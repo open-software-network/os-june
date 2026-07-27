@@ -381,6 +381,8 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.setItem("june:active-agent-profile", "default");
+    window.localStorage.removeItem("june:agent:last-open-session");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
@@ -694,35 +696,34 @@ describe("App shortcuts", () => {
   });
 
   it("opens the stored agent session requested by the companion", async () => {
-    mocks.listAgentSessions.mockResolvedValue([
-      {
-        id: "session-companion",
-        title: "Companion planning",
-        status: "completed",
-        model: "auto",
-        safetyMode: "sandboxed",
-        workspacePath: "/tmp/session-companion",
-        source: "user",
-        createdAt: "2026-07-16T09:00:00.000Z",
-        updatedAt: "2026-07-16T10:03:00.000Z",
-      },
+    const focusedSession = {
+      id: "session-companion",
+      title: "Companion planning",
+      status: "completed" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-companion",
+      source: "user" as const,
+      createdAt: "2026-07-16T09:00:00.000Z",
+      updatedAt: "2026-07-16T10:03:00.000Z",
+    };
+    mocks.listAgentSessions.mockResolvedValue([focusedSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: focusedSession.id, profile: "default" },
     ]);
     render(<App />);
 
-    await waitFor(() =>
-      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-focus")).toBe(
-        true,
-      ),
-    );
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
     act(() => {
-      for (const [event, handler] of mocks.listen.mock.calls) {
-        if (event === "june://companion-focus") {
-          handler({ payload: { agent: { storedSessionId: "session-companion" } } });
-        }
-      }
+      mocks.listeners.get("june://companion-focus")?.({
+        payload: { agent: { storedSessionId: "session-companion" } },
+      });
     });
 
-    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
     expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
   });
 
@@ -820,6 +821,103 @@ describe("App shortcuts", () => {
         model: created.model,
         safetyMode: created.safetyMode,
       }),
+    );
+  });
+
+  it("rejects a cached companion send after the active partition changes", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-stale-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: cached.id, message: "Cross the boundary" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-stale-send", {
+        type: "error",
+        data: {
+          code: "not_found",
+          message: "That agent session is no longer available.",
+          retryable: false,
+        },
+      }),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cached companion cancellation after the active partition changes", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-stale-cancel",
+          intent: {
+            type: "agentCancel",
+            data: { storedSessionId: cached.id },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-stale-cancel",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("ignores a cached companion focus target after the active partition changes", async () => {
+    const user = userEvent.setup();
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    await screen.findByRole("heading", { name: /Meeting notes/ });
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-focus")?.({
+        payload: { agent: { storedSessionId: cached.id } },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Message June" })).not.toBeInTheDocument(),
     );
   });
 

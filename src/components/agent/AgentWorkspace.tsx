@@ -50,6 +50,7 @@ import {
   dictationHelperCommand,
   juneHomeChat,
   type JuneHomeChatResponse,
+  listSessionPartitions,
   listVeniceModels,
   providerModelSettings,
   setCostQuality as setProviderCostQuality,
@@ -118,6 +119,10 @@ import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker
 import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
+import {
+  filterAgentSessionsForDataPartition,
+  sessionPartitionMap,
+} from "../../lib/session-partition-filter";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
@@ -810,6 +815,29 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!companionPairingEnabled) return;
+    async function companionSessionInActivePartition(storedSessionId: string) {
+      const [sessions, assignments] = await Promise.all([
+        agentRuntimeBindings.listSessions(),
+        listSessionPartitions(),
+      ]);
+      return filterAgentSessionsForDataPartition(
+        sessions,
+        sessionPartitionMap(assignments),
+        getCurrentDataPartitionName(),
+      ).find((session) => session.id === storedSessionId);
+    }
+
+    async function rejectUnavailableCompanionSession(operationId: string) {
+      await companionCompleteFrontendRequest(operationId, {
+        type: "error",
+        data: {
+          code: "not_found",
+          message: "That agent session is no longer available.",
+          retryable: false,
+        },
+      });
+    }
+
     async function handleCompanionRequest(payload: CompanionFrontendRequest) {
       try {
         switch (payload.intent.type) {
@@ -820,10 +848,13 @@ export function AgentWorkspace({
             const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
             let session: AgentSessionDto | undefined;
             if (requestedStoredSessionId) {
-              session = await agentRuntimeBindings
-                .getSession(requestedStoredSessionId)
-                .catch(() => undefined);
-              if (!session) throw new Error("That agent session is no longer available.");
+              session = await companionSessionInActivePartition(requestedStoredSessionId).catch(
+                () => undefined,
+              );
+              if (!session) {
+                await rejectUnavailableCompanionSession(payload.operationId);
+                return;
+              }
             } else {
               session = await agentRuntimeBindings.createSession({
                 title: titleFromPrompt(message),
@@ -857,6 +888,12 @@ export function AgentWorkspace({
           }
           case "agentCancel": {
             const { storedSessionId } = payload.intent.data;
+            if (
+              !(await companionSessionInActivePartition(storedSessionId).catch(() => undefined))
+            ) {
+              await rejectUnavailableCompanionSession(payload.operationId);
+              return;
+            }
             const run = await agentRuntimeBindings.getLatestRun?.(storedSessionId);
             if (
               run &&

@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use sqlx::query::query;
 use sqlx::query_builder::QueryBuilder;
 use sqlx::row::Row;
-use sqlx_sqlite::{Sqlite, SqlitePool};
+use sqlx_sqlite::{Sqlite, SqlitePool, SqliteRow};
 use uuid::Uuid;
 
 use crate::note_audio_export::{NoteAudioExportSelection, NoteAudioExportSource};
@@ -2142,16 +2142,45 @@ impl Repositories {
     }
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
-        let row = query(
+        self.get_note_with_profile(note_id, None).await
+    }
+
+    /// Looks up a note only inside the supplied data partition. Companion
+    /// callers use this at dispatch time so a cached id cannot cross a later
+    /// partition switch.
+    pub async fn get_note_in_profile(
+        &self,
+        profile: &str,
+        note_id: &str,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        self.get_note_with_profile(note_id, Some(profile)).await
+    }
+
+    async fn get_note_with_profile(
+        &self,
+        note_id: &str,
+        profile: Option<&str>,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        let mut note_query = QueryBuilder::<Sqlite>::new(
             "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
                     calendar_event_end_at, calendar_account_email
-             FROM notes WHERE id = ?",
-        )
-        .bind(note_id)
-        .fetch_one(&self.pool)
-        .await?;
+             FROM notes WHERE id = ",
+        );
+        note_query.push_bind(note_id);
+        if let Some(profile) = profile {
+            note_query.push(" AND profile = ");
+            note_query.push_bind(profile);
+        }
+        let row = note_query.build().fetch_one(&self.pool).await?;
+        self.hydrate_note_row(note_id, row).await
+    }
 
+    async fn hydrate_note_row(
+        &self,
+        note_id: &str,
+        row: SqliteRow,
+    ) -> Result<NoteDto, sqlx::error::Error> {
         let folder_ids = self.folder_ids(note_id).await?;
         let content = row
             .try_get::<Option<String>, _>("edited_content")?
@@ -3000,6 +3029,55 @@ impl Repositories {
             });
         }
         self.get_note(note_id).await.map_err(AppError::from)
+    }
+
+    /// Partition-scoped compare-and-swap used by companion edits. Both the
+    /// read and the atomic update include the active partition so a replayed
+    /// id cannot mutate a note after the user switches partitions.
+    pub async fn update_note_cas_in_profile(
+        &self,
+        profile: &str,
+        note_id: &str,
+        expected_revision: u64,
+        title: Option<String>,
+        edited_content: Option<String>,
+    ) -> Result<NoteDto, AppError> {
+        let current = self
+            .get_note_in_profile(profile, note_id)
+            .await
+            .map_err(|error| scoped_note_error(error))?;
+        let next_title = title.unwrap_or(current.title.clone());
+        let next_content = edited_content.or(current.edited_content.clone());
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| AppError::new("note_revision_invalid", "The note revision is invalid."))?;
+        let result = query(
+            "UPDATE notes
+             SET title = ?, edited_content = ?, updated_at = ?, revision = revision + 1
+             WHERE id = ? AND revision = ? AND profile = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(timestamp())
+        .bind(note_id)
+        .bind(expected_revision)
+        .bind(profile)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if result.rows_affected() == 0 {
+            let current = self
+                .get_note_in_profile(profile, note_id)
+                .await
+                .map_err(|error| scoped_note_error(error))?;
+            return Err(AppError {
+                code: "note_revision_conflict".to_string(),
+                message: "The note changed on another device.".to_string(),
+                details: serde_json::to_value(current).ok(),
+            });
+        }
+        self.get_note_in_profile(profile, note_id)
+            .await
+            .map_err(|error| scoped_note_error(error))
     }
 
     pub async fn audio_artifact_paths_for_note(
@@ -6031,6 +6109,16 @@ pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn scoped_note_error(error: sqlx::error::Error) -> AppError {
+    if matches!(error, sqlx::error::Error::RowNotFound) {
+        return AppError::new(
+            "note_not_found",
+            "That note is not available in the current data partition.",
+        );
+    }
+    AppError::from(error)
+}
+
 async fn insert_browser_approval_event(
     tx: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
     approval_id: &str,
@@ -8211,7 +8299,10 @@ mod tests {
     #[tokio::test]
     async fn companion_note_edits_use_compare_and_swap_revisions() {
         let repos = test_repositories().await;
-        let note = repos.create_note("default", None).await.expect("create note");
+        let note = repos
+            .create_note("default", None)
+            .await
+            .expect("create note");
         assert_eq!(note.revision, 1);
 
         let updated = repos
@@ -8251,6 +8342,41 @@ mod tests {
                 .as_deref(),
             Some("Encrypted edit")
         );
+    }
+
+    #[tokio::test]
+    async fn companion_note_reads_and_edits_recheck_the_active_partition() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("partition-a", None)
+            .await
+            .expect("create partition A note");
+
+        let read_error = repos
+            .get_note_in_profile("partition-b", &note.id)
+            .await
+            .expect_err("cached note id must not cross partitions");
+        assert!(matches!(read_error, sqlx::error::Error::RowNotFound));
+
+        let edit_error = repos
+            .update_note_cas_in_profile(
+                "partition-b",
+                &note.id,
+                note.revision,
+                Some("Cross-partition title".to_string()),
+                Some("Cross-partition edit".to_string()),
+            )
+            .await
+            .expect_err("cached edit must not cross partitions");
+        assert_eq!(edit_error.code, "note_not_found");
+
+        let unchanged = repos
+            .get_note_in_profile("partition-a", &note.id)
+            .await
+            .expect("partition A note remains readable");
+        assert_eq!(unchanged.title, note.title);
+        assert_eq!(unchanged.edited_content, note.edited_content);
+        assert_eq!(unchanged.revision, note.revision);
     }
 
     #[tokio::test]

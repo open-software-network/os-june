@@ -1015,29 +1015,40 @@ export function App() {
     setAgentOrigin,
   });
 
+  const companionScopedSessions = useCallback(async () => {
+    const [sessions, partitions] = await Promise.all([
+      listAgentSessions(),
+      refreshSessionPartitions(),
+    ]);
+    const fresh = dataPartitionScopedAgentSessions(sessions, partitions);
+    const currentById = new Map(
+      agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
+    );
+    const scoped = fresh.map((session) => {
+      const current = currentById.get(session.id);
+      return current?.title?.trim() ? { ...session, title: current.title } : session;
+    });
+    scoped.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return scoped;
+  }, [dataPartitionScopedAgentSessions, refreshSessionPartitions]);
+
   const openCompanionAgentSession = useCallback(
     async (storedSessionId?: string | null) => {
-      setAgentOrigin(undefined);
-      setActiveView("agent");
       if (!storedSessionId) {
+        setAgentOrigin(undefined);
+        setActiveView("agent");
         setActiveAgentSession(undefined);
         return;
       }
-      const cached = agentMenuBarSessionsRef.current.find(
-        (session) => session.id === storedSessionId,
-      );
-      if (cached) {
-        setActiveAgentSession(cached);
-        return;
-      }
-      setActiveAgentSession(undefined);
-      const session = (await listAgentSessions().catch(() => [])).find(
+      const session = (await companionScopedSessions().catch(() => [])).find(
         (candidate) => candidate.id === storedSessionId,
       );
-      if (session) setActiveAgentSession(session);
+      if (!session) return;
+      setAgentOrigin(undefined);
+      setActiveView("agent");
+      setActiveAgentSession(session);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [companionScopedSessions, setActiveAgentSession],
   );
 
   useEffect(() => {
@@ -1077,19 +1088,6 @@ export function App() {
     if (!companionPairingEnabled) return;
     let aborted = false;
     let unlisten: (() => void) | undefined;
-
-    async function companionScopedSessions() {
-      const fresh = dataPartitionScopedAgentSessions(await listAgentSessions());
-      const currentById = new Map(
-        agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
-      );
-      const sessions = fresh.map((session) => {
-        const current = currentById.get(session.id);
-        return current?.title?.trim() ? { ...session, title: current.title } : session;
-      });
-      sessions.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      return sessions;
-    }
 
     async function handleCompanionRequest(payload: CompanionFrontendRequest) {
       try {
@@ -1143,6 +1141,21 @@ export function App() {
           }
           case "agentSend":
           case "agentCancel": {
+            const storedSessionId = payload.intent.data.storedSessionId;
+            if (
+              storedSessionId &&
+              !(await companionScopedSessions()).some((session) => session.id === storedSessionId)
+            ) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
             const consumerAvailable = companionFrontendConsumerAvailable();
             queueCompanionFrontendRequest(payload);
             if (consumerAvailable) return;
@@ -1173,7 +1186,12 @@ export function App() {
       unlisten?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companionPairingEnabled, setActiveAgentSession]);
+  }, [
+    companionPairingEnabled,
+    companionScopedSessions,
+    openCompanionAgentSession,
+    setActiveAgentSession,
+  ]);
 
   useAgentAttentionNotifications({
     activeAgentSessionIdRef,

@@ -7,7 +7,7 @@ use crate::{
 };
 use june_companion_protocol::{
     ActiveRecording, ActiveRecordingSnapshot, ActiveRecordingState, Body, Capability, DeviceSelf,
-    DictationStyle, FailureCode, Frame, NoteConflict, NoteRecord, NoteSummary, Page,
+    DictationStyle, FailureCode, FocusTarget, Frame, NoteConflict, NoteRecord, NoteSummary, Page,
     ProtocolFailure, Response, ResultPayload, SafeSettings,
 };
 use std::{collections::HashMap, sync::Mutex};
@@ -129,15 +129,11 @@ impl Controller {
                 return Ok(ControllerOutcome::Immediate(response));
             }
         }
+        let active_profile = crate::commands::active_profile(app);
         let outcome = match frame.body {
             Body::NotesList(page) => {
                 let notes = repositories
-                    .list_notes(
-                        &crate::commands::active_profile(app),
-                        None,
-                        i64::from(page.limit),
-                        page.cursor,
-                    )
+                    .list_notes(&active_profile, None, i64::from(page.limit), page.cursor)
                     .await?;
                 let items = notes
                     .items
@@ -162,14 +158,22 @@ impl Controller {
                 ))
             }
             Body::NoteGet { note_id } => {
-                let note = repositories.get_note(&note_id).await?;
+                let note = repositories
+                    .get_note_in_profile(&active_profile, &note_id)
+                    .await
+                    .map_err(companion_note_lookup_error)?;
                 ControllerOutcome::Immediate(response(
                     capability,
                     ResultPayload::Note(note_record(note)?),
                 ))
             }
             Body::NoteEdit(request) => {
-                ensure_note_record_size(&repositories.get_note(&request.note_id).await?)?;
+                ensure_note_record_size(
+                    &repositories
+                        .get_note_in_profile(&active_profile, &request.note_id)
+                        .await
+                        .map_err(companion_note_lookup_error)?,
+                )?;
                 if request
                     .edited_content
                     .as_deref()
@@ -178,7 +182,8 @@ impl Controller {
                     return Err(note_too_large());
                 }
                 match repositories
-                    .update_note_cas(
+                    .update_note_cas_in_profile(
+                        &active_profile,
                         &request.note_id,
                         request.expected_revision,
                         request.title,
@@ -325,6 +330,12 @@ impl Controller {
                 ))
             }
             Body::AppFocus { target } => {
+                if let FocusTarget::Note { note_id } = &target {
+                    repositories
+                        .get_note_in_profile(&active_profile, note_id)
+                        .await
+                        .map_err(companion_note_lookup_error)?;
+                }
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();
                     let _ = window.unminimize();
@@ -473,6 +484,16 @@ fn note_too_large() -> AppError {
         "companion_note_too_large",
         "This note is too large to edit safely from the companion. Open it on your Mac.",
     )
+}
+
+fn companion_note_lookup_error(error: sqlx::error::Error) -> AppError {
+    if matches!(error, sqlx::error::Error::RowNotFound) {
+        return AppError::new(
+            "note_not_found",
+            "That note is not available in the current data partition.",
+        );
+    }
+    AppError::from(error)
 }
 
 fn bounded_utf8(value: &str, max_bytes: usize) -> String {
