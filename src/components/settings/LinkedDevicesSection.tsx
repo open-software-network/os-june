@@ -1,12 +1,17 @@
 import { writeText as writeClipboardText } from "@tauri-apps/plugin-clipboard-manager";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   companionApprovePairing,
   companionBeginPairing,
+  companionGrantBrowseRoot,
+  companionListBrowseRoots,
   companionListDevices,
   companionPairingStatus,
   companionRenameDevice,
+  companionRevokeBrowseRoot,
   companionRevokeDevice,
+  type CompanionBrowseRoot,
   type CompanionCapability,
   type CompanionPairingQr,
   type CompanionPairingStatus,
@@ -23,6 +28,8 @@ const capabilityLabels: Record<CompanionCapability, string> = {
   settingsEditSafe: "Edit safe settings",
   recordingControlExisting: "Control an existing recording",
   appFocus: "Focus June on this Mac",
+  filesUpload: "Add phone attachments",
+  filesBrowse: "Browse shared Mac folders",
   devicesReadSelf: "Read this device",
   devicesRevokeSelf: "Unlink this device",
 };
@@ -30,6 +37,7 @@ const companionCapabilities = Object.keys(capabilityLabels) as CompanionCapabili
 
 export function LinkedDevicesSection() {
   const [devices, setDevices] = useState<LinkedCompanionDevice[]>([]);
+  const [browseRoots, setBrowseRoots] = useState<CompanionBrowseRoot[]>([]);
   const [pairing, setPairing] = useState<CompanionPairingQr>();
   const [status, setStatus] = useState<CompanionPairingStatus>();
   const [editingId, setEditingId] = useState<string>();
@@ -60,9 +68,14 @@ export function LinkedDevicesSection() {
     setDevices(await companionListDevices());
   }, []);
 
+  const refreshBrowseRoots = useCallback(async () => {
+    setBrowseRoots(await companionListBrowseRoots());
+  }, []);
+
   useEffect(() => {
     void refreshDevices().catch((next) => setError(errorMessage(next)));
-  }, [refreshDevices]);
+    void refreshBrowseRoots().catch((next) => setError(errorMessage(next)));
+  }, [refreshBrowseRoots, refreshDevices]);
 
   useEffect(() => {
     if (!pairing) return;
@@ -183,6 +196,41 @@ export function LinkedDevicesSection() {
     }
   };
 
+  const addBrowseRoot = async () => {
+    setError(undefined);
+    const selected = await openFileDialog({ directory: true, multiple: false });
+    if (!selected || Array.isArray(selected)) return;
+    setBusy(true);
+    try {
+      await companionGrantBrowseRoot(selected);
+      await refreshBrowseRoots();
+    } catch (next) {
+      setError(errorMessage(next));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeBrowseRoot = async (root: CompanionBrowseRoot) => {
+    if (
+      !window.confirm(
+        `Stop sharing ${root.name}? Linked devices will lose access to this folder immediately.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    try {
+      await companionRevokeBrowseRoot(root.id);
+      await refreshBrowseRoots();
+    } catch (next) {
+      setError(errorMessage(next));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="settings-group companion-settings" aria-labelledby="linked-devices-heading">
       <header className="settings-page-header">
@@ -275,6 +323,47 @@ export function LinkedDevicesSection() {
               </button>
             </div>
           </div>
+        )}
+      </div>
+
+      <div className="settings-card companion-browse-card">
+        <div className="settings-row-info">
+          <h3 className="settings-row-title">Mac folders</h3>
+          <p className="settings-row-description">
+            Linked devices can browse file names and details only inside folders you add here. Files
+            are read only when you attach one to a June message. Folder contents cannot be
+            downloaded to the companion.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="primary-action"
+          disabled={busy || browseRoots.length >= 16}
+          onClick={() => void addBrowseRoot()}
+        >
+          Add folder
+        </button>
+        {browseRoots.length ? (
+          <ul className="companion-root-list" aria-label="Folders shared with linked devices">
+            {browseRoots.map((root) => (
+              <li className="companion-root-row" key={root.id}>
+                <div className="settings-row-info">
+                  <span className="settings-row-title">{root.name}</span>
+                  <span className="settings-row-description companion-root-path">{root.path}</span>
+                </div>
+                <button
+                  type="button"
+                  className="primary-action primary-destructive"
+                  disabled={busy}
+                  onClick={() => void removeBrowseRoot(root)}
+                >
+                  Stop sharing
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="settings-row-description">No Mac folders are shared with linked devices.</p>
         )}
       </div>
 
