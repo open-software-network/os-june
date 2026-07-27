@@ -249,7 +249,7 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
 ]);
 
 const HOME_CONVERSATION_GREETING =
-  /^(?:(?:hi|hey|hello)(?: there)?|(?:good )?(?:morning|afternoon|evening))(?: june)?$/;
+  /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$|^hello from [\p{L}\p{N}]+(?: [\p{L}\p{N}]+){0,2}$/u;
 
 function normalizedHomeAcknowledgement(message: string): string {
   return message
@@ -348,13 +348,8 @@ const HOME_TASK_ACTION_REQUEST =
   /\b(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_ACTION_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
-const HOME_TASK_REPEAT_REQUEST =
-  /\b(?:another one|continue (?:it|that|this)|do (?:it|that|this) again|pick (?:it|that|this) up|redo (?:it|that|this)|repeat (?:it|that|this)|resume (?:it|that|this)|same thing)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
-const HOME_TASK_CONTEXTUAL_REQUEST =
-  /\b(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
-const HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST = /\b(?:how about|what about)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
 
@@ -408,17 +403,9 @@ export function isHomeTaskReplayWithoutNewIntent(
     intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
   const matchesPriorHandoff = handoffs.some((handoff) => homeTaskSimilarity(task, handoff) >= 0.6);
   if (!matchesPriorHandoff) return false;
+  if (homeConversationGreetingReply(latestMessage)) return true;
   if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
-  if (
-    task.requiresCurrentResearch ||
-    actionCount > 0 ||
-    HOME_TASK_REPEAT_REQUEST.test(intentText) ||
-    HOME_TASK_CONTEXTUAL_REQUEST.test(intentText) ||
-    HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST.test(intentText)
-  ) {
-    return false;
-  }
-  return true;
+  return false;
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {

@@ -381,10 +381,10 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.type(screen.getByRole("textbox", { name: "Message June" }), "Greetings, June");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    expect(await screen.findByText("I'm here. What can I help with?")).toBeVisible();
+    await waitFor(() => expect(screen.getAllByText("Hey! What can I help with?")).toHaveLength(2));
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
     ).toHaveLength(1);
