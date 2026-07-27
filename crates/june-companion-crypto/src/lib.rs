@@ -41,7 +41,7 @@ pub fn generate_identity() -> Result<IdentityKeypair, CryptoError> {
 }
 
 enum State {
-    Handshake(Option<HandshakeState>),
+    Handshake(Option<Box<HandshakeState>>),
     Transport(TransportState),
 }
 
@@ -97,7 +97,7 @@ impl Session {
         }
         .map_err(CryptoError::Noise)?;
         Ok(Self {
-            state: State::Handshake(Some(handshake)),
+            state: State::Handshake(Some(Box::new(handshake))),
             remote_static: None,
             transport_started_at: None,
             sent_messages: 0,
@@ -195,7 +195,7 @@ impl Session {
         {
             return Ok(());
         }
-        let state = handshake.take().ok_or(CryptoError::InvalidState)?;
+        let state = *handshake.take().ok_or(CryptoError::InvalidState)?;
         if let Some(remote) = state.get_remote_static() {
             self.remote_static = Some(remote.try_into().map_err(|_| CryptoError::InvalidKey)?);
         }
@@ -240,6 +240,10 @@ pub mod ffi {
     pub const BUFFER_TOO_SMALL: i32 = 3;
     pub const REHANDSHAKE_REQUIRED: i32 = 4;
 
+    /// # Safety
+    ///
+    /// Both output pointers must address writable buffers of at least
+    /// [`KEY_BYTES`] bytes.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_generate_identity(
         private_out: *mut u8,
@@ -260,6 +264,10 @@ pub mod ffi {
         OK
     }
 
+    /// # Safety
+    ///
+    /// Both key pointers must address readable buffers of exactly
+    /// [`KEY_BYTES`] bytes for the duration of this call.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_pairing_session_new(
         initiator: bool,
@@ -278,6 +286,10 @@ pub mod ffi {
             .unwrap_or(ptr::null_mut())
     }
 
+    /// # Safety
+    ///
+    /// Both key pointers must address readable buffers of exactly
+    /// [`KEY_BYTES`] bytes for the duration of this call.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_linked_session_new(
         initiator: bool,
@@ -296,6 +308,11 @@ pub mod ffi {
             .unwrap_or(ptr::null_mut())
     }
 
+    /// # Safety
+    ///
+    /// `session` must be a live handle returned by this library. `input` must
+    /// address `input_len` readable bytes, `output` must address
+    /// `output_capacity` writable bytes, and `output_len` must be writable.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_session_write(
         session: *mut Session,
@@ -319,6 +336,11 @@ pub mod ffi {
         }
     }
 
+    /// # Safety
+    ///
+    /// `session` must be a live handle returned by this library. `input` must
+    /// address `input_len` readable bytes, `output` must address
+    /// `output_capacity` writable bytes, and `output_len` must be writable.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_session_read(
         session: *mut Session,
@@ -342,12 +364,19 @@ pub mod ffi {
         }
     }
 
+    /// # Safety
+    ///
+    /// `session` must be null or a live handle returned by this library.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_session_is_ready(session: *const Session) -> bool {
         // SAFETY: callers pass an opaque handle returned by this library.
         unsafe { session.as_ref() }.is_some_and(Session::is_transport_ready)
     }
 
+    /// # Safety
+    ///
+    /// `session` must be a live handle returned by this library and `output`
+    /// must address a writable buffer of at least [`KEY_BYTES`] bytes.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_session_remote_static(
         session: *const Session,
@@ -365,6 +394,10 @@ pub mod ffi {
         OK
     }
 
+    /// # Safety
+    ///
+    /// `session` must be null or a live handle returned by this library that
+    /// has not already been freed.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn june_crypto_session_free(session: *mut Session) {
         if !session.is_null() {
