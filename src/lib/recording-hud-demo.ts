@@ -34,9 +34,9 @@ type DemoState = "recording" | "paused" | "vertical" | "horizontal" | "end" | "d
 const STATUS_EVENT = "meeting-hud-status";
 const ZONE_EVENT = "meeting-hud-zone";
 
-// Status pushes carry fresh peaks; ~90ms keeps the waveform alive without
-// pinning the loop.
-const STATUS_TICK_MS = 90;
+// Match the real active telemetry cadence so the standalone HUD has production
+// waveform timing during visual review.
+const STATUS_TICK_MS = 50;
 
 const HELP = [
   "Recording pill demo states (meeting-hud window):",
@@ -55,11 +55,12 @@ const HELP = [
   "only restyle the pill if it is already on screen.",
   "",
   '"end" in the dev app arms the REAL meeting-end countdown on the live',
-  "recording (start one first): the native card pops bottom-center even with",
-  "June frontmost, the record dock shows the ticking notice, and Keep/Stop/",
-  "expiry drive the actual session — Stop now and the 15s lapse genuinely",
-  'finish the recording; "clear" suppresses it like Keep recording. On the',
-  "standalone page the same card is faked in place and the seconds arg works.",
+  "recording (start one first): the record dock shows the draining notice",
+  "while June is frontmost, and backgrounding June pops the native card",
+  "top-right; Keep/Stop/expiry drive the actual session — Stop now and the",
+  '15s lapse genuinely finish the recording; "clear" suppresses it like Keep',
+  "recording. On the standalone page the same card is faked in place and the",
+  "seconds arg works.",
 ].join("\n");
 
 let timers: number[] = [];

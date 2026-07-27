@@ -75,7 +75,7 @@ describe("SmoothedStreamingMarkdown", () => {
     expect(view.container.textContent).not.toContain("1.");
   });
 
-  it("batches appended stream text into one whole-chunk reveal per beat", () => {
+  it("paces a large provider chunk into word-sized reveals", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="Hello" running repairProse />);
     view.rerender(
@@ -86,11 +86,32 @@ describe("SmoothedStreamingMarkdown", () => {
       />,
     );
 
-    // The delta holds for one batch interval, then mounts all at once — a
-    // chunk fading in as a unit, never a partial left-to-right dribble.
+    // A provider delta can contain a paragraph. Its transport boundary must
+    // not become one giant visible animation batch.
     expect(view.container.textContent).toBe("Hello");
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.advanceTimersByTime(32));
+    expect(view.container.textContent).toBe("Hello from a");
+    act(() => vi.advanceTimersByTime(32));
+    expect(view.container.textContent).toBe("Hello from a larger provider");
+    act(() => vi.advanceTimersByTime(32));
     expect(view.container.textContent).toBe("Hello from a larger provider chunk");
+  });
+
+  it("limits the first non-empty provider delta without delaying its first words", () => {
+    vi.useFakeTimers();
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+
+    view.rerender(
+      <SmoothedStreamingMarkdown
+        markdown="Two visible words followed by the rest of a paragraph"
+        running
+      />,
+    );
+
+    expect(view.container.textContent).toBe("Two visible");
+    act(() => vi.advanceTimersByTime(32));
+    expect(view.container.textContent).toBe("Two visible words followed");
+    expect(view.container.textContent).not.toContain("paragraph");
   });
 
   it("flushes immediately when the turn completes", () => {
@@ -200,18 +221,22 @@ describe("SmoothedStreamingMarkdown", () => {
   });
 
   it("still renders valid emphasis after tightening literal-star handling", () => {
+    vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="before *valid words*" running />);
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("em")?.textContent).toBe("valid words");
   });
 
   it("excludes inline and fenced code from word-fade spans", () => {
+    vi.useFakeTimers();
     const view = render(
       <SmoothedStreamingMarkdown
         markdown={"Fade prose around `inline code`.\n\n```ts\nconst value = 1;\n```"}
         running
       />,
     );
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("p .agent-stream-word")).not.toBeNull();
     expect(view.container.querySelector("code .agent-stream-word")).toBeNull();
@@ -227,7 +252,7 @@ describe("SmoothedStreamingMarkdown", () => {
         running
       />,
     );
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("pre code")?.textContent).toBe("const value = 1;");
     expect(view.container.querySelector("p")?.textContent).toBe("Following prose");
@@ -239,6 +264,7 @@ describe("SmoothedStreamingMarkdown", () => {
     const view = render(
       <SmoothedStreamingMarkdown markdown={"> ```ts\n> const value = 1;"} running />,
     );
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("blockquote pre code")?.textContent).toBe(
       "const value = 1;",
@@ -250,7 +276,7 @@ describe("SmoothedStreamingMarkdown", () => {
         running
       />,
     );
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("blockquote pre code")?.textContent).toBe(
       "const value = 1;",
@@ -259,17 +285,21 @@ describe("SmoothedStreamingMarkdown", () => {
   });
 
   it("does not stall on a thematic break inside a blockquote", () => {
+    vi.useFakeTimers();
     const view = render(
       <SmoothedStreamingMarkdown markdown={"> ***\n> Following prose"} running />,
     );
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("blockquote hr")).not.toBeNull();
     expect(view.container.querySelector("blockquote p")?.textContent).toBe("Following prose");
   });
 
   it("reveals later paragraphs across renderer-recognized blank lines", () => {
+    vi.useFakeTimers();
     const markdown = "before *open\r\n \t\r\nNext paragraph";
     const view = render(<SmoothedStreamingMarkdown markdown={markdown} running />);
+    act(() => vi.runAllTimers());
 
     expect(
       [...view.container.querySelectorAll("p")].map((paragraph) => paragraph.textContent),
@@ -323,6 +353,7 @@ describe("SmoothedStreamingMarkdown", () => {
     const view = render(<SmoothedStreamingMarkdown markdown="" running />);
 
     view.rerender(<SmoothedStreamingMarkdown markdown={text} running />);
+    act(() => vi.runAllTimers());
 
     expect(view.container.textContent).toBe(text);
   });
@@ -331,12 +362,13 @@ describe("SmoothedStreamingMarkdown", () => {
     vi.useFakeTimers();
     const view = render(<SmoothedStreamingMarkdown markdown="" running />);
     view.rerender(<SmoothedStreamingMarkdown markdown="2 * 3" running />);
+    act(() => vi.runAllTimers());
     const three = [...view.container.querySelectorAll(".agent-stream-word")].find(
       (word) => word.textContent === "3",
     );
 
     view.rerender(<SmoothedStreamingMarkdown markdown="2 * 3 * 4" running />);
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.runAllTimers());
 
     expect(view.container.textContent).toBe("2 * 3 * 4");
     expect(view.container.querySelector("em")).toBeNull();
@@ -366,7 +398,7 @@ describe("SmoothedStreamingMarkdown", () => {
         running
       />,
     );
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("th")?.textContent).toBe("Metric");
     expect(view.container.textContent).toBe("MetricQ1Revenue1.2M");
@@ -385,10 +417,38 @@ describe("SmoothedStreamingMarkdown", () => {
         running
       />,
     );
-    act(() => vi.advanceTimersByTime(80));
+    act(() => vi.runAllTimers());
 
     expect(view.container.querySelector("blockquote th")?.textContent).toBe("Metric");
     expect(view.container.textContent).toBe("MetricQ1Revenue1.2M");
+  });
+
+  it("keeps streaming prose after a table finishes", () => {
+    vi.useFakeTimers();
+    const table = "| Metric | Q1 |\n| --- | --- |\n| Revenue | 1.2M |\n";
+    const view = render(<SmoothedStreamingMarkdown markdown="" running />);
+
+    view.rerender(<SmoothedStreamingMarkdown markdown={table} running />);
+    act(() => vi.runAllTimers());
+    expect(view.container.querySelector("table")).not.toBeNull();
+
+    const afterTable = `${table}\nThe response continues after the table.`;
+    view.rerender(<SmoothedStreamingMarkdown markdown={afterTable} running />);
+    act(() => vi.runAllTimers());
+    expect(view.container.textContent).toContain("The response continues after the table.");
+    expect(
+      [...view.container.querySelectorAll(".agent-stream-word")].some(
+        (word) => word.textContent === "continues",
+      ),
+    ).toBe(true);
+
+    view.rerender(
+      <SmoothedStreamingMarkdown markdown={`${afterTable} More streamed text.`} running />,
+    );
+    act(() => vi.runAllTimers());
+    expect(view.container.textContent).toContain(
+      "The response continues after the table. More streamed text.",
+    );
   });
 
   it("flushes a withheld tail when the turn completes", () => {

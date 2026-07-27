@@ -1,7 +1,7 @@
-/** Turns the cron expressions Hermes stores for routines into plain language
+/** Turns stored routine schedules into plain language
  * for the Routines list ("0 8 * * 1-5" reads as "Weekdays at 8:00 AM").
  *
- * Hermes passes the job's schedule through verbatim, so the field may hold a
+ * Imported schedules are preserved verbatim, so the field may hold a
  * five-field cron expression, an interval ("every 30m"), a one-off ISO date,
  * or text that is already human. Only the cron case needs translation; every
  * other input — and any cron shape too exotic to phrase with confidence
@@ -218,8 +218,8 @@ export type ScheduleDraft =
   | { kind: "interval"; minutes: number }
   | { kind: "custom"; expression: string };
 
-/** Renders a draft as a schedule string Hermes parses: five-field cron for
- * the clock-time kinds, its "every Nm"/"every Nh" interval grammar, or the
+/** Renders a draft as a June schedule string: five-field cron for the
+ * clock-time kinds, the "every Nm"/"every Nh" interval grammar, or the
  * custom expression verbatim. */
 export function scheduleFromDraft(draft: ScheduleDraft): string {
   switch (draft.kind) {
@@ -243,7 +243,7 @@ function cronTime(time: string): string {
 
 /** Maps a stored schedule back onto the picker. Mirrors the subset
  * `scheduleFromDraft` emits — a fixed clock time daily, on weekdays, or on
- * one weekday, plus Hermes-normalized intervals — and parks everything else
+ * one weekday, plus normalized intervals, and parks everything else
  * in `custom` rather than misreading it. */
 export function draftFromSchedule(schedule: string): ScheduleDraft {
   const trimmed = schedule.trim();

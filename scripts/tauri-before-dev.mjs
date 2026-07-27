@@ -17,6 +17,22 @@ let apiChild = null;
 let frontendChild = null;
 let shuttingDown = false;
 
+async function runRequired(name, command, args, cwd) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: process.env,
+      shell,
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${name} exited with ${signal ?? code}`));
+    });
+  });
+}
+
 function portIsOpen(port) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: "127.0.0.1", port });
@@ -65,6 +81,18 @@ function exitFromChild(code, signal) {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => exitFromChild(0, signal));
+}
+
+// The Rust host executes agent-runtime/dist/main.js in development. Build it
+// before Vite advertises readiness so a clean checkout can send its first turn.
+try {
+  await runRequired("agent runtime build", "pnpm", ["agent-runtime:build"], rootDir);
+} catch (error) {
+  console.error(`Agent runtime build failed: ${error instanceof Error ? error.message : error}`);
+  process.exit(1);
+}
+if (process.env.JUNE_DEV_PREPARE_ONLY === "1") {
+  process.exit(0);
 }
 
 if (skipLocalApi) {

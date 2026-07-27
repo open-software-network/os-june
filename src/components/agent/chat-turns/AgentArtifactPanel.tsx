@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { hermesBridgeFilePreview, hermesBridgeFileText } from "../../../lib/tauri";
+import { agentFilePreview, agentFileText } from "../../../lib/tauri";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
 import { SegmentedControl } from "../../ui/SegmentedControl";
 import { Spinner } from "../../ui/Spinner";
@@ -208,10 +208,10 @@ export function AgentArtifactPanel({
     let cancelled = false;
     setPreview({ kind: "loading" });
     const load: Promise<AgentArtifactPreview> = isPreviewableImagePath(artifactPath)
-      ? hermesBridgeFilePreview(artifactPath).then((dataUrl) =>
+      ? agentFilePreview(artifactPath).then((dataUrl) =>
           dataUrl ? ({ kind: "image", dataUrl } as const) : ({ kind: "none" } as const),
         )
-      : hermesBridgeFileText(artifactPath).then((text) =>
+      : agentFileText(artifactPath).then((text) =>
           text !== null ? ({ kind: "text", text } as const) : ({ kind: "none" } as const),
         );
     void load

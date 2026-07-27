@@ -7,6 +7,7 @@
 	ephemeral-api ephemeral-api-down dev-with-ephemeral-api \
 	check format typecheck test-web \
 	tauri-fmt tauri-fmt-check tauri-lint tauri-test \
+	companion-fmt companion-fmt-check companion-lint companion-test \
 	june-api-fmt june-api-fmt-check june-api-lint june-api-test \
 	fmt fmt-check lint test verify \
 	local-ci signoff-pr signoff-frontend signoff-rust-macos \
@@ -84,6 +85,23 @@ tauri-lint:  ## clippy (warnings = errors)
 tauri-test:  ## cargo test
 	cargo test --manifest-path src-tauri/Cargo.toml --locked
 
+# --- Companion protocol and crypto crates (crates/june-companion-*) ---
+companion-fmt:  ## rustfmt companion crates (write)
+	cargo fmt --manifest-path crates/june-companion-protocol/Cargo.toml --all
+	cargo fmt --manifest-path crates/june-companion-crypto/Cargo.toml --all
+
+companion-fmt-check:  ## rustfmt companion crates (check only)
+	cargo fmt --manifest-path crates/june-companion-protocol/Cargo.toml --all -- --check
+	cargo fmt --manifest-path crates/june-companion-crypto/Cargo.toml --all -- --check
+
+companion-lint:  ## clippy companion crates (warnings = errors)
+	cargo clippy --manifest-path crates/june-companion-protocol/Cargo.toml --all-targets --locked -- -D warnings
+	cargo clippy --manifest-path crates/june-companion-crypto/Cargo.toml --all-targets --locked -- -D warnings
+
+companion-test:  ## cargo test companion crates
+	cargo test --manifest-path crates/june-companion-protocol/Cargo.toml --locked
+	cargo test --manifest-path crates/june-companion-crypto/Cargo.toml --locked
+
 .PHONY: benchmark-note-transcription-latency benchmark-calendar-account-poll benchmark-share-rate-limiter
 benchmark-note-transcription-latency:
 	cargo test --manifest-path src-tauri/Cargo.toml --locked --release commands::note_transcription_benchmark::benchmark_post_finalization_note_transcription_latency -- --ignored --exact --nocapture --test-threads=1
@@ -125,15 +143,15 @@ skills-sync: sfw-check  ## Re-link skills into .claude/skills (sfw npx skills)
 	sfw npx -y $(SKILLS_CLI) experimental_sync --yes
 
 # --- Aggregates ---
-fmt: format tauri-fmt june-api-fmt  ## Format everything (biome + both cargo fmt)
+fmt: format tauri-fmt companion-fmt june-api-fmt  ## Format everything
 
-fmt-check: tauri-fmt-check june-api-fmt-check  ## Check rust formatting (biome format is covered by `check`)
+fmt-check: tauri-fmt-check companion-fmt-check june-api-fmt-check  ## Check Rust formatting
 
-lint: check tauri-lint june-api-lint  ## Lint everything (biome + both clippy)
+lint: check tauri-lint companion-lint june-api-lint  ## Lint everything
 
-test: test-web tauri-test june-api-test  ## Run all test suites
+test: test-web tauri-test companion-test june-api-test  ## Run all test suites
 
-verify: check typecheck test-web tauri-fmt-check tauri-lint tauri-test june-api-fmt-check june-api-lint june-api-test  ## Full CI-parity gate
+verify: check typecheck test-web tauri-fmt-check tauri-lint tauri-test companion-fmt-check companion-lint companion-test june-api-fmt-check june-api-lint june-api-test  ## Full CI-parity gate
 
 local-ci:  ## Run path-aware local PR checks and post required signoff/* statuses
 	./scripts/local-ci.sh

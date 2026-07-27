@@ -5,32 +5,38 @@ import {
   markAgentNewSessionPending,
   type AgentNewSessionDetail,
 } from "../components/agent/session-persistence";
-import { recordManualAgentSessionTitle } from "../components/agent/agent-session-continuity";
 import { NoteHeaderActions } from "../components/note-editor/NoteHeaderActions";
 import { toast } from "../components/ui/Toaster";
 import { exportNoteAsPdf } from "../lib/note-pdf";
 import { useNoteChat } from "../components/note-chat/useNoteChat";
+import { useExperimentalFlags } from "../lib/experimental-flags";
 import { noteReadyToShare } from "../lib/share-payload";
-import { SETTINGS_TABS } from "../components/settings/settings-config";
+import { SETTINGS_TABS } from "../components/settings/AppSettings";
 import type { TabItem } from "../components/tabs/TabBar";
 import { reorderTabs } from "./tabs/tabs";
 import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import {
   checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest,
+  listAgentItems,
+  type CompanionAgentStatus,
+  type CompanionFrontendRequest,
+  type CompanionResultPayload,
   createFolder,
   createNote,
   dictationHelperCommand,
   downloadNoteAudio,
-  ensureHermesBridgeSession,
   getNote,
   keepMeetingRecording,
   LIVE_TRANSCRIPT_EVENT,
-  listSessionProfiles,
+  listSessionPartitions,
+  listAgentSessions,
   openPrivacySettings,
   osAccountsLogout,
   recoverRecording,
   revealPath,
   renameFolder,
+  renameAgentSession,
   agentHudHide,
   agentHudShow,
   completeNoteSaveFlush,
@@ -53,13 +59,22 @@ import {
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
 import { messageFromError } from "../lib/errors";
-import { listHermesSessions } from "../lib/hermes-adapter";
+import { boundedCompanionText, companionAgentMessagesFromItems } from "../lib/agent-chat-runtime";
 import {
-  getActiveHermesProfileName,
-  PROFILE_DATA_CHANGED_EVENT,
-  type ProfileDataChangedDetail,
-} from "../lib/active-hermes-profile";
-import { filterAgentSessionsForProfile, sessionProfileMap } from "../lib/session-profile-filter";
+  companionFrontendConsumerAvailable,
+  queueCompanionFrontendRequest,
+} from "../lib/companion-frontend-router";
+import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
+import {
+  getCurrentDataPartitionName,
+  DATA_PARTITION_CHANGED_EVENT,
+  type DataPartitionChangedDetail,
+} from "../lib/data-partition";
+import {
+  filterAgentSessionsForDataPartition,
+  sessionPartitionMap,
+} from "../lib/session-partition-filter";
 import {
   authoritativeTranscriptCoverageKey,
   clearTerminalLiveTranscriptEvents,
@@ -86,7 +101,7 @@ import {
   setAgentHudEnabled,
   type AgentHudVisibilityChangedDetail,
 } from "../lib/agent-hud-settings";
-import type { FolderDto, AccountStatus, HermesSessionInfo } from "../lib/tauri";
+import type { FolderDto, AccountStatus } from "../lib/tauri";
 import type { RecordingSourceMode } from "../lib/tauri";
 import { retryPendingAutostartDefault } from "../lib/autostart";
 import { applyOnboardingReplayFlag, isOnboardingComplete } from "../lib/onboarding";
@@ -113,7 +128,6 @@ import {
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
 import {
   ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
-  AGENT_MENU_BAR_SESSION_FETCH_LIMIT,
   AGENT_MENU_BAR_SESSION_LIMIT,
   AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS,
   CHECK_FOR_UPDATES_EVENT,
@@ -130,13 +144,11 @@ import { useAppExternalEvents } from "./use-app-external-events";
 
 import { useAgentAttentionNotifications } from "./use-agent-attention-notifications";
 
-import { useAgentMenuSessions } from "./use-agent-menu-sessions";
-
 import { useAgentSessionSync } from "./use-agent-session-sync";
 
 import { useAgentMenuEvents } from "./use-agent-menu-events";
 
-import { useActiveProfileData } from "./use-active-profile-data";
+import { useDataPartitionRefresh } from "./use-data-partition-refresh";
 
 import { useRecordingStartActions } from "./use-recording-start-actions";
 
@@ -178,10 +190,11 @@ import { useAppState } from "./use-app-state";
 import { renderAppAccountGate } from "./app-account-gates";
 
 export function App() {
+  const { companionPairingEnabled } = useExperimentalFlags();
   const {
-    activeHermesProfileName,
-    profileDataRefreshRevision,
-    setProfileDataRefreshRevision,
+    currentDataPartitionName,
+    dataPartitionRefreshRevision,
+    setDataPartitionRefreshRevision,
     state,
     dispatch,
     error,
@@ -225,7 +238,7 @@ export function App() {
     sessionCompletionWritesRef,
     sessionCompletionTouchedRef,
     completedSessionsRef,
-    sessionProfilesRef,
+    sessionPartitionsRef,
     moveDialogSessionIds,
     setMoveDialogSessionIds,
     agentOrigin,
@@ -293,8 +306,8 @@ export function App() {
     refreshAccount,
     setAccount,
     recordingNoteIdRef,
-    crossProfileRecordingNoteIdRef,
-    calendarContextNoteProfilesRef,
+    crossPartitionRecordingNoteIdRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     pendingCalendarContextAdoptionsRef,
     recordingNoteId,
@@ -318,6 +331,25 @@ export function App() {
   const drainPendingMeetingEndFinishRef = useRef<() => void>(() => {});
   const meetingEndFinishHandlerRef = useRef<(sessionId: string) => Promise<boolean>>(
     async () => false,
+  );
+  const [homeStoredSessionId, setHomeStoredSessionId] = useState(() =>
+    readJuneHomeStoredSessionId(currentDataPartitionName),
+  );
+  useEffect(() => {
+    setHomeStoredSessionId(readJuneHomeStoredSessionId(currentDataPartitionName));
+  }, [currentDataPartitionName]);
+  const homeStoredSessionIdRef = useRef(homeStoredSessionId);
+  homeStoredSessionIdRef.current = homeStoredSessionId;
+  const focusedAgentSessions = useMemo(
+    () => agentSessions.filter((session) => session.id !== homeStoredSessionId),
+    [agentSessions, homeStoredSessionId],
+  );
+  const rememberHomeSession = useCallback(
+    (sessionId: string) => {
+      writeJuneHomeStoredSessionId(currentDataPartitionName, sessionId);
+      setHomeStoredSessionId(sessionId);
+    },
+    [currentDataPartitionName],
   );
   const noteSaveControllerRef = useRef<NoteSaveController | null>(null);
   if (!noteSaveControllerRef.current) {
@@ -499,7 +531,9 @@ export function App() {
         // openable from the native menu bar's recent-session shortcuts
         // (JUN-203 review).
         sessions: agentMenuBarSessionsRef.current.filter(
-          (session) => !completedSessionsRef.current[session.id],
+          (session) =>
+            session.id !== homeStoredSessionIdRef.current &&
+            !completedSessionsRef.current[session.id],
         ),
         workingSessionIds: agentMenuBarWorkingSessionIdsRef.current,
         waitingSessionIds: agentMenuBarWaitingSessionIdsRef.current,
@@ -516,27 +550,27 @@ export function App() {
     completedSessionsRef.current = completedSessions;
     publishAgentMenuBarState();
   }, [completedSessions, publishAgentMenuBarState]);
-  const profileScopedAgentSessions = useCallback(
-    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
-      if (profiles === null) return [];
-      const activeProfile = getActiveHermesProfileName().trim() || activeHermesProfileName;
-      return filterAgentSessionsForProfile(sessions, profiles, activeProfile);
+  const dataPartitionScopedAgentSessions = useCallback(
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      if (partitions === null) return [];
+      const currentDataPartition = getCurrentDataPartitionName().trim() || currentDataPartitionName;
+      return filterAgentSessionsForDataPartition(sessions, partitions, currentDataPartition);
     },
-    [activeHermesProfileName],
+    [currentDataPartitionName],
   );
-  const refreshSessionProfiles = useCallback(async () => {
-    const profiles = sessionProfileMap(await listSessionProfiles());
-    sessionProfilesRef.current = profiles;
-    return profiles;
+  const refreshSessionPartitions = useCallback(async () => {
+    const partitions = sessionPartitionMap(await listSessionPartitions());
+    sessionPartitionsRef.current = partitions;
+    return partitions;
   }, []);
   const commitAgentSessions = useCallback(
-    (sessions: readonly HermesSessionInfo[], profiles = sessionProfilesRef.current) => {
-      const scopedSessions = profileScopedAgentSessions(sessions, profiles);
+    (sessions: readonly AgentSessionDto[], partitions = sessionPartitionsRef.current) => {
+      const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
       agentMenuBarSessionsRef.current = scopedSessions;
       setAgentSessions(scopedSessions);
       publishAgentMenuBarState();
     },
-    [profileScopedAgentSessions, publishAgentMenuBarState],
+    [dataPartitionScopedAgentSessions, publishAgentMenuBarState],
   );
   const applyAgentHudVisibility = useCallback(
     (enabled: boolean) => {
@@ -752,7 +786,7 @@ export function App() {
     activateTab,
     activeTabId,
     activeTabIdRef,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     closeTab,
     cycleTab,
@@ -994,6 +1028,199 @@ export function App() {
     setAgentOrigin,
   });
 
+  const companionScopedSessions = useCallback(async () => {
+    const [sessions, partitions] = await Promise.all([
+      listAgentSessions(),
+      refreshSessionPartitions(),
+    ]);
+    const fresh = dataPartitionScopedAgentSessions(sessions, partitions);
+    const currentById = new Map(
+      agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
+    );
+    const scoped = fresh.map((session) => {
+      const current = currentById.get(session.id);
+      return current?.title?.trim() ? { ...session, title: current.title } : session;
+    });
+    scoped.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return scoped;
+  }, [dataPartitionScopedAgentSessions, refreshSessionPartitions]);
+
+  const openCompanionAgentSession = useCallback(
+    async (storedSessionId?: string | null) => {
+      if (!storedSessionId) {
+        setAgentOrigin(undefined);
+        setActiveView("agent");
+        setActiveAgentSession(undefined);
+        return;
+      }
+      const session = (await companionScopedSessions().catch(() => [])).find(
+        (candidate) => candidate.id === storedSessionId,
+      );
+      if (!session) return;
+      setAgentOrigin(undefined);
+      setActiveView("agent");
+      setActiveAgentSession(session);
+    },
+    [companionScopedSessions, setActiveAgentSession],
+  );
+
+  useEffect(() => {
+    if (!companionPairingEnabled) return;
+    type CompanionFocusTarget =
+      | "settings"
+      | { agent: { storedSessionId?: string | null } }
+      | { note: { noteId: string } };
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<CompanionFocusTarget>("june://companion-focus", (event) => {
+      const target = event.payload;
+      if (target === "settings") {
+        openSettings();
+        return;
+      }
+      if ("note" in target) {
+        setActiveView("meetings");
+        void getNote(target.note.noteId)
+          .then((note) => dispatch({ type: "noteLoaded", note }))
+          .catch((error) => setError(messageFromError(error)));
+        return;
+      }
+      void openCompanionAgentSession(target.agent.storedSessionId);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companionPairingEnabled, openSettings]);
+
+  useEffect(() => {
+    if (!companionPairingEnabled) return;
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
+      try {
+        switch (payload.intent.type) {
+          case "agentSessionsList": {
+            const sessions = await companionScopedSessions();
+            const page = companionByteBoundedPage(
+              sessions.map((session) => ({
+                id: session.id,
+                title: boundedCompanionText(session.title.trim() || "New session", 512),
+                status: companionAgentSessionStatus(
+                  session,
+                  agentMenuBarWorkingSessionIdsRef.current,
+                  agentMenuBarWaitingSessionIdsRef.current,
+                ),
+                updatedAt: session.updatedAt,
+              })),
+              payload.intent.data.cursor,
+              payload.intent.data.limit,
+            );
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              page ? { type: "agentSessions", data: page } : companionCursorError("agent session"),
+            );
+            return;
+          }
+          case "agentMessagesList": {
+            const { storedSessionId, cursor, limit } = payload.intent.data;
+            const knownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            if (!knownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const items = await listAgentItems(storedSessionId);
+            const stillKnownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            if (!stillKnownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const messages = companionAgentMessagesFromItems(items);
+            const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
+            page?.items.reverse();
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              page ? { type: "agentMessages", data: page } : companionCursorError("agent message"),
+            );
+            return;
+          }
+          case "agentSend":
+          case "agentCancel": {
+            const storedSessionId = payload.intent.data.storedSessionId;
+            if (
+              storedSessionId &&
+              !(await companionScopedSessions()).some((session) => session.id === storedSessionId)
+            ) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const consumerAvailable = companionFrontendConsumerAvailable();
+            queueCompanionFrontendRequest(payload);
+            if (consumerAvailable) return;
+            void openCompanionAgentSession(payload.intent.data.storedSessionId);
+            return;
+          }
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    void listen<CompanionFrontendRequest>("june://companion-request", ({ payload }) => {
+      void handleCompanionRequest(payload);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    companionPairingEnabled,
+    companionScopedSessions,
+    openCompanionAgentSession,
+    setActiveAgentSession,
+  ]);
+
   useAgentAttentionNotifications({
     activeAgentSessionIdRef,
     activeViewRef,
@@ -1014,13 +1241,13 @@ export function App() {
     let retryTimeout: number | undefined;
 
     function loadAgentMenuBarSessions(attempt: number) {
-      Promise.all([
-        listHermesSessions({ limit: AGENT_MENU_BAR_SESSION_FETCH_LIMIT }),
-        refreshSessionProfiles(),
-      ])
-        .then(([sessions, profiles]) => {
+      // Defer host access so partial test hosts and transient startup failures
+      // enter the normal retry path instead of escaping the effect synchronously.
+      Promise.resolve()
+        .then(() => Promise.all([listAgentSessions(), refreshSessionPartitions()]))
+        .then(([sessions, partitions]) => {
           if (cancelled) return;
-          commitAgentSessions(sessions, profiles);
+          commitAgentSessions(sessions, partitions);
         })
         .catch(() => {
           if (cancelled) return;
@@ -1038,18 +1265,7 @@ export function App() {
         window.clearTimeout(retryTimeout);
       }
     };
-  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionProfiles]);
-
-  // Routine runs finish on the launchd-managed gateway with no webview
-  // involvement, so nothing event-driven announces them. Poll the session
-  // store (the same feed the Routines view reads) and post one native,
-  // click-through notification per newly finished run. State persists so
-  // reloads and restarts never renotify, and the first poll of an install
-  // baselines silently instead of backfilling history.
-  useAgentMenuSessions({
-    appBlocked,
-    bootstrapped,
-  });
+  }, [appBlocked, bootstrapped, commitAgentSessions, refreshSessionPartitions]);
 
   // Project assignments for agent sessions, loaded once storage is up.
   useSessionMetadata({
@@ -1080,7 +1296,7 @@ export function App() {
     commitAgentSessions,
     pendingSessionProjectRef,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1123,9 +1339,9 @@ export function App() {
     agentMenuBarSessionsRef,
     handleAgentHudVisibilityRequest,
     pendingSessionProjectRef,
-    profileScopedAgentSessions,
+    dataPartitionScopedAgentSessions,
     publishAgentMenuBarState,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveAgentSessionId,
     setActiveAgentSessionSeed,
@@ -1198,7 +1414,7 @@ export function App() {
 
   useAppBootstrap({
     appBlocked,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     pendingCalendarContextAdoptionsRef,
@@ -1210,40 +1426,39 @@ export function App() {
   });
 
   useEffect(() => {
-    function handleProfileDataChanged(event: Event) {
-      const detail = (event as CustomEvent<ProfileDataChangedDetail>).detail;
-      if (!detail || detail.profile !== getActiveHermesProfileName()) return;
-      setProfileDataRefreshRevision((revision) => revision + 1);
+    function handleDataPartitionChanged(event: Event) {
+      const detail = (event as CustomEvent<DataPartitionChangedDetail>).detail;
+      if (!detail || detail.partition !== getCurrentDataPartitionName()) return;
+      setDataPartitionRefreshRevision((revision) => revision + 1);
     }
 
-    window.addEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+    window.addEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     return () => {
-      window.removeEventListener(PROFILE_DATA_CHANGED_EVENT, handleProfileDataChanged);
+      window.removeEventListener(DATA_PARTITION_CHANGED_EVENT, handleDataPartitionChanged);
     };
   }, []);
 
-  // A profile switch swaps the visible data, not just the agent runtime
-  // (ADR 0031): re-read profile-scoped notes, projects, chat mappings, and
-  // sessions together. The same refresh runs when profile data moves into the
-  // already-active profile, where the active profile name itself does not
+  // A data partition switch swaps all visible data (ADR 0031): re-read scoped
+  // notes, projects, chat mappings, and sessions together. The same refresh
+  // runs when data moves into the current partition, where its name does not
   // change. If a recording is running its note keeps the selection (get_note
   // is unscoped) so the recording view is never yanked mid-take.
-  const lastDataProfileRef = useRef<string | undefined>(undefined);
-  const lastProfileDataRefreshRevisionRef = useRef(0);
-  useActiveProfileData({
-    activeHermesProfileName,
+  const lastDataPartitionRef = useRef<string | undefined>(undefined);
+  const lastDataPartitionRefreshRevisionRef = useRef(0);
+  useDataPartitionRefresh({
+    currentDataPartitionName,
     activeViewRef,
     appBlocked,
     bootstrapped,
     commitAgentSessions,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
-    lastDataProfileRef,
-    lastProfileDataRefreshRevisionRef,
+    lastDataPartitionRef,
+    lastDataPartitionRefreshRevisionRef,
     pendingSessionProjectRef,
-    profileDataRefreshRevision,
+    dataPartitionRefreshRevision,
     recordingNoteIdRef,
-    refreshSessionProfiles,
+    refreshSessionPartitions,
     setActiveAgentSession,
     setActiveView,
     setAgentOrigin,
@@ -1495,21 +1710,18 @@ export function App() {
       const next = title.trim();
       const currentSession = agentSessions.find((session) => session.id === sessionId);
       const currentTitle =
-        currentSession?.title?.trim() ||
-        currentSession?.preview?.trim() ||
-        (currentSession ? "Untitled session" : "");
+        currentSession?.title.trim() || (currentSession ? "Untitled session" : "");
       if (!next || next === currentTitle) return;
 
-      const renameSession = (session: HermesSessionInfo) =>
+      const renameSession = (session: AgentSessionDto) =>
         session.id === sessionId ? { ...session, title: next } : session;
       setAgentSessions((current) => current.map(renameSession));
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.map(renameSession);
       publishAgentMenuBarState();
-      void ensureHermesBridgeSession({ sessionId, title: next }).catch(() => {
+      void renameAgentSession(sessionId, next).catch(() => {
         setError("Could not save the session name. It may revert after a restart.");
       });
       rememberSessionManuallyTitled(sessionId);
-      recordManualAgentSessionTitle(sessionId, next);
       window.dispatchEvent(
         new CustomEvent<AgentSessionRenamedDetail>(AGENT_SESSION_RENAMED_EVENT, {
           detail: { sessionId, title: next },
@@ -1729,7 +1941,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     fundingRequired,
@@ -1785,7 +1997,7 @@ export function App() {
     activeViewRef,
     appBlocked,
     bootstrapped,
-    crossProfileRecordingNoteIdRef,
+    crossPartitionRecordingNoteIdRef,
     dispatch,
     finishingSessionsRef,
     handleStartAgentRecording,
@@ -2016,6 +2228,7 @@ export function App() {
     accessibilityStatus,
     account,
     accountLoading,
+    currentDataPartitionName,
     activeAgentSessionFolder,
     activeAgentSessionId,
     activeAgentSessionSeed,
@@ -2023,7 +2236,7 @@ export function App() {
     agentOrigin,
     agentOriginFolder,
     agentProjectContextFolder,
-    agentSessions,
+    agentSessions: focusedAgentSessions,
     agentSessionsListRef,
     agentWaitingSessionIds,
     agentWorkingSessionIds,
@@ -2078,6 +2291,7 @@ export function App() {
     handleToggleSessionCompleted,
     handleTopUp,
     handleUpdateNote,
+    homeStoredSessionId,
     memoryFolderFilter,
     meetingEndCountdown,
     microphoneBlocked,
@@ -2095,6 +2309,7 @@ export function App() {
     recordingNoteId,
     refreshAccount,
     refreshFundingAccount,
+    rememberHomeSession,
     runUpdateCheck,
     selectedNote,
     selectedNoteId,
@@ -2128,7 +2343,7 @@ export function App() {
     activateTab,
     activeTabId,
     activeView,
-    agentSessions,
+    agentSessions: focusedAgentSessions,
     agentSessionsListRef,
     appMaxGrantWaitRef,
     billingNotice,
@@ -2163,6 +2378,7 @@ export function App() {
     handleSetSessionFolder,
     handleSignOut,
     handleToggleSessionCompleted,
+    homeStoredSessionId,
     mainPanelBodyRef,
     maxUpgradeError,
     maxUpgradePrompt,
@@ -2239,3 +2455,68 @@ export function App() {
 }
 
 // The collapsed transform is driven by `aria-pressed` on the parent button.
+
+function companionByteBoundedPage<T>(
+  items: T[],
+  cursor: string | undefined,
+  limit: number,
+): { items: T[]; nextCursor?: string } | undefined {
+  const offset = companionCursorOffset(cursor);
+  if (offset === undefined) return undefined;
+  const page: T[] = [];
+  let encodedBytes = 0;
+  let index = offset;
+  while (index < items.length && page.length < limit) {
+    const item = items[index];
+    if (item === undefined) break;
+    const itemBytes = new TextEncoder().encode(JSON.stringify(item)).byteLength;
+    if (page.length > 0 && encodedBytes + itemBytes > 38 * 1024) break;
+    page.push(item);
+    encodedBytes += itemBytes;
+    index += 1;
+  }
+  return {
+    items: page,
+    ...(index < items.length ? { nextCursor: String(index) } : {}),
+  };
+}
+
+function companionCursorOffset(cursor: string | undefined) {
+  if (cursor !== undefined && !/^\d+$/.test(cursor)) return undefined;
+  const offset = cursor === undefined ? 0 : Number(cursor);
+  return Number.isSafeInteger(offset) && offset >= 0 ? offset : undefined;
+}
+
+function companionCursorError(scope: string): CompanionResultPayload {
+  return {
+    type: "error",
+    data: {
+      code: "invalid_request",
+      message: `The ${scope} cursor is invalid.`,
+      retryable: false,
+    },
+  };
+}
+
+function companionAgentSessionStatus(
+  session: AgentSessionDto,
+  workingSessionIds: ReadonlySet<string>,
+  waitingSessionIds: ReadonlySet<string>,
+): CompanionAgentStatus {
+  if (waitingSessionIds.has(session.id)) return "waitingForUser";
+  if (workingSessionIds.has(session.id)) return "running";
+  switch (session.status) {
+    case "running":
+      return "running";
+    case "waiting_for_user":
+      return "waitingForUser";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "interrupted":
+      return "cancelled";
+    default:
+      return "idle";
+  }
+}

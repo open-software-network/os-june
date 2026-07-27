@@ -12,13 +12,14 @@ import { Sidebar } from "../components/sidebar/Sidebar";
 import { TabBar } from "../components/tabs/TabBar";
 import { ConnectorApprovalsTray } from "../components/connectors/ConnectorApprovalsTray";
 import { ComputerUseApprovalsTray } from "../components/agent/ComputerUseApprovalsTray";
+import { BrowserApprovalsTray } from "../components/agent/BrowserApprovalsTray";
 import { OPEN_REFERRAL_DIALOG_EVENT, ReferralNudge } from "../components/referral/ReferralNudge";
 import { markReferralNudgeClickedThrough } from "../lib/referral-nudge";
 import { Dialog } from "../components/ui/Dialog";
 import { osAccountsOpenPortal } from "../lib/tauri";
-import { isWindowsPlatform } from "../lib/platform";
+import { isMacLikePlatform, isWindowsPlatform } from "../lib/platform";
 import { messageFromError } from "../lib/errors";
-import type { HermesSessionInfo } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { NoteListItemDto } from "../lib/tauri";
 import {
   MAX_UPGRADE_BUSY_LABEL,
@@ -84,6 +85,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
     handleSetSessionFolder,
     handleSignOut,
     handleToggleSessionCompleted,
+    homeStoredSessionId,
     mainPanelBodyRef,
     maxUpgradeError,
     maxUpgradePrompt,
@@ -202,6 +204,8 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
       <Sidebar
         notes={state.notes}
         activeView={activeView}
+        homeEnabled={isMacLikePlatform()}
+        homeStoredSessionId={homeStoredSessionId}
         account={account}
         settingsTab={settingsTab}
         onSettingsTabChange={changeSettingsTab}
@@ -339,7 +343,11 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
           layoutFrozen={sidebarResizing}
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
-        <section className={`main-panel${activeView === "agent" ? " main-panel-agent-view" : ""}`}>
+        <section
+          className={`main-panel${
+            activeView === "agent" || activeView === "home" ? " main-panel-agent-view" : ""
+          }`}
+        >
           {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
               onDismiss={() => setAccessibilityBannerDismissed(true)}
@@ -519,7 +527,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
           moveDialogSessionIds
             ? moveDialogSessionIds
                 .map((id) => agentSessions.find((s) => s.id === id))
-                .filter((session): session is HermesSessionInfo => session !== undefined)
+                .filter((session): session is AgentSessionDto => session !== undefined)
             : []
         }
         sessionFolderIds={sessionFolders}
@@ -550,6 +558,7 @@ export function renderAppLayout(dependencies: RenderAppLayoutDependencies) {
       {/* Connector action approvals (approval trust mode) can arrive from a
             routine or chat in any view, so the tray is mounted at the shell. */}
       <div className="shell-approvals-stack">
+        <BrowserApprovalsTray />
         <ComputerUseApprovalsTray />
         <ConnectorApprovalsTray />
       </div>

@@ -46,7 +46,7 @@ pub(crate) async fn list_models(
         .pricing()
         .priced_models(kind)
         .into_iter()
-        .map(|(id, model)| to_dto(id, model))
+        .map(|(id, model)| to_dto(&id, &model))
         .collect();
     Ok(Json(ApiResponse::ok(models)))
 }

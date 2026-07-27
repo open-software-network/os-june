@@ -8,39 +8,60 @@ export const EXPERIMENTAL_FLAGS_CHANGED_EVENT = "experimental-flags-changed";
 export type ExperimentalFlags = {
   unlocked: boolean;
   browser_use: boolean;
+  companion_pairing: boolean;
+};
+
+type ExperimentalFlagsResponse = ExperimentalFlags & {
+  companion_pairing_effective?: boolean;
 };
 
 type ExperimentalFlagsCache = ExperimentalFlags & {
+  companion_pairing_effective: boolean;
   loaded: boolean;
 };
 
 export type ExperimentalFlagsSnapshot = ExperimentalFlagsCache & {
   browserUseEnabled: boolean;
+  companionPairingEnabled: boolean;
 };
 
-const DEFAULT_FLAGS: ExperimentalFlags = {
+const DEFAULT_FLAGS: ExperimentalFlagsCache = {
   unlocked: false,
   browser_use: false,
+  companion_pairing: false,
+  companion_pairing_effective: false,
+  loaded: false,
 };
 
-let cache: ExperimentalFlagsCache = { ...DEFAULT_FLAGS, loaded: false };
+let cache: ExperimentalFlagsCache = { ...DEFAULT_FLAGS };
 let cacheRevision = 0;
 let initialization: Promise<void> | undefined;
 let unlistenExperimentalFlags: (() => void) | undefined;
 const subscribers = new Set<() => void>();
 
-function normalizeFlags(flags: ExperimentalFlags): ExperimentalFlags {
+function normalizeStoredFlags(flags: ExperimentalFlags): ExperimentalFlags {
   return {
     unlocked: flags?.unlocked === true,
     browser_use: flags?.browser_use === true,
+    companion_pairing: flags?.companion_pairing === true,
   };
 }
 
-function publish(flags: ExperimentalFlags, loaded = true) {
+function normalizeFlags(flags: ExperimentalFlagsResponse): Omit<ExperimentalFlagsCache, "loaded"> {
+  return {
+    ...normalizeStoredFlags(flags),
+    companion_pairing_effective:
+      flags?.companion_pairing_effective ?? flags?.companion_pairing === true,
+  };
+}
+
+function publish(flags: ExperimentalFlagsResponse, loaded = true) {
   const normalized = normalizeFlags(flags);
   if (
     cache.unlocked === normalized.unlocked &&
     cache.browser_use === normalized.browser_use &&
+    cache.companion_pairing === normalized.companion_pairing &&
+    cache.companion_pairing_effective === normalized.companion_pairing_effective &&
     cache.loaded === loaded
   ) {
     return;
@@ -54,7 +75,7 @@ export async function initializeExperimentalFlags() {
   if (initialization) return initialization;
   initialization = (async () => {
     try {
-      const nextUnlisten = await listen<ExperimentalFlags>(
+      const nextUnlisten = await listen<ExperimentalFlagsResponse>(
         EXPERIMENTAL_FLAGS_CHANGED_EVENT,
         (event) => {
           publish(event.payload);
@@ -69,7 +90,7 @@ export async function initializeExperimentalFlags() {
 
     const revision = cacheRevision;
     try {
-      const flags = await invoke<ExperimentalFlags>("experimental_flags_get");
+      const flags = await invoke<ExperimentalFlagsResponse>("experimental_flags_get");
       if (cacheRevision === revision) publish(flags);
     } catch {
       // Keep fail-closed defaults unloaded so the next subscriber can retry.
@@ -100,6 +121,7 @@ export function useExperimentalFlags(): ExperimentalFlagsSnapshot {
   return {
     ...stored,
     browserUseEnabled: BROWSER_USE_ENABLED || stored.browser_use,
+    companionPairingEnabled: stored.companion_pairing_effective,
   };
 }
 
@@ -112,12 +134,13 @@ export function getCachedExperimentalFlags(): ExperimentalFlags {
   return {
     unlocked: cache.unlocked,
     browser_use: cache.browser_use,
+    companion_pairing: cache.companion_pairing,
   };
 }
 
 export async function setExperimentalFlags(flags: ExperimentalFlags) {
-  const normalized = normalizeFlags(flags);
-  const saved = await invoke<ExperimentalFlags>("experimental_flags_set", {
+  const normalized = normalizeStoredFlags(flags);
+  const saved = await invoke<ExperimentalFlagsResponse>("experimental_flags_set", {
     request: normalized,
   });
   publish(saved ?? normalized);

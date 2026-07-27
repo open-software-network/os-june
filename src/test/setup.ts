@@ -156,7 +156,16 @@ document.body.appendChild(toasterHost);
 createRoot(toasterHost).render(createElement(Toaster));
 
 // Clear any toasts a test left behind so they never leak into the next one.
-afterEach(() => {
-  toast.dismiss();
+// Sonner keeps a dismissed toast mounted for its 200 ms exit transition. Let
+// that removal finish before Vitest can tear down jsdom; otherwise the delayed
+// React state update can run after `window` has been removed and fail an
+// otherwise-passing release suite. Tests that never create a toast pay no wait.
+afterEach(async () => {
+  const activeToasts = toast.getToasts();
+  if (activeToasts.length > 0) vi.useRealTimers();
+  for (const activeToast of activeToasts) toast.dismiss(activeToast.id);
   cleanup();
+  if (activeToasts.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 });

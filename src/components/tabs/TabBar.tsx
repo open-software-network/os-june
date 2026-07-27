@@ -475,6 +475,7 @@ export function TabBar({
         tabIndex={0}
         aria-selected={active}
         data-active={active || undefined}
+        data-has-icon={tab.icon ? true : undefined}
         data-drag-source={tab.id === dragSourceId || undefined}
         title={tab.title}
         onClick={() => {
@@ -490,9 +491,11 @@ export function TabBar({
         onPointerUp={handleTabPointerUp}
         onPointerCancel={handleTabPointerCancel}
       >
-        <span className="tab-icon" aria-hidden>
-          {tab.icon}
-        </span>
+        {tab.icon ? (
+          <span className="tab-icon" aria-hidden>
+            {tab.icon}
+          </span>
+        ) : null}
         <span className="tab-label">{tab.title}</span>
         <button
           type="button"
@@ -593,9 +596,11 @@ export function TabBar({
                   }
                 }}
               >
-                <span className="tab-overflow-icon" aria-hidden>
-                  {tab.icon}
-                </span>
+                {tab.icon ? (
+                  <span className="tab-overflow-icon" aria-hidden>
+                    {tab.icon}
+                  </span>
+                ) : null}
                 <span className="tab-overflow-title">{tab.title}</span>
                 <button
                   type="button"

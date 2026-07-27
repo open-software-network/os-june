@@ -52,12 +52,10 @@ pub use PROVIDER_OPENAI as OPENAI_PROVIDER;
 pub use PROVIDER_VENICE as VENICE_PROVIDER;
 
 static MODEL_SETTINGS: OnceLock<Mutex<ProviderModelSettings>> = OnceLock::new();
-static HERMES_HOME_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static VENICE_VERIFY_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 pub struct ProviderSettingsState {
     path: PathBuf,
-    hermes_home: PathBuf,
     settings: Mutex<ProviderModelSettings>,
 }
 
@@ -414,70 +412,80 @@ pub fn live_transcription() -> bool {
 
 /// Context window (tokens) of the configured generation model, looked up in
 /// the backend's model catalog and cached per model id. The agent provider
-/// proxy advertises it on `/v1/models` so Hermes sizes its history to the
-/// real window and compresses proactively, instead of discovering the limit
+/// runtime uses it to size history to the real window and compact proactively,
+/// instead of discovering the limit
 /// by bouncing off the backend's prompt_too_long rejection. Returns `None`
 /// when the catalog is unreachable (offline, signed out) or doesn't report a
-/// window for the model — callers degrade by omitting the field, which puts
-/// Hermes back on its own probing, exactly the pre-advertisement behavior.
+/// window for the model. Callers degrade by omitting the field and relying on
+/// normal provider error mapping.
 pub async fn generation_model_context_tokens() -> Option<i64> {
     if generation_provider() == PROVIDER_LOCAL {
         return None;
     }
     let model_id = generation_model();
-    if let Ok(cache) = context_tokens_cache().lock() {
-        if let Some((cached_id, tokens)) = cache.as_ref() {
-            if *cached_id == model_id {
-                return Some(*tokens);
-            }
-        }
-    }
-    let models = crate::june_api::list_models(ModelMode::Generation.api_type())
+    june_model_runtime_capabilities(&model_id)
         .await
-        .ok()?;
-    let tokens = models
-        .into_iter()
-        .find(|model| model.id == model_id)?
-        .context_tokens?;
-    if let Ok(mut cache) = context_tokens_cache().lock() {
-        *cache = Some((model_id, tokens));
-    }
-    Some(tokens)
+        .context_tokens
 }
 
-/// One entry only: the generation model changes rarely, and a stale entry
-/// for the previous model would otherwise outlive a settings switch.
-fn context_tokens_cache() -> &'static Mutex<Option<(String, i64)>> {
-    static CACHE: OnceLock<Mutex<Option<(String, i64)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JuneModelRuntimeCapabilities {
+    pub context_tokens: Option<i64>,
+    pub supports_vision: bool,
 }
 
 /// Whether the configured generation model reports vision (image input) support
-/// in the backend catalog. Hermes' vision tools only take the native fast path
-/// (attach the image straight to the model's context) for providers they
-/// recognize OR when `model.supports_vision` is set in `config.yaml`; June's
-/// proxy is `provider: custom`, so that override is the only signal, and the
-/// spawn path resolves it here (see `render_hermes_config`). Returns `false`
+/// in the June API catalog. The agent runtime uses this to decide whether an
+/// image can be attached directly to model context. Returns `false`
 /// when the catalog is unreachable (offline, signed out) or the model reports no
 /// vision capability. In local dev, a persisted Auto selection can use the same
 /// catalog-backed capability fallback as June API when Auto is absent. The
-/// conservative default keeps the prior behavior, where Hermes falls back to
-/// its (unconfigured) auxiliary vision LLM.
+/// conservative default keeps image attachment fail-closed.
 pub async fn generation_model_supports_vision() -> bool {
     if generation_provider() == PROVIDER_LOCAL {
         return false;
     }
     let model_id = generation_model();
+    june_model_runtime_capabilities(&model_id)
+        .await
+        .supports_vision
+}
+
+/// Resolves the model-specific limits needed by an agent run. Agent sessions
+/// can select a model independently of the global generation setting, so this
+/// cache is keyed by the run model and shared across turns.
+pub async fn june_model_runtime_capabilities(model_id: &str) -> JuneModelRuntimeCapabilities {
+    if let Ok(cache) = model_runtime_capabilities_cache().lock() {
+        if let Some(capabilities) = cache.get(model_id) {
+            return *capabilities;
+        }
+    }
     let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
-        return false;
+        return JuneModelRuntimeCapabilities::default();
     };
-    generation_model_supports_vision_from_catalog(
-        &model_id,
-        crate::os_accounts::local_dev_enabled(),
-        models
+    let capabilities = JuneModelRuntimeCapabilities {
+        context_tokens: models
             .iter()
-            .map(|model| (model.id.as_str(), model.capabilities.as_slice())),
-    )
+            .find(|model| model.id == model_id)
+            .and_then(|model| model.context_tokens),
+        supports_vision: generation_model_supports_vision_from_catalog(
+            model_id,
+            crate::os_accounts::local_dev_enabled(),
+            models
+                .iter()
+                .map(|model| (model.id.as_str(), model.capabilities.as_slice())),
+        ),
+    };
+    if let Ok(mut cache) = model_runtime_capabilities_cache().lock() {
+        cache.insert(model_id.to_string(), capabilities);
+    }
+    capabilities
+}
+
+fn model_runtime_capabilities_cache(
+) -> &'static Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn generation_model_supports_vision_from_catalog<'a>(
@@ -553,7 +561,7 @@ pub fn provider_model_settings(
         .settings
         .lock()
         .map_err(|_| AppError::new("provider_settings_unavailable", "Settings lock failed."))?;
-    let effective_settings = effective_settings_for_hermes_home(&settings, &state.hermes_home);
+    let effective_settings = effective_settings_for_profile(&settings, "default");
     Ok(ProviderModelSettingsResponse {
         settings: ProviderModelSettingsDto::from(&*settings),
         effective_settings: ProviderModelSettingsDto::from(&effective_settings),
@@ -926,12 +934,13 @@ pub async fn video_status(
 /// bare `generated-video-*.mp4` filename (the agent frequently names a finished
 /// video by filename only when asked to show it again) to an asset-scoped path
 /// the webview can load. Mirrors the directory `june_api::write_video_bytes`
-/// and the `june_video` MCP write into.
+/// and the agent video tool write into.
 #[tauri::command]
 pub fn generated_video_dir(app: AppHandle) -> Result<String, AppError> {
     let dir = crate::app_paths::app_data_dir(&app)
         .map_err(|error| AppError::new("video_dir_failed", error.to_string()))?
-        .join("hermes")
+        .join("agent-workspaces")
+        .join("generated-media")
         .join("videos");
     Ok(dir.to_string_lossy().into_owned())
 }
@@ -1201,13 +1210,10 @@ pub async fn list_venice_models(
 pub fn setup(app: &mut tauri::App) {
     let path = provider_settings_path(app.handle())
         .unwrap_or_else(|| PathBuf::from("provider-settings.json"));
-    let hermes_home = provider_hermes_home(app.handle()).unwrap_or_else(|| PathBuf::from("hermes"));
     let settings = load_settings_from_disk(app.handle());
     replace_current_settings(settings.clone());
-    replace_hermes_home(Some(hermes_home.clone()));
     app.manage(ProviderSettingsState {
         path,
-        hermes_home,
         settings: Mutex::new(settings),
     });
 }
@@ -1225,31 +1231,16 @@ fn current_settings() -> ProviderModelSettings {
 
 fn effective_current_settings() -> ProviderModelSettings {
     let settings = current_settings();
-    hermes_home_store()
-        .lock()
-        .ok()
-        .and_then(|home| home.clone())
-        .map(|hermes_home| effective_settings_for_hermes_home(&settings, &hermes_home))
-        .unwrap_or(settings)
+    effective_settings_for_profile(&settings, "default")
 }
 
 fn settings_store() -> &'static Mutex<ProviderModelSettings> {
     MODEL_SETTINGS.get_or_init(|| Mutex::new(default_settings()))
 }
 
-fn hermes_home_store() -> &'static Mutex<Option<PathBuf>> {
-    HERMES_HOME_DIR.get_or_init(|| Mutex::new(None))
-}
-
 fn replace_current_settings(settings: ProviderModelSettings) {
     if let Ok(mut current) = settings_store().lock() {
         *current = settings;
-    }
-}
-
-fn replace_hermes_home(path: Option<PathBuf>) {
-    if let Ok(mut current) = hermes_home_store().lock() {
-        *current = path;
     }
 }
 
@@ -1343,15 +1334,6 @@ fn provider_settings_path(app: &AppHandle) -> Option<PathBuf> {
 
 fn provider_settings_path_from_config_dir(directory: PathBuf) -> PathBuf {
     directory.join("provider-settings.json")
-}
-
-fn provider_hermes_home(app: &AppHandle) -> Option<PathBuf> {
-    crate::app_paths::app_data_dir(app)
-        .ok()
-        .map(|directory| directory.join("hermes"))
-        .inspect(|path| {
-            let _ = fs::create_dir_all(path);
-        })
 }
 
 fn load_settings_from_disk(app: &AppHandle) -> ProviderModelSettings {
@@ -1556,22 +1538,6 @@ fn profile_overrides_empty(overrides: &ProfileModelOverrides) -> bool {
         && overrides.video_model.is_none()
 }
 
-pub(crate) fn active_profile_for_hermes_home(hermes_home: &std::path::Path) -> String {
-    fs::read_to_string(hermes_home.join("active_profile"))
-        .ok()
-        .map(|profile| profile.trim().to_string())
-        .filter(|profile| !profile.is_empty())
-        .unwrap_or_else(|| "default".to_string())
-}
-
-fn effective_settings_for_hermes_home(
-    settings: &ProviderModelSettings,
-    hermes_home: &std::path::Path,
-) -> ProviderModelSettings {
-    let active_profile = active_profile_for_hermes_home(hermes_home);
-    effective_settings_for_profile(settings, &active_profile)
-}
-
 fn effective_settings_for_profile(
     settings: &ProviderModelSettings,
     profile: &str,
@@ -1604,13 +1570,13 @@ fn validate_profile_override_name(profile: &str) -> Result<&str, AppError> {
     if profile == "default" {
         return Err(AppError::new(
             "profile_model_overrides_default_profile",
-            "The default profile uses global model settings.",
+            "The default data partition uses global model settings.",
         ));
     }
     if !is_safe_profile_name(profile) {
         return Err(AppError::new(
             "profile_model_overrides_invalid_profile",
-            "Invalid Hermes profile.",
+            "Invalid data partition.",
         ));
     }
     Ok(profile)
@@ -2338,7 +2304,6 @@ mod tests {
         ));
         ProviderSettingsState {
             path: dir.join("provider-settings.json"),
-            hermes_home: dir.join("hermes"),
             settings: Mutex::new(default_settings()),
         }
     }
@@ -2346,35 +2311,7 @@ mod tests {
     static NEXT_TEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
     #[test]
-    fn active_profile_defaults_for_missing_empty_and_unreadable_file() {
-        let state = test_state();
-
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-
-        fs::create_dir_all(&state.hermes_home).unwrap();
-        fs::write(state.hermes_home.join("active_profile"), "   \n").unwrap();
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-
-        fs::remove_file(state.hermes_home.join("active_profile")).unwrap();
-        fs::create_dir(state.hermes_home.join("active_profile")).unwrap();
-        assert_eq!(
-            active_profile_for_hermes_home(&state.hermes_home),
-            "default"
-        );
-    }
-
-    #[test]
     fn profile_overrides_resolve_fallbacks_and_partial_overrides() {
-        let state = test_state();
-        fs::create_dir_all(&state.hermes_home).unwrap();
-        fs::write(state.hermes_home.join("active_profile"), "writing\n").unwrap();
-
         let mut settings = default_settings();
         settings.transcription_provider = PROVIDER_VENICE.to_string();
         settings.transcription_model = "global-asr".to_string();
@@ -2390,21 +2327,19 @@ mod tests {
             },
         );
 
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
+        let effective = effective_settings_for_profile(&settings, "writing");
         assert_eq!(effective.transcription_provider, PROVIDER_OPENAI);
         assert_eq!(effective.transcription_model, "gpt-4o-transcribe");
         assert_eq!(effective.image_model, "global-image");
         assert_eq!(effective.video_model, "profile-video");
 
-        fs::write(state.hermes_home.join("active_profile"), "unknown\n").unwrap();
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
+        let effective = effective_settings_for_profile(&settings, "unknown");
         assert_eq!(effective.transcription_provider, PROVIDER_VENICE);
         assert_eq!(effective.transcription_model, "global-asr");
         assert_eq!(effective.image_model, "global-image");
         assert_eq!(effective.video_model, "global-video");
 
-        fs::remove_file(state.hermes_home.join("active_profile")).unwrap();
-        let effective = effective_settings_for_hermes_home(&settings, &state.hermes_home);
+        let effective = effective_settings_for_profile(&settings, "default");
         assert_eq!(effective.transcription_model, "global-asr");
     }
 

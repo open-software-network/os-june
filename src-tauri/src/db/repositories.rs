@@ -1,12 +1,10 @@
 use crate::domain::types::{
-    AgentMessageDto, AgentMessageRole, AgentSafetyProfile, AgentTaskDto, AgentTaskListResponse,
-    AgentTaskStatus, AgentToolEventDto, AgentToolEventStatus, AppError, AudioArtifactDto,
-    AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto, DictionaryEntryDto,
-    FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto, NoteCalendarEventDto,
-    NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
-    NoteTranscriptionJobRecord, NoteTranscriptionJobStatus, ProcessingStatus,
-    ProfileDataSummaryDto, RecordingOriginMetadata, RecordingSourceMode, RecordingState,
-    SessionFolderDto, SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
+    AppError, AudioArtifactDto, AudioValidationDto, CompletedSessionDto, DictationHistoryItemDto,
+    DictionaryEntryDto, FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto,
+    NoteCalendarEventDto, NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind,
+    NoteTranscriptionJobPlan, NoteTranscriptionJobRecord, NoteTranscriptionJobStatus,
+    ProcessingStatus, ProfileDataSummaryDto, RecordingOriginMetadata, RecordingSourceMode,
+    RecordingState, SessionFolderDto, SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -15,7 +13,7 @@ use sha2::{Digest, Sha256};
 use sqlx::query::query;
 use sqlx::query_builder::QueryBuilder;
 use sqlx::row::Row;
-use sqlx_sqlite::{Sqlite, SqlitePool};
+use sqlx_sqlite::{Sqlite, SqlitePool, SqliteRow};
 use uuid::Uuid;
 
 use crate::note_audio_export::{NoteAudioExportSelection, NoteAudioExportSource};
@@ -31,10 +29,23 @@ struct ListNotesCursor {
     created_at: String,
     rowid: i64,
 }
+const COMPANION_OPERATION_RETENTION_DAYS: i64 = 7;
+const MAX_COMPANION_OPERATIONS_PER_DEVICE: i64 = 1_024;
+const MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE: i64 = 128;
 
 #[derive(Clone)]
 pub struct Repositories {
     pub pool: SqlitePool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompanionDeviceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub public_key: Vec<u8>,
+    pub linked_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +236,55 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn upsert_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+        display_name: &str,
+        public_key: &[u8],
+    ) -> Result<CompanionDeviceRecord, sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO companion_devices (account_user_id, id, display_name, public_key, linked_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               account_user_id = excluded.account_user_id,
+               display_name = excluded.display_name,
+               public_key = excluded.public_key,
+               revoked_at = NULL
+             WHERE companion_devices.account_user_id = excluded.account_user_id
+                OR companion_devices.account_user_id = ''",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .bind(display_name)
+        .bind(public_key)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let device = self
+            .companion_device(account_user_id, id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        self.remember_companion_account(account_user_id).await?;
+        Ok(device)
+    }
+
+    pub async fn remember_companion_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT INTO companion_account_state (singleton, account_user_id)
+             VALUES (1, ?)
+             ON CONFLICT(singleton) DO UPDATE SET account_user_id = excluded.account_user_id",
+        )
+        .bind(account_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn evaluate_browser_action(
         &self,
         id: &str,
@@ -377,6 +437,274 @@ impl Repositories {
             expired: nonnegative_u64(row.get("expired")),
             cancelled_by_task_end: nonnegative_u64(row.get("cancelled_by_task_end")),
         })
+    }
+
+    pub async fn companion_account_user_id(&self) -> Result<Option<String>, sqlx::error::Error> {
+        query("SELECT account_user_id FROM companion_account_state WHERE singleton = 1")
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.try_get("account_user_id"))
+            .transpose()
+    }
+
+    pub async fn companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<Option<CompanionDeviceRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices WHERE account_user_id = ? AND id = ?",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(companion_device_from_row))
+    }
+
+    pub async fn list_companion_devices(
+        &self,
+        account_user_id: &str,
+    ) -> Result<Vec<CompanionDeviceRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices
+             WHERE account_user_id = ?
+             ORDER BY linked_at DESC",
+        )
+        .bind(account_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(companion_device_from_row).collect())
+    }
+
+    pub async fn rename_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+        display_name: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE companion_devices SET display_name = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(display_name)
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn revoke_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "UPDATE companion_devices SET revoked_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ? AND id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn revoke_companion_devices_for_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "UPDATE companion_devices
+             SET revoked_at = ?
+             WHERE account_user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM companion_devices WHERE account_user_id = ? AND id = ?")
+            .bind(account_user_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE companion_devices SET last_seen_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<Vec<u8>>, sqlx::error::Error> {
+        let row = query(
+            "SELECT operations.response
+             FROM companion_operations AS operations
+             JOIN companion_devices AS devices ON devices.id = operations.device_id
+             WHERE devices.account_user_id = ?
+               AND devices.revoked_at IS NULL
+               AND operations.device_id = ?
+               AND operations.operation_id = ?",
+        )
+        .bind(account_user_id)
+        .bind(device_id)
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| row.try_get("response")).transpose()
+    }
+
+    pub async fn remember_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn reserve_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        pending_response: &[u8],
+    ) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'pending', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )
+               AND (
+                 SELECT COUNT(*) FROM companion_operations
+                 WHERE device_id = ? AND operation_state = 'pending'
+               ) < ?",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(pending_response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .bind(device_id)
+        .bind(MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(inserted)
+    }
+
+    pub async fn complete_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "INSERT INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )
+             ON CONFLICT(device_id, operation_id) DO UPDATE SET
+               response = excluded.response,
+               operation_state = 'completed'",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     pub async fn increment_p3a_counter(
@@ -901,6 +1229,18 @@ impl Repositories {
     ) -> Result<ConnectorTriggerRecord, sqlx::error::Error> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let replace_result = async {
+            let previous = query(
+                "SELECT kind, account_id
+                 FROM connector_triggers
+                 WHERE job_id = ?",
+            )
+            .bind(job_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let previous_email_account = previous.as_ref().and_then(|row| {
+                (row.get::<String, _>("kind") == "email_received")
+                    .then(|| row.get::<String, _>("account_id"))
+            });
             // Check before deleting this job's old trigger. Editing an existing
             // email subscription for the same account must retain its cursor;
             // only the account's first active email subscription re-baselines.
@@ -920,6 +1260,20 @@ impl Repositories {
                 .bind(job_id)
                 .execute(&mut *transaction)
                 .await?;
+            if let Some(previous_account_id) =
+                previous_email_account.filter(|previous_account_id| {
+                    kind != "email_received" || previous_account_id != account_id
+                })
+            {
+                query(
+                    "DELETE FROM trigger_cursors
+                     WHERE account_id = ? AND kind = ?",
+                )
+                .bind(previous_account_id)
+                .bind(format!("email_received:{job_id}"))
+                .execute(&mut *transaction)
+                .await?;
+            }
 
             let id = Uuid::new_v4().to_string();
             let now = timestamp();
@@ -939,7 +1293,8 @@ impl Repositories {
             if reset_email_cursor {
                 query(
                     "DELETE FROM trigger_cursors
-                     WHERE account_id = ? AND kind = 'email_received'",
+                     WHERE account_id = ?
+                       AND (kind = 'email_received' OR kind LIKE 'email_received:%')",
                 )
                 .bind(account_id)
                 .execute(&mut *transaction)
@@ -973,10 +1328,33 @@ impl Repositories {
     }
 
     pub async fn delete_connector_trigger(&self, id: &str) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let trigger = query(
+            "SELECT job_id, kind, account_id
+             FROM connector_triggers
+             WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&mut *transaction)
+        .await?;
         let result = query("DELETE FROM connector_triggers WHERE id = ?")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
+        if let Some(trigger) =
+            trigger.filter(|row| row.get::<String, _>("kind") == "email_received")
+        {
+            let job_id: String = trigger.get("job_id");
+            query(
+                "DELETE FROM trigger_cursors
+                 WHERE account_id = ? AND kind = ?",
+            )
+            .bind(trigger.get::<String, _>("account_id"))
+            .bind(format!("email_received:{job_id}"))
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1014,6 +1392,41 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Advance a Gmail acknowledgement only while the exact subscription that
+    /// produced the poll snapshot still exists. The INSERT and trigger check
+    /// are one SQLite statement, so removal cannot race a stale cursor write.
+    pub async fn set_email_trigger_cursor_if_active(
+        &self,
+        trigger_id: &str,
+        job_id: &str,
+        account_id: &str,
+        cursor: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let now = timestamp();
+        let result = query(
+            "INSERT INTO trigger_cursors (account_id, kind, cursor, updated_at)
+             SELECT ?, ?, ?, ?
+             WHERE EXISTS (
+                 SELECT 1
+                 FROM connector_triggers
+                 WHERE id = ? AND job_id = ? AND kind = 'email_received' AND account_id = ?
+             )
+             ON CONFLICT(account_id, kind) DO UPDATE SET
+               cursor = excluded.cursor,
+               updated_at = excluded.updated_at",
+        )
+        .bind(account_id)
+        .bind(format!("email_received:{job_id}"))
+        .bind(cursor)
+        .bind(&now)
+        .bind(trigger_id)
+        .bind(job_id)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Remove the polling cursor for one account+kind so the next daemon poll
@@ -1729,16 +2142,45 @@ impl Repositories {
     }
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
-        let row = query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error,
+        self.get_note_with_profile(note_id, None).await
+    }
+
+    /// Looks up a note only inside the supplied data partition. Companion
+    /// callers use this at dispatch time so a cached id cannot cross a later
+    /// partition switch.
+    pub async fn get_note_in_profile(
+        &self,
+        profile: &str,
+        note_id: &str,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        self.get_note_with_profile(note_id, Some(profile)).await
+    }
+
+    async fn get_note_with_profile(
+        &self,
+        note_id: &str,
+        profile: Option<&str>,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        let mut note_query = QueryBuilder::<Sqlite>::new(
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
                     calendar_event_end_at, calendar_account_email
-             FROM notes WHERE id = ?",
-        )
-        .bind(note_id)
-        .fetch_one(&self.pool)
-        .await?;
+             FROM notes WHERE id = ",
+        );
+        note_query.push_bind(note_id);
+        if let Some(profile) = profile {
+            note_query.push(" AND profile = ");
+            note_query.push_bind(profile);
+        }
+        let row = note_query.build().fetch_one(&self.pool).await?;
+        self.hydrate_note_row(note_id, row).await
+    }
 
+    async fn hydrate_note_row(
+        &self,
+        note_id: &str,
+        row: SqliteRow,
+    ) -> Result<NoteDto, sqlx::error::Error> {
         let folder_ids = self.folder_ids(note_id).await?;
         let content = row
             .try_get::<Option<String>, _>("edited_content")?
@@ -1769,6 +2211,7 @@ impl Repositories {
             folder_ids,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
             duration_ms: None,
             calendar_event: note_calendar_event_from_row(&row),
             generated_content: row.get("generated_content"),
@@ -1800,7 +2243,12 @@ impl Repositories {
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
                  calendar_event_start_at = ?, calendar_event_end_at = ?,
-                 calendar_account_email = ?, updated_at = ?
+                 calendar_account_email = ?,
+                 revision = revision + CASE
+                     WHEN ? = 1 AND title = ? AND title != ? THEN 1
+                     ELSE 0
+                 END,
+                 updated_at = ?
              WHERE id = ? AND calendar_event_id IS NULL",
         )
         .bind(i64::from(expected_title.trim().is_empty()))
@@ -1811,6 +2259,9 @@ impl Repositories {
         .bind(&event.start_at)
         .bind(&event.end_at)
         .bind(&event.account_email)
+        .bind(i64::from(expected_title.trim().is_empty()))
+        .bind(expected_title)
+        .bind(&event.title)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)
@@ -1858,7 +2309,7 @@ impl Repositories {
                             1,
                             {NOTE_PREVIEW_CHAR_LIMIT}
                         ) AS preview,
-                        n.processing_status, n.created_at, n.updated_at
+                        n.processing_status, n.created_at, n.updated_at, n.revision
                  FROM notes n"
         ));
         if folder_id.is_some() {
@@ -1895,7 +2346,7 @@ impl Repositories {
             "
              )
              SELECT page.note_rowid, page.id, page.title, page.preview,
-                    page.processing_status, page.created_at, page.updated_at,
+                    page.processing_status, page.created_at, page.updated_at, page.revision,
                     CASE WHEN f.id IS NOT NULL THEN nf.folder_id END AS folder_id
              FROM page
              LEFT JOIN note_folders nf ON nf.note_id = page.id
@@ -1931,6 +2382,7 @@ impl Repositories {
                     folder_ids: folder_id.into_iter().collect(),
                     created_at: created_at.clone(),
                     updated_at: row.get("updated_at"),
+                    revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
                     duration_ms: None,
                 },
                 ListNotesCursor {
@@ -1953,6 +2405,10 @@ impl Repositories {
         } else {
             None
         };
+        let item_cursors = items_with_cursors
+            .iter()
+            .map(|(_, cursor)| encode_list_notes_cursor(cursor))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(ListNotesResponse {
             items: items_with_cursors
@@ -1960,6 +2416,7 @@ impl Repositories {
                 .map(|(item, _)| item)
                 .collect(),
             next_cursor,
+            item_cursors,
         })
     }
 
@@ -1989,7 +2446,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "note_folder_profile_mismatch",
-                "The note and project must belong to the active profile.",
+                "The note and project must belong to the current data partition.",
             ));
         }
 
@@ -2063,7 +2520,7 @@ impl Repositories {
         if !matches_active_profile {
             return Err(AppError::new(
                 "session_folder_profile_mismatch",
-                "The session and project must belong to the active profile.",
+                "The session and project must belong to the current data partition.",
             ));
         }
 
@@ -2134,6 +2591,7 @@ impl Repositories {
     pub async fn move_profile_data_to_default(
         &self,
         profile: &str,
+        redundant_session_id: Option<&str>,
     ) -> Result<(), sqlx::error::Error> {
         if profile == "default" {
             return Ok(());
@@ -2207,6 +2665,21 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        if let Some(session_id) = redundant_session_id {
+            query(
+                "DELETE FROM agent_sessions
+                 WHERE id = ?
+                   AND EXISTS (
+                     SELECT 1 FROM session_profiles
+                     WHERE session_id = ? AND profile = ?
+                   )",
+            )
+            .bind(session_id)
+            .bind(session_id)
+            .bind(profile)
+            .execute(&mut *transaction)
+            .await?;
+        }
         query("UPDATE session_profiles SET profile = 'default' WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -2245,6 +2718,16 @@ impl Repositories {
             .bind(profile)
             .execute(&mut *transaction)
             .await?;
+        // Session profile rows are only labels. Deleting those labels alone
+        // would make June-owned agent sessions fall back to Default and expose
+        // data the user explicitly chose to delete permanently.
+        query(
+            "DELETE FROM agent_sessions
+             WHERE id IN (SELECT session_id FROM session_profiles WHERE profile = ?)",
+        )
+        .bind(profile)
+        .execute(&mut *transaction)
+        .await?;
         query("DELETE FROM session_profiles WHERE profile = ?")
             .bind(profile)
             .execute(&mut *transaction)
@@ -2394,398 +2877,6 @@ impl Repositories {
         Ok(())
     }
 
-    pub async fn pause_running_agent_tasks_on_launch(&self) -> Result<(), sqlx::error::Error> {
-        let now = timestamp();
-        query(
-            "UPDATE agent_tasks
-             SET status = 'paused',
-                 progress_summary = 'Paused when June restarted.',
-                 updated_at = ?
-             WHERE status IN ('queued', 'running')",
-        )
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    /// Repairs genuinely stale `queued`/`running` tasks whose latest message
-    /// is already an assistant reply. `paused` and `waiting_for_user` are
-    /// deliberate resting states (placeholder pauses, clarify exchanges) and
-    /// must never be force-completed by this repair.
-    pub async fn complete_agent_tasks_with_assistant_messages(
-        &self,
-    ) -> Result<(), sqlx::error::Error> {
-        query(
-            "UPDATE agent_tasks
-             SET status = 'completed',
-                 progress_summary = 'Completed.',
-                 updated_at = COALESCE(
-                     (SELECT MAX(created_at)
-                      FROM agent_messages
-                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
-                     updated_at
-                 ),
-                 completed_at = COALESCE(
-                     completed_at,
-                     (SELECT MAX(created_at)
-                      FROM agent_messages
-                      WHERE task_id = agent_tasks.id AND role = 'assistant'),
-                     updated_at
-                 )
-             WHERE status IN ('queued', 'running')
-               AND (SELECT role
-                    FROM agent_messages
-                    WHERE task_id = agent_tasks.id
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT 1) = 'assistant'",
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn list_agent_tasks(&self) -> Result<AgentTaskListResponse, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    hermes_session_id, created_at, updated_at, completed_at
-             FROM agent_tasks
-             ORDER BY updated_at DESC, rowid DESC
-             LIMIT 200",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(AgentTaskListResponse {
-            items: rows.into_iter().map(agent_task_from_row).collect(),
-        })
-    }
-
-    pub async fn create_agent_task(
-        &self,
-        prompt: &str,
-        title: Option<&str>,
-        safety_profile: AgentSafetyProfile,
-    ) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let now = timestamp();
-        let task_id = Uuid::new_v4().to_string();
-        let trimmed_prompt = prompt.trim();
-        let title = title
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| title_from_prompt(trimmed_prompt));
-
-        let mut tx = self.pool.begin().await?;
-        query(
-            "INSERT INTO agent_tasks
-             (id, title, prompt, status, safety_profile, progress_summary, created_at, updated_at)
-             VALUES (?, ?, ?, 'queued', ?, 'Queued for the agent runtime.', ?, ?)",
-        )
-        .bind(&task_id)
-        .bind(title)
-        .bind(trimmed_prompt)
-        .bind(safety_profile.as_db())
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        query(
-            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, 'user', ?, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(&task_id)
-        .bind(trimmed_prompt)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        self.get_agent_task(&task_id).await
-    }
-
-    pub async fn get_agent_task(&self, task_id: &str) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let row = query(
-            "SELECT id, title, prompt, status, safety_profile, progress_summary, last_error,
-                    hermes_session_id, created_at, updated_at, completed_at
-             FROM agent_tasks
-             WHERE id = ?",
-        )
-        .bind(task_id)
-        .fetch_one(&self.pool)
-        .await?;
-        let mut task = agent_task_from_row(row);
-        task.messages = self.agent_messages(task_id).await?;
-        task.tool_events = self.agent_tool_events(task_id).await?;
-        Ok(task)
-    }
-
-    pub async fn set_agent_task_hermes_session(
-        &self,
-        task_id: &str,
-        hermes_session_id: &str,
-    ) -> Result<(), sqlx::error::Error> {
-        query("UPDATE agent_tasks SET hermes_session_id = ? WHERE id = ?")
-            .bind(hermes_session_id)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn add_agent_message(
-        &self,
-        task_id: &str,
-        role: AgentMessageRole,
-        content: &str,
-    ) -> Result<AgentMessageDto, sqlx::error::Error> {
-        let now = timestamp();
-        let id = Uuid::new_v4().to_string();
-        query(
-            "INSERT INTO agent_messages (id, task_id, role, content, created_at)
-             VALUES (?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(content)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
-        query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        let row = query(
-            "SELECT id, task_id, role, content, created_at
-             FROM agent_messages
-             WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(agent_message_from_row(row))
-    }
-
-    /// Inserts a hydrated message exactly once. `external_id` carries the
-    /// source-side identity (e.g. a Hermes message id); the unique index on
-    /// `(task_id, external_id)` plus `INSERT OR IGNORE` makes concurrent
-    /// hydrations race-safe. Rows hydrated before external ids existed are
-    /// matched by content so they are not duplicated either.
-    pub async fn add_agent_message_if_absent(
-        &self,
-        task_id: &str,
-        role: AgentMessageRole,
-        content: &str,
-        created_at: &str,
-        external_id: &str,
-    ) -> Result<bool, sqlx::error::Error> {
-        let existing = query(
-            "SELECT 1 FROM agent_messages
-             WHERE task_id = ?
-               AND role = ?
-               AND (external_id = ? OR (external_id IS NULL AND content = ?))
-             LIMIT 1",
-        )
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(external_id)
-        .bind(content)
-        .fetch_optional(&self.pool)
-        .await?;
-        if existing.is_some() {
-            return Ok(false);
-        }
-        let result = query(
-            "INSERT OR IGNORE INTO agent_messages
-             (id, task_id, role, content, created_at, external_id)
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(task_id)
-        .bind(role.as_db())
-        .bind(content)
-        .bind(created_at)
-        .bind(external_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    pub async fn update_agent_task_status(
-        &self,
-        task_id: &str,
-        status: AgentTaskStatus,
-        progress_summary: Option<&str>,
-        last_error: Option<&str>,
-    ) -> Result<AgentTaskDto, sqlx::error::Error> {
-        let now = timestamp();
-        let completed_at = match status {
-            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
-            _ => None,
-        };
-        query(
-            "UPDATE agent_tasks
-             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
-                 completed_at = COALESCE(?, completed_at)
-             WHERE id = ?",
-        )
-        .bind(status.as_db())
-        .bind(progress_summary)
-        .bind(last_error)
-        .bind(&now)
-        .bind(completed_at)
-        .bind(task_id)
-        .execute(&self.pool)
-        .await?;
-        self.get_agent_task(task_id).await
-    }
-
-    /// Updates a task's status only when its current status is in
-    /// `allowed_current`. Returns whether the transition was applied. This
-    /// lets background work (e.g. the runtime placeholder) avoid clobbering
-    /// states the user reached concurrently, such as resurrecting a
-    /// cancelled task.
-    pub async fn update_agent_task_status_if_in(
-        &self,
-        task_id: &str,
-        status: AgentTaskStatus,
-        progress_summary: Option<&str>,
-        last_error: Option<&str>,
-        allowed_current: &[AgentTaskStatus],
-    ) -> Result<bool, sqlx::error::Error> {
-        if allowed_current.is_empty() {
-            return Ok(false);
-        }
-        let now = timestamp();
-        let completed_at = match status {
-            AgentTaskStatus::Completed | AgentTaskStatus::Cancelled => Some(now.clone()),
-            _ => None,
-        };
-        let placeholders = vec!["?"; allowed_current.len()].join(", ");
-        let sql = format!(
-            "UPDATE agent_tasks
-             SET status = ?, progress_summary = ?, last_error = ?, updated_at = ?,
-                 completed_at = COALESCE(?, completed_at)
-             WHERE id = ? AND status IN ({placeholders})"
-        );
-        let mut query = query(&sql)
-            .bind(status.as_db())
-            .bind(progress_summary)
-            .bind(last_error)
-            .bind(&now)
-            .bind(completed_at)
-            .bind(task_id);
-        for current in allowed_current {
-            query = query.bind(current.as_db());
-        }
-        let result = query.execute(&self.pool).await?;
-        Ok(result.rows_affected() > 0)
-    }
-
-    /// Returns whether a Hermes session is already bound to a different
-    /// task, so heuristic session matching never steals another task's
-    /// conversation.
-    pub async fn hermes_session_bound_to_other_task(
-        &self,
-        task_id: &str,
-        hermes_session_id: &str,
-    ) -> Result<bool, sqlx::error::Error> {
-        let row =
-            query("SELECT 1 FROM agent_tasks WHERE hermes_session_id = ? AND id != ? LIMIT 1")
-                .bind(hermes_session_id)
-                .bind(task_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.is_some())
-    }
-
-    pub async fn add_agent_tool_event(
-        &self,
-        task_id: &str,
-        tool_name: &str,
-        status: AgentToolEventStatus,
-        summary: &str,
-        arguments_json: Option<&str>,
-        result_json: Option<&str>,
-        redacted: bool,
-    ) -> Result<AgentToolEventDto, sqlx::error::Error> {
-        let now = timestamp();
-        let completed_at = match status {
-            AgentToolEventStatus::Completed
-            | AgentToolEventStatus::Failed
-            | AgentToolEventStatus::Blocked => Some(now.clone()),
-            _ => None,
-        };
-        let id = Uuid::new_v4().to_string();
-        query(
-            "INSERT INTO agent_tool_events
-             (id, task_id, tool_name, status, summary, arguments_json, result_json,
-              redacted, created_at, completed_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(task_id)
-        .bind(tool_name)
-        .bind(status.as_db())
-        .bind(summary)
-        .bind(arguments_json)
-        .bind(result_json)
-        .bind(if redacted { 1 } else { 0 })
-        .bind(&now)
-        .bind(completed_at)
-        .execute(&self.pool)
-        .await?;
-        query("UPDATE agent_tasks SET updated_at = ? WHERE id = ?")
-            .bind(&now)
-            .bind(task_id)
-            .execute(&self.pool)
-            .await?;
-        let row = query(
-            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
-                    redacted, created_at, completed_at
-             FROM agent_tool_events
-             WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(agent_tool_event_from_row(row))
-    }
-
-    pub async fn agent_tool_events(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<AgentToolEventDto>, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, task_id, tool_name, status, summary, arguments_json, result_json,
-                    redacted, created_at, completed_at
-             FROM agent_tool_events
-             WHERE task_id = ?
-             ORDER BY created_at ASC, rowid ASC",
-        )
-        .bind(task_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(agent_tool_event_from_row).collect())
-    }
-
-    async fn agent_messages(
-        &self,
-        task_id: &str,
-    ) -> Result<Vec<AgentMessageDto>, sqlx::error::Error> {
-        let rows = query(
-            "SELECT id, task_id, role, content, created_at
-             FROM agent_messages
-             WHERE task_id = ?
-             ORDER BY created_at ASC, rowid ASC",
-        )
-        .bind(task_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(agent_message_from_row).collect())
-    }
-
     pub async fn delete_dictation_history_item(&self, id: &str) -> Result<(), sqlx::error::Error> {
         query("DELETE FROM dictation_history WHERE id = ?")
             .bind(id)
@@ -2891,7 +2982,7 @@ impl Repositories {
             .push_bind(active_tab)
             .push(", active_tab, 'notes'), updated_at = ")
             .push_bind(timestamp())
-            .push(" WHERE id = ")
+            .push(", revision = revision + 1 WHERE id = ")
             .push_bind(note_id)
             .push(
                 " RETURNING id, title, generated_content, edited_content, active_tab, updated_at",
@@ -2913,6 +3004,93 @@ impl Repositories {
             active_tab: row.get("active_tab"),
             updated_at: row.get("updated_at"),
         })
+    }
+
+    /// Compare-and-swap update for linked devices. A stale writer receives the
+    /// current note in structured error details instead of overwriting edits.
+    pub async fn update_note_cas(
+        &self,
+        note_id: &str,
+        expected_revision: u64,
+        title: Option<String>,
+        edited_content: Option<String>,
+    ) -> Result<NoteDto, AppError> {
+        let current = self.get_note(note_id).await.map_err(AppError::from)?;
+        let next_title = title.unwrap_or(current.title.clone());
+        let next_content = edited_content.or(current.edited_content.clone());
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| AppError::new("note_revision_invalid", "The note revision is invalid."))?;
+        let result = query(
+            "UPDATE notes
+             SET title = ?, edited_content = ?, updated_at = ?, revision = revision + 1
+             WHERE id = ? AND revision = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(timestamp())
+        .bind(note_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if result.rows_affected() == 0 {
+            let current = self.get_note(note_id).await.map_err(AppError::from)?;
+            return Err(AppError {
+                code: "note_revision_conflict".to_string(),
+                message: "The note changed on another device.".to_string(),
+                details: serde_json::to_value(current).ok(),
+            });
+        }
+        self.get_note(note_id).await.map_err(AppError::from)
+    }
+
+    /// Partition-scoped compare-and-swap used by companion edits. Both the
+    /// read and the atomic update include the active partition so a replayed
+    /// id cannot mutate a note after the user switches partitions.
+    pub async fn update_note_cas_in_profile(
+        &self,
+        profile: &str,
+        note_id: &str,
+        expected_revision: u64,
+        title: Option<String>,
+        edited_content: Option<String>,
+    ) -> Result<NoteDto, AppError> {
+        let current = self
+            .get_note_in_profile(profile, note_id)
+            .await
+            .map_err(scoped_note_error)?;
+        let next_title = title.unwrap_or(current.title.clone());
+        let next_content = edited_content.or(current.edited_content.clone());
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| AppError::new("note_revision_invalid", "The note revision is invalid."))?;
+        let result = query(
+            "UPDATE notes
+             SET title = ?, edited_content = ?, updated_at = ?, revision = revision + 1
+             WHERE id = ? AND revision = ? AND profile = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(timestamp())
+        .bind(note_id)
+        .bind(expected_revision)
+        .bind(profile)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if result.rows_affected() == 0 {
+            let current = self
+                .get_note_in_profile(profile, note_id)
+                .await
+                .map_err(scoped_note_error)?;
+            return Err(AppError {
+                code: "note_revision_conflict".to_string(),
+                message: "The note changed on another device.".to_string(),
+                details: serde_json::to_value(current).ok(),
+            });
+        }
+        self.get_note_in_profile(profile, note_id)
+            .await
+            .map_err(scoped_note_error)
     }
 
     pub async fn audio_artifact_paths_for_note(
@@ -3315,7 +3493,8 @@ impl Repositories {
                  active_tab = 'notes',
                  processing_status = 'ready',
                  last_error = NULL,
-                 updated_at = ?
+                 updated_at = ?,
+                 revision = revision + 1
              WHERE id = ?",
         )
         .bind(current.title.as_str())
@@ -5955,6 +6134,16 @@ pub fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn scoped_note_error(error: sqlx::error::Error) -> AppError {
+    if matches!(error, sqlx::error::Error::RowNotFound) {
+        return AppError::new(
+            "note_not_found",
+            "That note is not available in the current data partition.",
+        );
+    }
+    AppError::from(error)
+}
+
 async fn insert_browser_approval_event(
     tx: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
     approval_id: &str,
@@ -6184,61 +6373,50 @@ fn dictation_history_item_from_row(row: sqlx_sqlite::SqliteRow) -> DictationHist
     }
 }
 
-fn agent_task_from_row(row: sqlx_sqlite::SqliteRow) -> AgentTaskDto {
-    AgentTaskDto {
-        id: row.get("id"),
-        title: row.get("title"),
-        prompt: row.get("prompt"),
-        status: AgentTaskStatus::from(row.get::<String, _>("status").as_str()),
-        safety_profile: AgentSafetyProfile::from(row.get::<String, _>("safety_profile").as_str()),
-        hermes_session_id: row.get("hermes_session_id"),
-        progress_summary: row.get("progress_summary"),
-        last_error: row.get("last_error"),
-        created_at: row.get("created_at"),
-        updated_at: row.get("updated_at"),
-        completed_at: row.get("completed_at"),
-        messages: Vec::new(),
-        tool_events: Vec::new(),
-    }
-}
-
-fn agent_message_from_row(row: sqlx_sqlite::SqliteRow) -> AgentMessageDto {
-    AgentMessageDto {
-        id: row.get("id"),
-        task_id: row.get("task_id"),
-        role: AgentMessageRole::from(row.get::<String, _>("role").as_str()),
-        content: row.get("content"),
-        created_at: row.get("created_at"),
-    }
-}
-
-fn agent_tool_event_from_row(row: sqlx_sqlite::SqliteRow) -> AgentToolEventDto {
-    AgentToolEventDto {
-        id: row.get("id"),
-        task_id: row.get("task_id"),
-        tool_name: row.get("tool_name"),
-        status: AgentToolEventStatus::from(row.get::<String, _>("status").as_str()),
-        summary: row.get("summary"),
-        arguments_json: row.get("arguments_json"),
-        result_json: row.get("result_json"),
-        redacted: row.get::<i64, _>("redacted") != 0,
-        created_at: row.get("created_at"),
-        completed_at: row.get("completed_at"),
-    }
-}
-
 fn dictation_history_cutoff_timestamp() -> String {
     (Utc::now() - Duration::days(DICTATION_HISTORY_RETENTION_DAYS))
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn title_from_prompt(prompt: &str) -> String {
-    let compact = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    let title: String = compact.chars().take(64).collect();
-    if title.trim().is_empty() {
-        "New task".to_string()
-    } else {
-        title
+fn companion_operation_cutoff_timestamp() -> String {
+    (Utc::now() - Duration::days(COMPANION_OPERATION_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+async fn prune_companion_operations(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
+    device_id: &str,
+) -> Result<(), sqlx::error::Error> {
+    query("DELETE FROM companion_operations WHERE created_at < ?")
+        .bind(companion_operation_cutoff_timestamp())
+        .execute(&mut **transaction)
+        .await?;
+    query(
+        "DELETE FROM companion_operations
+         WHERE device_id = ? AND operation_state = 'completed'
+           AND operation_id NOT IN (
+             SELECT operation_id FROM companion_operations
+             WHERE device_id = ? AND operation_state = 'completed'
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?
+           )",
+    )
+    .bind(device_id)
+    .bind(device_id)
+    .bind(MAX_COMPANION_OPERATIONS_PER_DEVICE)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn companion_device_from_row(row: sqlx_sqlite::SqliteRow) -> CompanionDeviceRecord {
+    CompanionDeviceRecord {
+        id: row.get("id"),
+        display_name: row.get("display_name"),
+        public_key: row.get("public_key"),
+        linked_at: row.get("linked_at"),
+        last_seen_at: row.get("last_seen_at"),
+        revoked_at: row.get("revoked_at"),
     }
 }
 
@@ -6286,7 +6464,10 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Repositories;
+    use super::{
+        Repositories, MAX_COMPANION_OPERATIONS_PER_DEVICE,
+        MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE,
+    };
     use crate::domain::types::{
         NoteCalendarEventDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
         NoteTranscriptionJobStatus, ProcessingStatus, RecordingOriginMetadata, RecordingSourceMode,
@@ -6295,6 +6476,7 @@ mod tests {
     use sqlx::row::Row;
     use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::time::Duration as StdDuration;
+    use uuid::Uuid;
 
     async fn test_repositories() -> Repositories {
         let pool = SqlitePoolOptions::new()
@@ -6396,10 +6578,12 @@ mod tests {
     async fn calendar_event_titles_only_untouched_notes_and_hydrates_context() {
         let repos = test_repositories().await;
         let untouched = repos.create_note("default", None).await.expect("note");
+        let untouched_revision = untouched.revision;
         let named = repos
             .create_note("default", None)
             .await
             .expect("named note");
+        let named_revision = named.revision;
         query("UPDATE notes SET title = 'My own title' WHERE id = ?")
             .bind(&named.id)
             .execute(&repos.pool)
@@ -6426,8 +6610,30 @@ mod tests {
         let named = repos.get_note(&named.id).await.expect("named");
         assert_eq!(untouched.title, "Product review");
         assert_eq!(untouched.calendar_event, Some(event.clone()));
+        assert_eq!(untouched.revision, untouched_revision + 1);
         assert_eq!(named.title, "My own title");
         assert_eq!(named.calendar_event, Some(event));
+        assert_eq!(named.revision, named_revision);
+
+        let conflict = repos
+            .update_note_cas(
+                &untouched.id,
+                untouched_revision,
+                Some("Stale phone title".to_string()),
+                Some("Stale phone content".to_string()),
+            )
+            .await
+            .expect_err("calendar title must invalidate a stale companion edit");
+        assert_eq!(conflict.code, "note_revision_conflict");
+        let current = repos
+            .get_note(&untouched.id)
+            .await
+            .expect("calendar-titled note");
+        assert_eq!(current.title, "Product review");
+        assert_ne!(
+            current.edited_content.as_deref(),
+            Some("Stale phone content")
+        );
     }
 
     async fn recording_fixture(
@@ -6535,7 +6741,7 @@ mod tests {
             .expect("create source memory");
 
         repos
-            .move_profile_data_to_default("work")
+            .move_profile_data_to_default("work", None)
             .await
             .expect("move profile data");
 
@@ -6560,6 +6766,82 @@ mod tests {
             .expect("moved memory");
         assert_eq!(memory_row.get::<String, _>("profile"), "default");
         assert_eq!(memory_row.get::<String, _>("folder_id"), default_folder.id);
+    }
+
+    #[tokio::test]
+    async fn moving_profile_atomically_deletes_the_redundant_home_session() {
+        let repos = test_repositories().await;
+        let agents = crate::agent_runtime::AgentRepository::new(repos.pool.clone());
+        let retained = agents
+            .create_session_in_profile(
+                "Default Home",
+                "open-software/auto",
+                crate::agent_runtime::AgentSafetyMode::Sandboxed,
+                None,
+                "default",
+            )
+            .await
+            .expect("default Home session");
+        let redundant = agents
+            .create_session_in_profile(
+                "Work Home",
+                "open-software/auto",
+                crate::agent_runtime::AgentSafetyMode::Sandboxed,
+                None,
+                "work",
+            )
+            .await
+            .expect("work Home session");
+        let ordinary = agents
+            .create_session_in_profile(
+                "Work task",
+                "open-software/auto",
+                crate::agent_runtime::AgentSafetyMode::Sandboxed,
+                None,
+                "work",
+            )
+            .await
+            .expect("ordinary work session");
+
+        repos
+            .move_profile_data_to_default("work", Some(&redundant.id))
+            .await
+            .expect("move profile and retire duplicate Home");
+
+        assert!(agents.get_session(&retained.id).await.is_ok());
+        assert!(agents.get_session(&ordinary.id).await.is_ok());
+        assert!(agents.get_session(&redundant.id).await.is_err());
+        let moved_profile: String =
+            query("SELECT profile FROM session_profiles WHERE session_id = ?")
+                .bind(&ordinary.id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("moved session profile")
+                .get("profile");
+        assert_eq!(moved_profile, "default");
+    }
+
+    #[tokio::test]
+    async fn deleting_profile_deletes_its_agent_sessions_instead_of_exposing_them_as_default() {
+        let repos = test_repositories().await;
+        let agents = crate::agent_runtime::AgentRepository::new(repos.pool.clone());
+        let private_session = agents
+            .create_session_in_profile(
+                "Private Home",
+                "open-software/auto",
+                crate::agent_runtime::AgentSafetyMode::Sandboxed,
+                None,
+                "private",
+            )
+            .await
+            .expect("private session");
+
+        repos
+            .delete_profile_data("private")
+            .await
+            .expect("delete private profile");
+
+        assert!(agents.get_session(&private_session.id).await.is_err());
     }
 
     fn transcription_plan(
@@ -8088,6 +8370,396 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn companion_note_edits_use_compare_and_swap_revisions() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("default", None)
+            .await
+            .expect("create note");
+        assert_eq!(note.revision, 1);
+
+        let updated = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                Some("From iPhone".to_string()),
+                Some("Encrypted edit".to_string()),
+            )
+            .await
+            .expect("first compare-and-swap update");
+        assert_eq!(updated.revision, 2);
+
+        let conflict = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                None,
+                Some("Stale edit".to_string()),
+            )
+            .await
+            .expect_err("stale revision must not overwrite the note");
+        assert_eq!(conflict.code, "note_revision_conflict");
+        assert_eq!(
+            conflict
+                .details
+                .as_ref()
+                .and_then(|value| value["revision"].as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("current note")
+                .edited_content
+                .as_deref(),
+            Some("Encrypted edit")
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_note_reads_and_edits_recheck_the_active_partition() {
+        let repos = test_repositories().await;
+        let note = repos
+            .create_note("partition-a", None)
+            .await
+            .expect("create partition A note");
+
+        let read_error = repos
+            .get_note_in_profile("partition-b", &note.id)
+            .await
+            .expect_err("cached note id must not cross partitions");
+        assert!(matches!(read_error, sqlx::error::Error::RowNotFound));
+
+        let edit_error = repos
+            .update_note_cas_in_profile(
+                "partition-b",
+                &note.id,
+                note.revision,
+                Some("Cross-partition title".to_string()),
+                Some("Cross-partition edit".to_string()),
+            )
+            .await
+            .expect_err("cached edit must not cross partitions");
+        assert_eq!(edit_error.code, "note_not_found");
+
+        let unchanged = repos
+            .get_note_in_profile("partition-a", &note.id)
+            .await
+            .expect("partition A note remains readable");
+        assert_eq!(unchanged.title, note.title);
+        assert_eq!(unchanged.edited_content, note.edited_content);
+        assert_eq!(unchanged.revision, note.revision);
+    }
+
+    #[tokio::test]
+    async fn companion_operation_history_is_bounded_and_cleared_on_revocation() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+        repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-mutation",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("reserve pending mutation");
+
+        for index in 0..=MAX_COMPANION_OPERATIONS_PER_DEVICE {
+            repos
+                .remember_companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{index:04}"),
+                    b"accepted",
+                )
+                .await
+                .expect("remember operation");
+        }
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "operation-0000")
+                .await
+                .expect("read pruned operation"),
+            None
+        );
+        assert_eq!(
+            repos
+                .companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read retained operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-mutation")
+                .await
+                .expect("read retained pending mutation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+
+        repos
+            .revoke_companion_device("usr_test", &device_id)
+            .await
+            .expect("revoke companion device");
+        assert_eq!(
+            repos
+                .companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read revoked operation"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_mutation_reservation_survives_until_a_final_response_replaces_it() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        assert!(repos
+            .reserve_companion_operation("usr_test", &device_id, "mutation-1", b"outcome-unknown",)
+            .await
+            .expect("reserve mutation"));
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "mutation-1",
+                b"different-reservation",
+            )
+            .await
+            .expect("reject duplicate reservation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read reservation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+
+        repos
+            .complete_companion_operation("usr_test", &device_id, "mutation-1", b"accepted")
+            .await
+            .expect("complete mutation");
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read completed response")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_legacy_mutation_reservations_migrate_to_outcome_unknown() {
+        use june_companion_protocol::{
+            Capability, FailureCode, ProtocolFailure, Response, ResultPayload,
+        };
+
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+        let legacy = Response {
+            capability: Capability::AgentChat,
+            result: ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::Busy,
+                message: "This request may already have reached June. Check your Mac before trying a different request."
+                    .to_string(),
+                retryable: true,
+            }),
+        };
+        query(
+            "INSERT INTO companion_operations (device_id, operation_id, response, created_at)
+             VALUES (?, 'legacy-reservation', ?, '2026-07-17T00:00:00.000Z')",
+        )
+        .bind(&device_id)
+        .bind(serde_json::to_vec(&legacy).expect("encode legacy reservation"))
+        .execute(&repos.pool)
+        .await
+        .expect("insert legacy reservation");
+
+        crate::db::migrations::run_migrations(&repos.pool)
+            .await
+            .expect("rerun migrations");
+
+        let row = query(
+            "SELECT operation_state, response FROM companion_operations
+             WHERE device_id = ? AND operation_id = 'legacy-reservation'",
+        )
+        .bind(&device_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("read migrated reservation");
+        assert_eq!(row.get::<String, _>("operation_state"), "pending");
+        let encoded: Vec<u8> = row.get("response");
+        let migrated: Response =
+            serde_json::from_slice(&encoded).expect("decode migrated response");
+        assert!(matches!(
+            migrated.result,
+            ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::OutcomeUnknown,
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn companion_pending_mutation_limit_refuses_new_work_without_evicting_reservations() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        for index in 0..MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE {
+            assert!(repos
+                .reserve_companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("pending-{index:03}"),
+                    b"outcome-unknown",
+                )
+                .await
+                .expect("reserve pending operation"));
+        }
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-over-limit",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("refuse excess pending operation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-000")
+                .await
+                .expect("oldest pending operation remains")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_device_mutations_are_account_scoped() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_owner", &device_id, "Owner phone", &[4; 32])
+            .await
+            .expect("create owner device");
+        repos
+            .remember_companion_operation("usr_owner", &device_id, "operation-1", b"accepted")
+            .await
+            .expect("remember owner operation");
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("read persisted companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
+
+        assert!(repos
+            .companion_device("usr_other", &device_id)
+            .await
+            .expect("look up other account")
+            .is_none());
+        assert!(repos
+            .upsert_companion_device("usr_other", &device_id, "Other phone", &[4; 32])
+            .await
+            .is_err());
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("retain owner companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
+        repos
+            .rename_companion_device("usr_other", &device_id, "Renamed")
+            .await
+            .expect("ignore cross-account rename");
+        repos
+            .touch_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account touch");
+        repos
+            .revoke_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account revoke");
+        repos
+            .delete_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account delete");
+        assert!(repos
+            .companion_operation("usr_other", &device_id, "operation-1")
+            .await
+            .expect("ignore cross-account operation read")
+            .is_none());
+        repos
+            .remember_companion_operation(
+                "usr_other",
+                &device_id,
+                "cross-account-operation",
+                b"unexpected",
+            )
+            .await
+            .expect("ignore cross-account operation write");
+        assert!(repos
+            .companion_operation("usr_owner", &device_id, "cross-account-operation")
+            .await
+            .expect("read owner operation history")
+            .is_none());
+
+        let owner = repos
+            .companion_device("usr_owner", &device_id)
+            .await
+            .expect("look up owner account")
+            .expect("owner device remains");
+        assert_eq!(owner.display_name, "Owner phone");
+        assert!(owner.last_seen_at.is_none());
+        assert!(owner.revoked_at.is_none());
+        assert_eq!(
+            repos
+                .companion_operation("usr_owner", &device_id, "operation-1")
+                .await
+                .expect("read owner operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+    }
+
+    #[tokio::test]
     async fn connector_account_upsert_list_and_status() {
         let repos = test_repositories().await;
         repos
@@ -8872,6 +9544,10 @@ mod tests {
             .set_trigger_cursor("user@example.com", "email_received", "50")
             .await
             .expect("stale cursor");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "50")
+            .await
+            .expect("stale per-routine cursor");
 
         repos
             .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
@@ -8881,6 +9557,11 @@ mod tests {
             .trigger_cursor("user@example.com", "email_received")
             .await
             .expect("cursor reset")
+            .is_none());
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .expect("per-routine cursor reset")
             .is_none());
 
         let mut fire_count = simulate_email_poll(&repos, 100, &[]).await;
@@ -8908,6 +9589,77 @@ mod tests {
         );
         fire_count += simulate_email_poll(&repos, 101, &[101]).await;
         assert_eq!(fire_count, 1);
+    }
+
+    #[tokio::test]
+    async fn removed_email_subscription_does_not_reuse_its_old_cursor() {
+        let repos = test_repositories().await;
+        let removed = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("first email trigger");
+        repos
+            .replace_connector_trigger("job-2", "email_received", "user@example.com", "{}")
+            .await
+            .expect("peer email trigger");
+        repos
+            .set_trigger_cursor("user@example.com", "email_received", "100")
+            .await
+            .unwrap();
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "80")
+            .await
+            .unwrap();
+
+        assert!(repos
+            .delete_connector_trigger(&removed.id)
+            .await
+            .expect("remove subscription"));
+        assert!(!repos
+            .set_email_trigger_cursor_if_active(&removed.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("stale snapshot rejected"));
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
+
+        let reenabled = repos
+            .replace_connector_trigger("job-1", "email_received", "user@example.com", "{}")
+            .await
+            .expect("re-enable subscription");
+        assert!(repos
+            .set_email_trigger_cursor_if_active(&reenabled.id, "job-1", "user@example.com", "100",)
+            .await
+            .expect("active snapshot accepted"));
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            repos
+                .trigger_cursor("user@example.com", "email_received")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("100")
+        );
+
+        repos
+            .set_trigger_cursor("user@example.com", "email_received:job-1", "100")
+            .await
+            .unwrap();
+        repos
+            .replace_connector_trigger("job-1", "event_upcoming", "user@example.com", "{}")
+            .await
+            .expect("switch trigger kind");
+        assert!(repos
+            .trigger_cursor("user@example.com", "email_received:job-1")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

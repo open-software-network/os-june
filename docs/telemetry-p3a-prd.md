@@ -150,7 +150,7 @@ platform (`macos` / `windows` / `linux`) and app version series (e.g.
 | `notes.meetings-recorded` | Meeting recording completed | event | Investment in meetings pipeline |
 | `notes.audio-source` | Most-used audio source this week | none / mic only / mic + system | System-audio maintenance cost (Swift helpers) |
 | `dictation.sessions` | Dictation session completed | event | Dictation as flagship vs. niche |
-| `agent.sessions` | Agent session started | event | Hermes runtime investment |
+| `agent.sessions` | Agent session started | event | Agent runtime investment |
 | `agent.privacy-guard` | Agent privacy guard mode (sampled weekly) | off / structured | Rampart default-on decision |
 | `models.privacy-mode` | Most-selected model privacy mode this week | e2ee / private / anonymous | Model catalog and TEE roadmap |
 | `onboarding.completed` | Onboarding completed | completed | Onboarding funnel health |

@@ -132,19 +132,19 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
       artifacts: [
         {
           name: "revenue-chart.png",
-          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/revenue-chart.png",
+          path: "~/Library/Application Support/co.opensoftware.june/agent-workspaces/demo/revenue-chart.png",
           rootLabel: "Workspace",
           size: 31_000,
         },
         {
           name: "summary.md",
-          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/summary.md",
+          path: "~/Library/Application Support/co.opensoftware.june/agent-workspaces/demo/summary.md",
           rootLabel: "Workspace",
           size: 4_200,
         },
         {
           name: "build-log.txt",
-          path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/2026-06-09/run-4821/artifacts/logs/build-log.txt",
+          path: "~/Library/Application Support/co.opensoftware.june/agent-workspaces/demo/2026-06-09/run-4821/artifacts/logs/build-log.txt",
           rootLabel: "Home",
           size: 1_280_000,
         },
@@ -166,7 +166,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
             status: "complete",
             prompt: "a fox reading a book",
             name: "generated-image-1.png",
-            path: "~/Library/Application Support/co.opensoftware.june/hermes/workspace/generated-image-1.png",
+            path: "~/Library/Application Support/co.opensoftware.june/agent-workspaces/demo/generated-image-1.png",
             dataUrl: SAMPLE_IMAGE_DATA_URL,
           },
         ]),

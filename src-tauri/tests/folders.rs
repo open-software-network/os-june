@@ -1,4 +1,5 @@
 use os_june_lib::db::{migrations::run_migrations, repositories::Repositories};
+use sqlx::query::query;
 use sqlx_sqlite::SqlitePoolOptions;
 
 async fn repos() -> Repositories {
@@ -9,6 +10,19 @@ async fn repos() -> Repositories {
         .expect("sqlite memory");
     run_migrations(&pool).await.expect("migrations");
     Repositories::new(pool)
+}
+
+async fn create_agent_session(repos: &Repositories, id: &str) {
+    query(
+        "INSERT INTO agent_sessions
+         (id, title, status, model, safety_mode, source, created_at, updated_at)
+         VALUES (?, 'Test session', 'idle', 'auto', 'sandboxed', 'user',
+                 '2026-05-19T10:00:00Z', '2026-05-19T10:00:00Z')",
+    )
+    .bind(id)
+    .execute(&repos.pool)
+    .await
+    .expect("agent session fixture");
 }
 
 #[tokio::test]
@@ -173,28 +187,29 @@ async fn renaming_missing_folder_returns_descriptive_error() {
 #[tokio::test]
 async fn assigning_and_removing_session_folders_round_trips() {
     let repos = repos().await;
+    create_agent_session(&repos, "agent-session-1").await;
     let folder = repos
         .create_folder("default", "Launch", None)
         .await
         .expect("folder");
 
     repos
-        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "agent-session-1", &folder.id)
         .await
         .expect("assign session");
     // Re-assigning is a no-op rather than an error.
     repos
-        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "agent-session-1", &folder.id)
         .await
         .expect("assign session twice");
 
     let assignments = repos.list_session_folders().await.expect("list");
     assert_eq!(assignments.len(), 1);
-    assert_eq!(assignments[0].session_id, "hermes-session-1");
+    assert_eq!(assignments[0].session_id, "agent-session-1");
     assert_eq!(assignments[0].folder_id, folder.id);
 
     repos
-        .remove_session_from_folder("hermes-session-1", &folder.id)
+        .remove_session_from_folder("agent-session-1", &folder.id)
         .await
         .expect("remove session");
     assert!(repos
@@ -207,6 +222,7 @@ async fn assigning_and_removing_session_folders_round_trips() {
 #[tokio::test]
 async fn assigning_session_to_folder_requires_both_to_match_the_active_profile() {
     let repos = repos().await;
+    create_agent_session(&repos, "session-a").await;
     let folder_a = repos
         .create_folder("profile-a", "Profile A project", None)
         .await
@@ -250,12 +266,13 @@ async fn assigning_session_to_folder_requires_both_to_match_the_active_profile()
 #[tokio::test]
 async fn deleting_folder_drops_its_session_assignments() {
     let repos = repos().await;
+    create_agent_session(&repos, "agent-session-1").await;
     let folder = repos
         .create_folder("default", "Launch", None)
         .await
         .expect("folder");
     repos
-        .assign_session_to_folder("default", "hermes-session-1", &folder.id)
+        .assign_session_to_folder("default", "agent-session-1", &folder.id)
         .await
         .expect("assign session");
 

@@ -1770,6 +1770,102 @@ pub fn stop_helper(app: &AppHandle) {
     if let Some(helper) = helper {
         abandon_helper(helper);
     }
+    // A command thread can be blocked writing to a wedged helper while it owns
+    // `state.process`, or the child handle can race out of the slot before the
+    // bounded reaper confirms exit. Dropping the app in either state detaches
+    // the child and leaves its global event tap alive. On macOS the per-instance
+    // ownership record gives us a lock-independent handle to the exact helper
+    // this process spawned. Always verify that record after the normal path so
+    // shutdown does not return until the helper is gone (or ownership fails
+    // closed). This also removes the now-stale record after a clean exit.
+    #[cfg(target_os = "macos")]
+    if !reap_current_owned_helper_without_process_lock(app) {
+        tracing::warn!("dictation helper shutdown fallback could not confirm the helper exited");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn decide_owned_shutdown_action(
+    recorded_app_pid: u32,
+    current_app_pid: u32,
+    owner: OwnerLiveness,
+    helper: HelperMatch,
+) -> RecordAction {
+    if recorded_app_pid != current_app_pid || owner != OwnerLiveness::Alive {
+        return RecordAction::Abort;
+    }
+    match helper {
+        HelperMatch::MatchesRecord => RecordAction::Reap,
+        HelperMatch::GoneOrReused => RecordAction::DeleteStale,
+        HelperMatch::Unknown => RecordAction::Abort,
+    }
+}
+
+/// Reaps this app instance's helper without acquiring [`HelperState::process`].
+///
+/// This is only a shutdown fallback for a process lock held by a blocked helper
+/// write. The ownership record is keyed to the current app pid, and both the app
+/// and helper start times are revalidated before the helper is signalled.
+#[cfg(target_os = "macos")]
+fn reap_current_owned_helper_without_process_lock(app: &AppHandle) -> bool {
+    let Some(path) = helper_ownership_path(app) else {
+        return true;
+    };
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "dictation shutdown fallback could not read its ownership record"
+            );
+            return false;
+        }
+    };
+    let record = match serde_json::from_str::<HelperOwnershipRecord>(&raw) {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                %error,
+                "dictation shutdown fallback found an invalid ownership record"
+            );
+            return false;
+        }
+    };
+    let owner = owner_liveness(&probe_start_time(record.app_pid), &record.app_start);
+    let helper = helper_match(
+        &probe_start_time(record.helper_pid),
+        &record.helper_start,
+        &inspect_helper_identity(record.helper_pid),
+    );
+    match decide_owned_shutdown_action(record.app_pid, std::process::id(), owner, helper) {
+        RecordAction::Reap => {
+            kill_pid(record.helper_pid);
+            if !wait_for_pid_exit(record.helper_pid, HELPER_ORPHAN_EXIT_TIMEOUT) {
+                tracing::warn!(
+                    helper_pid = record.helper_pid,
+                    "dictation shutdown fallback helper would not exit"
+                );
+                return false;
+            }
+            let _ = fs::remove_file(path);
+            true
+        }
+        RecordAction::DeleteStale => {
+            let _ = fs::remove_file(path);
+            true
+        }
+        RecordAction::Skip | RecordAction::Abort => {
+            tracing::warn!(
+                app_pid = record.app_pid,
+                helper_pid = record.helper_pid,
+                "dictation shutdown fallback could not validate helper ownership"
+            );
+            false
+        }
+    }
 }
 
 pub(crate) fn dictation_helper_pid(app: &AppHandle) -> Option<u32> {
@@ -3085,7 +3181,10 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
             )
         })?;
 
-    let mut child = Command::new(&helper_path)
+    let mut command = Command::new(&helper_path);
+    #[cfg(target_os = "macos")]
+    command.env("JUNE_OWNER_PID", std::process::id().to_string());
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -6132,6 +6231,34 @@ mod tests {
         );
         assert_eq!(
             decide_record_action(OwnerLiveness::Dead, HelperMatch::Unknown),
+            RecordAction::Abort
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shutdown_fallback_reaps_only_the_current_instances_helper() {
+        assert_eq!(
+            decide_owned_shutdown_action(42, 42, OwnerLiveness::Alive, HelperMatch::MatchesRecord,),
+            RecordAction::Reap
+        );
+        assert_eq!(
+            decide_owned_shutdown_action(42, 42, OwnerLiveness::Alive, HelperMatch::GoneOrReused,),
+            RecordAction::DeleteStale
+        );
+        // A sibling instance's ownership record is never a shutdown target.
+        assert_eq!(
+            decide_owned_shutdown_action(41, 42, OwnerLiveness::Alive, HelperMatch::MatchesRecord,),
+            RecordAction::Abort
+        );
+        // Pid reuse, an already-dead owner, or any uncertain helper identity
+        // fails closed instead of signalling an unverified process.
+        assert_eq!(
+            decide_owned_shutdown_action(42, 42, OwnerLiveness::Dead, HelperMatch::MatchesRecord,),
+            RecordAction::Abort
+        );
+        assert_eq!(
+            decide_owned_shutdown_action(42, 42, OwnerLiveness::Alive, HelperMatch::Unknown,),
             RecordAction::Abort
         );
     }

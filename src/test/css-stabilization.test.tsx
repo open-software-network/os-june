@@ -11,6 +11,7 @@ describe("CSS stabilization state selectors", () => {
 
   it("uses composited properties for waveform and progress animation", () => {
     expect(appCss).toContain("transition: transform 18ms linear;");
+    expect(appCss).toContain("transition: clip-path 18ms linear;");
     expect(appCss).toContain("transition: clip-path var(--t-fast) var(--ease-out);");
     expect(appCss).not.toMatch(/transition:[ \t]*(?:height|width)\b/);
   });

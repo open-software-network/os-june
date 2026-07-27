@@ -1,6 +1,9 @@
 import { IconZap } from "central-icons/IconZap";
-import { isRunningScheduledRunSession, sessionTimestamp } from "../../lib/hermes-adapter";
-import type { HermesSessionInfo } from "../../lib/tauri";
+import {
+  isRunningRoutineSession,
+  sessionTimestamp,
+  type RoutineRunSession,
+} from "../../lib/agent-routine-history";
 
 /** Past runs of one or all routines: each row is a cron-sourced session,
  * opened in the agent view on click so the whole conversation is readable. */
@@ -9,12 +12,12 @@ export function RoutineRunList({
   label,
   onOpen,
 }: {
-  runs: HermesSessionInfo[];
-  label: (run: HermesSessionInfo) => string;
-  onOpen: (run: HermesSessionInfo) => void;
+  runs: RoutineRunSession[];
+  label: (run: RoutineRunSession) => string;
+  onOpen: (run: RoutineRunSession) => void;
 }) {
   return (
-    <ul className="routines-list routines-runs-list" role="list">
+    <ul className="routines-list routines-runs-list">
       {runs.map((run) => (
         <RunRow key={run.id} run={run} label={label(run)} onOpen={() => onOpen(run)} />
       ))}
@@ -27,11 +30,11 @@ function RunRow({
   label,
   onOpen,
 }: {
-  run: HermesSessionInfo;
+  run: RoutineRunSession;
   label: string;
   onOpen: () => void;
 }) {
-  const running = isRunningScheduledRunSession(run);
+  const running = isRunningRoutineSession(run);
   const preview = run.preview?.trim() || (running ? "Running now" : "");
   return (
     <li className="routines-run">

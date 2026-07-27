@@ -10,7 +10,6 @@ const deferredImports = vi.hoisted(() => ({
   noteEditor: vi.fn(),
   settings: vi.fn(),
   folders: vi.fn(),
-  routines: vi.fn(),
 }));
 
 vi.mock("../components/note-editor/NoteEditor", () => {
@@ -26,11 +25,6 @@ vi.mock("../components/settings/AppSettings", () => {
 vi.mock("../components/folders/FoldersWorkspace", () => {
   deferredImports.folders();
   return { FoldersWorkspace: () => null };
-});
-
-vi.mock("../components/routines/RoutinesView", () => {
-  deferredImports.routines();
-  return { RoutinesView: () => null };
 });
 
 type ProbeProps = {
@@ -122,7 +116,6 @@ describe("lazy workspace routes", () => {
     deferredImports.noteEditor.mockClear();
     deferredImports.settings.mockClear();
     deferredImports.folders.mockClear();
-    deferredImports.routines.mockClear();
 
     let runIdle: (() => void) | undefined;
     const requestIdleCallback = vi.fn((callback: () => void) => {
@@ -147,7 +140,6 @@ describe("lazy workspace routes", () => {
       expect(deferredImports.noteEditor).toHaveBeenCalledOnce();
       expect(deferredImports.settings).toHaveBeenCalledOnce();
       expect(deferredImports.folders).toHaveBeenCalledOnce();
-      expect(deferredImports.routines).toHaveBeenCalledOnce();
     });
   });
 });

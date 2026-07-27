@@ -6,7 +6,7 @@ import { ShareLinkCopyAction } from "../components/share/ShareLinkCopyAction";
 import { NotesList } from "../components/notes-list/NotesList";
 import { BreadcrumbBar } from "../components/ui/BreadcrumbBar";
 import { IconProjects } from "central-icons/IconProjects";
-import { retryProcessing } from "../lib/tauri";
+import { agentRuntimeBindings, retryProcessing } from "../lib/tauri";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { messageFromError } from "../lib/errors";
 import {
@@ -30,6 +30,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     accessibilityStatus,
     account,
     accountLoading,
+    currentDataPartitionName,
     activeAgentSessionFolder,
     activeAgentSessionId,
     activeAgentSessionSeed,
@@ -92,6 +93,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     handleToggleSessionCompleted,
     handleTopUp,
     handleUpdateNote,
+    homeStoredSessionId,
     memoryFolderFilter,
     meetingEndCountdown,
     microphoneBlocked,
@@ -109,6 +111,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     recordingNoteId,
     refreshAccount,
     refreshFundingAccount,
+    rememberHomeSession,
     runUpdateCheck,
     selectedNote,
     selectedNoteId,
@@ -134,6 +137,21 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     takeNewTabIntent,
     topUpLabel,
   } = dependencies;
+
+  const resolveAgentSessionProjectContext = (sessionId: string) => {
+    const folder =
+      sessionId === activeAgentSessionId
+        ? activeAgentSessionFolder
+        : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
+    return folder
+      ? {
+          id: folder.id,
+          name: folder.name,
+          instructions: folder.instructions,
+          localPath: folder.localPath,
+        }
+      : undefined;
+  };
 
   return activeView === "settings" ? (
     <AppSettingsRoute
@@ -186,9 +204,6 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     <RoutinesViewRoute
       creditActionsDisabledReason={fundingRequired ? ROUTINE_FUNDING_DISABLED_REASON : undefined}
       onCreateRoutine={(prompt) => {
-        // The agent workspace is unmounted while Routines is shown,
-        // so the pending marker alone is consumed on mount — no
-        // window event needed (it could double-submit the session).
         markAgentNewSessionPending(prompt);
         setActiveAgentSession(undefined);
         setActiveView("agent");
@@ -206,6 +221,44 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
         setActiveAgentSession(session);
         setActiveView("agent");
       }}
+    />
+  ) : activeView === "home" ? (
+    <AgentWorkspaceRoute
+      key={`home:${currentDataPartitionName}`}
+      homeMode
+      homeUserDisplayName={account.user?.displayName}
+      initialSessionId={homeStoredSessionId}
+      onHomeSessionCreated={rememberHomeSession}
+      onOpenHomeTaskSession={(sessionId, title) => {
+        void (async () => {
+          try {
+            const session =
+              agentSessions.find((item) => item.id === sessionId) ??
+              (await agentRuntimeBindings.getSession(sessionId));
+            setAgentOrigin(undefined);
+            setActiveAgentSession(session);
+            setActiveView("agent");
+          } catch (cause) {
+            setError(messageFromError(cause) || `Could not open ${title}.`);
+          }
+        })();
+      }}
+      creditActionsDisabledReason={fundingRequired ? COMPOSER_FUNDING_DISABLED_REASON : undefined}
+      renderFundingNotice={
+        fundingRequired
+          ? (textFundingContext) => (
+              <FundingNotice
+                account={fundingAccount}
+                onRefresh={refreshFundingAccount}
+                textFundingContext={textFundingContext}
+              />
+            )
+          : undefined
+      }
+      fundingTier={fundingTierOf(fundingAccount)}
+      topUpLabel={topUpLabel}
+      onTopUp={handleTopUp}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
     />
   ) : activeView === "agent" ? (
     // The origin crumbs render inside the workspace's own sticky
@@ -230,20 +283,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       topUpLabel={topUpLabel}
       onTopUp={handleTopUp}
       sessionInProject={Boolean(activeAgentSessionFolder)}
-      resolveSessionProjectContext={(sessionId) => {
-        const folder =
-          sessionId === activeAgentSessionId
-            ? activeAgentSessionFolder
-            : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
-        return folder
-          ? {
-              id: folder.id,
-              name: folder.name,
-              instructions: folder.instructions,
-              localPath: folder.localPath,
-            }
-          : undefined;
-      }}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
       projectContext={
         agentProjectContextFolder
           ? {

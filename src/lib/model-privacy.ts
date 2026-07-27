@@ -1,3 +1,4 @@
+import { AUTO_MODEL_ID } from "./agent-model-selection";
 import type { ProviderModelMode, VeniceModelDto } from "./tauri";
 
 export type ModelPrivacyMode = "e2ee" | "private" | "anonymous";
@@ -63,8 +64,12 @@ export function modelSupportsTools(
 
 export function modelAvailableForMode(
   mode: ProviderModelMode,
-  model: Partial<Pick<VeniceModelDto, "capabilities" | "provider">>,
+  model: Partial<Pick<VeniceModelDto, "id" | "capabilities" | "provider">>,
 ) {
+  // Auto is June's first-party router, not a concrete provider model. Its
+  // catalog row therefore does not need to duplicate every capability of the
+  // concrete model selected at request time.
+  if (mode === "generation" && model.id === AUTO_MODEL_ID) return true;
   if (mode === "generation" && model.provider && !modelSupportsTools(model)) {
     return false;
   }

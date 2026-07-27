@@ -515,8 +515,7 @@ export function ApprovalPart({
             </p>
           )}
           <p>
-            Approve once allows only this request. This session allows matching requests until the
-            session ends.{" "}
+            Approve once allows only this request.{" "}
             {part.allowPermanent ? "Always allows matching requests in future sessions. " : null}
             Deny blocks the request.
           </p>

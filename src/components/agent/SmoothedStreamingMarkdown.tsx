@@ -3,13 +3,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { createInlineMarkdownPattern, MarkdownContent } from "./MarkdownContent";
 
-// Deltas gather for one beat, then the whole backlog mounts in a single
-// commit — every word in the batch shares one fade timeline, so a chunk
-// surfaces as a unit instead of a mask sweeping left to right. The interval
-// is the batch width: long enough that a fast token stream groups into
-// visible chunks (and markdown parsing stays off the display refresh), short
-// enough that the response never feels laggy.
-const STREAM_REVEAL_INTERVAL_MS = 80;
+// Providers can deliver anything from a token to a paragraph in one delta.
+// Reveal a tiny, word-bounded slice on each beat so those transport chunks do
+// not become visible presentation chunks. Two words per 32 ms stays well ahead
+// of reading speed while still feeling like prose is arriving continuously.
+const STREAM_REVEAL_INTERVAL_MS = 32;
+const STREAM_WORDS_PER_REVEAL = 2;
 
 // Longest ambiguous markdown tail we will stall the reveal on. Past this,
 // revealing beats freezing the stream on syntax that may never close. That
@@ -309,12 +308,53 @@ export function holdbackSafeEnd(text: string): number {
   return holdbackDecision(text).safeEnd;
 }
 
+function wordBoundedEnd(text: string, start: number, limit: number): number {
+  let cursor = start;
+  let words = 0;
+  let inWord = false;
+  while (cursor < limit) {
+    if (/\s/.test(text[cursor])) {
+      if (inWord) {
+        words += 1;
+        inWord = false;
+      }
+      cursor += 1;
+      if (words >= STREAM_WORDS_PER_REVEAL) {
+        while (cursor < limit && /\s/.test(text[cursor])) cursor += 1;
+        return cursor;
+      }
+      continue;
+    }
+    inWord = true;
+    cursor += 1;
+  }
+  return limit;
+}
+
+// A word boundary can still land inside markdown (`**two words`). Advance to
+// the first word-bounded prefix whose own parse is safe, which keeps existing
+// rendered words mounted while allowing a complete inline construct to arrive
+// together when necessary.
+function nextRevealEnd(text: string, currentEnd: number, safeEnd: number): number {
+  let scanFrom = currentEnd;
+  while (scanFrom < safeEnd) {
+    const candidateEnd = wordBoundedEnd(text, scanFrom, safeEnd);
+    const candidateSafeEnd = Math.min(
+      holdbackDecision(text.slice(0, candidateEnd)).safeEnd,
+      safeEnd,
+    );
+    if (candidateSafeEnd > currentEnd) return candidateSafeEnd;
+    if (candidateEnd <= scanFrom) break;
+    scanFrom = candidateEnd;
+  }
+  return safeEnd;
+}
+
 /**
- * Presents append-only assistant text as chunk-batched reveals: deltas are
- * held for one short beat and released together, so each batch fades in as a
- * unit (see agent-stream-word-in). The authoritative text remains the raw
- * stream in AgentWorkspace; this component only trails it by at most one
- * batch interval.
+ * Presents append-only assistant text as word-paced reveals. Provider deltas
+ * are transport details and may contain whole paragraphs, so the visible
+ * stream advances in small word-bounded steps instead. The authoritative text
+ * remains the raw stream in AgentWorkspace.
  */
 export function SmoothedStreamingMarkdown({
   markdown,
@@ -334,8 +374,12 @@ export function SmoothedStreamingMarkdown({
       !running || reducedMotion || document.hidden
         ? { safeEnd: markdown.length, disableWordFade: false }
         : holdbackDecision(markdown);
+    const initialEnd =
+      !running || reducedMotion || document.hidden
+        ? decision.safeEnd
+        : nextRevealEnd(markdown, 0, decision.safeEnd);
     initialPresentationRef.current = {
-      visible: markdown.slice(0, decision.safeEnd),
+      visible: markdown.slice(0, initialEnd),
       fadeDisabled: decision.disableWordFade,
     };
   }
@@ -365,19 +409,19 @@ export function SmoothedStreamingMarkdown({
 
   const scheduleReveal = useCallback(() => {
     if (timerRef.current !== null) return;
-    timerRef.current = window.setTimeout(() => {
+    const tick = () => {
       timerRef.current = null;
-      // Everything that arrived during the batch interval mounts at once, in
-      // one commit, so the whole batch starts its fade on the same frame.
-      // Reveal only up to the safe holdback so an incomplete trailing
-      // construct does not surface and then re-parse under the next delta.
       const decision = holdbackDecision(targetRef.current);
       if (decision.disableWordFade) setFadeDisabled(true);
-      const safe = targetRef.current.slice(0, decision.safeEnd);
-      if (safe !== visibleRef.current) {
-        reveal(safe);
+      const end = nextRevealEnd(targetRef.current, visibleRef.current.length, decision.safeEnd);
+      if (end > visibleRef.current.length) {
+        reveal(targetRef.current.slice(0, end));
       }
-    }, STREAM_REVEAL_INTERVAL_MS);
+      if (end < decision.safeEnd) {
+        timerRef.current = window.setTimeout(tick, STREAM_REVEAL_INTERVAL_MS);
+      }
+    };
+    timerRef.current = window.setTimeout(tick, STREAM_REVEAL_INTERVAL_MS);
   }, [reveal]);
 
   useLayoutEffect(() => {
@@ -390,14 +434,25 @@ export function SmoothedStreamingMarkdown({
       reveal(markdown);
       return;
     }
-    // First chunk, or a reconciled (non-prefix) replacement: reveal instantly
-    // rather than waiting a beat, but still only up to the safe holdback.
-    if (visibleRef.current.length === 0 || !markdown.startsWith(visibleRef.current)) {
+    // A reconciled (non-prefix) replacement is a correction, not an append.
+    // Reveal it immediately rather than animating through text being replaced.
+    if (!markdown.startsWith(visibleRef.current)) {
       stopTimer();
       const decision = holdbackDecision(markdown);
       if (decision.disableWordFade) setFadeDisabled(true);
       const safe = markdown.slice(0, decision.safeEnd);
       if (safe !== visibleRef.current) reveal(safe);
+      return;
+    }
+    // The first provider delta is visible immediately, but only as the first
+    // word-sized step. Continue draining the rest even if no new delta arrives.
+    if (visibleRef.current.length === 0) {
+      stopTimer();
+      const decision = holdbackDecision(markdown);
+      if (decision.disableWordFade) setFadeDisabled(true);
+      const end = nextRevealEnd(markdown, 0, decision.safeEnd);
+      if (end > 0) reveal(markdown.slice(0, end));
+      if (end < decision.safeEnd) scheduleReveal();
       return;
     }
     scheduleReveal();

@@ -1,7 +1,7 @@
 use crate::error::ApiError;
 use crate::share_rate_limit::ShareRateLimiter;
 use june_config::BrowserTransportsConfig;
-use june_domain::{TokenVerifier, UserId};
+use june_domain::{CompanionSnapshot, CompanionStore, TokenVerifier, UserId};
 use june_services::{
     AgentChatService, DictateService, ImageService, IssueReportService, NoteGenerateService,
     NoteTranscribeService, P3aReportService, PricingTable, ShareService, VideoService,
@@ -128,6 +128,7 @@ struct ApiStateInner {
     computer_use: june_config::ComputerUseConfig,
     local_dev_enabled: bool,
     token_verifier: Arc<dyn TokenVerifier>,
+    companion: Arc<crate::handlers::companion::CompanionRelay>,
     note_transcribe: Arc<NoteTranscribeService>,
     note_generate: Arc<NoteGenerateService>,
     agent_chat: Arc<AgentChatService>,
@@ -197,6 +198,10 @@ pub struct ApiStateParams {
     pub computer_use: june_config::ComputerUseConfig,
     pub local_dev_enabled: bool,
     pub token_verifier: Arc<dyn TokenVerifier>,
+    pub companion_store: Option<Arc<dyn CompanionStore>>,
+    pub companion_snapshot: CompanionSnapshot,
+    pub companion_enabled: bool,
+    pub companion_push: Option<CompanionPushConfig>,
     pub note_transcribe: Arc<NoteTranscribeService>,
     pub note_generate: Arc<NoteGenerateService>,
     pub agent_chat: Arc<AgentChatService>,
@@ -223,6 +228,12 @@ impl ApiState {
                 computer_use: params.computer_use,
                 local_dev_enabled: params.local_dev_enabled,
                 token_verifier: params.token_verifier,
+                companion: Arc::new(crate::handlers::companion::CompanionRelay::new(
+                    params.companion_store,
+                    params.companion_snapshot,
+                    params.companion_enabled,
+                    params.companion_push,
+                )),
                 note_transcribe: params.note_transcribe,
                 note_generate: params.note_generate,
                 agent_chat: params.agent_chat,
@@ -286,6 +297,10 @@ impl ApiState {
 
     pub(crate) fn token_verifier(&self) -> &dyn TokenVerifier {
         self.inner.token_verifier.as_ref()
+    }
+
+    pub(crate) fn companion(&self) -> &crate::handlers::companion::CompanionRelay {
+        self.inner.companion.as_ref()
     }
 
     pub(crate) fn note_transcribe(&self) -> &NoteTranscribeService {
@@ -355,6 +370,15 @@ impl ApiState {
     pub(crate) fn browser_transports(&self) -> BrowserTransportsConfig {
         self.inner.browser_transports
     }
+}
+
+#[derive(Clone)]
+pub struct CompanionPushConfig {
+    pub team_id: String,
+    pub key_id: String,
+    pub private_key_pem: String,
+    pub bundle_id: String,
+    pub production: bool,
 }
 
 #[cfg(test)]

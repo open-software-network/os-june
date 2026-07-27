@@ -3,7 +3,6 @@ import {
   checkRecordingSourceReadiness,
   completeNoteSaveFlush,
   downloadNoteAudio,
-  ensureHermesBridgeGateway,
   finishRecording,
   getNote,
   juneOpenCommunityPage,
@@ -122,12 +121,6 @@ describe("Tauri command contracts", () => {
     expect(mocks.invoke).toHaveBeenNthCalledWith(4, "recover_recording", {
       request: { sessionId: "session-2", action: "discard" },
     });
-  });
-
-  it("invokes the Hermes gateway ensure command for routines", async () => {
-    await ensureHermesBridgeGateway();
-
-    expect(mocks.invoke).toHaveBeenCalledWith("ensure_hermes_bridge_gateway");
   });
 
   it("opens the June community through a dedicated command", async () => {

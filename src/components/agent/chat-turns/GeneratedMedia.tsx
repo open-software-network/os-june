@@ -1,7 +1,7 @@
 import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import type { AgentChatPart } from "../../../lib/agent-chat-runtime";
-import { hermesBridgeFilePreview, localVideoFileSrc } from "../../../lib/tauri";
+import { agentFilePreview, localVideoFileSrc } from "../../../lib/tauri";
 import { HoverTip } from "../../ui/HoverTip";
 
 const GENERATED_MEDIA_MARK_CELLS = [
@@ -404,7 +404,7 @@ export function AgentGeneratedImage({
     }
     let cancelled = false;
     setPathPreviewDataUrl(null);
-    hermesBridgeFilePreview(part.path)
+    agentFilePreview(part.path)
       .then((dataUrl) => {
         if (!cancelled) setPathPreviewDataUrl(dataUrl);
       })
@@ -448,7 +448,7 @@ export function AgentGeneratedImage({
   }
   const label = part.name?.trim() || "Generated image";
   // "Open" enlarges filesystem-backed images in the artifact viewer. MCP image
-  // blocks have only inline bytes, so they render as a plain frame; Hermes
+  // blocks have only inline bytes, so they render as a plain frame. Legacy
   // MEDIA references have a path and lazily fetch their preview data url above.
   const image = imageSrc ? (
     <img src={imageSrc} alt={part.prompt} draggable={false} />

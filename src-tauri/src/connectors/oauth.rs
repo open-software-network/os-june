@@ -161,7 +161,7 @@ pub(crate) enum LoopbackPort {
 /// Bind the loopback listener per the port strategy. For candidates, the
 /// first free port wins; every candidate being taken is reported with the
 /// full list so the user can see which local ports the connect needs.
-async fn bind_loopback(port: &LoopbackPort) -> Result<TcpListener, AppError> {
+pub(crate) async fn bind_loopback(port: &LoopbackPort) -> Result<TcpListener, AppError> {
     let bind_failed = |detail: String| {
         AppError::new(
             "connector_loopback_bind_failed",
@@ -384,7 +384,7 @@ pub(crate) static SUCCESS_BODY: LazyLock<String> = LazyLock::new(|| {
 /// Every per-socket read is bounded so a slow client on the loopback port
 /// cannot stall the listener for the full connect timeout. `provider_label`
 /// names the provider in the denial/missing-code error copy.
-async fn await_callback(
+pub(crate) async fn await_callback(
     listener: &TcpListener,
     expected_state: &str,
     provider_label: &str,
@@ -692,13 +692,13 @@ async fn fetch_userinfo_email(access_token: &str) -> Result<String, AppError> {
         .ok_or_else(identity_failed)
 }
 
-fn pkce() -> (String, String) {
+pub(crate) fn pkce() -> (String, String) {
     let verifier = random_b64url(32);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
 }
 
-fn random_b64url(bytes: usize) -> String {
+pub(crate) fn random_b64url(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::thread_rng().fill_bytes(&mut buf);
     URL_SAFE_NO_PAD.encode(&buf)

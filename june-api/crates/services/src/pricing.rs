@@ -1,18 +1,34 @@
 use june_config::{ModelPriceConfig, ModelProvider, ModelType, PriceUnit};
 use june_domain::{Credits, InferencePrivacy, ModelKind, TokenUsage};
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{RwLock, RwLockReadGuard},
+};
 use thiserror::Error;
 
 const RATE_SCALE: u64 = 1_000_000;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PricingTable {
-    models: BTreeMap<String, ModelPriceConfig>,
+    models: RwLock<BTreeMap<String, ModelPriceConfig>>,
 }
 
 impl PricingTable {
     pub fn new(models: BTreeMap<String, ModelPriceConfig>) -> Self {
-        Self { models }
+        Self {
+            models: RwLock::new(models),
+        }
+    }
+
+    /// Atomically swaps the complete model catalog used by both discovery and
+    /// request pricing. In-flight pricing calls finish against either the old
+    /// or new snapshot, never a partially updated table.
+    pub fn replace(&self, models: BTreeMap<String, ModelPriceConfig>) {
+        let mut current = self
+            .models
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *current = models;
     }
 
     pub fn price_audio_seconds(
@@ -20,7 +36,8 @@ impl PricingTable {
         model_id: &str,
         seconds: u64,
     ) -> Result<Credits, PricingError> {
-        let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
+        let models = self.read_models();
+        let model = models.get(model_id).ok_or(PricingError::NotPriced)?;
         if model.unit != PriceUnit::Seconds {
             return Err(PricingError::WrongUnit);
         }
@@ -35,7 +52,8 @@ impl PricingTable {
         model_id: &str,
         usage: TokenUsage,
     ) -> Result<Credits, PricingError> {
-        let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
+        let models = self.read_models();
+        let model = models.get(model_id).ok_or(PricingError::NotPriced)?;
         if model.unit != PriceUnit::Tokens {
             return Err(PricingError::WrongUnit);
         }
@@ -52,17 +70,17 @@ impl PricingTable {
     }
 
     pub fn has_model(&self, model_id: &str) -> bool {
-        self.models.contains_key(model_id)
+        self.read_models().contains_key(model_id)
     }
 
     pub fn is_venice_model(&self, model_id: &str) -> bool {
-        self.models
+        self.read_models()
             .get(model_id)
             .is_some_and(|model| model.provider == ModelProvider::Venice)
     }
 
     pub fn inference_privacy(&self, model_id: &str) -> InferencePrivacy {
-        self.models
+        self.read_models()
             .get(model_id)
             .and_then(|model| model.privacy.as_deref())
             .filter(|privacy| privacy.eq_ignore_ascii_case("anonymized"))
@@ -70,45 +88,45 @@ impl PricingTable {
     }
 
     pub fn ensure_model_kind(&self, model_id: &str, kind: ModelKind) -> Result<(), PricingError> {
-        let model = self.models.get(model_id).ok_or(PricingError::NotPriced)?;
-        if !model_type_matches_kind(model.model_type, kind) {
-            return Err(PricingError::WrongUnit);
-        }
-        match kind {
-            ModelKind::Asr => {
-                if model.unit != PriceUnit::Seconds {
-                    return Err(PricingError::WrongUnit);
-                }
-                model
-                    .credits_per_million_seconds
-                    .ok_or(PricingError::MissingRate)?;
-            }
-            ModelKind::Text => {
-                if model.unit != PriceUnit::Tokens {
-                    return Err(PricingError::WrongUnit);
-                }
-                model
-                    .input_credits_per_million_tokens
-                    .ok_or(PricingError::MissingRate)?;
-                model
-                    .output_credits_per_million_tokens
-                    .ok_or(PricingError::MissingRate)?;
-            }
-        }
-        Ok(())
+        self.priced_model(model_id, kind).map(drop)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &ModelPriceConfig)> {
-        self.models.iter()
+    pub fn priced_model(
+        &self,
+        model_id: &str,
+        kind: ModelKind,
+    ) -> Result<ModelPriceConfig, PricingError> {
+        let models = self.read_models();
+        let model = models.get(model_id).ok_or(PricingError::NotPriced)?;
+        validate_model_kind(model, kind)?;
+        Ok(model.clone())
     }
 
-    pub fn priced_models(&self, kind: Option<ModelKind>) -> Vec<(&String, &ModelPriceConfig)> {
-        self.models
+    pub fn find_priced_model(
+        &self,
+        kind: ModelKind,
+        mut predicate: impl FnMut(&str, &ModelPriceConfig) -> bool,
+    ) -> Option<(String, ModelPriceConfig)> {
+        let models = self.read_models().clone();
+        models.into_iter().find(|(model_id, model)| {
+            validate_model_kind(model, kind).is_ok() && predicate(model_id, model)
+        })
+    }
+
+    pub fn priced_models(&self, kind: Option<ModelKind>) -> Vec<(String, ModelPriceConfig)> {
+        self.read_models()
             .iter()
             .filter(|(_, model)| {
                 kind.is_none_or(|kind| model_type_matches_kind(model.model_type, kind))
             })
+            .map(|(id, model)| (id.clone(), model.clone()))
             .collect()
+    }
+
+    fn read_models(&self) -> RwLockReadGuard<'_, BTreeMap<String, ModelPriceConfig>> {
+        self.models
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn price_scaled<const N: usize>(components: [(u64, u64); N]) -> Result<Credits, PricingError> {
@@ -135,6 +153,34 @@ fn model_type_matches_kind(model_type: ModelType, kind: ModelKind) -> bool {
         (model_type, kind),
         (ModelType::Asr, ModelKind::Asr) | (ModelType::Text, ModelKind::Text)
     )
+}
+
+fn validate_model_kind(model: &ModelPriceConfig, kind: ModelKind) -> Result<(), PricingError> {
+    if !model_type_matches_kind(model.model_type, kind) {
+        return Err(PricingError::WrongUnit);
+    }
+    match kind {
+        ModelKind::Asr => {
+            if model.unit != PriceUnit::Seconds {
+                return Err(PricingError::WrongUnit);
+            }
+            model
+                .credits_per_million_seconds
+                .ok_or(PricingError::MissingRate)?;
+        }
+        ModelKind::Text => {
+            if model.unit != PriceUnit::Tokens {
+                return Err(PricingError::WrongUnit);
+            }
+            model
+                .input_credits_per_million_tokens
+                .ok_or(PricingError::MissingRate)?;
+            model
+                .output_credits_per_million_tokens
+                .ok_or(PricingError::MissingRate)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -356,5 +402,27 @@ mod tests {
         assert!(!table.is_venice_model("openai-asr"));
         assert!(table.is_venice_model("venice-text"));
         assert!(!table.is_venice_model("missing"));
+    }
+
+    #[test]
+    fn replaces_the_catalog_atomically() {
+        let table = PricingTable::new(models([("old", PriceUnit::Tokens, 1, 1, ModelType::Text)]));
+
+        table.replace(models([("new", PriceUnit::Tokens, 2, 3, ModelType::Text)]));
+
+        assert!(!table.has_model("old"));
+        assert!(table.has_model("new"));
+        assert_eq!(
+            table
+                .price_token_usage(
+                    "new",
+                    TokenUsage {
+                        prompt_tokens: 1_000_000,
+                        completion_tokens: 1_000_000,
+                    },
+                )
+                .map(|credits| credits.0),
+            Ok(5)
+        );
     }
 }

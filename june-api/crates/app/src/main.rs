@@ -62,7 +62,15 @@ async fn serve() -> anyhow::Result<()> {
     // file and Issue creation POSTs are not idempotent.
     let issue_report_http =
         issue_report_client(Duration::from_secs(config.server.request_timeout_secs))?;
-    let pricing = load_pricing(&config, upstream_http.clone()).await;
+    let initial_pricing = try_load_pricing(&config, upstream_http.clone())
+        .await
+        .unwrap_or_else(|| configured_pricing(&config));
+    tracing::info!(
+        count = initial_pricing.len(),
+        "loaded initial model catalog"
+    );
+    let pricing = Arc::new(PricingTable::new(initial_pricing));
+    spawn_model_catalog_refresh(&config, upstream_http.clone(), pricing.clone());
     let clients = HttpClients {
         default: &http,
         upstream: &upstream_http,
@@ -103,37 +111,147 @@ async fn serve() -> anyhow::Result<()> {
                 }
             },
         };
-    let app = build_router(&config, clients, pricing, share_store);
+    let companion = load_companion_runtime(&config).await;
+    let app = build_router(
+        &config,
+        clients,
+        pricing,
+        RuntimeStores {
+            share: share_store,
+            companion,
+        },
+    );
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "june-api listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn load_pricing(
+async fn load_companion_runtime(config: &AppConfig) -> CompanionRuntime {
+    let (store, snapshot): (
+        Option<Arc<dyn june_domain::CompanionStore>>,
+        june_domain::CompanionSnapshot,
+    ) = match config.companion.database_url.trim() {
+        "" => {
+            if !config.local_dev.enabled {
+                tracing::warn!(
+                    "companion store not configured; companion relay endpoints disabled"
+                );
+            }
+            (None, june_domain::CompanionSnapshot::default())
+        }
+        database_url => match june_persistence::PgCompanionStore::connect(database_url).await {
+            Ok(store) => match june_domain::CompanionStore::snapshot(&store).await {
+                Ok(snapshot) => {
+                    tracing::info!(
+                        devices = snapshot.devices.len(),
+                        links = snapshot.links.len(),
+                        "companion store connected"
+                    );
+                    (Some(Arc::new(store)), snapshot)
+                }
+                Err(error) => {
+                    tracing::error!(%error, "companion store load failed; relay disabled");
+                    (None, june_domain::CompanionSnapshot::default())
+                }
+            },
+            Err(error) => {
+                tracing::error!(%error, "companion store connection failed; relay disabled");
+                (None, june_domain::CompanionSnapshot::default())
+            }
+        },
+    };
+    let enabled = config.local_dev.enabled || store.is_some();
+    let push = if config.companion.apns_team_id.trim().is_empty()
+        || config.companion.apns_key_id.trim().is_empty()
+        || config.companion.apns_private_key_pem.trim().is_empty()
+        || config.companion.apns_bundle_id.trim().is_empty()
+    {
+        tracing::info!("APNs credentials not configured; opaque companion wakes disabled");
+        None
+    } else {
+        Some(june_api::CompanionPushConfig {
+            team_id: config.companion.apns_team_id.clone(),
+            key_id: config.companion.apns_key_id.clone(),
+            private_key_pem: config.companion.apns_private_key_pem.replace("\\n", "\n"),
+            bundle_id: config.companion.apns_bundle_id.clone(),
+            production: config.companion.apns_production,
+        })
+    };
+    CompanionRuntime {
+        store,
+        snapshot,
+        enabled,
+        push,
+    }
+}
+
+async fn try_load_pricing(
     config: &AppConfig,
     http: reqwest::Client,
-) -> BTreeMap<String, ModelPriceConfig> {
-    let mut pricing = config.pricing.clone();
+) -> Option<BTreeMap<String, ModelPriceConfig>> {
     if !provider_is_configured(config, ModelProvider::Venice) {
         tracing::info!("Venice API key is not configured; skipping Venice model catalog");
-        return pricing;
+        return Some(configured_pricing(config));
     }
     match VeniceModelCatalog::from_config(http, &config.upstreams.venice)
         .priced_models()
         .await
     {
         Ok(models) => {
-            let count = models.len();
+            let mut pricing = config.pricing.clone();
             pricing.extend(models);
             apply_private_route_price_floors(&mut pricing);
-            tracing::info!(count, "loaded Venice model catalog");
+            Some(filter_pricing_for_environment(config, pricing))
         }
         Err(error) => {
-            tracing::warn!(%error, "failed to load Venice model catalog; using configured model pricing only");
+            tracing::warn!(%error, "failed to refresh Venice model catalog; keeping the last known catalog");
+            None
         }
     }
-    pricing
+}
+
+fn configured_pricing(config: &AppConfig) -> BTreeMap<String, ModelPriceConfig> {
+    filter_pricing_for_environment(config, config.pricing.clone())
+}
+
+fn filter_pricing_for_environment(
+    config: &AppConfig,
+    pricing: BTreeMap<String, ModelPriceConfig>,
+) -> BTreeMap<String, ModelPriceConfig> {
+    if config.local_dev.enabled {
+        filter_unconfigured_provider_models(config, pricing)
+    } else {
+        pricing
+    }
+}
+
+fn spawn_model_catalog_refresh(
+    config: &AppConfig,
+    http: reqwest::Client,
+    pricing: Arc<PricingTable>,
+) {
+    if !provider_is_configured(config, ModelProvider::Venice) {
+        return;
+    }
+    let config = config.clone();
+    let refresh_every = Duration::from_secs(config.server.model_catalog_refresh_secs);
+    let task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(refresh_every).await;
+            if let Some(models) = try_load_pricing(&config, http.clone()).await {
+                let count = models.len();
+                pricing.replace(models);
+                tracing::info!(
+                    count,
+                    refresh_secs = refresh_every.as_secs(),
+                    "refreshed model catalog"
+                );
+            }
+        }
+    });
+    // Dropping a Tokio join handle detaches the long-lived refresh task.
+    drop(task);
 }
 
 /// The routed catalog currently reports the cheapest eligible endpoint, while
@@ -174,25 +292,19 @@ fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceCon
 fn build_router(
     config: &AppConfig,
     clients: HttpClients<'_>,
-    mut pricing_config: BTreeMap<String, ModelPriceConfig>,
-    share_store: Option<Arc<dyn june_domain::ShareStore>>,
+    pricing: Arc<PricingTable>,
+    stores: RuntimeStores,
 ) -> axum::Router {
-    if config.local_dev.enabled {
-        pricing_config = filter_unconfigured_provider_models(config, pricing_config);
-    }
-
-    let openai_model_ids = pricing_config
-        .iter()
-        .filter(|(_, model)| model.provider == ModelProvider::Openai)
-        .map(|(model_id, _)| model_id.clone())
-        .collect::<Vec<_>>();
-
-    let pricing = Arc::new(PricingTable::new(pricing_config));
     let os_accounts = build_os_accounts_client(config, clients.default);
+    let routing_pricing = pricing.clone();
     let transcriber: Arc<dyn june_domain::Transcriber> = Arc::new(RoutingTranscriber::from_config(
         clients.upstream.clone(),
         &config.upstreams,
-        openai_model_ids,
+        Arc::new(move |model_id| {
+            routing_pricing
+                .priced_model(model_id, june_domain::ModelKind::Asr)
+                .is_ok_and(|model| model.provider == ModelProvider::Openai)
+        }),
     ));
     // Note generation and agent chat can now run long (streamed/kept-alive
     // responses), so their upstream window must leave the settlement budget
@@ -338,7 +450,7 @@ fn build_router(
         flat_estimate_credits,
     }));
 
-    let share = share_store.map(|store| {
+    let share = stores.share.map(|store| {
         Arc::new(june_services::ShareService::new(
             june_services::ShareServiceDeps {
                 store,
@@ -374,6 +486,10 @@ fn build_router(
         computer_use: config.computer_use.clone(),
         local_dev_enabled: config.local_dev.enabled,
         token_verifier,
+        companion_store: stores.companion.store,
+        companion_snapshot: stores.companion.snapshot,
+        companion_enabled: stores.companion.enabled,
+        companion_push: stores.companion.push,
         note_transcribe,
         note_generate,
         agent_chat,
@@ -412,6 +528,18 @@ fn build_router(
     } else {
         june_api::router(state)
     }
+}
+
+struct CompanionRuntime {
+    store: Option<Arc<dyn june_domain::CompanionStore>>,
+    snapshot: june_domain::CompanionSnapshot,
+    enabled: bool,
+    push: Option<june_api::CompanionPushConfig>,
+}
+
+struct RuntimeStores {
+    share: Option<Arc<dyn june_domain::ShareStore>>,
+    companion: CompanionRuntime,
 }
 
 #[derive(Clone, Copy)]

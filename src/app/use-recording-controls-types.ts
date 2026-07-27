@@ -1,6 +1,6 @@
 import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type Tab } from "./tabs/tabs";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { Tab } from "./tabs/tabs";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type { RecordingSourceMode } from "../lib/tauri";
 import type { NotesAction, NotesState } from "./state/app-state";
@@ -10,7 +10,7 @@ export type UseRecordingControlsDependencies = {
   activeViewRef: React.MutableRefObject<SidebarView>;
   appBlocked: boolean;
   bootstrapped: boolean;
-  crossProfileRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
+  crossPartitionRecordingNoteIdRef: React.MutableRefObject<string | undefined>;
   dispatch: React.Dispatch<NotesAction>;
   finishingSessionsRef: React.MutableRefObject<Set<string>>;
   handleStartAgentRecording: (requestedSourceMode: RecordingSourceMode) => Promise<NoteDto>;

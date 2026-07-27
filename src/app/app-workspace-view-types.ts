@@ -1,17 +1,18 @@
 import type { AgentSessionsListHandle } from "../components/agent/AgentSessionsList";
 import type { ReportCategory } from "../components/agent/composer/reportCategory";
 import type { NotesListHandle } from "../components/notes-list/NotesList";
-import type { SettingsTab } from "../components/settings/settings-config";
+import type { SettingsTab } from "../components/settings/AppSettings";
 import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { TabNav } from "./tabs/tabs";
-import type { LiveTranscriptEventDto, RecoverableRecordingDto } from "../lib/tauri";
 import type {
   AccountStatus,
   FolderDto,
-  HermesSessionInfo,
+  LiveTranscriptEventDto,
   NoteDto,
   NoteEditablePatch,
+  RecoverableRecordingDto,
 } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import type { JuneUpdate } from "../lib/updater";
 import type { UpdateCheckMode, UpdatePromptPayload } from "./update-decision";
@@ -22,14 +23,15 @@ export type RenderAppWorkspaceDependencies = {
   accessibilityStatus: string | undefined;
   account: AccountStatus;
   accountLoading: boolean;
+  currentDataPartitionName: string;
   activeAgentSessionFolder: FolderDto | undefined;
   activeAgentSessionId: string | undefined;
-  activeAgentSessionSeed: HermesSessionInfo | undefined;
+  activeAgentSessionSeed: AgentSessionDto | undefined;
   activeView: SidebarView;
   agentOrigin: { kind: "project"; folderId: string } | { kind: "routines" } | undefined;
   agentOriginFolder: FolderDto | undefined;
   agentProjectContextFolder: FolderDto | undefined;
-  agentSessions: HermesSessionInfo[];
+  agentSessions: AgentSessionDto[];
   agentSessionsListRef: React.MutableRefObject<AgentSessionsListHandle | null>;
   agentWaitingSessionIds: ReadonlySet<string>;
   agentWorkingSessionIds: ReadonlySet<string>;
@@ -100,6 +102,7 @@ export type RenderAppWorkspaceDependencies = {
   handleToggleSessionCompleted: (sessionId: string, completed: boolean) => Promise<void>;
   handleTopUp: () => void;
   handleUpdateNote: (noteId: string, patch: NoteEditablePatch) => void;
+  homeStoredSessionId: string | undefined;
   memoryFolderFilter: string | undefined;
   meetingEndCountdown: { sessionId: string; secondsRemaining: number } | null;
   microphoneBlocked: boolean;
@@ -117,13 +120,14 @@ export type RenderAppWorkspaceDependencies = {
   recordingNoteId: string | undefined;
   refreshAccount: () => Promise<AccountStatus | undefined>;
   refreshFundingAccount: () => Promise<AccountStatus | undefined>;
+  rememberHomeSession: (sessionId: string) => void;
   runUpdateCheck: (mode: UpdateCheckMode, check?: () => Promise<JuneUpdate | null>) => void;
   selectedNote: NoteDto | undefined;
   selectedNoteId: string | undefined;
   selectedNoteLiveTranscript: LiveTranscriptEventDto[];
   selectedRecovery: RecoverableRecordingDto | undefined;
   sessionFolders: Record<string, string[]>;
-  setActiveAgentSession: (session: HermesSessionInfo | undefined) => void;
+  setActiveAgentSession: (session: AgentSessionDto | undefined) => void;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
   setAgentOrigin: React.Dispatch<
     React.SetStateAction<{ kind: "project"; folderId: string } | { kind: "routines" } | undefined>

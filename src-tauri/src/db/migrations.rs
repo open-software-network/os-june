@@ -6,6 +6,10 @@ use sqlx_sqlite::{SqlitePool, SqliteTransaction};
 
 const SCHEMA_MIGRATIONS_TABLE: &str = "schema_migrations";
 
+const LEGACY_PENDING_COMPANION_MESSAGE: &str =
+    "This request may already have reached June. Check your Mac before trying a different request.";
+const OUTCOME_UNKNOWN_COMPANION_MESSAGE: &str = "This request may already have reached June. Check your Mac, then choose the action again only if it is still needed.";
+
 #[derive(Clone, Copy)]
 struct ColumnDefinition {
     name: &'static str,
@@ -146,6 +150,26 @@ const PROFILE_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 }];
 const ROUTINE_APPROVAL_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "approval_since",
+    definition: "TEXT",
+}];
+const ROUTINE_TOOL_CATALOG_VERSION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "tool_catalog_version",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+}];
+const AGENT_RUN_MCP_SNAPSHOT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "mcp_policy_snapshotted",
+    definition: "INTEGER NOT NULL DEFAULT 0",
+}];
+const AGENT_RUN_SKILLS_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "enabled_skills_json",
+    definition: "TEXT NOT NULL DEFAULT '[]'",
+}];
+const AGENT_RUN_REASONING_EFFORT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "reasoning_effort",
+    definition: "TEXT",
+}];
+const AGENT_RUN_CONFIG_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "run_config_json",
     definition: "TEXT",
 }];
 const FOLDER_MEMORY_COLUMNS: &[ColumnDefinition] = &[
@@ -793,6 +817,419 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 32,
+        name: "agent_runtime",
+        requirements: &[
+            SchemaRequirement::Table("agent_sessions"),
+            SchemaRequirement::Table("agent_runs"),
+            SchemaRequirement::Table("agent_items"),
+            SchemaRequirement::Table("agent_artifacts"),
+            SchemaRequirement::Table("agent_skill_settings"),
+            SchemaRequirement::Table("agent_migration_manifests"),
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "title",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "model",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "safety_mode",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "workspace_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "source",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_sessions",
+                column: "last_error",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "model",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "started_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "usage_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "interrupted_state_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "last_sequence",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "error_code",
+            },
+            SchemaRequirement::Column {
+                table: "agent_runs",
+                column: "error_message",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "run_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "sequence",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "kind",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "payload_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "external_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_items",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "run_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "item_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "provenance",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "action",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "original_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "mime_type",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "size_bytes",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "available",
+            },
+            SchemaRequirement::Column {
+                table: "agent_artifacts",
+                column: "created_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "skill_id",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "enabled",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "managed",
+            },
+            SchemaRequirement::Column {
+                table: "agent_skill_settings",
+                column: "updated_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "migration_key",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_path",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_fingerprint",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "status",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "source_counts_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "imported_counts_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "skipped_count",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "errors_json",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "started_at",
+            },
+            SchemaRequirement::Column {
+                table: "agent_migration_manifests",
+                column: "completed_at",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "session_id",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "folder_id",
+            },
+            SchemaRequirement::Column {
+                table: "session_folders",
+                column: "assigned_at",
+            },
+            SchemaRequirement::Index("idx_agent_sessions_updated_at"),
+            SchemaRequirement::Index("idx_agent_sessions_status"),
+            SchemaRequirement::Index("idx_agent_runs_session_started"),
+            SchemaRequirement::Index("idx_agent_runs_status"),
+            SchemaRequirement::Index("idx_agent_items_session_sequence"),
+            SchemaRequirement::Index("idx_agent_items_external_id"),
+            SchemaRequirement::Index("idx_agent_artifacts_session_created"),
+            SchemaRequirement::Index("idx_session_folders_folder"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/025_agent_runtime.sql"
+        ))],
+    },
+    Migration {
+        version: 33,
+        name: "agent_routines",
+        requirements: &[
+            SchemaRequirement::Table("routines"),
+            SchemaRequirement::Table("routine_runs"),
+            SchemaRequirement::Index("idx_routines_due"),
+            SchemaRequirement::Index("idx_routines_claim"),
+            SchemaRequirement::Index("idx_routine_runs_routine_started"),
+            SchemaRequirement::Index("idx_routine_runs_active"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/026_routines.sql"
+        ))],
+    },
+    Migration {
+        version: 34,
+        name: "agent_mcp",
+        requirements: &[
+            SchemaRequirement::Table("agent_mcp_servers"),
+            SchemaRequirement::Index("idx_agent_mcp_servers_enabled"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/027_agent_mcp.sql"
+        ))],
+    },
+    Migration {
+        version: 35,
+        name: "agent_run_mcp_policy",
+        requirements: &[
+            SchemaRequirement::Table("agent_run_mcp_policies"),
+            SchemaRequirement::Index("idx_agent_run_mcp_policies_run"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/028_agent_run_mcp_policy.sql"
+        ))],
+    },
+    Migration {
+        version: 36,
+        name: "routine_tool_catalog_version",
+        requirements: &[SchemaRequirement::Column {
+            table: "routines",
+            column: "tool_catalog_version",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "routines",
+            columns: ROUTINE_TOOL_CATALOG_VERSION_COLUMN,
+        }],
+    },
+    Migration {
+        version: 37,
+        name: "agent_run_mcp_snapshot",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "mcp_policy_snapshotted",
+        }],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "agent_runs",
+                columns: AGENT_RUN_MCP_SNAPSHOT_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/029_agent_run_mcp_snapshot.sql"
+            )),
+        ],
+    },
+    Migration {
+        version: 38,
+        name: "agent_run_skills",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "enabled_skills_json",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "agent_runs",
+            columns: AGENT_RUN_SKILLS_COLUMN,
+        }],
+    },
+    Migration {
+        version: 39,
+        name: "agent_run_reasoning_effort",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "reasoning_effort",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "agent_runs",
+            columns: AGENT_RUN_REASONING_EFFORT_COLUMN,
+        }],
+    },
+    Migration {
+        version: 40,
+        name: "agent_run_config",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_runs",
+            column: "run_config_json",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "agent_runs",
+            columns: AGENT_RUN_CONFIG_COLUMN,
+        }],
+    },
+    Migration {
+        version: 41,
+        name: "companion_devices",
+        requirements: &[SchemaRequirement::Table("companion_devices")],
+        steps: &[
+            // Compare-and-swap revision for remote-safe note edits: linked
+            // devices must never overwrite newer local edits (ADR-0048).
+            MigrationStep::EnsureColumns {
+                table: "notes",
+                columns: NOTE_REVISION_COLUMN,
+            },
+            MigrationStep::Sql(include_str!("../../migrations/030_companion.sql")),
+        ],
+    },
+    Migration {
+        version: 42,
+        name: "companion_account_scope",
+        requirements: &[SchemaRequirement::Column {
+            table: "companion_devices",
+            column: "account_user_id",
+        }],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "companion_devices",
+                columns: COMPANION_ACCOUNT_USER_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/031_companion_account_scope.sql"
+            )),
+        ],
+    },
+    Migration {
+        version: 43,
+        name: "companion_operation_state",
+        requirements: &[SchemaRequirement::Table("companion_account_state")],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "companion_operations",
+                columns: COMPANION_OPERATION_STATE_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/032_companion_operation_state.sql"
+            )),
+        ],
+    },
+    // Renumbered from 32 when main advanced past it — positions here are
+    // shipped schema versions, so the branch's migration appends after
+    // everything main has already stamped (ADR-0037: append-only).
+    Migration {
+        version: 44,
         name: "meeting_recording_origin",
         requirements: &[
             SchemaRequirement::Column {
@@ -814,6 +1251,19 @@ const MIGRATIONS: &[Migration] = &[
         }],
     },
 ];
+
+const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "revision",
+    definition: "INTEGER NOT NULL DEFAULT 1",
+}];
+const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "account_user_id",
+    definition: "TEXT NOT NULL DEFAULT ''",
+}];
+const COMPANION_OPERATION_STATE_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "operation_state",
+    definition: "TEXT NOT NULL DEFAULT 'completed'",
+}];
 
 struct AppliedMigration {
     version: i64,
@@ -886,7 +1336,62 @@ impl SchemaSnapshot {
 }
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    run_migration_catalog(pool, MIGRATIONS).await
+    run_migration_catalog(pool, MIGRATIONS).await?;
+    // Prerelease companion builds recorded outcome-unknown mutations as
+    // retryable 'completed' busy responses. Rewriting them to non-retryable
+    // pending reservations must survive re-runs, so it stays outside the
+    // one-shot catalog and matches nothing once every legacy row is rewritten.
+    migrate_legacy_companion_reservations(pool).await
+}
+
+async fn migrate_legacy_companion_reservations(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::error::Error> {
+    use june_companion_protocol::{FailureCode, ResultPayload};
+
+    let rows = query(
+        "SELECT device_id, operation_id, response
+         FROM companion_operations
+         WHERE operation_state = 'completed'
+           AND instr(CAST(response AS TEXT), ?) > 0",
+    )
+    .bind(LEGACY_PENDING_COMPANION_MESSAGE)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let encoded: Vec<u8> = row.get("response");
+        let Ok(mut response) =
+            serde_json::from_slice::<june_companion_protocol::Response>(&encoded)
+        else {
+            continue;
+        };
+        let ResultPayload::Error(failure) = &mut response.result else {
+            continue;
+        };
+        if failure.code != FailureCode::Busy
+            || !failure.retryable
+            || failure.message != LEGACY_PENDING_COMPANION_MESSAGE
+        {
+            continue;
+        }
+        failure.code = FailureCode::OutcomeUnknown;
+        failure.message = OUTCOME_UNKNOWN_COMPANION_MESSAGE.to_string();
+        failure.retryable = false;
+        let Ok(encoded) = serde_json::to_vec(&response) else {
+            continue;
+        };
+        query(
+            "UPDATE companion_operations
+             SET operation_state = 'pending', response = ?
+             WHERE device_id = ? AND operation_id = ?",
+        )
+        .bind(encoded)
+        .bind(row.get::<String, _>("device_id"))
+        .bind(row.get::<String, _>("operation_id"))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn run_migration_catalog(
@@ -896,9 +1401,14 @@ async fn run_migration_catalog(
     validate_catalog(migrations)?;
 
     if let Some(applied) = read_applied_migrations_from_pool(pool).await? {
-        let current = validate_applied_migrations(&applied, migrations)?;
-        if current == migrations.len() {
-            return Ok(());
+        if is_prerelease_agent_runtime_stamp(&applied, migrations) {
+            // Repair needs the same write lock and transaction as a normal
+            // migration, so continue into migrate_locked.
+        } else {
+            let current = validate_applied_migrations(&applied, migrations)?;
+            if current == migrations.len() {
+                return Ok(());
+            }
         }
     }
 
@@ -921,17 +1431,34 @@ async fn migrate_locked(
     transaction: &mut SqliteTransaction<'_>,
     migrations: &[Migration],
 ) -> Result<(), sqlx::Error> {
-    let applied = read_applied_migrations_from_transaction(transaction).await?;
+    let mut applied = read_applied_migrations_from_transaction(transaction).await?;
+    if let Some(ref stamped) = applied {
+        if repair_prerelease_agent_runtime_stamp(transaction, stamped, migrations).await? {
+            applied = read_applied_migrations_from_transaction(transaction).await?;
+        }
+    }
     let current = match applied {
         Some(ref applied) if !applied.is_empty() => {
             validate_applied_migrations(applied, migrations)?
         }
         _ => {
             let snapshot = SchemaSnapshot::load(transaction).await?;
-            let detected = detect_legacy_version(&snapshot, migrations)?;
-            create_schema_migrations_table(transaction).await?;
-            stamp_legacy_migrations(transaction, &migrations[..detected]).await?;
-            detected
+            if adopt_prerelease_agent_runtime_schema(transaction, &snapshot, migrations).await? {
+                migrations
+                    .iter()
+                    .position(|migration| migration.name == "agent_runtime")
+                    .map(|index| index + 1)
+                    .ok_or_else(|| {
+                        sqlx::Error::Protocol(
+                            "adopted agent runtime is missing from migration catalog".into(),
+                        )
+                    })?
+            } else {
+                let detected = detect_legacy_version(&snapshot, migrations)?;
+                create_schema_migrations_table(transaction).await?;
+                stamp_legacy_migrations(transaction, &migrations[..detected]).await?;
+                detected
+            }
         }
     };
 
@@ -953,6 +1480,174 @@ async fn migrate_locked(
     }
 
     Ok(())
+}
+
+async fn repair_prerelease_agent_runtime_stamp(
+    transaction: &mut SqliteTransaction<'_>,
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+) -> Result<bool, sqlx::Error> {
+    if !is_prerelease_agent_runtime_stamp(applied, migrations) {
+        return Ok(false);
+    }
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return Ok(false);
+    };
+    let runtime = &migrations[runtime_index];
+    // PR #920 prerelease builds stamped the runtime at either version 30 or
+    // version 31 as main appended migrations underneath the branch. The
+    // released runtime belongs at version 32. Preserve main's release order
+    // and adopt the already-installed runtime without replaying its SQL.
+    let displaced_index = applied
+        .last()
+        .and_then(|last| usize::try_from(last.version).ok())
+        .and_then(|version| version.checked_sub(1))
+        .ok_or_else(|| {
+            sqlx::Error::Protocol(
+                "agent runtime prerelease repair has no displaced migration".into(),
+            )
+        })?;
+    let displaced = &migrations[displaced_index];
+    let intervening = &migrations[displaced_index + 1..runtime_index];
+
+    validate_applied_migrations(&applied[..displaced_index], migrations)?;
+    let snapshot = SchemaSnapshot::load(transaction).await?;
+    if !runtime
+        .requirements
+        .iter()
+        .copied()
+        .all(|requirement| snapshot.satisfies(requirement))
+    {
+        return Ok(false);
+    }
+
+    apply_migration(transaction, displaced).await?;
+    query(
+        "UPDATE schema_migrations
+         SET name = ?
+         WHERE version = ? AND name = ?",
+    )
+    .bind(displaced.name)
+    .bind(displaced.version)
+    .bind(runtime.name)
+    .execute(&mut **transaction)
+    .await?;
+    for migration in intervening {
+        apply_migration(transaction, migration).await?;
+        stamp_legacy_migrations(transaction, std::slice::from_ref(migration)).await?;
+    }
+    // The prerelease schema already has the complete runtime. Replaying this
+    // SQL would attempt to import tables it retired, so only stamp it after
+    // the requirement check above.
+    stamp_legacy_migrations(transaction, std::slice::from_ref(runtime)).await?;
+    Ok(true)
+}
+
+fn is_prerelease_agent_runtime_stamp(
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+) -> bool {
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return false;
+    };
+    let Some(runtime) = migrations.get(runtime_index) else {
+        return false;
+    };
+    let Some(last) = applied.last() else {
+        return false;
+    };
+    let known_displaced_version =
+        last.version == runtime.version - 2 || last.version == runtime.version - 1;
+    let Some(displaced) = last
+        .version
+        .checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| migrations.get(index))
+    else {
+        return false;
+    };
+    known_displaced_version
+        && matches!(
+            displaced.name,
+            "connector_trigger_uniqueness" | "note_hydration_indexes"
+        )
+        && applied.len() == usize::try_from(last.version).unwrap_or_default()
+        && last.version == displaced.version
+        && last.name == runtime.name
+}
+
+/// The runtime branch was exercised before the version catalog reached those
+/// installs. Its runtime schema is complete, but it has no ledger and can be
+/// missing the two mainline migrations that landed between its old version-30
+/// stamp and the released version-32 runtime. Adopt that exact known shape in
+/// one transaction: prove the historical prefix, apply or stamp the intervening
+/// mainline migrations, then stamp the already-present runtime without replay.
+async fn adopt_prerelease_agent_runtime_schema(
+    transaction: &mut SqliteTransaction<'_>,
+    snapshot: &SchemaSnapshot,
+    migrations: &[Migration],
+) -> Result<bool, sqlx::Error> {
+    let Some(runtime_index) = migrations
+        .iter()
+        .position(|migration| migration.name == "agent_runtime")
+    else {
+        return Ok(false);
+    };
+    let Some(first_intervening_index) = runtime_index.checked_sub(2) else {
+        return Ok(false);
+    };
+    let runtime = &migrations[runtime_index];
+    if !migration_requirements_satisfied(snapshot, runtime) {
+        return Ok(false);
+    }
+
+    // Versions 9 through 11 were retired by the runtime SQL, so their original
+    // landmarks are absent on this one known replacement schema. Every other
+    // earlier migration must still be directly observable.
+    if !migrations[..first_intervening_index]
+        .iter()
+        .all(|migration| legacy_requirement_satisfied(snapshot, migration, true))
+    {
+        return Ok(false);
+    }
+
+    create_schema_migrations_table(transaction).await?;
+    stamp_legacy_migrations(transaction, &migrations[..first_intervening_index]).await?;
+    for migration in &migrations[first_intervening_index..runtime_index] {
+        if !migration_requirements_satisfied(snapshot, migration) {
+            apply_migration(transaction, migration).await?;
+        }
+        stamp_legacy_migrations(transaction, std::slice::from_ref(migration)).await?;
+    }
+    stamp_legacy_migrations(transaction, std::slice::from_ref(runtime)).await?;
+    Ok(true)
+}
+
+fn migration_requirements_satisfied(snapshot: &SchemaSnapshot, migration: &Migration) -> bool {
+    migration
+        .requirements
+        .iter()
+        .copied()
+        .all(|requirement| snapshot.satisfies(requirement))
+}
+
+fn legacy_requirement_satisfied(
+    snapshot: &SchemaSnapshot,
+    migration: &Migration,
+    agent_runtime_installed: bool,
+) -> bool {
+    migration_requirements_satisfied(snapshot, migration)
+        || (agent_runtime_installed
+            && matches!(
+                migration.name,
+                "agent_workspace" | "agent_task_session_identity" | "agent_message_identity"
+            ))
 }
 
 fn validate_catalog(migrations: &[Migration]) -> Result<(), sqlx::Error> {
@@ -1009,12 +1704,47 @@ fn detect_legacy_version(
 
     let mut detected = 0;
     let mut first_missing: Option<&Migration> = None;
+    // The first June-owned agent runtime migration intentionally retires the
+    // three Hermes-era agent tables after importing them. Builds that shipped
+    // that migration before the version catalog landed therefore have a
+    // complete, unversioned runtime schema where migrations 9 through 11 are
+    // no longer directly observable. Treat those retired requirements as
+    // satisfied only when the complete replacement schema is present. Every
+    // unrelated historical requirement is still checked normally.
+    let agent_runtime_installed = migrations
+        .iter()
+        .find(|migration| migration.name == "agent_runtime")
+        .is_some_and(|migration| {
+            migration
+                .requirements
+                .iter()
+                .copied()
+                .all(|requirement| snapshot.satisfies(requirement))
+        });
+    let agent_runtime_tables_present = migrations
+        .iter()
+        .find(|migration| migration.name == "agent_runtime")
+        .is_some_and(|migration| {
+            migration.requirements.iter().any(|requirement| {
+                matches!(*requirement, SchemaRequirement::Table(table) if snapshot.tables.contains(table))
+            })
+        });
+    if agent_runtime_tables_present && !agent_runtime_installed {
+        return Err(sqlx::Error::Protocol(
+            "unversioned database contains an incomplete June agent runtime schema".to_string(),
+        ));
+    }
     for migration in migrations {
         let applied = migration
             .requirements
             .iter()
             .copied()
-            .all(|requirement| snapshot.satisfies(requirement));
+            .all(|requirement| snapshot.satisfies(requirement))
+            || (agent_runtime_installed
+                && matches!(
+                    migration.name,
+                    "agent_workspace" | "agent_task_session_identity" | "agent_message_identity"
+                ));
         if applied {
             if let Some(missing) = first_missing {
                 return Err(sqlx::Error::Protocol(format!(
@@ -1288,6 +2018,39 @@ mod tests {
         .expect("delete guard");
     }
 
+    async fn install_runtime_non_replay_guard(pool: &SqlitePool) {
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES ('session', 'title', 'idle', 'auto', 'sandboxed', 'user', 'now', 'now')",
+        )
+        .execute(pool)
+        .await
+        .expect("agent session");
+        for (sequence, id) in ["message-1", "message-2"].into_iter().enumerate() {
+            query(
+                "INSERT INTO agent_items (
+                    id, session_id, sequence, kind, payload_json, created_at
+                 ) VALUES (?, 'session', ?, 'assistant_message', '{}', 'now')",
+            )
+            .bind(id)
+            .bind(sequence as i64)
+            .execute(pool)
+            .await
+            .expect("runtime message");
+        }
+        query(
+            "CREATE TRIGGER reject_agent_runtime_replay
+             BEFORE DELETE ON agent_items
+             BEGIN
+               SELECT RAISE(ABORT, 'destructive runtime migration replayed');
+             END",
+        )
+        .execute(pool)
+        .await
+        .expect("runtime delete guard");
+    }
+
     async fn assert_latest_stamp(pool: &SqlitePool) {
         let row = query(
             "SELECT COUNT(*) AS count, MAX(version) AS version
@@ -1374,6 +2137,159 @@ mod tests {
         assert_latest_stamp(&pool).await;
     }
 
+    #[tokio::test]
+    async fn prerelease_agent_runtime_stamp_repairs_without_replaying_runtime_migration() {
+        let pool = test_pool().await;
+        run_migrations(&pool).await.expect("current schema");
+        install_runtime_non_replay_guard(&pool).await;
+        query("DROP INDEX idx_connector_triggers_job_id_unique")
+            .execute(&pool)
+            .await
+            .expect("restore pre-uniqueness index state");
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            query(&format!("DROP INDEX {index}"))
+                .execute(&pool)
+                .await
+                .expect("restore pre-hydration index state");
+        }
+        for (id, created_at) in [
+            ("trigger-old", "2026-07-24T08:00:00Z"),
+            ("trigger-new", "2026-07-24T09:00:00Z"),
+        ] {
+            query(
+                "INSERT INTO connector_triggers
+                 (id, job_id, kind, account_id, config, created_at)
+                 VALUES (?, 'job-1', 'email_received', 'user@example.com', '{}', ?)",
+            )
+            .bind(id)
+            .bind(created_at)
+            .execute(&pool)
+            .await
+            .expect("legacy duplicate trigger");
+        }
+        query("DELETE FROM schema_migrations WHERE version >= 31")
+            .execute(&pool)
+            .await
+            .expect("remove corrected runtime stamp");
+        query(
+            "UPDATE schema_migrations
+             SET name = 'agent_runtime'
+             WHERE version = 30",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore prerelease runtime stamp");
+
+        run_migrations(&pool)
+            .await
+            .expect("repair prerelease migration stamps");
+
+        let item_count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved runtime messages")
+            .get("count");
+        assert_eq!(item_count, 2);
+        let trigger_id: String = query("SELECT id FROM connector_triggers WHERE job_id = 'job-1'")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved newest trigger")
+            .get("id");
+        assert_eq!(trigger_id, "trigger-new");
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_version_31_runtime_stamp_repairs_hydration_indexes() {
+        let pool = test_pool().await;
+        run_migrations(&pool).await.expect("current schema");
+        install_runtime_non_replay_guard(&pool).await;
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            query(&format!("DROP INDEX {index}"))
+                .execute(&pool)
+                .await
+                .expect("restore pre-hydration index state");
+        }
+        query("DELETE FROM schema_migrations WHERE version >= 32")
+            .execute(&pool)
+            .await
+            .expect("remove corrected runtime stamp");
+        query(
+            "UPDATE schema_migrations
+             SET name = 'agent_runtime'
+             WHERE version = 31",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore later prerelease runtime stamp");
+
+        run_migrations(&pool)
+            .await
+            .expect("repair version 31 prerelease migration stamp");
+
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            let present: i64 = query(
+                "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name = ?",
+            )
+            .bind(index)
+            .fetch_one(&pool)
+            .await
+            .expect("hydration index lookup")
+            .get("count");
+            assert_eq!(present, 1, "{index} should be restored");
+        }
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn unversioned_prerelease_runtime_adopts_intervening_migrations_without_replay() {
+        let pool = test_pool().await;
+        run_migrations(&pool).await.expect("current schema");
+        install_runtime_non_replay_guard(&pool).await;
+        query("DROP INDEX idx_connector_triggers_job_id_unique")
+            .execute(&pool)
+            .await
+            .expect("restore pre-uniqueness index state");
+        for index in [
+            "idx_audio_artifacts_note_status_created_at",
+            "idx_transcripts_note_created_at",
+            "idx_recording_checkpoints_session_kind_created_at",
+        ] {
+            query(&format!("DROP INDEX {index}"))
+                .execute(&pool)
+                .await
+                .expect("restore pre-hydration index state");
+        }
+        query("DROP TABLE schema_migrations")
+            .execute(&pool)
+            .await
+            .expect("remove version table");
+
+        run_migrations(&pool)
+            .await
+            .expect("adopt prerelease runtime schema");
+
+        let item_count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved runtime messages")
+            .get("count");
+        assert_eq!(item_count, 2);
+        assert_latest_stamp(&pool).await;
+    }
+
     #[test]
     fn catalog_rejects_migrations_without_legacy_requirements() {
         let error = validate_catalog(EMPTY_REQUIREMENTS_MIGRATIONS)
@@ -1386,7 +2302,7 @@ mod tests {
     async fn current_replay_database_is_stamped_without_replaying_sql() {
         let pool = test_pool().await;
         run_migrations(&pool).await.expect("build current schema");
-        install_non_replay_guard(&pool).await;
+        install_runtime_non_replay_guard(&pool).await;
         query("DROP TABLE schema_migrations")
             .execute(&pool)
             .await
@@ -1396,12 +2312,154 @@ mod tests {
             .await
             .expect("stamp current replay database");
 
-        let count: i64 = query("SELECT COUNT(*) AS count FROM agent_messages")
+        let count: i64 = query("SELECT COUNT(*) AS count FROM agent_items")
             .fetch_one(&pool)
             .await
-            .expect("agent messages")
+            .expect("runtime messages")
             .get("count");
         assert_eq!(count, 2);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_routine_catalog_rows_are_preserved_and_marked_legacy() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..35])
+            .await
+            .expect("prerelease routine schema");
+        query("ALTER TABLE routines DROP COLUMN tool_catalog_version")
+            .execute(&pool)
+            .await
+            .expect("recreate prerelease catalog shape");
+        query(
+            "INSERT INTO routines (
+                id, name, prompt, schedule, timezone, repeat, deliver, model,
+                safety_mode, state, enabled, created_at, updated_at, metadata_json
+             ) VALUES (
+                'routine-prerelease', 'Daily recap', 'Recap my day', '@daily',
+                'UTC', 'forever', 'local', 'auto', 'sandboxed', 'scheduled', 1,
+                'now', 'now', '{}'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease routine");
+
+        run_migrations(&pool)
+            .await
+            .expect("upgrade prerelease routine schema");
+        run_migrations(&pool)
+            .await
+            .expect("idempotent routine catalog upgrade");
+
+        let row = query(
+            "SELECT name, tool_catalog_version
+             FROM routines
+             WHERE id = 'routine-prerelease'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved routine");
+        assert_eq!(row.get::<String, _>("name"), "Daily recap");
+        assert_eq!(row.get::<i64, _>("tool_catalog_version"), 0);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn prerelease_agent_runs_get_an_immutable_mcp_snapshot_marker() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..36])
+            .await
+            .expect("prerelease MCP policy schema");
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES (
+                'session-prerelease', 'Existing session', 'idle', 'auto',
+                'sandboxed', 'user', 'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease session");
+        query(
+            "INSERT INTO agent_runs (
+                id, session_id, status, model, started_at, updated_at
+             ) VALUES (
+                'run-prerelease', 'session-prerelease', 'interrupted', 'auto',
+                'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease run");
+        query("ALTER TABLE agent_runs DROP COLUMN mcp_policy_snapshotted")
+            .execute(&pool)
+            .await
+            .expect("recreate prerelease run shape");
+
+        run_migrations(&pool)
+            .await
+            .expect("upgrade prerelease MCP snapshot schema");
+        run_migrations(&pool)
+            .await
+            .expect("idempotent MCP snapshot upgrade");
+
+        let snapshotted: i64 = query(
+            "SELECT mcp_policy_snapshotted
+             FROM agent_runs
+             WHERE id = 'run-prerelease'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved run")
+        .get("mcp_policy_snapshotted");
+        assert_eq!(snapshotted, 1);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_prerelease_runs_gain_nullable_durable_run_configuration() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..39])
+            .await
+            .expect("migration 39 schema");
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES (
+                'session-config', 'Waiting session', 'waiting_for_user', 'auto',
+                'sandboxed', 'routine', 'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease session");
+        query(
+            "INSERT INTO agent_runs (
+                id, session_id, status, model, started_at, updated_at
+             ) VALUES (
+                'run-config', 'session-config', 'waiting_for_user', 'auto',
+                'now', 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("prerelease run");
+
+        run_migrations(&pool)
+            .await
+            .expect("add durable run configuration");
+        run_migrations(&pool)
+            .await
+            .expect("idempotent durable run configuration migration");
+
+        let row = query("SELECT status, run_config_json FROM agent_runs WHERE id = 'run-config'")
+            .fetch_one(&pool)
+            .await
+            .expect("preserved run");
+        assert_eq!(row.get::<String, _>("status"), "waiting_for_user");
+        assert_eq!(row.get::<Option<String>, _>("run_config_json"), None);
         assert_latest_stamp(&pool).await;
     }
 

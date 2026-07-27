@@ -3,9 +3,9 @@
     "publisher": "Open Software Network",
     "targets": ["nsis"],
     "resources": {
-      "../.tauri-hermes/hermes": "native/hermes",
+      "../.tauri-agent-runtime/june-agent-runtime.exe": "native/bin/june-agent-runtime.exe",
+      "../.tauri-agent-runtime/june-agent-runtime.exe.sha256": "native/bin/june-agent-runtime.exe.sha256",
       "../extension/dist": "native/extension",
-      "resources/hermes-skills": "native/hermes-skills",
       "native/bin/june-dictation-helper.exe": "native/bin/june-dictation-helper.exe"
     },
     "windows": {

@@ -1,4 +1,4 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import type * as React from "react";
 
 export type UseDictationEventsDependencies = {

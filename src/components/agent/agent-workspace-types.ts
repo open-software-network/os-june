@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import type { AgentProjectContext } from "../../lib/agent-project-context";
-import type { HermesSessionInfo } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 /** Where the session was opened from — rendered as the leading crumbs in the
  * sticky session bar ("Projects / June" or "Agents") with a back arrow. */
 export type AgentWorkspaceOrigin = {
@@ -11,10 +11,16 @@ export type AgentWorkspaceOrigin = {
 };
 
 export type AgentWorkspaceProps = {
-  initialSession?: HermesSessionInfo;
+  initialSession?: AgentSessionDto;
   initialSessionId?: string;
+  /** Persistent relationship-level conversation, distinct from focused sessions. */
+  homeMode?: boolean;
+  /** Best-effort account display name used only for Home's greeting. */
+  homeUserDisplayName?: string;
+  onHomeSessionCreated?: (storedSessionId: string) => void;
+  onOpenHomeTaskSession?: (storedSessionId: string, title: string) => void;
   origin?: AgentWorkspaceOrigin;
-  onSessionSelected?: (session: HermesSessionInfo | undefined) => void;
+  onSessionSelected?: (session: AgentSessionDto | undefined) => void;
   onTopUp?: () => void | Promise<void>;
   topUpLabel?: string;
   /** Whether the active session is filed in a project — drives the session
