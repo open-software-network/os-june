@@ -14,7 +14,7 @@ pub struct AgentRepository {
 }
 
 pub(crate) enum ContextSummaryReplacement {
-    Applied(AgentItemDto),
+    Applied(Box<AgentItemDto>),
     Noop,
     Conflict,
 }
@@ -705,7 +705,7 @@ impl AgentRepository {
             )
             .await?
         {
-            ContextSummaryReplacement::Applied(item) => Ok(Some(item)),
+            ContextSummaryReplacement::Applied(item) => Ok(Some(*item)),
             ContextSummaryReplacement::Noop | ContextSummaryReplacement::Conflict => Ok(None),
         }
     }
@@ -835,7 +835,7 @@ impl AgentRepository {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
-        Ok(ContextSummaryReplacement::Applied(AgentItemDto {
+        Ok(ContextSummaryReplacement::Applied(Box::new(AgentItemDto {
             id,
             session_id: session_id.to_string(),
             run_id: Some(run_id.to_string()),
@@ -843,7 +843,7 @@ impl AgentRepository {
             payload,
             external_id: Some(format!("context-summary:{run_id}")),
             created_at,
-        }))
+        })))
     }
 
     pub async fn update_run_status(
