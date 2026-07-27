@@ -247,7 +247,11 @@ impl Controller {
                     })?;
                 ControllerOutcome::Immediate(response(
                     capability,
-                    ResultPayload::Device(device_self(device)?),
+                    ResultPayload::Device(device_self(
+                        device,
+                        app.state::<super::CompanionRuntime>()
+                            .desktop_display_name(),
+                    )?),
                 ))
             }
             Body::DeviceRevokeSelf => {
@@ -619,12 +623,16 @@ fn protocol_style(style: DesktopDictationStyle) -> DictationStyle {
     }
 }
 
-fn device_self(device: CompanionDeviceRecord) -> Result<DeviceSelf, AppError> {
+fn device_self(
+    device: CompanionDeviceRecord,
+    desktop_display_name: String,
+) -> Result<DeviceSelf, AppError> {
     Ok(DeviceSelf {
         device_id: device.id.parse().map_err(|_| {
             AppError::new("companion_device_invalid", "Linked device id is invalid.")
         })?,
         display_name: device.display_name,
+        desktop_display_name: Some(desktop_display_name),
         linked_at: device.linked_at,
         last_seen_at: device.last_seen_at,
         revoked_at: device.revoked_at,
@@ -700,6 +708,26 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn device_self_includes_the_cached_desktop_name() {
+        let device = CompanionDeviceRecord {
+            id: Uuid::nil().to_string(),
+            display_name: "Phone".to_string(),
+            public_key: vec![1_u8; 32],
+            linked_at: "2026-07-27T12:00:00Z".to_string(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+
+        let projected = device_self(device, "Studio Mac".to_string()).unwrap();
+
+        assert_eq!(projected.display_name, "Phone");
+        assert_eq!(
+            projected.desktop_display_name.as_deref(),
+            Some("Studio Mac")
+        );
     }
 
     #[test]

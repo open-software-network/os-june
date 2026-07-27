@@ -7,7 +7,9 @@ use base64::{
     Engine as _,
 };
 use june_companion_crypto::{generate_identity, KEY_BYTES};
-use june_companion_protocol::{AgentStatus, Capability, Event, ResultPayload, MAX_TEXT_BYTES};
+use june_companion_protocol::{
+    AgentStatus, Capability, Event, ResultPayload, MAX_DEVICE_DISPLAY_NAME_BYTES, MAX_TEXT_BYTES,
+};
 use rand::{rngs::OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,7 +28,6 @@ use uuid::Uuid;
 pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendIntent};
 
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
-const MAX_DEVICE_NAME_BYTES: usize = 128;
 const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 
@@ -45,6 +46,7 @@ pub struct CompanionRuntime {
     account_activity: AtomicUsize,
     account_activity_changed: Notify,
     effective_enabled: OnceLock<bool>,
+    desktop_display_name: OnceLock<String>,
 }
 
 impl Default for CompanionRuntime {
@@ -64,6 +66,7 @@ impl Default for CompanionRuntime {
             account_activity: AtomicUsize::new(0),
             account_activity_changed: Notify::new(),
             effective_enabled: OnceLock::new(),
+            desktop_display_name: OnceLock::new(),
         }
     }
 }
@@ -75,6 +78,19 @@ impl CompanionRuntime {
 
     fn effective_enabled(&self) -> bool {
         self.effective_enabled.get().copied().unwrap_or(false)
+    }
+
+    fn latch_desktop_display_name(&self, display_name: String) -> &str {
+        self.desktop_display_name
+            .get_or_init(|| display_name)
+            .as_str()
+    }
+
+    pub(super) fn desktop_display_name(&self) -> String {
+        self.desktop_display_name
+            .get()
+            .cloned()
+            .unwrap_or_else(default_desktop_display_name)
     }
 }
 
@@ -218,16 +234,8 @@ pub async fn companion_begin_pairing(
     let identity = load_or_create_identity(&account_user_id)?;
     let mut secret = [0_u8; KEY_BYTES];
     OsRng.fill_bytes(&mut secret);
-    let status: PairingStatus = companion_post(
-        "/v1/companion/pairings",
-        &CreatePairingRequest {
-            desktop_device_id: identity.device_id,
-            desktop_public_key: identity.public_key()?.to_vec(),
-            display_name: desktop_display_name(),
-            pairing_proof: Sha256::digest(secret).to_vec(),
-        },
-    )
-    .await?;
+    let request = create_pairing_request(&runtime, &identity, &secret)?;
+    let status: PairingStatus = companion_post("/v1/companion/pairings", &request).await?;
     remember_pending_pairing(
         &runtime,
         status.pairing_id,
@@ -565,7 +573,7 @@ pub async fn companion_rename_device(
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
     let name = request.display_name.trim();
-    if name.is_empty() || name.len() > MAX_DEVICE_NAME_BYTES {
+    if name.is_empty() || name.len() > MAX_DEVICE_DISPLAY_NAME_BYTES {
         return Err(AppError::new(
             "companion_device_name_invalid",
             "Enter a shorter device name.",
@@ -810,8 +818,9 @@ pub async fn companion_publish_agent_event(
 
 pub fn setup(app: &AppHandle) {
     let stored_enabled = crate::experimental_settings::companion_pairing_enabled(app);
-    app.state::<CompanionRuntime>()
-        .latch_effective_enabled(stored_enabled);
+    let runtime = app.state::<CompanionRuntime>();
+    runtime.latch_effective_enabled(stored_enabled);
+    runtime.latch_desktop_display_name(resolve_desktop_display_name());
     start(app);
 }
 
@@ -974,7 +983,20 @@ fn finish_pairing(runtime: &CompanionRuntime, pairing_id: Uuid) {
     }
 }
 
-fn desktop_display_name() -> String {
+fn create_pairing_request(
+    runtime: &CompanionRuntime,
+    identity: &StoredIdentity,
+    secret: &[u8; KEY_BYTES],
+) -> Result<CreatePairingRequest, AppError> {
+    Ok(CreatePairingRequest {
+        desktop_device_id: identity.device_id,
+        desktop_public_key: identity.public_key()?.to_vec(),
+        display_name: runtime.desktop_display_name(),
+        pairing_proof: Sha256::digest(secret).to_vec(),
+    })
+}
+
+fn resolve_desktop_display_name() -> String {
     #[cfg(target_os = "macos")]
     if let Ok(output) = std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
@@ -989,10 +1011,18 @@ fn desktop_display_name() -> String {
             return name;
         }
     }
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .and_then(|value| normalized_device_name(&value))
-        .unwrap_or_else(|| "June on Mac".to_string())
+    ["COMPUTERNAME", "HOSTNAME"]
+        .into_iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .and_then(|value| normalized_device_name(&value))
+        })
+        .unwrap_or_else(default_desktop_display_name)
+}
+
+fn default_desktop_display_name() -> String {
+    "June on Mac".to_string()
 }
 
 fn normalized_device_name(value: &str) -> Option<String> {
@@ -1000,7 +1030,7 @@ fn normalized_device_name(value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    let mut end = value.len().min(MAX_DEVICE_NAME_BYTES);
+    let mut end = value.len().min(MAX_DEVICE_DISPLAY_NAME_BYTES);
     while !value.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
@@ -1313,16 +1343,37 @@ mod tests {
         );
         assert_eq!(normalized_device_name("  "), None);
 
-        let oversized = "a".repeat(MAX_DEVICE_NAME_BYTES + 1);
+        let oversized = "a".repeat(MAX_DEVICE_DISPLAY_NAME_BYTES + 1);
         assert_eq!(
             normalized_device_name(&oversized).unwrap().len(),
-            MAX_DEVICE_NAME_BYTES
+            MAX_DEVICE_DISPLAY_NAME_BYTES
         );
 
-        let unicode = "é".repeat(MAX_DEVICE_NAME_BYTES);
+        let unicode = "é".repeat(MAX_DEVICE_DISPLAY_NAME_BYTES);
         let normalized = normalized_device_name(&unicode).unwrap();
-        assert!(normalized.len() <= MAX_DEVICE_NAME_BYTES);
+        assert!(normalized.len() <= MAX_DEVICE_DISPLAY_NAME_BYTES);
         assert!(normalized.is_char_boundary(normalized.len()));
+    }
+
+    #[test]
+    fn pairing_request_uses_the_startup_cached_desktop_name() {
+        let runtime = CompanionRuntime::default();
+        runtime.latch_desktop_display_name("Studio Mac".to_string());
+        let identity = StoredIdentity {
+            account_user_id: "usr_test".to_string(),
+            device_id: Uuid::nil(),
+            private_key_b64: STANDARD_NO_PAD.encode([1_u8; KEY_BYTES]),
+            public_key_b64: STANDARD_NO_PAD.encode([2_u8; KEY_BYTES]),
+        };
+
+        let request = create_pairing_request(&runtime, &identity, &[3_u8; KEY_BYTES]).unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+
+        assert_eq!(serialized["displayName"], "Studio Mac");
+        assert_eq!(
+            serialized["desktopPublicKey"],
+            serde_json::json!(vec![2_u8; KEY_BYTES])
+        );
     }
 
     #[test]

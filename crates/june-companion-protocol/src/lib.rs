@@ -12,6 +12,7 @@ pub const MAX_CIPHERTEXT_BYTES: usize = 45 * 1024;
 pub const MAX_RELAY_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const MAX_TEXT_BYTES: usize = 32 * 1024;
 pub const MAX_PAGE_SIZE: u16 = 100;
+pub const MAX_DEVICE_DISPLAY_NAME_BYTES: usize = 128;
 pub const DEFAULT_CONTROL_TTL_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -191,6 +192,16 @@ impl Body {
             Self::Event(Event::AgentStatus {
                 stored_session_id, ..
             }) => validate_id(stored_session_id),
+            Self::Response(Response {
+                result: ResultPayload::Device(device),
+                ..
+            }) => {
+                validate_text(&device.display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
+                if let Some(desktop_display_name) = &device.desktop_display_name {
+                    validate_text(desktop_display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -420,6 +431,8 @@ pub enum ActiveRecordingState {
 pub struct DeviceSelf {
     pub device_id: Uuid,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_display_name: Option<String>,
     pub linked_at: String,
     pub last_seen_at: Option<String>,
     pub revoked_at: Option<String>,
@@ -730,6 +743,91 @@ mod tests {
         assert!(matches!(
             envelope.validate(),
             Err(ProtocolError::FrameTooLarge)
+        ));
+    }
+
+    #[test]
+    fn device_self_round_trips_with_and_without_the_optional_desktop_name() {
+        let now = 1_000_000;
+        let response = |desktop_display_name| {
+            Frame::new(
+                Uuid::nil(),
+                1,
+                now,
+                Capability::DevicesReadSelf,
+                Body::Response(Response {
+                    capability: Capability::DevicesReadSelf,
+                    result: ResultPayload::Device(DeviceSelf {
+                        device_id: Uuid::nil(),
+                        display_name: "Phone".to_string(),
+                        desktop_display_name,
+                        linked_at: "2026-07-27T12:00:00Z".to_string(),
+                        last_seen_at: None,
+                        revoked_at: None,
+                    }),
+                }),
+            )
+        };
+
+        let without_name = response(None);
+        let encoded_without_name = encode_frame(&without_name).unwrap();
+        assert!(!String::from_utf8_lossy(&encoded_without_name).contains("desktopDisplayName"));
+        assert_eq!(
+            decode_frame(&encoded_without_name, now).unwrap(),
+            without_name
+        );
+
+        let with_name = response(Some("Studio Mac".to_string()));
+        let encoded_with_name = encode_frame(&with_name).unwrap();
+        assert!(String::from_utf8_lossy(&encoded_with_name).contains("desktopDisplayName"));
+        assert_eq!(decode_frame(&encoded_with_name, now).unwrap(), with_name);
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct LegacyDeviceSelf {
+            device_id: Uuid,
+            display_name: String,
+        }
+        let current_device = DeviceSelf {
+            device_id: Uuid::nil(),
+            display_name: "Phone".to_string(),
+            desktop_display_name: Some("Studio Mac".to_string()),
+            linked_at: "2026-07-27T12:00:00Z".to_string(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+        let legacy_device: LegacyDeviceSelf =
+            serde_json::from_slice(&serde_json::to_vec(&current_device).unwrap()).unwrap();
+        assert_eq!(legacy_device.device_id, Uuid::nil());
+        assert_eq!(legacy_device.display_name, "Phone");
+    }
+
+    #[test]
+    fn device_self_rejects_an_unbounded_desktop_name() {
+        let now = 1_000_000;
+        let frame = Frame::new(
+            Uuid::nil(),
+            1,
+            now,
+            Capability::DevicesReadSelf,
+            Body::Response(Response {
+                capability: Capability::DevicesReadSelf,
+                result: ResultPayload::Device(DeviceSelf {
+                    device_id: Uuid::nil(),
+                    display_name: "Phone".to_string(),
+                    desktop_display_name: Some(
+                        "x".repeat(MAX_DEVICE_DISPLAY_NAME_BYTES.saturating_add(1)),
+                    ),
+                    linked_at: "2026-07-27T12:00:00Z".to_string(),
+                    last_seen_at: None,
+                    revoked_at: None,
+                }),
+            }),
+        );
+
+        assert!(matches!(
+            frame.validate(now),
+            Err(ProtocolError::TextTooLarge)
         ));
     }
 }

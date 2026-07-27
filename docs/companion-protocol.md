@@ -62,6 +62,13 @@ read/edit, existing-recording state/pause/resume/stop, app focus, and
 self-device read/revoke. Body-to-capability equality is validated before
 dispatch.
 
+The encrypted `deviceGetSelf` result may include the Desktop's user-facing
+device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
+bytes. Desktop resolves and caches the value at startup, then supplies it only
+after the Noise-authenticated `devicesReadSelf` request. Older companions ignore
+the additive field, and new companions retain their generic Mac fallback when
+an older Desktop omits it.
+
 Agent session and message reads go through typed frontend intents backed by
 the current Hermes session APIs. The companion receives the same sanitized
 display text as June Desktop: machine context, provider routing details,
