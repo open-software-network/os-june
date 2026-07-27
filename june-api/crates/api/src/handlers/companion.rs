@@ -53,6 +53,9 @@ const SECRET_BYTES: usize = 32;
 const MAX_PENDING_PAIRINGS_PER_USER: usize = 8;
 const MAX_PENDING_PAIRINGS_TOTAL: usize = 4_096;
 const MAX_ACTIVE_DEVICES_PER_USER: usize = 32;
+const MAX_PROOF_REQUESTS_PER_MINUTE: usize = 30;
+const MAX_RECONNECTS_PER_MINUTE: usize = 30;
+const MAX_PROOF_RATE_KEYS: usize = 4_096;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 pub(crate) struct CompanionRelay {
@@ -69,6 +72,9 @@ struct RelayState {
     links: HashSet<DeviceLink>,
     connections: HashMap<Uuid, Connection>,
     last_push_at: HashMap<Uuid, Instant>,
+    proof_request_times: HashMap<Uuid, VecDeque<Instant>>,
+    reconnect_times: HashMap<Uuid, VecDeque<Instant>>,
+    message_times: HashMap<Uuid, VecDeque<Instant>>,
 }
 
 #[derive(Clone)]
@@ -399,7 +405,17 @@ pub(crate) async fn relay_socket(
     state
         .companion()
         .authorize_connection(&user_id, query.device_id)?;
+    if !state.companion().admit_reconnect(query.device_id) {
+        return Err(ApiError::service_overloaded());
+    }
     Ok(upgrade.on_upgrade(move |socket| relay_connection(state, user_id, query.device_id, socket)))
+}
+
+pub(crate) fn pairing_id_from_proof_path(path: &str) -> Option<Uuid> {
+    path.strip_prefix("/v1/companion/pairings/")?
+        .split('/')
+        .next()
+        .and_then(|pairing_id| Uuid::parse_str(pairing_id).ok())
 }
 
 async fn companion_user(state: &ApiState, headers: &HeaderMap) -> Result<UserId, ApiError> {
@@ -469,7 +485,6 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
         return;
     };
     let (mut sender, mut receiver) = socket.split();
-    let mut message_times = VecDeque::new();
     loop {
         tokio::select! {
             outbound_message = outbound.recv() => {
@@ -489,7 +504,7 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
                     }
                     Message::Pong(_) => continue,
                 };
-                if !allow_message(&mut message_times) { break; }
+                if !state.companion().allow_relay_message(device_id) { break; }
                 if bytes.len() > MAX_RELAY_ENVELOPE_BYTES { break; }
                 let Ok(envelope) = serde_json::from_slice::<RelayEnvelope>(&bytes) else { break; };
                 if envelope.validate().is_err() || envelope.sender_device_id != device_id { break; }
@@ -504,14 +519,17 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
 }
 
 fn allow_message(times: &mut VecDeque<Instant>) -> bool {
-    let now = Instant::now();
+    allow_within_window(times, MAX_MESSAGES_PER_MINUTE, Instant::now())
+}
+
+fn allow_within_window(times: &mut VecDeque<Instant>, limit: usize, now: Instant) -> bool {
     while times
         .front()
         .is_some_and(|at| now.duration_since(*at) >= Duration::from_mins(1))
     {
         times.pop_front();
     }
-    if times.len() >= MAX_MESSAGES_PER_MINUTE {
+    if times.len() >= limit {
         return false;
     }
     times.push_back(now);
@@ -568,6 +586,9 @@ impl CompanionRelay {
                 links,
                 connections: HashMap::new(),
                 last_push_at: HashMap::new(),
+                proof_request_times: HashMap::new(),
+                reconnect_times: HashMap::new(),
+                message_times: HashMap::new(),
             }),
             store,
             enabled,
@@ -581,6 +602,53 @@ impl CompanionRelay {
         } else {
             Err(ApiError::service_overloaded())
         }
+    }
+
+    pub(crate) fn admit_proof_request(&self, pairing_id: Uuid) -> bool {
+        let now = Instant::now();
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.proof_request_times.retain(|_, times| {
+            while times
+                .front()
+                .is_some_and(|at| now.duration_since(*at) >= Duration::from_mins(1))
+            {
+                times.pop_front();
+            }
+            !times.is_empty()
+        });
+        if !state.proof_request_times.contains_key(&pairing_id)
+            && state.proof_request_times.len() >= MAX_PROOF_RATE_KEYS
+        {
+            return false;
+        }
+        allow_within_window(
+            state.proof_request_times.entry(pairing_id).or_default(),
+            MAX_PROOF_REQUESTS_PER_MINUTE,
+            now,
+        )
+    }
+
+    fn admit_reconnect(&self, device_id: Uuid) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        allow_within_window(
+            state.reconnect_times.entry(device_id).or_default(),
+            MAX_RECONNECTS_PER_MINUTE,
+            Instant::now(),
+        )
+    }
+
+    fn allow_relay_message(&self, device_id: Uuid) -> bool {
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        allow_message(state.message_times.entry(device_id).or_default())
     }
 
     fn create_pairing(
@@ -1164,6 +1232,8 @@ impl CompanionRelay {
         }
         device.revoked = true;
         state.links.retain(|link| !link.contains(device_id));
+        state.reconnect_times.remove(&device_id);
+        state.message_times.remove(&device_id);
         if let Some(connection) = state.connections.remove(&device_id) {
             let _ = connection.outbound.try_send(Outbound::Revoked);
         }
@@ -1698,6 +1768,41 @@ mod tests {
             assert!(allow_message(&mut times));
         }
         assert!(!allow_message(&mut times));
+    }
+
+    #[test]
+    fn proof_admission_is_bounded_before_body_parsing() {
+        let relay = CompanionRelay::default();
+        let pairing_id = Uuid::new_v4();
+        for _ in 0..MAX_PROOF_REQUESTS_PER_MINUTE {
+            assert!(relay.admit_proof_request(pairing_id));
+        }
+        assert!(!relay.admit_proof_request(pairing_id));
+    }
+
+    #[test]
+    fn reconnect_admission_is_throttled() {
+        let relay = CompanionRelay::default();
+        let device_id = Uuid::new_v4();
+        for _ in 0..MAX_RECONNECTS_PER_MINUTE {
+            assert!(relay.admit_reconnect(device_id));
+        }
+        assert!(!relay.admit_reconnect(device_id));
+    }
+
+    #[tokio::test]
+    async fn reconnect_does_not_reset_message_budget() {
+        let (relay, desktop, _) = linked_relay().await;
+        for _ in 0..MAX_MESSAGES_PER_MINUTE {
+            assert!(relay.allow_relay_message(desktop));
+        }
+
+        let (_, connection_id) = relay.connect(&user(), desktop).unwrap();
+        relay.disconnect(desktop, connection_id);
+        let (_, reconnected_id) = relay.connect(&user(), desktop).unwrap();
+
+        assert!(!relay.allow_relay_message(desktop));
+        relay.disconnect(desktop, reconnected_id);
     }
 
     #[test]

@@ -145,6 +145,30 @@ async fn integration_companion_proposal_uses_the_desktop_pairing_capability()
 }
 
 #[tokio::test]
+async fn integration_companion_rejects_oversized_proof_body_before_validation()
+-> Result<(), Box<dyn Error>> {
+    let pairing_id = uuid::Uuid::new_v4();
+    let response = send_on(
+        test_router(),
+        json_request(
+            &format!("/v1/companion/pairings/{pairing_id}/propose"),
+            &serde_json::json!({
+                "mobileDeviceId": uuid::Uuid::new_v4(),
+                "mobilePublicKey": vec![3_u8; 32],
+                "displayName": "x".repeat(5_000),
+                "pairingProof": vec![9_u8; 32],
+                "deviceCredentialHash": vec![4_u8; 32]
+            }),
+            None,
+        )?,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    Ok(())
+}
+
+#[tokio::test]
 async fn integration_note_generate_returns_enveloped_response() -> Result<(), Box<dyn Error>> {
     let response = send(json_request(
         "/v1/notes/generate",

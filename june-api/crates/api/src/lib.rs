@@ -58,6 +58,7 @@ pub use state::{
 /// header is how logs and metrics tell them apart (ADR 0021).
 pub const JUNE_APP_VERSION_HEADER: &str = "x-june-app-version";
 pub const JUNE_MACOS_VERSION_HEADER: &str = "x-june-macos-version";
+const COMPANION_BODY_LIMIT_BYTES: usize = 4 * 1024;
 
 // The route table: one line per endpoint, so it grows with each capability
 // (private sharing is the latest). Splitting it would scatter the surface.
@@ -105,35 +106,55 @@ pub fn router(state: ApiState) -> Router {
         )
         .route(
             "/v1/companion/pairings",
-            post(handlers::companion::create_pairing),
+            post(handlers::companion::create_pairing)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/companion/pairings/{pairing_id}",
-            get(handlers::companion::pairing_status),
+            get(handlers::companion::pairing_status)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/companion/pairings/{pairing_id}/propose",
-            post(handlers::companion::propose_pairing),
+            post(handlers::companion::propose_pairing).layer(
+                ServiceBuilder::new()
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        companion_proof_admission_middleware,
+                    ))
+                    .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
+            ),
         )
         .route(
             "/v1/companion/pairings/{pairing_id}/mobile-status",
-            post(handlers::companion::mobile_pairing_status),
+            post(handlers::companion::mobile_pairing_status).layer(
+                ServiceBuilder::new()
+                    .layer(middleware::from_fn_with_state(
+                        state.clone(),
+                        companion_proof_admission_middleware,
+                    ))
+                    .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
+            ),
         )
         .route(
             "/v1/companion/pairings/{pairing_id}/approve",
-            post(handlers::companion::approve_pairing),
+            post(handlers::companion::approve_pairing)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/companion/devices/{device_id}/revoke",
-            post(handlers::companion::revoke_device),
+            post(handlers::companion::revoke_device)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/companion/devices/{device_id}/push",
-            post(handlers::companion::register_push),
+            post(handlers::companion::register_push)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/companion/relay",
-            get(handlers::companion::relay_socket),
+            get(handlers::companion::relay_socket)
+                .layer(DefaultBodyLimit::max(COMPANION_BODY_LIMIT_BYTES)),
         )
         .route(
             "/v1/notes/generate",
@@ -354,6 +375,19 @@ async fn authenticate_and_admit(
         declared
     };
     let _admission = state.admit_agent_request(&user_id, charge_bytes)?;
+    Ok(next.run(request).await)
+}
+
+async fn companion_proof_admission_middleware(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if let Some(pairing_id) = handlers::companion::pairing_id_from_proof_path(request.uri().path())
+        && !state.companion().admit_proof_request(pairing_id)
+    {
+        return Err(ApiError::service_overloaded());
+    }
     Ok(next.run(request).await)
 }
 
