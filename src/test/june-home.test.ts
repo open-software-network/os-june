@@ -290,6 +290,10 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Help me draft a customer reply", [prior]),
     ).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't look into those wines", [prior])).toBe(
+      true,
+    );
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't do that", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
@@ -345,6 +349,48 @@ describe("June Home", () => {
         [prior],
       ),
     ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Paris planning", prompt: "Plan a trip to Paris." },
+        "Plan the quarterly budget",
+        [
+          {
+            id: "home-task-paris",
+            title: "Paris planning",
+            prompt: "Plan a trip to Paris.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "AI research", prompt: "Research AI." },
+        "Greetings, June",
+        [
+          {
+            id: "home-task-ai",
+            title: "AI research",
+            prompt: "Research AI.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Cat research", prompt: "Research cats." },
+        "Greetings, June",
+        [
+          {
+            id: "home-task-cat",
+            title: "Cat research",
+            prompt: "Research cat behavior.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {

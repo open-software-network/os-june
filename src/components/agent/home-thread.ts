@@ -273,7 +273,9 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "afternoon",
   "about",
   "agent",
+  "analyze", "analyse", "build", "check", "compare",
   "create",
+  "draft", "edit", "explore", "find", "fix", "generate", "help", "investigate", "look",
   "day",
   "evening",
   "focused",
@@ -287,8 +289,10 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "howdy",
   "june",
   "morning",
+  "make", "plan", "prepare",
   "please",
   "research",
+  "review", "schedule", "search", "summarize", "summarise", "update", "write",
   "see",
   "session",
   "start",
@@ -303,13 +307,15 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
 const HOME_TASK_ACTION_REQUEST =
   /\b(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_ACTION_NEGATION =
-  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|investigate|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_REPEAT_REQUEST =
   /\b(?:another one|continue (?:it|that|this)|do (?:it|that|this) again|pick (?:it|that|this) up|redo (?:it|that|this)|repeat (?:it|that|this)|resume (?:it|that|this)|same thing)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_REQUEST =
   /\b(?:do (?:it|that|this|the same)|how about|one more|same for|what about|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_CONTEXTUAL_NEGATION =
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -318,11 +324,11 @@ function homeTaskGroundingTokens(value: string): Set<string> {
       .toLocaleLowerCase()
       .match(/[\p{L}\p{N}]+/gu)
       ?.map((token) =>
-        token.length > 4 && token.endsWith("s") && !token.endsWith("ss")
+        token.length > 3 && token.endsWith("s") && !token.endsWith("ss")
           ? token.slice(0, -1)
           : token,
       )
-      .filter((token) => token.length >= 3 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
+      .filter((token) => token.length >= 2 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
   );
 }
 
@@ -330,6 +336,8 @@ function normalizedHomeTaskIntent(value: string): string {
   return value
     .normalize("NFKC")
     .replace(/[’‘]/g, "'")
+    .replace(/\bdon't\b/gi, "do not")
+    .replace(/'/g, "")
     .replace(/[^\p{L}\p{N}']+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
@@ -340,6 +348,9 @@ function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
 }
 
 function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
+  const normalizedLeftTitle = normalizedHomeTaskIntent(left.title).toLocaleLowerCase();
+  const normalizedRightTitle = normalizedHomeTaskIntent(right.title).toLocaleLowerCase();
+  if (normalizedLeftTitle && normalizedLeftTitle === normalizedRightTitle) return 1;
   const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
   const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
   if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
@@ -355,11 +366,12 @@ export function isHomeTaskReplayWithoutNewIntent(
   const intentText = normalizedHomeTaskIntent(latestMessage);
   const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
   const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
+  const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
   const matchesPriorHandoff = handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );
   if (!matchesPriorHandoff) return false;
-  if (negatesRepeat || negatesAction) return true;
+  if (negatesRepeat || negatesAction || negatesContext) return true;
   const latestTokens = homeTaskGroundingTokens(latestMessage);
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
   if (
