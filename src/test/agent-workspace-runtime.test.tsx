@@ -393,24 +393,16 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.type(screen.getByRole("textbox", { name: "Message June" }), "Plan a trip to Rome");
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
-    await waitFor(() =>
-      expect(
-        mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
-      ).toHaveLength(2),
-    );
-    expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
-      request: expect.objectContaining({ title: "Plan a trip to Rome" }),
-    });
-    await waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
-        request: expect.objectContaining({
-          sessionId: focusedSession.id,
-          prompt: expect.stringMatching(
-            /Plan a trip to Rome[\s\S]+latest Home request above is authoritative[\s\S]+Research good wines near southern France\./,
-          ),
-        }),
-      }),
-    );
+    expect(await screen.findByText("I'm here. What can I help with?")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(2);
   });
 
   it("repairs a stale Home mapping when its June-owned session is missing", async () => {

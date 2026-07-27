@@ -24,7 +24,6 @@ import {
   compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
   homeConversationGreetingReply,
-  homeTaskReplaysPriorMetadata,
   isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
@@ -314,14 +313,15 @@ describe("June Home", () => {
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, June", [prior])).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Help me draft a customer reply", [prior]),
-    ).toBe(false);
+    ).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't look into those wines", [prior])).toBe(
       true,
     );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't do that", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "How about a Japan itinerary?", [prior])).toBe(
-      false,
+      true,
     );
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "How are you?", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
@@ -330,7 +330,7 @@ describe("June Home", () => {
     ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Compare wine prices", prompt: "Compare prices for those wines." },
@@ -351,7 +351,7 @@ describe("June Home", () => {
           },
         ],
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         {
@@ -509,7 +509,7 @@ describe("June Home", () => {
           },
         ],
       ),
-    ).toBe(false);
+    ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "AI research", prompt: "Research AI." },
@@ -538,37 +538,6 @@ describe("June Home", () => {
         ],
       ),
     ).toBe(true);
-  });
-
-  it("detects prior task metadata that is not grounded in the latest request", () => {
-    const prior = {
-      id: "home-task-wine",
-      title: "Wine research",
-      prompt: "Research good wines near southern France.",
-      status: "running" as const,
-    };
-
-    expect(
-      homeTaskReplaysPriorMetadata(
-        { title: "Wine research", prompt: "Research good wines near southern France." },
-        "Plan a trip to Rome",
-        [prior],
-      ),
-    ).toBe(true);
-    expect(
-      homeTaskReplaysPriorMetadata(
-        { title: "Wine research", prompt: "Research wines in Japan." },
-        "Do the same for Japan",
-        [prior],
-      ),
-    ).toBe(false);
-    expect(
-      homeTaskReplaysPriorMetadata(
-        { title: "Wine research", prompt: "Research good wines near southern France." },
-        "Research those wines again",
-        [prior],
-      ),
-    ).toBe(false);
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {

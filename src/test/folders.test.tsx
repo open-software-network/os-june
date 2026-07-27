@@ -396,6 +396,19 @@ describe("folders UI", () => {
       await user.click(menuShell);
       expect(screen.getByRole("menu")).toBeInTheDocument();
 
+      const sidebar = trigger.closest(".sidebar") as HTMLElement;
+      const mutationMarker = document.createElement("div");
+      anchorRect = { top: 520, bottom: 548, right: 232 };
+      act(() => sidebar.prepend(mutationMarker));
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "568px", top: "296px" });
+      });
+      anchorRect = { top: 548, bottom: 576, right: 232 };
+      act(() => mutationMarker.remove());
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "568px", top: "324px" });
+      });
+
       const appShell = trigger.closest(".app-shell") as HTMLElement;
       anchorRect = { top: 548, bottom: 576, right: 280 };
       scrollportRect = { ...scrollportRect, right: 280 };

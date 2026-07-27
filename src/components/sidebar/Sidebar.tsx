@@ -2530,6 +2530,8 @@ function SidebarContextMenu({
       ownerObserver.observe(sidebar, {
         attributes: true,
         attributeFilter: ["data-collapsed"],
+        childList: true,
+        subtree: true,
       });
     }
     if (appShell) {

@@ -317,6 +317,7 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "analyze",
   "analyse",
   "and",
+  "are",
   "build",
   "check",
   "compare",
@@ -388,6 +389,10 @@ const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,8}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_POSITIVE_NEGATION_EXCEPTION = /\b(?:do not|don't|never)\s+forget\s+to\b/i;
+const HOME_TASK_REPEAT_REQUEST = /\b(?:again|continue|redo|repeat|resume)\b/i;
+const HOME_TASK_CONTEXTUAL_REQUEST =
+  /\b(?:do (?:it|that|this|the same)|one more|same for|start (?:it|that|this)|(?:first|second|third|next) one)\b/i;
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -452,15 +457,9 @@ function latestHomeTaskNovelGrounding(
   };
 }
 
-export function homeTaskReplaysPriorMetadata(
-  task: JuneHomeTaskRequest,
-  latestMessage: string,
-  handoffs: HomeTaskHandoff[],
-): boolean {
-  const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
-  if (matchingHandoffs.length === 0) return false;
-  const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
-  return grounding.hasNovelGrounding && !grounding.taskUsesNovelGrounding;
+function homeTaskSharesLatestGrounding(task: JuneHomeTaskRequest, latestMessage: string): boolean {
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  return [...homeTaskGroundingTokens(latestMessage)].some((token) => taskTokens.has(token));
 }
 
 export function isHomeTaskReplayWithoutNewIntent(
@@ -475,11 +474,18 @@ export function isHomeTaskReplayWithoutNewIntent(
   const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
   if (matchingHandoffs.length === 0) return false;
   if (homeConversationGreetingReply(latestMessage)) return true;
-  if (latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs).taskUsesNovelGrounding) {
+  const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
+  if (grounding.taskUsesNovelGrounding) return false;
+  if (negatesRepeat || negatesContext || negatesAction) return true;
+  if (
+    HOME_TASK_POSITIVE_NEGATION_EXCEPTION.test(intentText) ||
+    HOME_TASK_REPEAT_REQUEST.test(intentText) ||
+    HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)
+  ) {
     return false;
   }
-  if (negatesRepeat || negatesContext || negatesAction) return true;
-  return false;
+  if (grounding.hasNovelGrounding) return true;
+  return !homeTaskSharesLatestGrounding(task, latestMessage);
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {
