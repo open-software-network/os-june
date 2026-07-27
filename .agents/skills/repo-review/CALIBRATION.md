@@ -188,3 +188,6 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #985 Home replay follow-up | Standards (final) | 0 | — | clean on Home terminology, user-facing copy, task-boundary naming, and the combined sidebar diff |
 | #985 Home replay follow-up | Spec (final) | 0 | — | clean on greeting conversation, task-bearing greetings, stale-session prevention, and the existing sidebar requirements |
 | #985 Home replay follow-up | Adversarial (iterative) | 14 | 14 | drove the guard from an exact greeting list to a fail-safe task-boundary check, then closed variant greetings, negation, unrelated-action overlap, short-topic, inflection, prefix-collision, and contextual-follow-up gaps |
+| #985 submitted-scroll follow-up | Standards (final) | 0 | — | clean on the explicit user-submit scroll signal, tests, terminology, and the formatting-only CI repair |
+| #985 submitted-scroll follow-up | Spec (final) | 1 | 0 | implementation aligned; the sole finding incorrectly required live browser metrics to be duplicated in the unit test, while the recorded walkthrough proved 1,281 px to 0 px and the test deterministically proved the scroll request |
+| #985 submitted-scroll follow-up | Adversarial (final) | 0 | — | approved after tracing queued, ordinary, new-session, and Home submit paths plus navigation and missing-scroller behavior |
