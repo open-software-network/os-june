@@ -532,6 +532,7 @@ export function AgentWorkspace({
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
+  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
   const waiting = projection.run?.status === "waiting_for_user";
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
@@ -1031,7 +1032,7 @@ export function AgentWorkspace({
     // state lets the greeting and suggestions settle underneath the input.
     // The focused new-session hero is inline and remains the only mode that
     // intentionally needs no fixed-composer clearance.
-    if ((!homeMode && (newSessionMode || !selectedSession)) || !scroller || !composer) {
+    if (heroMode || !scroller || !composer) {
       setComposerClearance(0);
       return;
     }
@@ -1051,7 +1052,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [homeMode, newSessionMode, selectedSession]);
+  }, [heroMode]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
@@ -1901,7 +1902,6 @@ export function AgentWorkspace({
     await refreshSessions();
   }
 
-  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const sessionActionsAvailable = Boolean(selectedId && selectedSession);
   const homeConversationTurns = useMemo(
     () =>
@@ -2088,6 +2088,7 @@ export function AgentWorkspace({
       running={running}
       submitting={submitting}
       disabledReason={textActionsDisabledReason}
+      notice={!heroMode ? error : undefined}
       hero={heroMode}
       showModelPicker={!homeMode}
     />
@@ -2151,11 +2152,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Home conversation">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline" data-home="true">
                 {homeConversationTurns.map((turn, index) => {
                   const previous = index > 0 ? homeConversationTurns[index - 1] : undefined;
@@ -2270,11 +2266,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Agent task details">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline">
                 {visibleTurns.map((turn) => (
                   <AgentChatTurnRow
@@ -2613,6 +2604,7 @@ function AgentComposer({
   running,
   submitting,
   disabledReason,
+  notice,
   hero = false,
   showModelPicker = true,
 }: {
@@ -2640,6 +2632,7 @@ function AgentComposer({
   running: boolean;
   submitting: boolean;
   disabledReason?: string;
+  notice?: string;
   hero?: boolean;
   showModelPicker?: boolean;
 }) {
@@ -2762,6 +2755,11 @@ function AgentComposer({
           }
         />
       )}
+      {notice ? (
+        <div className="agent-composer-notice" role="alert">
+          {notice}
+        </div>
+      ) : null}
       <div className="agent-composer-box">
         {attachments.length ? (
           <div className="agent-composer-attachments">
