@@ -1682,7 +1682,8 @@ export function AgentWorkspace({
               readHomeTaskHandoffs(storedSessionId as string),
             ),
         );
-        const responseTask = rejectedStaleTask ? undefined : response.task;
+        const responseTask =
+          rejectedStaleTask || !response.task ? undefined : { ...response.task, prompt: message };
         const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
           responseTask && toolCallId

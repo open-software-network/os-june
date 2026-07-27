@@ -389,6 +389,23 @@ describe("AgentWorkspace runtime wiring", () => {
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
     ).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Plan a trip to Rome");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(
+        mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+      ).toHaveLength(2),
+    );
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({
+          sessionId: focusedSession.id,
+          prompt: "Plan a trip to Rome",
+        }),
+      }),
+    );
   });
 
   it("repairs a stale Home mapping when its June-owned session is missing", async () => {

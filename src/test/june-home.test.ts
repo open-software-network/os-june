@@ -291,23 +291,23 @@ describe("June Home", () => {
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, June", [prior])).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Help me draft a customer reply", [prior]),
-    ).toBe(true);
+    ).toBe(false);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't look into those wines", [prior])).toBe(
       true,
     );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't do that", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "How about a Japan itinerary?", [prior])).toBe(
-      true,
+      false,
     );
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Research those apples in France again", [prior]),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Compare wine prices", prompt: "Compare prices for those wines." },
@@ -328,7 +328,7 @@ describe("June Home", () => {
           },
         ],
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         {
@@ -437,7 +437,7 @@ describe("June Home", () => {
           },
         ],
       ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "AI research", prompt: "Research AI." },
