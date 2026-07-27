@@ -40,10 +40,10 @@ export function sidebarContextMenuAnchorIsVisible(
         boundary.bottom === 0 &&
         boundary.left === 0 &&
         boundary.right === 0) ||
-      (anchor.bottom > boundary.top &&
-        anchor.top < boundary.bottom &&
-        anchor.right > boundary.left &&
-        anchor.left < boundary.right),
+      (anchor.top >= boundary.top &&
+        anchor.bottom <= boundary.bottom &&
+        anchor.left >= boundary.left &&
+        anchor.right <= boundary.right),
   );
 }
 

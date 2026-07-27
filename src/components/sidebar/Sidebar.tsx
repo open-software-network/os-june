@@ -2497,7 +2497,8 @@ function SidebarContextMenu({
       if (
         !anchor.isConnected ||
         sidebar?.dataset.collapsed === "true" ||
-        appShell?.dataset.sidebar === "collapsed"
+        appShell?.dataset.sidebar === "collapsed" ||
+        appShell?.dataset.sidebarPreview === "collapsed"
       ) {
         onClose();
         return;
@@ -2530,13 +2531,17 @@ function SidebarContextMenu({
     if (appShell) {
       ownerObserver.observe(appShell, {
         attributes: true,
-        attributeFilter: ["data-sidebar"],
+        attributeFilter: ["data-sidebar", "data-sidebar-preview", "style"],
       });
     }
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updatePosition);
+    if (sidebar) resizeObserver?.observe(sidebar);
     return () => {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
       ownerObserver.disconnect();
+      resizeObserver?.disconnect();
     };
   }, [anchor, onClose]);
 

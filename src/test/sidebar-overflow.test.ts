@@ -90,5 +90,12 @@ describe("sidebar overflow containment", () => {
         [scrollport],
       ),
     ).toBe(false);
+    expect(
+      sidebarContextMenuAnchorIsVisible(
+        { top: 190, bottom: 212, left: 206, right: 228 },
+        viewport,
+        [scrollport],
+      ),
+    ).toBe(false);
   });
 });

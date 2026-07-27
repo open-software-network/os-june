@@ -327,18 +327,20 @@ describe("folders UI", () => {
 
     try {
       const { rerender } = render(
-        <Sidebar
-          notes={notes}
-          activeView="notes"
-          onChangeView={vi.fn()}
-          onSelectNote={vi.fn()}
-          onDeleteNote={vi.fn()}
-          onOpenMoveDialog={vi.fn()}
-          onRemoveNoteFromFolder={vi.fn()}
-          onNewAgentSession={vi.fn()}
-          onRenameAgentSession={vi.fn()}
-          onSelectAgentSession={vi.fn()}
-        />,
+        <div className="app-shell" data-sidebar-preview="expanded">
+          <Sidebar
+            notes={notes}
+            activeView="notes"
+            onChangeView={vi.fn()}
+            onSelectNote={vi.fn()}
+            onDeleteNote={vi.fn()}
+            onOpenMoveDialog={vi.fn()}
+            onRemoveNoteFromFolder={vi.fn()}
+            onNewAgentSession={vi.fn()}
+            onRenameAgentSession={vi.fn()}
+            onSelectAgentSession={vi.fn()}
+          />
+        </div>,
       );
 
       act(() => {
@@ -387,6 +389,15 @@ describe("folders UI", () => {
         expect(menuShell).toHaveStyle({ right: "568px", top: "324px" });
       });
 
+      const appShell = trigger.closest(".app-shell") as HTMLElement;
+      anchorRect = { top: 548, bottom: 576, right: 280 };
+      scrollportRect = { ...scrollportRect, right: 280 };
+      act(() => appShell.style.setProperty("--sidebar-w-current", "280px"));
+
+      await waitFor(() => {
+        expect(menuShell).toHaveStyle({ right: "520px", top: "324px" });
+      });
+
       viewportWidth = 640;
       viewportHeight = 420;
       anchorRect = { top: 348, bottom: 376, right: 232 };
@@ -416,20 +427,32 @@ describe("folders UI", () => {
       await user.click(trigger);
       expect(await screen.findByRole("menu")).toBeInTheDocument();
 
+      act(() => appShell.setAttribute("data-sidebar-preview", "collapsed"));
+
+      await waitFor(() => {
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      });
+
+      appShell.setAttribute("data-sidebar-preview", "expanded");
+      await user.click(trigger);
+      expect(await screen.findByRole("menu")).toBeInTheDocument();
+
       rerender(
-        <Sidebar
-          notes={notes}
-          activeView="notes"
-          collapsed
-          onChangeView={vi.fn()}
-          onSelectNote={vi.fn()}
-          onDeleteNote={vi.fn()}
-          onOpenMoveDialog={vi.fn()}
-          onRemoveNoteFromFolder={vi.fn()}
-          onNewAgentSession={vi.fn()}
-          onRenameAgentSession={vi.fn()}
-          onSelectAgentSession={vi.fn()}
-        />,
+        <div className="app-shell" data-sidebar-preview="expanded">
+          <Sidebar
+            notes={notes}
+            activeView="notes"
+            collapsed
+            onChangeView={vi.fn()}
+            onSelectNote={vi.fn()}
+            onDeleteNote={vi.fn()}
+            onOpenMoveDialog={vi.fn()}
+            onRemoveNoteFromFolder={vi.fn()}
+            onNewAgentSession={vi.fn()}
+            onRenameAgentSession={vi.fn()}
+            onSelectAgentSession={vi.fn()}
+          />
+        </div>,
       );
 
       await waitFor(() => {
