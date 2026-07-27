@@ -250,8 +250,41 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
 
 const HOME_CONVERSATION_GREETING =
   /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$/u;
-const HOME_CONVERSATION_HELLO_FROM =
-  /^hello\s+from\s+[\p{L}\p{N}]+(?:[ '-][\p{L}\p{N}]+){0,2}[.!?]*$/iu;
+const HOME_CONVERSATION_HELLO_FROM = /^hello\s+from\s+(.+?)[.!?]*$/iu;
+const HOME_CONVERSATION_LOCATION_CONNECTORS = new Set([
+  "da",
+  "de",
+  "del",
+  "do",
+  "dos",
+  "la",
+  "las",
+  "le",
+  "of",
+  "the",
+  "van",
+  "von",
+]);
+
+function isHomeConversationLocationWord(word: string): boolean {
+  if (!/^[\p{L}\p{N}'’-]+$/u.test(word)) return false;
+  if (!/[\p{Ll}\p{Lu}]/u.test(word)) return true;
+  return /^\p{Lu}/u.test(word);
+}
+
+function isHomeConversationHelloFrom(message: string): boolean {
+  const match = HOME_CONVERSATION_HELLO_FROM.exec(message);
+  if (!match?.[1]) return false;
+  const words = match[1].trim().split(/\s+/);
+  if (words.length === 0 || words.length > 3) return false;
+  return words.every(
+    (word, index) =>
+      isHomeConversationLocationWord(word) ||
+      (index > 0 &&
+        index < words.length - 1 &&
+        HOME_CONVERSATION_LOCATION_CONNECTORS.has(word.toLocaleLowerCase())),
+  );
+}
 
 function normalizedHomeAcknowledgement(message: string): string {
   return message
@@ -269,8 +302,7 @@ export function homeConversationGreetingReply(message: string): string | undefin
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
-  return HOME_CONVERSATION_GREETING.test(normalized) ||
-    HOME_CONVERSATION_HELLO_FROM.test(visibleMessage)
+  return HOME_CONVERSATION_GREETING.test(normalized) || isHomeConversationHelloFrom(visibleMessage)
     ? "Hey! What can I help with?"
     : undefined;
 }
@@ -350,10 +382,8 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "your",
 ]);
 
-const HOME_TASK_ACTION_REQUEST =
-  /\b(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_ACTION_NEGATION =
-  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
+  /\b(?:(?:do not|don't|never)(?!\s+forget\s+to\b)|stop)\b|\bwithout\s+(?:\w+\s+){0,3}\w+ing\b/i;
 const HOME_TASK_REPEAT_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,8}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
@@ -442,15 +472,13 @@ export function isHomeTaskReplayWithoutNewIntent(
   const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
   const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
   const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
-  const actionCount =
-    intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
   const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
   if (matchingHandoffs.length === 0) return false;
   if (homeConversationGreetingReply(latestMessage)) return true;
   if (latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs).taskUsesNovelGrounding) {
     return false;
   }
-  if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
+  if (negatesRepeat || negatesContext || negatesAction) return true;
   return false;
 }
 

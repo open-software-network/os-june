@@ -249,6 +249,7 @@ describe("June Home", () => {
       "Greetings, June",
       "Good to see you, June",
       "Hello from Stockholm",
+      "hello from New York",
       "Morning June",
       "Good morning, June.",
     ]) {
@@ -260,6 +261,8 @@ describe("June Home", () => {
       homeConversationGreetingReply("Hello from Stockholm, research the market"),
     ).toBeUndefined();
     expect(homeConversationGreetingReply("Hello from London, plan dinner")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from Paris plan dinner")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from Stockholm research apples")).toBeUndefined();
     expect(homeConversationGreetingReply("Hey there, research apples in Mexico")).toBeUndefined();
     expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
   });
@@ -404,6 +407,34 @@ describe("June Home", () => {
             id: "home-task-rome-flight",
             title: "Flight booking",
             prompt: "Book a flight to Rome.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Flight booking", prompt: "Book that flight." },
+        "Don't book that flight",
+        [
+          {
+            id: "home-task-flight",
+            title: "Flight booking",
+            prompt: "Book that flight.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Flight booking", prompt: "Book that flight." },
+        "Don't forget to book that flight",
+        [
+          {
+            id: "home-task-flight",
+            title: "Flight booking",
+            prompt: "Book that flight.",
             status: "running",
           },
         ],
