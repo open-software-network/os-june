@@ -107,6 +107,7 @@ import { buildSidebarSessionLists } from "./sidebar-session-lists";
 import {
   positionSidebarContextMenu,
   sidebarContextMenuAnchorIsVisible,
+  sidebarContextMenuGeometryFromStyles,
 } from "./sidebar-context-menu";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
@@ -2512,7 +2513,10 @@ function SidebarContextMenu({
         return;
       }
       const { width, height } = menu.getBoundingClientRect();
-      const next = positionSidebarContextMenu(anchorRect, { width, height }, viewport);
+      const geometry = sidebarContextMenuGeometryFromStyles(
+        window.getComputedStyle(document.documentElement),
+      );
+      const next = positionSidebarContextMenu(anchorRect, { width, height }, viewport, geometry);
       setPosition((current) =>
         current?.right === next.right && current.top === next.top ? current : next,
       );
@@ -2545,8 +2549,6 @@ function SidebarContextMenu({
     };
   }, [anchor, onClose]);
 
-  const initialAnchor = anchor.getBoundingClientRect();
-
   return createPortal(
     <div
       ref={menuRef}
@@ -2561,8 +2563,8 @@ function SidebarContextMenu({
         position
           ? { right: position.right, top: position.top }
           : {
-              right: window.innerWidth - initialAnchor.right,
-              top: initialAnchor.bottom + 4,
+              right: 0,
+              top: 0,
               visibility: "hidden",
             }
       }

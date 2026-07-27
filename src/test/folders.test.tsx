@@ -324,6 +324,11 @@ describe("folders UI", () => {
         }
         return originalGetBoundingClientRect.call(this);
       });
+    const rootStyle = document.documentElement.style;
+    const previousSp1 = rootStyle.getPropertyValue("--sp-1");
+    const previousSp3 = rootStyle.getPropertyValue("--sp-3");
+    rootStyle.setProperty("--sp-1", "4px");
+    rootStyle.setProperty("--sp-3", "8px");
 
     try {
       const { rerender } = render(
@@ -461,6 +466,10 @@ describe("folders UI", () => {
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();
       });
     } finally {
+      if (previousSp1) rootStyle.setProperty("--sp-1", previousSp1);
+      else rootStyle.removeProperty("--sp-1");
+      if (previousSp3) rootStyle.setProperty("--sp-3", previousSp3);
+      else rootStyle.removeProperty("--sp-3");
       menuRectSpy.mockRestore();
       innerHeightSpy.mockRestore();
       innerWidthSpy.mockRestore();

@@ -162,6 +162,7 @@ import {
   homeConversationContextFromTurns,
   isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
+  homeTaskReplaysPriorMetadata,
   homeDemoReply,
   insertHomeDirectReply,
   markHomeTaskHandoffActive,
@@ -1675,19 +1676,23 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
+        const latestHandoffs = readHomeTaskHandoffs(storedSessionId as string);
         const rejectedStaleTask = Boolean(
+          response.task && isHomeTaskReplayWithoutNewIntent(response.task, message, latestHandoffs),
+        );
+        const replaysPriorMetadata = Boolean(
           response.task &&
-            isHomeTaskReplayWithoutNewIntent(
-              response.task,
-              message,
-              readHomeTaskHandoffs(storedSessionId as string),
-            ),
+            !rejectedStaleTask &&
+            homeTaskReplaysPriorMetadata(response.task, message, latestHandoffs),
         );
         const responseTask =
           rejectedStaleTask || !response.task
             ? undefined
             : {
                 ...response.task,
+                ...(replaysPriorMetadata
+                  ? { title: titleFromPrompt(message), summary: undefined }
+                  : {}),
                 prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
               };
         const toolCallId = responseTask ? `direct:${suffix}` : undefined;

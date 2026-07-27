@@ -24,6 +24,7 @@ import {
   compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
   homeConversationGreetingReply,
+  homeTaskReplaysPriorMetadata,
   isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
@@ -258,6 +259,7 @@ describe("June Home", () => {
     expect(
       homeConversationGreetingReply("Hello from Stockholm, research the market"),
     ).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from London, plan dinner")).toBeUndefined();
     expect(homeConversationGreetingReply("Hey there, research apples in Mexico")).toBeUndefined();
     expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
   });
@@ -287,6 +289,9 @@ describe("June Home", () => {
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Please do not repeat that", [prior])).toBe(
       true,
     );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "I don't want you to repeat that", [prior]),
+    ).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Do not research those wines", [prior])).toBe(
       true,
     );
@@ -420,6 +425,13 @@ describe("June Home", () => {
     ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine research", prompt: "Research wines in Italy." },
+        "Don't research France; Italy instead",
+        [prior],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
         { title: "Product review summary", prompt: "Summarize the product review." },
         "Greetings, June",
         [
@@ -495,6 +507,37 @@ describe("June Home", () => {
         ],
       ),
     ).toBe(true);
+  });
+
+  it("detects prior task metadata that is not grounded in the latest request", () => {
+    const prior = {
+      id: "home-task-wine",
+      title: "Wine research",
+      prompt: "Research good wines near southern France.",
+      status: "running" as const,
+    };
+
+    expect(
+      homeTaskReplaysPriorMetadata(
+        { title: "Wine research", prompt: "Research good wines near southern France." },
+        "Plan a trip to Rome",
+        [prior],
+      ),
+    ).toBe(true);
+    expect(
+      homeTaskReplaysPriorMetadata(
+        { title: "Wine research", prompt: "Research wines in Japan." },
+        "Do the same for Japan",
+        [prior],
+      ),
+    ).toBe(false);
+    expect(
+      homeTaskReplaysPriorMetadata(
+        { title: "Wine research", prompt: "Research good wines near southern France." },
+        "Research those wines again",
+        [prior],
+      ),
+    ).toBe(false);
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {

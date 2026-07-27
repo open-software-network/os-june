@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   positionSidebarContextMenu,
   sidebarContextMenuAnchorIsVisible,
+  sidebarContextMenuGeometryFromStyles,
 } from "../components/sidebar/sidebar-context-menu";
 import appCss from "../styles/app.css?raw";
 
@@ -15,6 +16,8 @@ function cssRuleFor(selector: string) {
 }
 
 describe("sidebar overflow containment", () => {
+  const menuGeometry = { viewportInset: 8, anchorGap: 4 };
+
   it("lets completed sessions shrink without displacing the account footer", () => {
     expect(cssRuleFor(".sidebar-completed-section")).toContain("flex: 0 1 auto;");
     expect(cssRuleFor(".sidebar-completed-section")).toContain("overflow: hidden;");
@@ -39,6 +42,7 @@ describe("sidebar overflow containment", () => {
         { top: 100, bottom: 128, right: 232 },
         { width: 156, height: 180 },
         { width: 800, height: 600 },
+        menuGeometry,
       ),
     ).toEqual({ right: 568, top: 132 });
   });
@@ -49,6 +53,7 @@ describe("sidebar overflow containment", () => {
         { top: 548, bottom: 576, right: 232 },
         { width: 156, height: 220 },
         { width: 800, height: 600 },
+        menuGeometry,
       ),
     ).toEqual({ right: 568, top: 324 });
   });
@@ -57,17 +62,40 @@ describe("sidebar overflow containment", () => {
     const menu = { width: 156, height: 220 };
 
     expect(
-      positionSidebarContextMenu({ top: 548, bottom: 576, right: 792 }, menu, {
-        width: 900,
-        height: 620,
-      }),
+      positionSidebarContextMenu(
+        { top: 548, bottom: 576, right: 792 },
+        menu,
+        {
+          width: 900,
+          height: 620,
+        },
+        menuGeometry,
+      ),
     ).toEqual({ right: 108, top: 324 });
     expect(
-      positionSidebarContextMenu({ top: 348, bottom: 376, right: 232 }, menu, {
-        width: 640,
-        height: 420,
-      }),
+      positionSidebarContextMenu(
+        { top: 348, bottom: 376, right: 232 },
+        menu,
+        {
+          width: 640,
+          height: 420,
+        },
+        menuGeometry,
+      ),
     ).toEqual({ right: 408, top: 124 });
+  });
+
+  it("reads context-menu geometry from shared spacing tokens", () => {
+    const values = new Map([
+      ["--sp-3", "8px"],
+      ["--sp-1", "4px"],
+    ]);
+
+    expect(
+      sidebarContextMenuGeometryFromStyles({
+        getPropertyValue: (property) => values.get(property) ?? "",
+      }),
+    ).toEqual(menuGeometry);
   });
 
   it("detects when scrolling moves a menu trigger outside the viewport", () => {

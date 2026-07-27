@@ -249,7 +249,9 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
 ]);
 
 const HOME_CONVERSATION_GREETING =
-  /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$|^hello from [\p{L}\p{N}]+(?: [\p{L}\p{N}]+){0,2}$/u;
+  /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$/u;
+const HOME_CONVERSATION_HELLO_FROM =
+  /^hello\s+from\s+[\p{L}\p{N}]+(?:[ '-][\p{L}\p{N}]+){0,2}[.!?]*$/iu;
 
 function normalizedHomeAcknowledgement(message: string): string {
   return message
@@ -260,13 +262,17 @@ function normalizedHomeAcknowledgement(message: string): string {
 }
 
 export function homeConversationGreetingReply(message: string): string | undefined {
+  const visibleMessage = message.normalize("NFKC").trim();
   const normalized = message
     .normalize("NFKC")
     .toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .replace(/\s+/g, " ");
-  return HOME_CONVERSATION_GREETING.test(normalized) ? "Hey! What can I help with?" : undefined;
+  return HOME_CONVERSATION_GREETING.test(normalized) ||
+    HOME_CONVERSATION_HELLO_FROM.test(visibleMessage)
+    ? "Hey! What can I help with?"
+    : undefined;
 }
 
 const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
@@ -349,7 +355,7 @@ const HOME_TASK_ACTION_REQUEST =
 const HOME_TASK_ACTION_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:analy[sz]e|build|check|compare|create|draft|edit|email|explore|find|fix|generate|help me|investigate|look into|make|plan|prepare|research|review|schedule|search|start|summari[sz]e|update|write)\b/i;
 const HOME_TASK_REPEAT_NEGATION =
-  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,2}(?:again|continue|redo|repeat|resume)\b/i;
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,8}(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_NEGATION =
   /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
 
@@ -390,6 +396,43 @@ function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskReques
   return shared / Math.max(leftTokens.size, rightTokens.size);
 }
 
+function matchingPriorHomeTaskHandoffs(
+  task: JuneHomeTaskRequest,
+  handoffs: HomeTaskHandoff[],
+): HomeTaskHandoff[] {
+  return handoffs.filter((handoff) => homeTaskSimilarity(task, handoff) >= 0.6);
+}
+
+function latestHomeTaskNovelGrounding(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  matchingHandoffs: HomeTaskHandoff[],
+): { hasNovelGrounding: boolean; taskUsesNovelGrounding: boolean } {
+  const latestTokens = homeTaskGroundingTokens(latestMessage);
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  const priorTokens = matchingHandoffs.map((handoff) =>
+    homeTaskGroundingTokens(`${handoff.title} ${handoff.prompt}`),
+  );
+  const novelGrounding = [...latestTokens].filter((token) =>
+    priorTokens.every((tokens) => !tokens.has(token)),
+  );
+  return {
+    hasNovelGrounding: novelGrounding.length > 0,
+    taskUsesNovelGrounding: novelGrounding.some((token) => taskTokens.has(token)),
+  };
+}
+
+export function homeTaskReplaysPriorMetadata(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  handoffs: HomeTaskHandoff[],
+): boolean {
+  const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
+  if (matchingHandoffs.length === 0) return false;
+  const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
+  return grounding.hasNovelGrounding && !grounding.taskUsesNovelGrounding;
+}
+
 export function isHomeTaskReplayWithoutNewIntent(
   task: JuneHomeTaskRequest,
   latestMessage: string,
@@ -401,9 +444,12 @@ export function isHomeTaskReplayWithoutNewIntent(
   const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
   const actionCount =
     intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
-  const matchesPriorHandoff = handoffs.some((handoff) => homeTaskSimilarity(task, handoff) >= 0.6);
-  if (!matchesPriorHandoff) return false;
+  const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
+  if (matchingHandoffs.length === 0) return false;
   if (homeConversationGreetingReply(latestMessage)) return true;
+  if (latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs).taskUsesNovelGrounding) {
+    return false;
+  }
   if (negatesRepeat || negatesContext || (negatesAction && actionCount < 2)) return true;
   return false;
 }

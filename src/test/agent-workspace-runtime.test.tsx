@@ -398,6 +398,9 @@ describe("AgentWorkspace runtime wiring", () => {
         mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
       ).toHaveLength(2),
     );
+    expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
+      request: expect.objectContaining({ title: "Plan a trip to Rome" }),
+    });
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
         request: expect.objectContaining({

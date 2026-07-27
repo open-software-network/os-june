@@ -10,8 +10,26 @@ type ViewportSize = {
   height: number;
 };
 
-const VIEWPORT_INSET = 8;
-const ANCHOR_GAP = 4;
+export type SidebarContextMenuGeometry = {
+  viewportInset: number;
+  anchorGap: number;
+};
+
+type CssCustomPropertyReader = Pick<CSSStyleDeclaration, "getPropertyValue">;
+
+function cssPixelValue(styles: CssCustomPropertyReader, property: string): number {
+  const value = Number.parseFloat(styles.getPropertyValue(property));
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+export function sidebarContextMenuGeometryFromStyles(
+  styles: CssCustomPropertyReader,
+): SidebarContextMenuGeometry {
+  return {
+    viewportInset: cssPixelValue(styles, "--sp-3"),
+    anchorGap: cssPixelValue(styles, "--sp-1"),
+  };
+}
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(Math.max(value, minimum), maximum);
@@ -56,14 +74,16 @@ export function positionSidebarContextMenu(
   anchor: SidebarContextMenuAnchor,
   menu: MenuSize,
   viewport: ViewportSize,
+  geometry: SidebarContextMenuGeometry,
 ): { right: number; top: number } {
-  const maximumRight = Math.max(VIEWPORT_INSET, viewport.width - menu.width - VIEWPORT_INSET);
-  const right = clamp(viewport.width - anchor.right, VIEWPORT_INSET, maximumRight);
-  const maximumTop = Math.max(VIEWPORT_INSET, viewport.height - menu.height - VIEWPORT_INSET);
-  const belowTop = anchor.bottom + ANCHOR_GAP;
-  const aboveTop = anchor.top - ANCHOR_GAP - menu.height;
+  const { viewportInset, anchorGap } = geometry;
+  const maximumRight = Math.max(viewportInset, viewport.width - menu.width - viewportInset);
+  const right = clamp(viewport.width - anchor.right, viewportInset, maximumRight);
+  const maximumTop = Math.max(viewportInset, viewport.height - menu.height - viewportInset);
+  const belowTop = anchor.bottom + anchorGap;
+  const aboveTop = anchor.top - anchorGap - menu.height;
 
   if (belowTop <= maximumTop) return { right, top: belowTop };
-  if (aboveTop >= VIEWPORT_INSET) return { right, top: aboveTop };
-  return { right, top: clamp(belowTop, VIEWPORT_INSET, maximumTop) };
+  if (aboveTop >= viewportInset) return { right, top: aboveTop };
+  return { right, top: clamp(belowTop, viewportInset, maximumTop) };
 }
