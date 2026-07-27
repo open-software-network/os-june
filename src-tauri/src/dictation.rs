@@ -390,6 +390,12 @@ impl DictationTakeState {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (*generation == expected_generation).then(operation)
     }
+
+    fn lock_helper_commands(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.helper_command_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 async fn run_dictation_take_step<F, T>(take: &DictationTakeToken, future: F) -> Option<T>
@@ -801,10 +807,16 @@ struct ShortcutActivationController {
     /// Updated only from helper lifecycle events. Unlike `active_mode`, this
     /// also reflects recordings started by the composer button.
     helper_is_listening: bool,
-    /// Cleared as soon as a replacement start is ordered, before the helper
-    /// acknowledges it. This prevents a delayed terminal event from the
-    /// previous take from resetting the replacement shortcut activation.
+    /// The take the helper has acknowledged with `listening_started`.
     helper_take_id: Option<String>,
+    /// A start command written to the helper but not yet acknowledged. Keeping
+    /// it separate from confirmed ownership lets a correlated rejection roll
+    /// back the attempted start without losing control of the prior take.
+    pending_helper_take_id: Option<String>,
+    /// Set after this helper process emits any take-correlated lifecycle
+    /// event. Once negotiated, an untagged take-owned event cannot terminate a
+    /// tagged active take; untagged global errors remain event-only.
+    helper_uses_take_ids: bool,
     push_to_talk_is_down: bool,
     push_started_at: Option<Instant>,
     toggle_command_in_flight: bool,
@@ -825,6 +837,13 @@ enum DictationCommand {
     StopAndPaste,
     DiscardListening,
     ToggleListening,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelperLifecycleDisposition {
+    Apply,
+    EmitOnly,
+    Ignore,
 }
 
 impl ShortcutActivationController {
@@ -922,12 +941,16 @@ impl ShortcutActivationController {
     fn set_helper_listening(&mut self, listening: bool, take_id: Option<&str>) {
         self.helper_is_listening = listening;
         if listening {
+            self.helper_uses_take_ids |= take_id.is_some();
             self.helper_take_id = take_id.map(str::to_string);
+            if self.pending_helper_take_id.as_deref() == take_id {
+                self.pending_helper_take_id = None;
+            }
         }
     }
 
     fn prepare_helper_start(&mut self, take_id: &str) {
-        self.helper_take_id = Some(take_id.to_string());
+        self.pending_helper_take_id = Some(take_id.to_string());
     }
 
     fn prepare_renderer_command(
@@ -937,8 +960,14 @@ impl ShortcutActivationController {
         current_take_id: Option<String>,
     ) -> (bool, Option<String>) {
         let starts_recording = command_type == "start_listening"
-            || (command_type == "toggle_listening" && !self.helper_is_listening);
-        let active_take_id = self.helper_take_id.clone().or(current_take_id);
+            || (command_type == "toggle_listening"
+                && !self.helper_is_listening
+                && self.pending_helper_take_id.is_none());
+        let active_take_id = self
+            .pending_helper_take_id
+            .clone()
+            .or_else(|| self.helper_take_id.clone())
+            .or(current_take_id);
         let take_id = requested_take_id.or_else(|| {
             starts_recording
                 .then(|| uuid::Uuid::new_v4().to_string())
@@ -946,7 +975,14 @@ impl ShortcutActivationController {
         });
 
         if helper_command_type_resets_shortcut_activation(command_type) {
-            self.reset();
+            let targets_input_activation = take_id.as_deref().map_or(true, |take_id| {
+                self.pending_helper_take_id.as_deref() == Some(take_id)
+                    || (self.pending_helper_take_id.is_none()
+                        && self.helper_take_id.as_deref() == Some(take_id))
+            });
+            if targets_input_activation {
+                self.reset_input_activation();
+            }
         }
         if starts_recording {
             if let Some(take_id) = take_id.as_deref() {
@@ -957,37 +993,134 @@ impl ShortcutActivationController {
         (starts_recording, take_id)
     }
 
+    fn matches_helper_take(&self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        self.pending_helper_take_id.as_deref() == Some(take_id)
+            || self.helper_take_id.as_deref() == Some(take_id)
+            || (self.pending_helper_take_id.is_none()
+                && self.helper_take_id.is_none()
+                && current_take_id == Some(take_id))
+    }
+
+    fn matches_delivery_take(&self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        if let Some(pending_take_id) = self.pending_helper_take_id.as_deref() {
+            return pending_take_id == take_id;
+        }
+        self.helper_take_id.as_deref() == Some(take_id)
+            || (self.helper_take_id.is_none() && current_take_id == Some(take_id))
+    }
+
     fn reset_for_helper_discard(
         &mut self,
         take_id: Option<&str>,
         reason: Option<&str>,
         current_take_id: Option<&str>,
-    ) -> bool {
+    ) -> HelperLifecycleDisposition {
+        self.helper_uses_take_ids |= take_id.is_some();
         let matches_active_take = match take_id {
-            Some(take_id) => self
-                .helper_take_id
-                .as_deref()
-                .or(current_take_id)
-                .is_some_and(|active_take_id| active_take_id == take_id),
+            Some(take_id) => self.matches_helper_take(take_id, current_take_id),
             // New helpers explain untagged terminal events such as a
             // start-pending stop. A payload with neither field is an older
             // helper, where resetting remains the compatible behavior.
-            None => reason.is_none(),
+            None => reason.is_none() && !self.helper_uses_take_ids,
         };
         if !matches_active_take {
-            return false;
+            return HelperLifecycleDisposition::Ignore;
         }
-        self.reset();
-        true
+        let preserves_confirmed_take = if let Some(take_id) = take_id {
+            self.finish_helper_take(take_id, current_take_id)
+        } else {
+            self.reset();
+            false
+        };
+        if preserves_confirmed_take {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Apply
+        }
+    }
+
+    fn finish_helper_take(&mut self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        let finished_pending = self.pending_helper_take_id.as_deref() == Some(take_id);
+        let finished_confirmed = self.helper_take_id.as_deref() == Some(take_id);
+        let preserves_confirmed_take = finished_pending
+            && self
+                .helper_take_id
+                .as_deref()
+                .is_some_and(|confirmed| confirmed != take_id);
+        if finished_pending {
+            self.pending_helper_take_id = None;
+            self.reset_input_activation();
+        }
+        if finished_confirmed {
+            self.helper_take_id = None;
+            self.helper_is_listening = false;
+            self.helper_finalizing_since = None;
+            if self.pending_helper_take_id.is_none() {
+                self.reset_input_activation();
+            }
+        }
+        if !finished_pending
+            && !finished_confirmed
+            && self.pending_helper_take_id.is_none()
+            && self.helper_take_id.is_none()
+            && current_take_id == Some(take_id)
+        {
+            self.reset();
+        }
+        preserves_confirmed_take
+    }
+
+    fn finish_for_helper_event(
+        &mut self,
+        take_id: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> HelperLifecycleDisposition {
+        let Some(take_id) = take_id else {
+            self.reset();
+            return HelperLifecycleDisposition::Apply;
+        };
+        self.helper_uses_take_ids = true;
+        if !self.matches_helper_take(take_id, current_take_id) {
+            return HelperLifecycleDisposition::Ignore;
+        }
+        if self.finish_helper_take(take_id, current_take_id) {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Apply
+        }
     }
 
     fn clear_helper_take(&mut self) {
         self.helper_take_id = None;
+        self.pending_helper_take_id = None;
+    }
+
+    fn clear_helper_protocol(&mut self) {
+        self.clear_helper_take();
+        self.helper_uses_take_ids = false;
+    }
+
+    fn untagged_take_event_disposition(
+        &self,
+        event_type: Option<&str>,
+    ) -> HelperLifecycleDisposition {
+        if !self.helper_uses_take_ids
+            || (self.helper_take_id.is_none() && self.pending_helper_take_id.is_none())
+        {
+            return HelperLifecycleDisposition::Apply;
+        }
+        if event_type == Some("error") {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Ignore
+        }
     }
 
     fn command_starts_recording(&self, command: DictationCommand) -> bool {
         matches!(command, DictationCommand::StartListening)
-            || (matches!(command, DictationCommand::ToggleListening) && !self.helper_is_listening)
+            || (matches!(command, DictationCommand::ToggleListening)
+                && !self.helper_is_listening
+                && self.pending_helper_take_id.is_none())
     }
 
     fn track_composer_request(&mut self, request_id: Option<String>) {
@@ -1004,19 +1137,26 @@ impl ShortcutActivationController {
         if self.pending_composer_request_id.as_deref() != Some(request_id) {
             return false;
         }
-        self.reset();
+        self.pending_composer_request_id = None;
+        self.pending_helper_take_id = None;
+        self.reset_input_activation();
         true
     }
 
     fn reset(&mut self) {
-        self.active_mode = None;
+        self.reset_input_activation();
         self.helper_take_id = None;
+        self.pending_helper_take_id = None;
+        self.helper_finalizing_since = None;
+        self.pending_composer_request_id = None;
+    }
+
+    fn reset_input_activation(&mut self) {
+        self.active_mode = None;
         self.push_to_talk_is_down = false;
         self.push_started_at = None;
         self.toggle_command_in_flight = false;
         self.last_toggle_command_at = None;
-        self.helper_finalizing_since = None;
-        self.pending_composer_request_id = None;
     }
 }
 
@@ -2656,7 +2796,10 @@ fn handle_shortcut_key_event(
                     let command_take_id = if starts_recording {
                         Some(uuid::Uuid::new_v4().to_string())
                     } else {
-                        state.helper_take_id.clone()
+                        state
+                            .pending_helper_take_id
+                            .clone()
+                            .or_else(|| state.helper_take_id.clone())
                     };
                     if let Some(take_id) = command_take_id.as_deref().filter(|_| starts_recording) {
                         state.prepare_helper_start(take_id);
@@ -2799,7 +2942,18 @@ fn clear_shortcut_helper_take(app: &AppHandle) {
     }
 }
 
-fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value) -> bool {
+fn clear_shortcut_helper_protocol(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.clear_helper_protocol();
+        }
+    }
+}
+
+fn reset_shortcut_for_helper_discard(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> HelperLifecycleDisposition {
     let take_id = dictation_take_id_from_event(event);
     let reason = dictation_discard_reason_from_event(event);
     let current_take_id = app
@@ -2814,7 +2968,154 @@ fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value)
             );
         }
     }
-    false
+    HelperLifecycleDisposition::Ignore
+}
+
+fn finish_shortcut_for_helper_event(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> HelperLifecycleDisposition {
+    let take_id = dictation_take_id_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            return controller.finish_for_helper_event(take_id, current_take_id.as_deref());
+        }
+    }
+    if take_id.is_some() && current_take_id.as_deref() != take_id {
+        HelperLifecycleDisposition::Ignore
+    } else {
+        HelperLifecycleDisposition::Apply
+    }
+}
+
+fn helper_event_matches_active_take(app: &AppHandle, event: &serde_json::Value) -> bool {
+    let Some(take_id) = dictation_take_id_from_event(event) else {
+        return true;
+    };
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(controller) = state.controller.lock() {
+            return controller.matches_helper_take(take_id, current_take_id.as_deref());
+        }
+    }
+    current_take_id.as_deref() == Some(take_id)
+}
+
+fn dictation_delivery_matches_active_take(app: &AppHandle, take_id: &str) -> bool {
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(controller) = state.controller.lock() {
+            return controller.matches_delivery_take(take_id, current_take_id.as_deref());
+        }
+    }
+    current_take_id.as_deref() == Some(take_id)
+}
+
+fn helper_audio_level_matches_active_take(app: &AppHandle, event: &serde_json::Value) -> bool {
+    let Some(take_id) = dictation_take_id_from_event(event) else {
+        return true;
+    };
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state.controller.lock().ok().map(|controller| {
+                controller.helper_is_listening
+                    && controller.helper_take_id.as_deref() == Some(take_id)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn note_helper_take_protocol(app: &AppHandle, event: Option<&serde_json::Value>) {
+    if event.and_then(dictation_take_id_from_event).is_none() {
+        return;
+    }
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.helper_uses_take_ids = true;
+        }
+    }
+}
+
+fn helper_event_serializes_with_commands(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some(
+            "audio_level"
+                | "recording_discarded"
+                | "finalizing_transcript"
+                | "final_transcript"
+                | "paste_target"
+                | "paste_completed"
+                | "error"
+        )
+    )
+}
+
+fn helper_event_requires_take_match(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some(
+            "finalizing_transcript"
+                | "final_transcript"
+                | "paste_target"
+                | "paste_completed"
+                | "error"
+        )
+    )
+}
+
+fn untagged_take_event_disposition(
+    app: &AppHandle,
+    event_type: Option<&str>,
+    event: Option<&serde_json::Value>,
+) -> HelperLifecycleDisposition {
+    if event.and_then(dictation_take_id_from_event).is_some()
+        || !matches!(
+            event_type,
+            Some(
+                "audio_level"
+                    | "finalizing_transcript"
+                    | "final_transcript"
+                    | "paste_target"
+                    | "paste_completed"
+                    | "error"
+            )
+        )
+    {
+        return HelperLifecycleDisposition::Apply;
+    }
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .map(|controller| controller.untagged_take_event_disposition(event_type))
+        })
+        .unwrap_or(HelperLifecycleDisposition::Apply)
+}
+
+fn emit_helper_event_without_lifecycle(app: &AppHandle, mut event: serde_json::Value) {
+    if let Some(payload) = event
+        .get_mut("payload")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        payload.insert(
+            "preserveActiveTake".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    annotate_silent_error(&mut event);
+    let event_type = event.get("type").and_then(serde_json::Value::as_str);
+    append_dictation_event_log(app, event_type, &event);
+    let _ = app.emit("dictation-event", event.to_string());
 }
 
 fn send_dictation_command(
@@ -2874,7 +3175,7 @@ fn send_dictation_command(
                             command_take_id.as_deref(),
                         );
                         reset_shortcut_activation(&app);
-                        notify_dictation_not_signed_in(&app);
+                        notify_dictation_not_signed_in(&app, None);
                         forwarded
                     });
                 }
@@ -2965,7 +3266,7 @@ const NOT_SIGNED_IN_DEDUPE_MS: u64 = 2_000;
 /// Emits the signed-out prompt and pulls the app forward, unless the same
 /// prompt fired within the dedupe window. Owns the focus pull too, so
 /// callers can't split the prompt from it.
-fn notify_dictation_not_signed_in(app: &AppHandle) {
+fn notify_dictation_not_signed_in(app: &AppHandle, take: Option<&DictationTakeToken>) {
     use std::sync::atomic::Ordering;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2982,7 +3283,11 @@ fn notify_dictation_not_signed_in(app: &AppHandle) {
         // Another path won the race within the same window.
         return;
     }
-    emit_dictation_event_value(app, dictation_not_signed_in_event());
+    if let Some(take) = take {
+        emit_dictation_take_event(app, take, dictation_not_signed_in_event());
+    } else {
+        emit_dictation_event_value(app, dictation_not_signed_in_event());
+    }
     focus_main_window(app);
 }
 
@@ -4327,7 +4632,7 @@ fn reapply_helper_settings(app: &AppHandle) {
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
     update_shortcut_helper_listening(app, false, None);
-    clear_shortcut_helper_take(app);
+    clear_shortcut_helper_protocol(app);
     let event = helper_unavailable_event(reason, message);
     if let Some(status) = app.try_state::<HotkeyStatus>() {
         set_hotkey_status(&status, event.clone());
@@ -4341,15 +4646,67 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .as_ref()
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
+    let take_state = app.try_state::<DictationTakeState>();
+    // A helper outcome and a replacement command must have one total order.
+    // If the outcome wins, its whole lifecycle transition and frontend emit
+    // finish before the replacement is prepared. If the command wins, its
+    // take correlation is already installed and the stale outcome is ignored.
+    let _helper_command_guard = helper_event_serializes_with_commands(event_type)
+        .then(|| {
+            take_state
+                .as_ref()
+                .map(|state| state.lock_helper_commands())
+        })
+        .flatten();
+    note_helper_take_protocol(app, event.as_ref());
 
-    if let (Some("recording_discarded"), Some(event)) = (event_type, event.as_ref()) {
-        if !reset_shortcut_for_helper_discard(app, event) {
-            tracing::info!(
-                take_id = dictation_take_id_from_event(event),
-                "ignoring discard event that does not belong to the active dictation take"
-            );
-            return;
+    if event_type == Some("audio_level")
+        && event
+            .as_ref()
+            .is_some_and(|event| !helper_audio_level_matches_active_take(app, event))
+    {
+        return;
+    }
+    if helper_event_requires_take_match(event_type)
+        && event
+            .as_ref()
+            .is_some_and(|event| !helper_event_matches_active_take(app, event))
+    {
+        if event_type == Some("error") {
+            handle_shortcut_composer_response(app, event_type, event.as_ref());
+            if let Some(event) = event.as_ref().cloned() {
+                emit_helper_event_without_lifecycle(app, event);
+            }
         }
+        tracing::info!(
+            event_type,
+            take_id = event.as_ref().and_then(dictation_take_id_from_event),
+            "ignoring helper lifecycle event that does not belong to the active dictation take"
+        );
+        return;
+    }
+    let lifecycle_disposition =
+        match untagged_take_event_disposition(app, event_type, event.as_ref()) {
+            HelperLifecycleDisposition::Apply => match (event_type, event.as_ref()) {
+                (Some("recording_discarded"), Some(event)) => {
+                    reset_shortcut_for_helper_discard(app, event)
+                }
+                (Some("final_transcript" | "error"), Some(event))
+                    if dictation_take_id_from_event(event).is_some() =>
+                {
+                    finish_shortcut_for_helper_event(app, event)
+                }
+                _ => HelperLifecycleDisposition::Apply,
+            },
+            disposition => disposition,
+        };
+    if lifecycle_disposition == HelperLifecycleDisposition::Ignore {
+        tracing::info!(
+            event_type,
+            take_id = event.as_ref().and_then(dictation_take_id_from_event),
+            "ignoring helper lifecycle event that does not belong to the active dictation take"
+        );
+        return;
     }
 
     match (event_type, event.as_ref()) {
@@ -4367,6 +4724,12 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         consume_started_composer_registration(&state, event_type, event);
     }
     handle_shortcut_composer_response(app, event_type, event.as_ref());
+    if lifecycle_disposition == HelperLifecycleDisposition::EmitOnly {
+        if let Some(event) = event {
+            emit_helper_event_without_lifecycle(app, event);
+        }
+        return;
+    }
 
     if matches!(
         event_type,
@@ -4378,16 +4741,25 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     }
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
-    if matches!(
+    let correlated_terminal_transition = matches!(
         event_type,
-        Some(
-            "listening_started"
-                | "finalizing_transcript"
-                | "recording_discarded"
-                | "final_transcript"
-                | "error"
+        Some("recording_discarded" | "final_transcript" | "error")
+    ) && event
+        .as_ref()
+        .and_then(dictation_take_id_from_event)
+        .is_some();
+    if !correlated_terminal_transition
+        && matches!(
+            event_type,
+            Some(
+                "listening_started"
+                    | "finalizing_transcript"
+                    | "recording_discarded"
+                    | "final_transcript"
+                    | "error"
+            )
         )
-    ) {
+    {
         acknowledge_shortcut_toggle(app);
     }
     match event_type {
@@ -4403,7 +4775,9 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
             update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, true);
         }
-        Some("recording_discarded" | "final_transcript" | "error") => {
+        Some("recording_discarded" | "final_transcript" | "error")
+            if !correlated_terminal_transition =>
+        {
             update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, false);
         }
@@ -4414,7 +4788,9 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     // so a stale terminal event cannot clear the replacement take's flags.
     match (event_type, event.as_ref()) {
         (Some("recording_discarded"), None) => reset_shortcut_activation(app),
-        (Some("final_transcript" | "error"), _) => clear_shortcut_helper_take(app),
+        (Some("final_transcript" | "error"), _) if !correlated_terminal_transition => {
+            clear_shortcut_helper_take(app)
+        }
         _ => {}
     }
 
@@ -4459,7 +4835,11 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
                     }
                     let state = app.state::<HelperState>();
                     let _ = send_helper_command(&state, command);
-                    emit_dictation_event_value(app, app_error_event(error));
+                    if let Some(take_id) = take_id {
+                        emit_dictation_take_id_event(app, take_id, app_error_event(error));
+                    } else {
+                        emit_dictation_event_value(app, app_error_event(error));
+                    }
                 }
             }
         }
@@ -4493,7 +4873,10 @@ fn handle_shortcut_composer_response(
     if event_type == Some("listening_started") {
         clear_shortcut_composer_request(app, request_id);
     } else if event_type == Some("error")
-        && payload.get("code").and_then(serde_json::Value::as_str) == Some("composer_delivery_busy")
+        && matches!(
+            payload.get("code").and_then(serde_json::Value::as_str),
+            Some("composer_delivery_busy" | "recording_start_busy" | "recording_start_failed")
+        )
     {
         if let Some(state) = app.try_state::<ShortcutActivationState>() {
             if let Ok(mut controller) = state.controller.lock() {
@@ -4547,6 +4930,32 @@ async fn transcribe_recording_ready(
 fn add_dictation_take_id(command: &mut serde_json::Value, claim: &DictationDeliveryClaim) {
     if let Some(object) = command.as_object_mut() {
         object.insert("takeId".into(), serde_json::json!(claim.take.id()));
+    }
+}
+
+fn add_dictation_take_id_to_event(event: &mut serde_json::Value, take_id: &str) {
+    if let Some(payload) = event
+        .get_mut("payload")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        payload.insert("takeId".into(), serde_json::json!(take_id));
+    }
+}
+
+fn emit_dictation_take_event(app: &AppHandle, take: &DictationTakeToken, event: serde_json::Value) {
+    emit_dictation_take_id_event(app, take.id(), event);
+}
+
+fn emit_dictation_take_id_event(app: &AppHandle, take_id: &str, mut event: serde_json::Value) {
+    add_dictation_take_id_to_event(&mut event, take_id);
+    let take_state = app.try_state::<DictationTakeState>();
+    let _helper_command_guard = take_state
+        .as_ref()
+        .map(|state| state.lock_helper_commands());
+    if dictation_delivery_matches_active_take(app, take_id) {
+        emit_dictation_event_value(app, event);
+    } else {
+        emit_helper_event_without_lifecycle(app, event);
     }
 }
 
@@ -4634,7 +5043,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                emit_dictation_event_value(app, app_error_event(error));
+                emit_dictation_take_event(app, take, app_error_event(error));
             }
             return;
         }
@@ -4648,7 +5057,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                notify_dictation_not_signed_in(app);
+                notify_dictation_not_signed_in(app, Some(take));
             }
             let _ = std::fs::remove_file(&audio_path);
             return;
@@ -4666,7 +5075,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                emit_dictation_event_value(app, app_error_event(error));
+                emit_dictation_take_event(app, take, app_error_event(error));
             }
             let _ = std::fs::remove_file(&audio_path);
             return;
@@ -4699,7 +5108,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                emit_dictation_event_value(app, app_error_event(error));
+                emit_dictation_take_event(app, take, app_error_event(error));
             }
             return;
         }
@@ -4874,7 +5283,7 @@ fn deliver_dictation_outcome(
     }
     if let Err(error) = send_claimed_dictation_take_command(app, &claim, helper_command) {
         update_shortcut_helper_finalizing(app, false);
-        emit_dictation_event_value(app, app_error_event(error));
+        emit_dictation_take_event(app, &claim.take, app_error_event(error));
         let _ = std::fs::remove_file(audio_path);
         return;
     }
@@ -4885,7 +5294,7 @@ fn deliver_dictation_outcome(
     // leaving Fn suppressed until the 30-second safety timeout expired.
     update_shortcut_helper_finalizing(app, false);
     if let Some(event) = outcome.event {
-        emit_dictation_event_value(app, event);
+        emit_dictation_take_event(app, &claim.take, event);
     }
     let _ = std::fs::remove_file(audio_path);
 }
@@ -4913,8 +5322,9 @@ fn retain_low_speech_evidence_recording(
         }
         Err(error) => {
             update_shortcut_helper_finalizing(app, false);
-            emit_dictation_event_value(
+            emit_dictation_take_event(
                 app,
+                &claim.take,
                 app_error_event(AppError::new(
                     "dictation_recovery_unavailable",
                     "June couldn't save this dictation. The recording was kept for recovery.",
@@ -8262,7 +8672,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_helper_discard_does_not_reset_a_replacement_shortcut() {
+    fn confirmed_previous_discard_preserves_a_pending_replacement_shortcut() {
         let mut controller = ShortcutActivationController::default();
         let down = Instant::now();
         let up = down + PUSH_TO_TALK_MIN_HOLD;
@@ -8278,15 +8688,54 @@ mod tests {
         );
         controller.prepare_helper_start("take-b");
 
-        assert!(!controller.reset_for_helper_discard(
-            Some("take-a"),
-            Some("command"),
-            Some("take-a"),
-        ));
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-a"), Some("command"), Some("take-a"),),
+            HelperLifecycleDisposition::Apply
+        );
+        assert!(controller.helper_take_id.is_none());
+        assert_eq!(controller.pending_helper_take_id.as_deref(), Some("take-b"));
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             Some(DictationCommand::StopAndPaste)
         );
+    }
+
+    #[test]
+    fn pending_start_rejection_preserves_the_confirmed_take() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-b"), Some("take-a")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn stale_terminal_event_cannot_finish_a_confirmed_replacement() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-a"), Some("take-a")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-b"));
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn pending_replacement_owns_new_delivery_lifecycle_events() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert!(!controller.matches_delivery_take("take-a", Some("take-a")));
+        assert!(controller.matches_delivery_take("take-b", Some("take-a")));
     }
 
     #[test]
@@ -8306,11 +8755,10 @@ mod tests {
         controller.prepare_helper_start("take-b");
         controller.set_helper_listening(true, Some("take-b"));
 
-        assert!(controller.reset_for_helper_discard(
-            Some("take-b"),
-            Some("escape"),
-            Some("take-b"),
-        ));
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-b"), Some("escape"), Some("take-b"),),
+            HelperLifecycleDisposition::Apply
+        );
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             None
@@ -8333,11 +8781,10 @@ mod tests {
         );
         controller.prepare_helper_start("take-b");
 
-        assert!(!controller.reset_for_helper_discard(
-            None,
-            Some("start_cancelled"),
-            Some("take-b"),
-        ));
+        assert_eq!(
+            controller.reset_for_helper_discard(None, Some("start_cancelled"), Some("take-b"),),
+            HelperLifecycleDisposition::Ignore
+        );
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             Some(DictationCommand::StopAndPaste)
@@ -8381,11 +8828,34 @@ mod tests {
             ),
             Some(DictationCommand::StartListening)
         );
-        assert!(controller.reset_for_helper_discard(None, None, Some("take-b")));
+        assert_eq!(
+            controller.reset_for_helper_discard(None, None, Some("take-b")),
+            HelperLifecycleDisposition::Apply
+        );
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             None
         );
+    }
+
+    #[test]
+    fn negotiated_take_protocol_rejects_untagged_take_outcomes() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+
+        assert_eq!(
+            controller.untagged_take_event_disposition(Some("final_transcript")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(
+            controller.untagged_take_event_disposition(Some("error")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+        assert_eq!(
+            controller.reset_for_helper_discard(None, None, Some("take-a")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
     }
 
     #[test]
@@ -8724,13 +9194,44 @@ mod tests {
 
         assert!(!starts_recording);
         assert_eq!(take_id.as_deref(), Some("take-a"));
-        assert!(controller.helper_take_id.is_none());
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
         assert!(controller.helper_is_listening);
-        assert!(controller.reset_for_helper_discard(
-            Some("take-a"),
-            Some("command"),
-            Some("take-a"),
-        ));
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-a"), Some("command"), Some("take-a"),),
+            HelperLifecycleDisposition::Apply
+        );
+    }
+
+    #[test]
+    fn stale_renderer_terminal_command_does_not_reset_the_replacement_take() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        let (_, take_id) = controller.prepare_renderer_command(
+            "discard_recording",
+            Some("take-a".to_string()),
+            Some("take-a".to_string()),
+        );
+        assert_eq!(take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_take_id.is_none());
+        assert_eq!(controller.pending_helper_take_id.as_deref(), Some("take-b"));
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Up,
+                DictationShortcutKind::PushToTalk,
+                now + PUSH_TO_TALK_MIN_HOLD,
+            ),
+            Some(DictationCommand::StopAndPaste)
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -9533,6 +10034,55 @@ mod tests {
         start_entered_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("replacement start should run after the terminal write");
+        replacement
+            .join()
+            .expect("replacement start thread should finish");
+    }
+
+    #[test]
+    fn replacement_start_waits_for_a_correlated_helper_lifecycle_event() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        let (event_entered_tx, event_entered_rx) = mpsc::channel();
+        let (release_event_tx, release_event_rx) = mpsc::channel();
+        let event_state = Arc::clone(&state);
+        let event = thread::spawn(move || {
+            let _guard = event_state.lock_helper_commands();
+            event_entered_tx
+                .send(())
+                .expect("test should observe the helper lifecycle event");
+            release_event_rx
+                .recv()
+                .expect("test should release the helper lifecycle event");
+        });
+        event_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("helper lifecycle event should acquire the command lock");
+
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let replacement_state = Arc::clone(&state);
+        let replacement = thread::spawn(move || {
+            replacement_state.run_new_helper_command(|_| {
+                start_entered_tx
+                    .send(())
+                    .expect("test should observe the replacement start");
+            });
+        });
+        assert!(matches!(
+            start_entered_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_event_tx
+            .send(())
+            .expect("test should release the helper lifecycle event");
+        event
+            .join()
+            .expect("helper lifecycle event thread should finish");
+        start_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should run after the lifecycle event");
         replacement
             .join()
             .expect("replacement start thread should finish");

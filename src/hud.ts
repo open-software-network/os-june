@@ -1027,6 +1027,26 @@ function hideSoon(delay = 900) {
 async function handleDictationEventPayload(payload: unknown) {
   const dictationEvent = parseEvent(payload);
   if (!dictationEvent) return;
+  if (activeDictationTakeId && dictationEvent.payload?.preserveActiveTake === true) {
+    return;
+  }
+  const eventTakeId = dictationTakeId(dictationEvent);
+  if (
+    activeDictationTakeId &&
+    eventTakeId &&
+    eventTakeId !== activeDictationTakeId &&
+    [
+      "audio_level",
+      "finalizing_transcript",
+      "final_transcript",
+      "paste_target",
+      "paste_completed",
+      "recording_discarded",
+      "error",
+    ].includes(dictationEvent.type)
+  ) {
+    return;
+  }
 
   if (dictationEvent.type === "listening_started") {
     activeDictationTakeId = dictationTakeId(dictationEvent);
@@ -1066,8 +1086,6 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "finalizing_transcript") {
-    const takeId = dictationTakeId(dictationEvent);
-    if (activeDictationTakeId && takeId && takeId !== activeDictationTakeId) return;
     // Drop any level still queued from listening so it can't push a stray
     // sample into the meter after we've moved on to transcribing.
     cancelPendingAudioLevel();
@@ -1106,8 +1124,6 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "recording_discarded") {
-    const takeId = dictationTakeId(dictationEvent);
-    if (activeDictationTakeId && takeId && takeId !== activeDictationTakeId) return;
     activeDictationTakeId = undefined;
     // A grazed push-to-talk key or a signed-out session: the recording was
     // dropped without transcription, so the listening HUD just goes away.

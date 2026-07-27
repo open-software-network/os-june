@@ -23,7 +23,10 @@ request must not cancel or deliver into the new take.
   writing a start command so pending and active helper events share the same
   identity; a helper paired with an older coordinator mints a fallback.
   macOS and Windows include it in `listening_started`,
-  `finalizing_transcript`, `recording_ready`, and `recording_discarded`.
+  `audio_level`, `finalizing_transcript`, `recording_ready`,
+  `recording_discarded`, `final_transcript`, `paste_target`,
+  `paste_completed`, and take-owned errors. Rust-generated take outcomes carry
+  the same ID.
 - Rust creates one cancellation token for that take at `listening_started` and
   atomically grants its first `recording_ready` event the sole processing
   claim. Duplicate ready events cannot start another metered request. Rust
@@ -49,23 +52,35 @@ request must not cancel or deliver into the new take.
   its discard, resets the matching shortcut activation, and opens the sign-in
   surface while holding that lock. Start, stop, discard, and toggle controls
   snapshot their target take, update shortcut state, advance the generation,
-  and write the helper command under the same lock. A stale signed-out result
-  or delayed terminal-control write therefore cannot enqueue a discard, stop,
-  or state reset behind a newer start.
+  and write the helper command under the same lock. Take-owned helper
+  lifecycle events hold that lock through correlation, controller changes,
+  and frontend emission. A stale signed-out result, delayed terminal-control
+  write, or old helper outcome therefore cannot enqueue a discard, stop, or
+  lifecycle reset behind a newer start.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
   later text for it. Tagged text, stop, and discard commands cannot affect a
-  different active or pending take. The Dictation HUD sends the take ID it is
-  displaying and ignores a tagged discard from an older take. Rust also clears
-  the previous helper take correlation before writing a replacement start, so
-  a delayed discard event is rejected before generic lifecycle handling and
-  cannot clear the replacement shortcut's listening or finalizing state. New
-  helpers explain untagged terminal events with a reason; events with neither
-  a take ID nor a reason retain the older-helper reset behavior. A reasoned,
-  untagged idle event does not cancel crash-recovery work still owned by Rust.
-  Missing IDs remain accepted for compatibility with an older app or helper. A
-  replacement helper with no active take keeps ADR-0014's clipboard recovery
-  behavior for work that survived a helper crash.
+  different active or pending take. Rust tracks requested starts separately
+  from helper-confirmed ownership: `listening_started` promotes a pending ID,
+  while a correlated start rejection rolls it back without losing control of
+  the prior recording. A terminal command for an older visible take is still
+  sent for the helper to authorize, but it cannot reset the pending
+  replacement's keyboard state.
+- The Dictation HUD ignores every tagged take-owned lifecycle event from an
+  older take, not only discard. Rust rejects mismatched tagged events before
+  generic controller, microphone-duck, indicator, or window handling. A
+  matching prior-take terminal event may finish confirmed ownership while
+  preserving a pending replacement; an asynchronous paste completion cannot
+  hide that replacement after it starts. New helpers explain untagged terminal
+  events with a reason; events with neither a take ID nor a reason retain the
+  older-helper reset behavior. A reasoned, untagged idle event does not cancel
+  crash-recovery work still owned by Rust. Missing IDs remain accepted while
+  paired with an older app or helper. Once a helper emits a tagged lifecycle
+  event, an untagged take-owned outcome cannot terminate the tagged active
+  take; an untagged global error remains observable without changing that
+  take's HUD or controller. A replacement helper with no active take keeps
+  ADR-0014's clipboard recovery behavior for work that survived a helper
+  crash.
 
 ## Consequences
 

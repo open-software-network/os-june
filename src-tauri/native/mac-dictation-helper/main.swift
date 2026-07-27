@@ -24,6 +24,18 @@ func emit(_ type: String, _ payload: [String: String] = [:]) {
     fflush(stdout)
 }
 
+func takePayload(
+    _ payload: [String: String] = [:],
+    takeID: String?
+) -> [String: String] {
+    guard let takeID else {
+        return payload
+    }
+    var correlated = payload
+    correlated["takeId"] = takeID
+    return correlated
+}
+
 func emitJSON(_ type: String, _ payload: [String: Any] = [:]) {
     let event: [String: Any] = [
         "type": type,
@@ -1823,10 +1835,19 @@ final class DictationController {
 
     func start(takeID: String? = nil) {
         if startPending {
+            if takeID != activeTakeID {
+                emit("error", takePayload([
+                    "code": "recording_start_busy",
+                    "message": "Dictation is already starting.",
+                ], takeID: takeID))
+            }
             return
         }
         guard !listening else {
-            emit("error", ["code": "already_listening", "message": "Dictation is already listening."])
+            emit("error", takePayload([
+                "code": "already_listening",
+                "message": "Dictation is already listening.",
+            ], takeID: takeID))
             return
         }
 
@@ -1846,9 +1867,13 @@ final class DictationController {
                     return
                 }
                 guard microphoneAllowed else {
+                    let rejectedTakeID = self.activeTakeID
                     self.startPending = false
                     self.activeTakeID = nil
-                    emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
+                    emit("error", takePayload([
+                        "code": "microphone_permission_missing",
+                        "message": "Microphone permission is required.",
+                    ], takeID: rejectedTakeID))
                     emit("permission_status", permissionPayload())
                     return
                 }
@@ -1890,7 +1915,10 @@ final class DictationController {
             return
         }
         guard isListening, recordingPurpose == .dictation else {
-            emit("error", ["code": "not_listening", "message": "Dictation is not listening."])
+            emit("error", takePayload([
+                "code": "not_listening",
+                "message": "Dictation is not listening.",
+            ], takeID: takeID ?? activeTakeID))
             return
         }
 
@@ -1943,8 +1971,8 @@ final class DictationController {
             return
         }
 
-        emit("final_transcript", ["text": text])
-        PasteboardInserter.paste(text)
+        emit("final_transcript", takePayload(["text": text], takeID: takeID))
+        PasteboardInserter.paste(text, takeID: takeID)
         resetRecordingState()
     }
 
@@ -1958,7 +1986,7 @@ final class DictationController {
             return
         }
 
-        let copied = PasteboardInserter.copyForRecovery(text)
+        let copied = PasteboardInserter.copyForRecovery(text, takeID: takeID)
         resetRecordingState(keepRecordingFile: keepRecordingFile && !copied)
     }
 
@@ -2050,7 +2078,10 @@ final class DictationController {
             recorder.prepareToRecord()
 
             guard recorder.record() else {
-                emit("error", ["code": "audio_start_failed", "message": "Could not start microphone recording."])
+                emit("error", takePayload([
+                    "code": "audio_start_failed",
+                    "message": "Could not start microphone recording.",
+                ], takeID: activeTakeID))
                 resetRecordingState()
                 return
             }
@@ -2334,7 +2365,10 @@ final class DictationController {
         if recordingPurpose == .micTest {
             emit("mic_test_level", ["level": String(format: "%.4f", level)])
         } else {
-            emit("audio_level", ["level": String(format: "%.4f", level)])
+            emit("audio_level", takePayload(
+                ["level": String(format: "%.4f", level)],
+                takeID: activeTakeID
+            ))
         }
     }
 
@@ -2363,7 +2397,10 @@ final class DictationController {
         if purpose == .micTest {
             emit("mic_test_error", ["code": code, "message": message])
         } else {
-            emit("error", ["code": code, "message": message])
+            emit("error", takePayload(
+                ["code": code, "message": message],
+                takeID: activeTakeID
+            ))
         }
     }
 
@@ -2446,20 +2483,23 @@ enum PasteboardInserter {
     /// to read the transcript from the pasteboard.
     private static let pasteboardRestoreDelay: TimeInterval = 0.7
 
-    private static func emitPasteTargetUnavailable() {
-        emit("error", [
+    private static func emitPasteTargetUnavailable(takeID: String?) {
+        emit("error", takePayload([
             "code": "paste_target_unavailable",
             "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
-        ])
+        ], takeID: takeID))
     }
 
-    static func paste(_ text: String) {
+    static func paste(_ text: String, takeID: String?) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            emit("error", ["code": "pasteboard_write_failed", "message": "Could not write transcript to the clipboard."])
+            emit("error", takePayload([
+                "code": "pasteboard_write_failed",
+                "message": "Could not write transcript to the clipboard.",
+            ], takeID: takeID))
             restore(snapshot, to: pasteboard)
             return
         }
@@ -2475,23 +2515,23 @@ enum PasteboardInserter {
         // permission state so the in-app Accessibility banner appears.
         guard AXIsProcessTrusted() else {
             emit("permission_status", permissionPayload())
-            emit("error", [
+            emit("error", takePayload([
                 "code": "accessibility_permission_missing",
                 "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
-            ])
+            ], takeID: takeID))
             return
         }
 
         guard let target = FocusTargetController.shared.pasteTarget() else {
-            emitPasteTargetUnavailable()
+            emitPasteTargetUnavailable(takeID: takeID)
             return
         }
 
         let targetActivated = target.isActive ? true : target.activate(options: [])
-        emit("paste_target", [
+        emit("paste_target", takePayload([
             "app": FocusTargetController.shared.pasteTargetDescription(),
             "activated": boolStatus(targetActivated),
-        ])
+        ], takeID: takeID))
 
         waitForActivation(
             of: target,
@@ -2503,12 +2543,12 @@ enum PasteboardInserter {
             // abandon the paste rather than guess: the transcript is already on
             // the clipboard, and a manual Cmd+V beats text in the wrong app.
             guard targetIsFrontmost else {
-                emitPasteTargetUnavailable()
+                emitPasteTargetUnavailable(takeID: takeID)
                 return
             }
 
             postPasteShortcut()
-            emit("paste_completed")
+            emit("paste_completed", takePayload(takeID: takeID))
 
             DispatchQueue.global().asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
                 if pasteboard.string(forType: .string) == text {
@@ -2521,24 +2561,24 @@ enum PasteboardInserter {
     /// Last-resort recovery when Dictation history could not save a transcript.
     /// Unlike a normal paste, the clipboard is deliberately not restored after
     /// a successful write.
-    static func copyForRecovery(_ text: String) -> Bool {
+    static func copyForRecovery(_ text: String, takeID: String?) -> Bool {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             restore(snapshot, to: pasteboard)
-            emit("error", [
+            emit("error", takePayload([
                 "code": "pasteboard_write_failed",
                 "message": "Could not save or copy this dictation. The recording was kept for recovery.",
-            ])
+            ], takeID: takeID))
             return false
         }
 
-        emit("error", [
+        emit("error", takePayload([
             "code": "dictation_recovery_clipboard",
             "message": "Could not save this dictation. Use Cmd+V to keep the transcript.",
-        ])
+        ], takeID: takeID))
         return true
     }
 

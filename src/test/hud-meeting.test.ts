@@ -832,6 +832,44 @@ describe("meeting detection HUD", () => {
     expect(mocks.hide).not.toHaveBeenCalled();
   });
 
+  it("ignores stale take-owned lifecycle events after a replacement starts", async () => {
+    await loadHud();
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-1" },
+    });
+    await emit("dictation-event", {
+      type: "listening_started",
+      payload: { takeId: "take-2" },
+    });
+    mocks.hide.mockClear();
+
+    for (const event of [
+      { type: "audio_level", payload: { takeId: "take-1", level: 0.8 } },
+      { type: "finalizing_transcript", payload: { takeId: "take-1" } },
+      { type: "final_transcript", payload: { takeId: "take-1", text: "old" } },
+      { type: "paste_target", payload: { takeId: "take-1", app: "Old app" } },
+      { type: "paste_completed", payload: { takeId: "take-1" } },
+      {
+        type: "error",
+        payload: { takeId: "take-1", code: "old_take_failed", message: "Old failure" },
+      },
+      {
+        type: "error",
+        payload: {
+          preserveActiveTake: true,
+          code: "global_helper_error",
+          message: "Unrelated helper failure",
+        },
+      },
+    ]) {
+      await emit("dictation-event", event);
+    }
+
+    expect(hudElement().dataset.state).toBe("listening");
+    expect(mocks.hide).not.toHaveBeenCalled();
+  });
+
   it("keeps an active recording visible when the cancel command fails", async () => {
     await loadHud();
     await emit("dictation-event", { type: "listening_started" });
