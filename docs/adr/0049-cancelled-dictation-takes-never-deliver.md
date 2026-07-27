@@ -49,19 +49,20 @@ request must not cancel or deliver into the new take.
   authorized by a delivery claim that won first.
 - Start-time authentication cancellation and all interactive helper controls
   share one generation lock. June validates the authentication result, writes
-  its discard, and resets the matching shortcut activation while holding that
-  lock, then emits the correlated sign-in prompt after releasing it. Start,
-  stop, discard, and toggle controls snapshot their target take, update
-  shortcut state, advance the generation, and write the helper command under
-  the same lock. Take-owned helper lifecycle events hold that lock through
-  correlation, controller changes, and frontend emission. A stale signed-out
-  result, delayed terminal-control write, or old helper outcome therefore
-  cannot enqueue a discard, stop, or lifecycle reset behind a newer start.
-  Because a helper can reject a pending start without advancing the command
-  generation, signed-out cleanup also proves that its exact pending or
-  confirmed take is still owned. It retires only that start and emits a
-  correlated error; an already rejected start cannot clear a previously
-  confirmed recording.
+  its discard, resets the matching shortcut activation, and emits the
+  correlated sign-in event while holding that lock; focusing the main window
+  happens after release. Start, stop, discard, and toggle controls snapshot
+  their target take, update shortcut state, advance the generation, and write
+  the helper command under the same lock. Take-owned helper lifecycle events
+  hold that lock through correlation, controller changes, and frontend
+  emission. A stale signed-out result, delayed terminal-control write, or old
+  helper outcome therefore cannot enqueue a discard, stop, or lifecycle reset
+  behind a newer start. Because a helper can reject a pending start without
+  advancing the command generation, signed-out cleanup also proves that its
+  exact pending or confirmed take is still owned. It retires only that start
+  and emits a correlated event; an already rejected start cannot clear a
+  previously confirmed recording. An event suppressed to preserve that
+  recording does not consume the visible-prompt dedupe window.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
   later text for it. Tagged text, stop, and discard commands cannot affect a

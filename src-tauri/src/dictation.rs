@@ -3189,7 +3189,7 @@ fn send_dictation_command(
                     let Some(take_id) = command_take_id.as_deref() else {
                         return;
                     };
-                    let preserved_confirmed_take = take_state
+                    let should_focus = take_state
                         .run_if_current_helper_command(start_attempt, || {
                             // A helper may reject this attempted start while a
                             // previously confirmed take keeps recording. Retire
@@ -3205,18 +3205,18 @@ fn send_dictation_command(
                                 false,
                                 Some(take_id),
                             );
-                            Some(preserved_confirmed_take)
+                            Some(emit_start_auth_not_signed_in(
+                                &app,
+                                take_id,
+                                preserved_confirmed_take,
+                            ))
                         })
                         .flatten();
-                    // Correlated event emission takes the helper-command lock
-                    // itself, so wait until the serialized auth cleanup above
-                    // has released that lock.
-                    if let Some(preserved_confirmed_take) = preserved_confirmed_take {
-                        notify_dictation_not_signed_in(
-                            &app,
-                            Some(take_id),
-                            !preserved_confirmed_take,
-                        );
+                    // Focusing does not change helper or HUD lifecycle state,
+                    // so keep the serialized section above limited to the
+                    // ownership-sensitive discard and error emission.
+                    if should_focus == Some(true) {
+                        focus_main_window(&app);
                     }
                 }
             }
@@ -3303,14 +3303,7 @@ static LAST_NOT_SIGNED_IN_AT_MS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 const NOT_SIGNED_IN_DEDUPE_MS: u64 = 2_000;
 
-/// Emits the signed-out prompt and pulls the app forward, unless the same
-/// prompt fired within the dedupe window. Owns the focus pull too, so
-/// callers can't split the prompt from it.
-fn notify_dictation_not_signed_in(
-    app: &AppHandle,
-    take_id: Option<&str>,
-    force_apply_to_hud: bool,
-) {
+fn claim_not_signed_in_prompt() -> bool {
     use std::sync::atomic::Ordering;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3318,25 +3311,71 @@ fn notify_dictation_not_signed_in(
         .unwrap_or(0);
     let last = LAST_NOT_SIGNED_IN_AT_MS.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) < NOT_SIGNED_IN_DEDUPE_MS {
-        return;
+        return false;
     }
-    if LAST_NOT_SIGNED_IN_AT_MS
+    LAST_NOT_SIGNED_IN_AT_MS
         .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        // Another path won the race within the same window.
-        return;
+        .is_ok()
+}
+
+/// Emits a start-time auth failure while the caller holds the helper-command
+/// generation lock. This avoids recursively acquiring that lock through the
+/// general correlated emitter.
+fn emit_start_auth_not_signed_in(
+    app: &AppHandle,
+    take_id: &str,
+    preserved_confirmed_take: bool,
+) -> bool {
+    let mut event = dictation_not_signed_in_event();
+    add_dictation_take_id_to_event(&mut event, take_id);
+    if preserved_confirmed_take {
+        // The rejected start never owned the active recording. Keep the
+        // diagnostic event, but do not mutate that recording's lifecycle or
+        // consume the dedupe slot its own auth backstop may need.
+        emit_helper_event_without_lifecycle(app, event);
+        return false;
     }
-    if let Some(take_id) = take_id.filter(|_| force_apply_to_hud) {
-        let mut event = dictation_not_signed_in_event();
-        add_dictation_take_id_to_event(&mut event, take_id);
-        emit_dictation_event_value(app, event);
-    } else if let Some(take_id) = take_id {
-        emit_dictation_take_id_event(app, take_id, dictation_not_signed_in_event());
-    } else {
+    if !claim_not_signed_in_prompt() {
+        return false;
+    }
+    emit_dictation_event_value(app, event);
+    true
+}
+
+/// Emits the signed-out prompt and pulls the app forward, unless the same
+/// visible prompt fired within the dedupe window.
+fn notify_dictation_not_signed_in(app: &AppHandle, take_id: Option<&str>) {
+    let emitted_visible_prompt = if let Some(take_id) = take_id {
+        emit_correlated_not_signed_in(app, take_id)
+    } else if claim_not_signed_in_prompt() {
         emit_dictation_event_value(app, dictation_not_signed_in_event());
+        true
+    } else {
+        false
+    };
+    if emitted_visible_prompt {
+        focus_main_window(app);
     }
-    focus_main_window(app);
+}
+
+fn emit_correlated_not_signed_in(app: &AppHandle, take_id: &str) -> bool {
+    let mut event = dictation_not_signed_in_event();
+    add_dictation_take_id_to_event(&mut event, take_id);
+    let take_state = app.try_state::<DictationTakeState>();
+    let _helper_command_guard = take_state
+        .as_ref()
+        .map(|state| state.lock_helper_commands());
+    if !dictation_delivery_matches_active_take(app, take_id) {
+        // A late auth backstop is still useful in the event log, but it must
+        // neither mutate a replacement nor suppress that take's own prompt.
+        emit_helper_event_without_lifecycle(app, event);
+        return false;
+    }
+    if !claim_not_signed_in_prompt() {
+        return false;
+    }
+    emit_dictation_event_value(app, event);
+    true
 }
 
 fn dictation_not_signed_in_event() -> serde_json::Value {
@@ -5105,7 +5144,7 @@ async fn transcribe_recording_ready_inner(
             .is_some()
             {
                 update_shortcut_helper_finalizing(app, false);
-                notify_dictation_not_signed_in(app, Some(take.id()), false);
+                notify_dictation_not_signed_in(app, Some(take.id()));
             }
             let _ = std::fs::remove_file(&audio_path);
             return;
