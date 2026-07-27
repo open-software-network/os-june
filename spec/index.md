@@ -31,9 +31,9 @@ authoritative, reviewable version.
 
 - [control-sizes](control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 
-## Agent surface — MCP
+## Agent surface - tools
 
-- [mcp-tool-naming](mcp-tool-naming.md) — internal MCP tools are `verb_object`; the owning PRD names them before the code is written
+- [mcp-tool-naming](mcp-tool-naming.md) - June-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
 
 ## Tooling — dependencies
 

@@ -29,3 +29,15 @@ otherwise explicitly describes the retired MCP-server shape.
 ## Validation
 
 `pnpm check` exited 0. Biome reported existing warnings but no errors.
+
+## Greptile round 1
+
+Addressed the P2 naming-spec finding. `spec/mcp-tool-naming.md` now governs
+June-owned in-loop host tools, keeps the `verb_object` rule and
+contract-before-code requirement, points to ADR-0040, and treats the
+June-managed `june_*` MCP-server framing and `june_browser` example as
+historical. It now directs readers to the current Rust host-tool catalog and
+dispatch files instead of the removed Hermes Python servers.
+
+Updated the matching one-line descriptions in `spec/index.md` and `AGENTS.md`.
+`pnpm check` exited 0 with the existing warnings and no errors.
