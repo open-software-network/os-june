@@ -793,6 +793,7 @@ mod tests {
     use june_companion_protocol::Capability;
 
     #[tokio::test]
+    #[allow(clippy::result_large_err)]
     async fn companion_websocket_upgrades_carry_the_app_version() {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await

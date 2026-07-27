@@ -3058,7 +3058,7 @@ impl Repositories {
         let current = self
             .get_note_in_profile(profile, note_id)
             .await
-            .map_err(|error| scoped_note_error(error))?;
+            .map_err(scoped_note_error)?;
         let next_title = title.unwrap_or(current.title.clone());
         let next_content = edited_content.or(current.edited_content.clone());
         let expected_revision = i64::try_from(expected_revision)
@@ -3081,7 +3081,7 @@ impl Repositories {
             let current = self
                 .get_note_in_profile(profile, note_id)
                 .await
-                .map_err(|error| scoped_note_error(error))?;
+                .map_err(scoped_note_error)?;
             return Err(AppError {
                 code: "note_revision_conflict".to_string(),
                 message: "The note changed on another device.".to_string(),
@@ -3090,7 +3090,7 @@ impl Repositories {
         }
         self.get_note_in_profile(profile, note_id)
             .await
-            .map_err(|error| scoped_note_error(error))
+            .map_err(scoped_note_error)
     }
 
     pub async fn audio_artifact_paths_for_note(
