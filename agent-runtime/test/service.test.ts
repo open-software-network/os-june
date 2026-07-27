@@ -81,6 +81,37 @@ test("emits the visible context summary and exact removed ids after compaction",
   assert.equal(engine.summaryInputs[0]?.maxOutputTokens, 1_024);
 });
 
+test("includes automatic compaction usage while preserving latest request context", async () => {
+  const engine = new SummaryUsageEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 9 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(4_000)}`,
+  }));
+
+  await service.handle(
+    request("run.start", {
+      ...runParams,
+      history,
+      contextWindow: 7_000,
+      maxOutputTokens: 1_024,
+    }),
+  );
+  await nextTurn();
+
+  const usage = frames().find((frame) => frame.method === "usage.updated")?.params;
+  assert.deepEqual(usage, {
+    inputTokens: 23,
+    outputTokens: 4,
+    totalTokens: 27,
+    requests: 2,
+    latestInputTokens: 3,
+  });
+});
+
 test("serializes an approval interruption for durable host persistence", async () => {
   const engine = new FakeEngine({
     history: [],
@@ -370,6 +401,13 @@ test("routes manual compaction through the reserved metered model host tool", as
     typeof summaryInput.content === "string" &&
       summaryInput.content.length <= 8_100,
   );
+  assert.deepEqual((result as { usage?: JsonObject }).usage, {
+    inputTokens: 20,
+    outputTokens: 3,
+    totalTokens: 23,
+    requests: 1,
+    latestInputTokens: 20,
+  });
 });
 
 test("keeps manual compaction available when model summarization fails", async () => {
@@ -429,9 +467,9 @@ class FakeEngine implements AgentEngine {
   }
 
   async initialize(_params: RuntimeInitializeParams): Promise<void> {}
-  async summarize(input: EngineSummaryInput): Promise<string> {
+  async summarize(input: EngineSummaryInput) {
     this.summaryInputs.push(input);
-    return "Model-generated context summary";
+    return { text: "Model-generated context summary", usage: {} };
   }
   async start(input: EngineRunInput): Promise<EngineResult> {
     this.starts += 1;
@@ -445,7 +483,7 @@ class FakeEngine implements AgentEngine {
 }
 
 class FailingSummaryEngine extends FakeEngine {
-  override async summarize(input: EngineSummaryInput): Promise<string> {
+  override async summarize(input: EngineSummaryInput) {
     this.summaryInputs.push(input);
     throw new Error("model request timed out");
   }
@@ -454,7 +492,7 @@ class FailingSummaryEngine extends FakeEngine {
 class BlockingSummaryEngine extends FakeEngine {
   summaryStarted = false;
 
-  override async summarize(input: EngineSummaryInput): Promise<string> {
+  override async summarize(input: EngineSummaryInput) {
     this.summaryInputs.push(input);
     this.summaryStarted = true;
     return new Promise((_, reject) => {
@@ -466,6 +504,23 @@ class BlockingSummaryEngine extends FakeEngine {
       if (input.signal?.aborted) rejectAborted();
       else input.signal?.addEventListener("abort", rejectAborted, { once: true });
     });
+  }
+}
+
+class SummaryUsageEngine extends FakeEngine {
+  override readonly result: EngineResult = {
+    finalOutput: "Hi",
+    history: [{ id: "assistant", kind: "message", role: "assistant", text: "Hi" }],
+    usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4, requests: 1 },
+    interruptions: [],
+  };
+
+  override async summarize(input: EngineSummaryInput) {
+    this.summaryInputs.push(input);
+    return {
+      text: "Model-generated context summary",
+      usage: { inputTokens: 20, outputTokens: 3, totalTokens: 23, requests: 1 },
+    };
   }
 }
 

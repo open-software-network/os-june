@@ -105,14 +105,15 @@ export class RuntimeService {
     active: ActiveRun,
   ): Promise<EngineResult> {
     throwIfAborted(active.controller.signal);
+    let compactionUsage: RuntimeUsage = {};
     const compaction = await compactHistory({
       history: parsed.history,
       contextWindow: parsed.contextWindow,
       ...(parsed.maxOutputTokens === undefined ? {} : { maxOutputTokens: parsed.maxOutputTokens }),
       onFallback: (error) =>
         this.logCompactionFallback(error, sessionId, runId),
-      summarize: (history) =>
-        this.engine.summarize({
+      summarize: async (history) => {
+        const summary = await this.engine.summarize({
           sessionId,
           runId,
           model: parsed.model,
@@ -122,7 +123,10 @@ export class RuntimeService {
             ? {}
             : { maxOutputTokens: parsed.maxOutputTokens }),
           signal: active.controller.signal,
-        }),
+        });
+        compactionUsage = mergeUsage(compactionUsage, summary.usage);
+        return summary.text;
+      },
     });
     throwIfAborted(active.controller.signal);
     this.emit("run.started", {
@@ -135,7 +139,7 @@ export class RuntimeService {
         : { contextSummary: compaction.summary as unknown as JsonValue }),
     }, sessionId, runId);
     const runParams: RunStartParams = { ...parsed, history: compaction.history };
-    return this.engine.start({
+    const result = await this.engine.start({
       sessionId,
       runId,
       params: runParams,
@@ -143,6 +147,10 @@ export class RuntimeService {
       emit: (event) => this.forwardEngineEvent(event, sessionId, runId),
       takeSteering: () => active.steering.splice(0),
     });
+    return {
+      ...result,
+      usage: mergeUsage(compactionUsage, result.usage),
+    };
   }
 
   private resume(sessionId: string, runId: string, params: JsonObject): JsonValue {
@@ -205,6 +213,7 @@ export class RuntimeService {
     const model = typeof params.model === "string" ? params.model.trim() : "";
     const maxOutputTokens =
       typeof params.maxOutputTokens === "number" ? params.maxOutputTokens : undefined;
+    let compactionUsage: RuntimeUsage = {};
     const result = await compactHistory({
       history: history as RunStartParams["history"],
       contextWindow:
@@ -214,8 +223,8 @@ export class RuntimeService {
         this.logCompactionFallback(error, sessionId, runId),
       ...(model
         ? {
-            summarize: (items) =>
-              this.engine.summarize({
+            summarize: async (items) => {
+              const summary = await this.engine.summarize({
                 sessionId,
                 runId,
                 model,
@@ -225,12 +234,18 @@ export class RuntimeService {
                     ? params.contextWindow
                     : 128_000,
                 ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-              }),
+              });
+              compactionUsage = mergeUsage(compactionUsage, summary.usage);
+              return summary.text;
+            },
           }
         : {}),
       force: true,
     });
-    return result as unknown as JsonValue;
+    return {
+      ...result,
+      usage: compactionUsage,
+    } as unknown as JsonValue;
   }
 
   private logCompactionFallback(
@@ -337,6 +352,35 @@ export class RuntimeService {
     if (!this.peer) throw new ProtocolError(-32603, "Runtime transport is not attached");
     return this.peer;
   }
+}
+
+function mergeUsage(earlier: RuntimeUsage, later: RuntimeUsage): RuntimeUsage {
+  return compactUsage({
+    inputTokens: addDefined(earlier.inputTokens, later.inputTokens),
+    outputTokens: addDefined(earlier.outputTokens, later.outputTokens),
+    totalTokens: addDefined(earlier.totalTokens, later.totalTokens),
+    requests: addDefined(earlier.requests, later.requests),
+    latestInputTokens:
+      later.latestInputTokens ??
+      later.inputTokens ??
+      earlier.latestInputTokens ??
+      earlier.inputTokens,
+    provider: later.provider ?? earlier.provider,
+    privacyLevel: later.privacyLevel ?? earlier.privacyLevel,
+    endpoint: later.endpoint ?? earlier.endpoint,
+  });
+}
+
+function addDefined(left?: number, right?: number): number | undefined {
+  return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
+}
+
+function compactUsage(
+  value: Record<string, number | string | undefined>,
+): RuntimeUsage {
+  return Object.fromEntries(
+    Object.entries(value).filter((entry) => entry[1] !== undefined),
+  ) as RuntimeUsage;
 }
 
 function validateRunStart(params: RunStartParams): void {

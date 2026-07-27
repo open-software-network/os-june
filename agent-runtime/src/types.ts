@@ -90,6 +90,7 @@ export type RuntimeUsage = {
   outputTokens?: number;
   totalTokens?: number;
   requests?: number;
+  latestInputTokens?: number;
   provider?: string;
   privacyLevel?: string;
   endpoint?: string;
@@ -197,6 +198,11 @@ export type EngineSummaryInput = {
   signal?: AbortSignal;
 };
 
+export type EngineSummaryResult = {
+  text: string;
+  usage: RuntimeUsage;
+};
+
 export type SteeringMessage = {
   messageId: string;
   text: string;
@@ -212,7 +218,7 @@ export type EngineResult = {
 
 export interface AgentEngine {
   initialize(params: RuntimeInitializeParams): Promise<void>;
-  summarize(input: EngineSummaryInput): Promise<string>;
+  summarize(input: EngineSummaryInput): Promise<EngineSummaryResult>;
   start(input: EngineRunInput): Promise<EngineResult>;
   resume(input: EngineResumeInput): Promise<EngineResult>;
   shutdown(): Promise<void>;

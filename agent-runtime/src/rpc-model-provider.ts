@@ -3,7 +3,7 @@ import {
   type Model,
   type ModelProvider,
 } from "@openai/agents";
-import type { JsonObject, JsonValue } from "./types.js";
+import type { JsonObject, JsonValue, RuntimeUsage } from "./types.js";
 import type { SteeringMessage } from "./types.js";
 
 export const MODEL_CHAT_COMPLETIONS_TOOL = "__june_model_chat_completions";
@@ -27,6 +27,8 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   latestRoute: ModelRoute | undefined;
   resolvedModel: string | undefined;
   reasoningWireFormat: ReasoningWireFormat | undefined;
+  latestUsage: RuntimeUsage | undefined;
+  totalUsage: RuntimeUsage = {};
 
   constructor(
     invoke: ModelRpcInvoker,
@@ -101,6 +103,11 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
     while (true) {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
+        const usage = chatCompletionUsage(chunk.usage);
+        if (usage) {
+          this.latestUsage = usage;
+          this.totalUsage = addUsage(this.totalUsage, usage);
+        }
         if (autoRequested) {
           const chunkModel = autoResponseModel(chunk.model);
           if (chunkModel && this.resolvedModel && chunkModel !== this.resolvedModel) {
@@ -389,4 +396,49 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function chatCompletionUsage(value: unknown): RuntimeUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = numberValue(value.inputTokens ?? value.input_tokens ?? value.prompt_tokens);
+  const outputTokens = numberValue(
+    value.outputTokens ?? value.output_tokens ?? value.completion_tokens,
+  );
+  const totalTokens = numberValue(value.totalTokens ?? value.total_tokens);
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    totalTokens === undefined
+  ) {
+    return undefined;
+  }
+  return compactUsage({
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    requests: numberValue(value.requests) ?? 1,
+  });
+}
+
+function addUsage(left: RuntimeUsage, right: RuntimeUsage): RuntimeUsage {
+  return compactUsage({
+    inputTokens: addDefined(left.inputTokens, right.inputTokens),
+    outputTokens: addDefined(left.outputTokens, right.outputTokens),
+    totalTokens: addDefined(left.totalTokens, right.totalTokens),
+    requests: addDefined(left.requests, right.requests),
+  });
+}
+
+function addDefined(left?: number, right?: number): number | undefined {
+  return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
+}
+
+function compactUsage(
+  value: Record<string, number | string | undefined>,
+): RuntimeUsage {
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, number | string] => entry[1] !== undefined,
+    ),
+  ) as RuntimeUsage;
 }

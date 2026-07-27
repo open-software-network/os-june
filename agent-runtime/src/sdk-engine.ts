@@ -22,6 +22,7 @@ import type {
   EngineResumeInput,
   EngineRunInput,
   EngineSummaryInput,
+  EngineSummaryResult,
   HostToolInvoker,
   RunResumeParams,
   RunStartParams,
@@ -67,7 +68,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
     this.initialized = true;
   }
 
-  async summarize(input: EngineSummaryInput): Promise<string> {
+  async summarize(input: EngineSummaryInput): Promise<EngineSummaryResult> {
     const modelProvider = this.createModelProvider(input.sessionId, input.runId);
     const contextWindow = Math.max(1_024, Math.floor(input.contextWindow));
     const configuredOutputTokens = Math.max(
@@ -109,7 +110,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
     }
     summary = summary.trim();
     if (!summary) throw new Error("June model route returned an empty context summary");
-    return summary;
+    return { text: summary, usage: modelProvider.totalUsage };
   }
 
   async start(input: EngineRunInput): Promise<EngineResult> {
@@ -330,11 +331,15 @@ export class OpenAIAgentsEngine implements AgentEngine {
         ? serializeState(stream.state.toString(), modelProvider.reasoningWireFormat)
         : undefined;
     const history = sdkHistoryToRuntime(stream.history);
+    const usage = normalizeUsage(stream.usage);
+    const latestInputTokens =
+      modelProvider.latestUsage?.inputTokens ?? usage.inputTokens;
     return {
       ...(typeof stream.finalOutput === "string" ? { finalOutput: stream.finalOutput } : {}),
       history,
       usage: {
-        ...normalizeUsage(stream.usage),
+        ...usage,
+        ...(latestInputTokens === undefined ? {} : { latestInputTokens }),
         ...modelProvider.latestRoute,
         ...(modelProvider.resolvedModel ? { resolvedModel: modelProvider.resolvedModel } : {}),
       },
