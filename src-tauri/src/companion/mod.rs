@@ -1,4 +1,5 @@
 mod controller;
+mod files;
 mod transport;
 
 use crate::{commands::repositories, domain::types::AppError};
@@ -34,6 +35,7 @@ const ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 pub struct CompanionRuntime {
     pub controller: Controller,
     pairings: Mutex<HashMap<Uuid, PendingPairing>>,
+    browse_references: Mutex<HashMap<Uuid, files::BrowseReference>>,
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
     active_frontend_operations: Mutex<HashSet<Uuid>>,
     inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
@@ -54,6 +56,7 @@ impl Default for CompanionRuntime {
         Self {
             controller: Controller::default(),
             pairings: Mutex::default(),
+            browse_references: Mutex::default(),
             pending_frontend: Mutex::default(),
             active_frontend_operations: Mutex::default(),
             inflight_operations: Mutex::default(),
@@ -222,6 +225,20 @@ pub struct LinkedDeviceDto {
 pub struct RenameDeviceRequest {
     pub device_id: String,
     pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseRootDto {
+    pub id: Uuid,
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantBrowseRootRequest {
+    pub path: String,
 }
 
 #[tauri::command]
@@ -560,9 +577,91 @@ fn companion_capabilities() -> Vec<Capability> {
         Capability::SettingsEditSafe,
         Capability::RecordingControlExisting,
         Capability::AppFocus,
+        Capability::FilesUpload,
+        Capability::FilesBrowse,
         Capability::DevicesReadSelf,
         Capability::DevicesRevokeSelf,
     ]
+}
+
+#[tauri::command]
+pub async fn companion_list_browse_roots(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+) -> Result<Vec<BrowseRootDto>, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    Ok(
+        files::list_root_records(&repositories(&app).await?, &account_user_id)
+            .await?
+            .into_iter()
+            .map(|root| BrowseRootDto {
+                id: root.id,
+                name: root.display_name,
+                path: root.canonical_path.to_string_lossy().into_owned(),
+            })
+            .collect(),
+    )
+}
+
+#[tauri::command]
+pub async fn companion_grant_browse_root(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    request: GrantBrowseRootRequest,
+) -> Result<BrowseRootDto, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    let root = files::grant_root(
+        &repositories(&app).await?,
+        &account_user_id,
+        std::path::Path::new(&request.path),
+    )
+    .await?;
+    Ok(BrowseRootDto {
+        id: root.id,
+        name: root.display_name,
+        path: root.canonical_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn companion_revoke_browse_root(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    root_id: Uuid,
+) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    files::revoke_root(
+        &app,
+        &repositories(&app).await?,
+        &crate::os_accounts::current_user_id().await?,
+        root_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn companion_consume_attachments(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    reference_ids: Vec<Uuid>,
+) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    if reference_ids.len() > june_companion_protocol::MAX_ATTACHMENT_REFERENCES {
+        return Err(AppError::new(
+            "companion_attachment_invalid",
+            "Too many companion attachments were selected.",
+        ));
+    }
+    files::consume_attachments(
+        &app,
+        &repositories(&app).await?,
+        &crate::os_accounts::current_user_id().await?,
+        &reference_ids,
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -603,6 +702,13 @@ pub async fn companion_revoke_device(
         .await?
         .revoke_companion_device(&account_user_id, &device_id.to_string())
         .await?;
+    files::cleanup_device_uploads(
+        &app,
+        &repositories(&app).await?,
+        &account_user_id,
+        &device_id.to_string(),
+    )
+    .await;
     Ok(())
 }
 
@@ -821,6 +927,7 @@ pub fn setup(app: &AppHandle) {
     let runtime = app.state::<CompanionRuntime>();
     runtime.latch_effective_enabled(stored_enabled);
     runtime.latch_desktop_display_name(resolve_desktop_display_name());
+    files::start_cleanup(app);
     start(app);
 }
 
@@ -871,12 +978,15 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     let mut remote_device_ids = HashSet::new();
     for account_user_id in account_user_ids {
         if let Ok(devices) = repos.list_companion_devices(&account_user_id).await {
-            remote_device_ids.extend(
-                devices
-                    .into_iter()
-                    .filter(|device| device.revoked_at.is_none())
-                    .filter_map(|device| Uuid::parse_str(&device.id).ok()),
-            );
+            for device in devices
+                .into_iter()
+                .filter(|device| device.revoked_at.is_none())
+            {
+                if let Ok(device_id) = Uuid::parse_str(&device.id) {
+                    remote_device_ids.insert(device_id);
+                }
+                files::cleanup_device_uploads(app, &repos, &account_user_id, &device.id).await;
+            }
         }
         repos
             .revoke_companion_devices_for_account(&account_user_id)

@@ -62,8 +62,12 @@ than creating a second agent control path.
 
 ## Authority and availability
 
-The Mac is authoritative. The phone cannot run the embedded Hermes runtime,
-start a recording, approve tools, read the filesystem, or use provider keys.
+The Mac is authoritative. The phone cannot run June's local agent harness,
+start a recording, approve tools, read arbitrary filesystem contents, or use
+provider keys. A linked device can list bounded metadata only inside roots the
+signed-in Mac user explicitly grants, and a selected file reaches June only
+through the normal agent attachment path. The companion cannot download Mac
+file contents.
 When the Mac is offline, control fails immediately and the UI says offline.
 No control ciphertext is queued. The encrypted mobile cache only renders the
 last successful snapshot while locked/offline and is not synchronization.

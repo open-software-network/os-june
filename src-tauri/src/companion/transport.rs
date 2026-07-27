@@ -785,8 +785,26 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
         "unauthorized" => FailureCode::Unauthorized,
         "companion_replay_rejected" => FailureCode::Replay,
         "companion_frame_invalid" | "companion_device_name_invalid" => FailureCode::InvalidRequest,
-        "companion_device_not_found" => FailureCode::NotFound,
-        "note_revision_conflict" => FailureCode::Conflict,
+        "companion_root_invalid"
+        | "companion_browse_invalid"
+        | "companion_browse_cursor_invalid"
+        | "companion_upload_offset_invalid"
+        | "companion_upload_incomplete"
+        | "companion_attachment_invalid"
+        | "companion_identifier_invalid" => FailureCode::InvalidRequest,
+        "companion_device_not_found"
+        | "companion_root_not_found"
+        | "companion_file_not_found"
+        | "companion_upload_not_found"
+        | "companion_attachment_not_found" => FailureCode::NotFound,
+        "note_revision_conflict" | "companion_upload_conflict" => FailureCode::Conflict,
+        "companion_upload_expired" | "companion_attachment_expired" => FailureCode::Expired,
+        "companion_root_limit_exceeded"
+        | "companion_file_limit_exceeded"
+        | "companion_upload_limit_exceeded"
+        | "companion_reference_limit_exceeded" => FailureCode::LimitExceeded,
+        "companion_upload_integrity_mismatch" => FailureCode::IntegrityMismatch,
+        "companion_upload_outcome_unknown" => FailureCode::OutcomeUnknown,
         "companion_note_too_large" => FailureCode::Unsupported,
         "companion_frontend_timeout" => FailureCode::Busy,
         "companion_frontend_unavailable" => FailureCode::MacOffline,

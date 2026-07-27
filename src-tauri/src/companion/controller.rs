@@ -20,8 +20,10 @@ const MAX_COMPANION_NOTE_CONTENT_BYTES: usize = 28 * 1024;
 const MAX_COMPANION_NOTE_CONTENT_JSON_BYTES: usize = 30 * 1024;
 
 /// Only these typed intents can cross from the companion controller into the
-/// frontend. Raw Hermes frames, arbitrary Tauri commands, paths, SQL, shell,
-/// approvals, provider credentials, and recording start have no variant here.
+/// frontend. Raw agent-harness frames, arbitrary Tauri commands or paths, SQL,
+/// shell, approvals, provider credentials, and recording start have no variant
+/// here. Attachment paths are injected only after the controller resolves
+/// authenticated, device-scoped opaque references.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum FrontendIntent {
@@ -37,6 +39,8 @@ pub enum FrontendIntent {
     AgentSend {
         stored_session_id: Option<String>,
         message: String,
+        attachments: Vec<String>,
+        attachment_reference_ids: Vec<uuid::Uuid>,
     },
     AgentCancel {
         stored_session_id: String,
@@ -265,6 +269,8 @@ impl Controller {
                 repositories
                     .revoke_companion_device(account_user_id, device_id)
                     .await?;
+                super::files::cleanup_device_uploads(app, repositories, account_user_id, device_id)
+                    .await;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::AgentSessionsList(page) => {
@@ -281,10 +287,95 @@ impl Controller {
                 cursor: page.cursor,
                 limit: page.limit,
             }),
-            Body::AgentSend(request) => ControllerOutcome::Frontend(FrontendIntent::AgentSend {
-                stored_session_id: request.stored_session_id,
-                message: request.message,
-            }),
+            Body::AgentSend(request) => {
+                let attachments = super::files::resolve_attachment_paths(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request.attachment_reference_ids,
+                )
+                .await?;
+                ControllerOutcome::Frontend(FrontendIntent::AgentSend {
+                    stored_session_id: request.stored_session_id,
+                    message: request.message,
+                    attachments,
+                    attachment_reference_ids: request.attachment_reference_ids,
+                })
+            }
+            Body::UploadBegin(request) => {
+                let progress = super::files::begin_upload(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::UploadChunk(request) => {
+                let progress = super::files::append_upload_chunk(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::UploadCommit { reservation_id } => {
+                let progress = super::files::commit_upload(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    reservation_id,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::BrowseRootsList => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseRoots(
+                    super::files::protocol_roots(repositories, account_user_id).await?,
+                ),
+            )),
+            Body::BrowseDirList {
+                root_id,
+                relative_path,
+                page,
+            } => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseEntries(
+                    super::files::list_directory(
+                        repositories,
+                        account_user_id,
+                        root_id,
+                        &relative_path,
+                        &page,
+                    )
+                    .await?,
+                ),
+            )),
+            Body::BrowseFileStat {
+                root_id,
+                relative_path,
+            } => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseFile(
+                    super::files::stat_file(
+                        app,
+                        repositories,
+                        account_user_id,
+                        device_id,
+                        root_id,
+                        &relative_path,
+                    )
+                    .await?,
+                ),
+            )),
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
             }
@@ -652,6 +743,7 @@ mod tests {
             Body::AgentSend(AgentSendRequest {
                 stored_session_id: None,
                 message: "Hello".to_string(),
+                attachment_reference_ids: Vec::new(),
             }),
             Body::RecordingPause {
                 recording_session_id: "active".to_string(),

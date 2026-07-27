@@ -88,6 +88,7 @@ const mocks = vi.hoisted(() => ({
   completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
   companionCompleteFrontendRequest: vi.fn(),
+  companionConsumeAttachments: vi.fn().mockResolvedValue(undefined),
   companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
   companionPairingEnabled: true,
   listAgentItems: vi.fn().mockResolvedValue([]),
@@ -249,6 +250,7 @@ vi.mock("../lib/tauri", () => ({
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
+  companionConsumeAttachments: mocks.companionConsumeAttachments,
   companionPublishAgentEvent: mocks.companionPublishAgentEvent,
   listAgentItems: mocks.listAgentItems,
   openPrivacySettings: mocks.openPrivacySettings,
@@ -790,6 +792,50 @@ describe("App shortcuts", () => {
       {
         type: "agentAccepted",
         data: { storedSessionId: sandboxed.id },
+      },
+    );
+  });
+
+  it("hands resolved companion attachments to the normal agent run and consumes references", async () => {
+    const target = agentSession("session-with-phone-file", "Attachment session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-attachment-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Read the attached brief",
+              attachments: ["/tmp/companion/content"],
+              attachmentReferenceIds: ["00000000-0000-0000-0000-000000000003"],
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: target.id,
+          attachments: ["/tmp/companion/content"],
+        }),
+      ),
+    );
+    expect(mocks.companionConsumeAttachments).toHaveBeenCalledWith([
+      "00000000-0000-0000-0000-000000000003",
+    ]);
+    expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+      "operation-attachment-send",
+      {
+        type: "agentAccepted",
+        data: { storedSessionId: target.id },
       },
     );
   });

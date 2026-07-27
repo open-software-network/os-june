@@ -2311,6 +2311,8 @@ export type CompanionCapability =
   | "settingsEditSafe"
   | "recordingControlExisting"
   | "appFocus"
+  | "filesUpload"
+  | "filesBrowse"
   | "devicesReadSelf"
   | "devicesRevokeSelf";
 
@@ -2360,6 +2362,30 @@ export async function companionListDevices() {
   return invoke<LinkedCompanionDevice[]>("companion_list_devices");
 }
 
+export type CompanionBrowseRoot = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export async function companionListBrowseRoots() {
+  return invoke<CompanionBrowseRoot[]>("companion_list_browse_roots");
+}
+
+export async function companionGrantBrowseRoot(path: string) {
+  return invoke<CompanionBrowseRoot>("companion_grant_browse_root", {
+    request: { path },
+  });
+}
+
+export async function companionRevokeBrowseRoot(rootId: string) {
+  return invoke<void>("companion_revoke_browse_root", { rootId });
+}
+
+export async function companionConsumeAttachments(referenceIds: string[]) {
+  return invoke<void>("companion_consume_attachments", { referenceIds });
+}
+
 export async function companionRenameDevice(deviceId: string, displayName: string) {
   return invoke<void>("companion_rename_device", {
     request: { deviceId, displayName },
@@ -2392,7 +2418,15 @@ export type CompanionFrontendIntent =
       type: "agentMessagesList";
       data: { storedSessionId: string; cursor?: string; limit: number };
     }
-  | { type: "agentSend"; data: { storedSessionId?: string; message: string } }
+  | {
+      type: "agentSend";
+      data: {
+        storedSessionId?: string;
+        message: string;
+        attachments: string[];
+        attachmentReferenceIds: string[];
+      };
+    }
   | { type: "agentCancel"; data: { storedSessionId: string } };
 
 export type CompanionFrontendRequest = {
@@ -2442,6 +2476,9 @@ export type CompanionResultPayload =
           | "conflict"
           | "mac_offline"
           | "busy"
+          | "outcome_unknown"
+          | "limit_exceeded"
+          | "integrity_mismatch"
           | "internal";
         message: string;
         retryable: boolean;

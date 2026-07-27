@@ -1264,6 +1264,20 @@ const MIGRATIONS: &[Migration] = &[
             columns: NOTE_CALENDAR_HTML_LINK_COLUMN,
         }],
     },
+    // The feature branch used catalog position 44, but main already shipped
+    // positions 44 and 45. Preserve those entries and append the file schema
+    // after them as required by ADR-0037.
+    Migration {
+        version: 46,
+        name: "companion_files",
+        requirements: &[
+            SchemaRequirement::Table("companion_browse_roots"),
+            SchemaRequirement::Table("companion_uploads"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_files.sql"
+        ))],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {

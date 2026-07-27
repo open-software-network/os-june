@@ -42,6 +42,7 @@ import type {
 import {
   agentRuntimeBindings,
   companionCompleteFrontendRequest,
+  companionConsumeAttachments,
   companionPublishAgentEvent,
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
@@ -868,7 +869,12 @@ export function AgentWorkspace({
           case "agentMessagesList":
             return;
           case "agentSend": {
-            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            const {
+              storedSessionId: requestedStoredSessionId,
+              message,
+              attachments = [],
+              attachmentReferenceIds = [],
+            } = payload.intent.data;
             let session: AgentSessionDto | undefined;
             let createdSessionPartition: string | undefined;
             if (requestedStoredSessionId) {
@@ -913,8 +919,9 @@ export function AgentWorkspace({
               safetyMode: authorizedSession.safetyMode,
               workspacePath: authorizedSession.workspacePath,
               enabledSkillIds,
-              attachments: [],
+              attachments,
             });
+            await companionConsumeAttachments(attachmentReferenceIds);
             projectContextSignaturesBySessionId.set(
               authorizedSession.id,
               preparedPrompt.contextSignature,
