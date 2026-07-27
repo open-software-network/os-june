@@ -52,6 +52,7 @@ pub struct StartRunRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResolveInterruptionRequest {
     pub interruption_id: String,
+    pub run_id: String,
     pub resolution: Value,
 }
 #[derive(Deserialize)]
@@ -786,8 +787,8 @@ pub async fn resolve_agent_interruption(
     request: ResolveInterruptionRequest,
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
-    let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE kind = 'interruption' AND json_extract(payload_json, '$.id') = ? ORDER BY created_at DESC LIMIT 1")
-        .bind(&request.interruption_id).fetch_one(&repository.pool).await?;
+    let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.status') = 'pending' LIMIT 1")
+        .bind(&request.run_id).bind(&request.interruption_id).fetch_one(&repository.pool).await?;
     use sqlx::row::Row;
     let run_id: String = row.get("run_id");
     let session_id: String = row.get("session_id");
@@ -818,6 +819,22 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .unwrap_or("approval")
         .to_string();
+    let resolution_kind = request
+        .resolution
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response kind is required.",
+            )
+        })?;
+    if resolution_kind != interruption_kind {
+        return Err(AppError::new(
+            "agent_interruption_resolution_invalid",
+            "The interruption response does not match the pending request.",
+        ));
+    }
     let clarification_answer = request
         .resolution
         .get("answer")
@@ -829,13 +846,20 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let approved = clarification_answer.is_some()
-        || secret_value.is_some()
-        || request
-            .resolution
-            .get("choice")
-            .and_then(Value::as_str)
-            .is_some_and(|choice| choice != "deny");
+    let choice = request.resolution.get("choice").and_then(Value::as_str);
+    let approved = match interruption_kind.as_str() {
+        "clarification" if clarification_answer.is_some() => true,
+        "secret" if secret_value.is_some() && choice == Some("once") => true,
+        "secret" if secret_value.is_none() && choice == Some("deny") => false,
+        "approval" if matches!(choice, Some("once" | "session" | "always")) => true,
+        "approval" if choice == Some("deny") => false,
+        _ => {
+            return Err(AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response is invalid.",
+            ));
+        }
+    };
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
@@ -908,7 +932,10 @@ pub async fn resolve_agent_interruption(
     } else {
         None
     };
+    let resolution_nonce = uuid::Uuid::new_v4().to_string();
     interruption["status"] = json!("resolved");
+    interruption["approved"] = json!(approved);
+    interruption["resolutionNonce"] = json!(resolution_nonce);
     interruption["resolvedAt"] = json!(chrono::Utc::now().to_rfc3339());
     if let Some(answer) = clarification_answer.as_deref() {
         interruption["answer"] = json!(answer);
@@ -920,26 +947,41 @@ pub async fn resolve_agent_interruption(
     // sidecar can emit resumed events immediately after accepting the request,
     // so both must be in place before dispatch, but neither may be left behind
     // when preparation or persistence fails.
-    let persist_result: Result<(), sqlx::Error> = async {
+    let persist_result: Result<(), AppError> = async {
         let mut transaction = repository.pool.begin().await?;
-        sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
+        let item_updated = sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ? AND json_extract(payload_json, '$.status') = 'pending'")
             .bind(interruption.to_string())
             .bind(&item_id)
             .execute(&mut *transaction)
-            .await?;
-        sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ?")
+            .await?
+            .rows_affected();
+        if item_updated != 1 {
+            return Err(AppError::new(
+                "agent_interruption_expired",
+                "This interruption can no longer be resumed.",
+            ));
+        }
+        let run_updated = sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ? AND status = 'waiting_for_user'")
             .bind(chrono::Utc::now().to_rfc3339())
             .bind(&run.id)
             .execute(&mut *transaction)
-            .await?;
-        transaction.commit().await
+            .await?
+            .rows_affected();
+        if run_updated != 1 {
+            return Err(AppError::new(
+                "agent_interruption_expired",
+                "This interruption can no longer be resumed.",
+            ));
+        }
+        transaction.commit().await?;
+        Ok(())
     }
     .await;
     if let Err(error) = persist_result {
         if let Some(secret_ref) = secret_ref.as_deref() {
             let _ = super::secrets::delete(secret_ref).await;
         }
-        return Err(error.into());
+        return Err(error);
     }
     if let Err(error) = host
         .request("run.resume", &session.id, &run.id, params)
@@ -947,19 +989,23 @@ pub async fn resolve_agent_interruption(
     {
         let restore_result = async {
             let mut transaction = repository.pool.begin().await?;
-            sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
+            let restored = sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ? AND json_extract(payload_json, '$.resolutionNonce') = ? AND COALESCE(json_extract(payload_json, '$.executionState'), 'unconsumed') = 'unconsumed'")
                 .bind(&original_interruption_json)
                 .bind(&item_id)
+                .bind(&resolution_nonce)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+            if restored == 1 {
+                sqlx::query::query(
+                    "UPDATE agent_runs SET last_sequence = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(run.last_sequence)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(&run.id)
                 .execute(&mut *transaction)
                 .await?;
-            sqlx::query::query(
-                "UPDATE agent_runs SET last_sequence = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(run.last_sequence)
-            .bind(chrono::Utc::now().to_rfc3339())
-            .bind(&run.id)
-            .execute(&mut *transaction)
-            .await?;
+            }
             transaction.commit().await
         }
         .await;
@@ -1491,8 +1537,6 @@ async fn tool_descriptors(
         ,{ "name": "request_clarification", "description": "Pause and ask the user a question when their answer is required to continue.", "parameters": { "type": "object", "properties": { "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["question", "choices"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_secret", "description": "Securely request a secret from the user. The result is an opaque one-use reference for a safety-controlled tool, never the secret value.", "parameters": { "type": "object", "properties": { "reason": { "type": "string" } }, "required": ["reason"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "computer_use", "description": "Operate the attended computer-use session through June's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
-        ,{ "name": "notion_call", "description": "Call an enabled read-only Notion tool through June's connected account.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false } }
-        ,{ "name": "notion_action", "description": "Call an enabled Notion action through June's approval broker.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false }, "requiresApproval": true }
     ]);
     let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
         crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),

@@ -54,12 +54,14 @@ describe("agent runtime Tauri bindings", () => {
 
     await agentRuntimeBindings.resolveInterruption({
       interruptionId: "approval-1",
+      runId: "run-1",
       resolution: { kind: "approval", choice: "once" },
     });
 
     expect(invoke).toHaveBeenCalledWith("resolve_agent_interruption", {
       request: {
         interruptionId: "approval-1",
+        runId: "run-1",
         resolution: { kind: "approval", choice: "once" },
       },
     });

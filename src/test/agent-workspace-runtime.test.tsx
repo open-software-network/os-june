@@ -1364,6 +1364,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("resolve_agent_interruption", {
         request: {
           interruptionId: "clarify-1",
+          runId: "run-2",
           resolution: { kind: "clarification", answer: "June" },
         },
       }),

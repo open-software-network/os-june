@@ -157,8 +157,16 @@ selected-resource proof, and an honest privacy claim.
 
 | Server | Tools |
 | --- | --- |
-| `june_notion` | `search_pages`, `get_page`, `list_data_source`, `query_data_source`, `list_comments` |
-| `june_notion_actions` | `notion-create-pages`, `notion-update-page`; later comments, move, duplicate, attachment, database/data-source, and view actions only after separate approval |
+| `june_notion` | `notion-search`, `notion-fetch`, `notion-query-data-sources`, `notion-query-database-view`, `notion-get-comments`, `notion-get-enhanced-markdown-specification`, `notion-get-view-configuration-dsl` |
+| `june_notion_actions` | `notion-create-pages`, `notion-update-page` |
+
+These are the exact third-party canonical names currently returned by Notion's
+hosted MCP preview. June preserves them through discovery, policy checks, Rust
+preflight, and provider invocation. The OpenAI Agents SDK converts punctuation
+in function-tool names to underscores, so the model-facing aliases replace
+each hyphen with an underscore (for example, `notion_update_page`) before the
+SDK dispatches back to the canonical operation. Future hosted tools are not
+part of this contract until they are separately reviewed and added here.
 
 Tool results preserve page/block/data-source ids, parent ids, canonical URLs,
 last-edited time, property schema, pagination cursor, and a compact content
