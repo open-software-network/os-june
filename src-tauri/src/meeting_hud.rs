@@ -957,7 +957,9 @@ fn make_nonactivating(hud: &WebviewWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ACTIVE_TICK, END_PROMPT_WINDOW_SIZE, PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
+    use super::{
+        ACTIVE_TICK, END_PROMPT_WINDOW_SIZE, PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE,
+    };
     use crate::domain::types::{
         AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState, RecordingStatusDto,
         RecordingTelemetryDto, SourceState, SourceStatusDto,

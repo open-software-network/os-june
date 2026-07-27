@@ -1963,7 +1963,10 @@ mod tests {
             .force_meeting_end_countdown("meeting-session".to_string(), 10_000)
             .expect("force countdown");
         assert_eq!(status.phase, MeetingEndPhase::Countdown);
-        assert_eq!(status.expires_at_ms, Some(10_000 + MEETING_END_COUNTDOWN_MS));
+        assert_eq!(
+            status.expires_at_ms,
+            Some(10_000 + MEETING_END_COUNTDOWN_MS)
+        );
 
         // Keep recording suppresses it exactly like a detector-armed countdown.
         let suppressed = state
