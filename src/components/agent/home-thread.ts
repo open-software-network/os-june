@@ -319,24 +319,27 @@ function homeTaskGroundingTokens(value: string): Set<string> {
   );
 }
 
-function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
-  const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
-  const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
-  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
-  const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  return shared / new Set([...leftTokens, ...rightTokens]).size;
+function homeTaskTokenMatches(left: string, right: string): boolean {
+  return (
+    left === right ||
+    (left.length >= 5 && right.length >= 5 && left.slice(0, 5) === right.slice(0, 5))
+  );
 }
 
 function homeTaskTokensOverlap(left: Set<string>, right: Set<string>): boolean {
   return [...left].some((leftToken) =>
-    [...right].some(
-      (rightToken) =>
-        leftToken === rightToken ||
-        (leftToken.length >= 5 &&
-          rightToken.length >= 5 &&
-          leftToken.slice(0, 5) === rightToken.slice(0, 5)),
-    ),
+    [...right].some((rightToken) => homeTaskTokenMatches(leftToken, rightToken)),
   );
+}
+
+function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
+  const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
+  const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  const shared = [...leftTokens].filter((leftToken) =>
+    [...rightTokens].some((rightToken) => homeTaskTokenMatches(leftToken, rightToken)),
+  ).length;
+  return shared / Math.max(leftTokens.size, rightTokens.size);
 }
 
 export function isHomeTaskReplayWithoutNewIntent(
@@ -352,12 +355,15 @@ export function isHomeTaskReplayWithoutNewIntent(
   if (!negatesAction && HOME_TASK_ACTION_REQUEST.test(latestMessage)) {
     return false;
   }
+  const matchesPriorHandoff = handoffs.some(
+    (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
+  );
+  if (!matchesPriorHandoff) return false;
+  if (negatesRepeat || negatesAction) return true;
   const latestTokens = homeTaskGroundingTokens(latestMessage);
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
   if (homeTaskTokensOverlap(latestTokens, taskTokens)) return false;
-  return handoffs.some(
-    (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
-  );
+  return true;
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {
