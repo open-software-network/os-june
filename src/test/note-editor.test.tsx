@@ -147,11 +147,12 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByText("Google Calendar")).toBeInTheDocument();
-    expect(screen.getByText("june@example.com")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Matched to Product review in Google Calendar"),
-    ).toBeInTheDocument();
+    const chip = screen.getByLabelText("Matched to Product review in Google Calendar");
+    expect(chip).toHaveClass("note-calendar-chip");
+    // The badge stays succinct: the event time range is the visible label; the
+    // account email moved into the hover tip.
+    expect(chip).toHaveTextContent(/ to /);
+    expect(screen.queryByText("june@example.com")).toBeNull();
   });
 
   it("shows raw transcript in transcription tab", () => {

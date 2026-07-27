@@ -10678,30 +10678,29 @@ button.agent-user-attachment:hover {
   opacity: 0.45;
 }
 
-.note-calendar-context {
-  display: flex;
+/* Matched Google Calendar event, folded into the overline as a quiet badge on
+ * the house recipe (.status-pill's soft muted wash). The Google mark carries
+ * the source, the label carries the event time; the account email lives in the
+ * hover tip so the row stays one succinct line. */
+.note-calendar-chip {
+  display: inline-flex;
   align-items: center;
+  flex: 0 1 auto;
+  gap: var(--sp-2);
   min-width: 0;
-  max-width: 100%;
+  padding: 1px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: var(--lh-sm);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
-.note-calendar-context > svg {
+.note-calendar-chip > svg {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  margin-right: var(--sp-2);
-  color: var(--foreground);
 }
 
-.note-calendar-source {
-  color: var(--foreground);
-  font-weight: var(--fw-medium);
-}
-
-.note-calendar-account {
+.note-calendar-chip-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

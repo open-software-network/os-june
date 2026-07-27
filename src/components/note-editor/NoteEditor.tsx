@@ -5,7 +5,7 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
-import { IconCalendar3 } from "central-icons/IconCalendar3";
+import { IconGoogle } from "central-icons/IconGoogle";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
@@ -413,26 +413,24 @@ export function NoteEditor({
               onCreateAndAssign={onCreateAndAssignFolder}
               onNavigateToFolder={onNavigateToFolder}
             />
-          </div>
-        </div>
-        {note.calendarEvent ? (
-          <div
-            className="note-calendar-context"
-            aria-label={`Matched to ${note.calendarEvent.title} in Google Calendar`}
-            title={`Matched from ${note.calendarEvent.accountEmail}`}
-          >
-            <IconCalendar3 aria-hidden="true" />
-            <span className="note-calendar-source">Google Calendar</span>
-            {calendarEventTime ? (
+            {note.calendarEvent ? (
               <>
                 <span className="note-overline-dot" aria-hidden="true" />
-                <span>{calendarEventTime}</span>
+                <HoverTip
+                  className="note-calendar-chip"
+                  tip={`Matched to "${note.calendarEvent.title}" in Google Calendar (${note.calendarEvent.accountEmail})`}
+                  tabIndex={0}
+                  aria-label={`Matched to ${note.calendarEvent.title} in Google Calendar`}
+                >
+                  <IconGoogle size={12} aria-hidden />
+                  <span className="note-calendar-chip-label">
+                    {calendarEventTime ?? note.calendarEvent.title}
+                  </span>
+                </HoverTip>
               </>
             ) : null}
-            <span className="note-overline-dot" aria-hidden="true" />
-            <span className="note-calendar-account">{note.calendarEvent.accountEmail}</span>
           </div>
-        ) : null}
+        </div>
         <SegmentedControl
           aria-label="Note views"
           value={activeTab}
