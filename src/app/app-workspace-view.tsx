@@ -135,6 +135,21 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     topUpLabel,
   } = dependencies;
 
+  const resolveAgentSessionProjectContext = (sessionId: string) => {
+    const folder =
+      sessionId === activeAgentSessionId
+        ? activeAgentSessionFolder
+        : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
+    return folder
+      ? {
+          id: folder.id,
+          name: folder.name,
+          instructions: folder.instructions,
+          localPath: folder.localPath,
+        }
+      : undefined;
+  };
+
   return activeView === "settings" ? (
     <AppSettingsRoute
       account={account}
@@ -240,6 +255,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       fundingTier={fundingTierOf(fundingAccount)}
       topUpLabel={topUpLabel}
       onTopUp={handleTopUp}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
     />
   ) : activeView === "agent" ? (
     // The origin crumbs render inside the workspace's own sticky
@@ -264,20 +280,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       topUpLabel={topUpLabel}
       onTopUp={handleTopUp}
       sessionInProject={Boolean(activeAgentSessionFolder)}
-      resolveSessionProjectContext={(sessionId) => {
-        const folder =
-          sessionId === activeAgentSessionId
-            ? activeAgentSessionFolder
-            : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
-        return folder
-          ? {
-              id: folder.id,
-              name: folder.name,
-              instructions: folder.instructions,
-              localPath: folder.localPath,
-            }
-          : undefined;
-      }}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
       projectContext={
         agentProjectContextFolder
           ? {

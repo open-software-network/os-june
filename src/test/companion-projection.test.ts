@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { boundedCompanionText, companionAgentMessagesFromItems } from "../lib/agent-chat-runtime";
+import { prepareProjectPrompt } from "../lib/agent-project-context";
 import type { AgentItemDto } from "../lib/agent-runtime-contract";
 
 describe("Companion agent message projection", () => {
@@ -78,6 +79,37 @@ describe("Companion agent message projection", () => {
       34 * 1024,
     );
     expect(message?.text.endsWith("[Message truncated on companion]")).toBe(true);
+  });
+
+  it("removes injected project context from companion history", () => {
+    const prompt = prepareProjectPrompt(
+      "What changed?",
+      {
+        id: "project-1",
+        name: "Private launch",
+        instructions: "Never expose these local instructions.",
+      },
+      undefined,
+    ).text;
+    const items: AgentItemDto[] = [
+      {
+        id: "user",
+        sessionId: "session-1",
+        sequence: 1,
+        createdAt: "2026-07-16T10:00:00.000Z",
+        kind: "message",
+        role: "user",
+        text: prompt,
+        status: "complete",
+      },
+    ];
+
+    expect(companionAgentMessagesFromItems(items)).toEqual([
+      expect.objectContaining({
+        id: "user",
+        text: "What changed?",
+      }),
+    ]);
   });
 
   it("bounds UTF-8 text without splitting a scalar", () => {

@@ -309,6 +309,7 @@ export function AgentWorkspace({
   onMoveSessionToProject,
   sessionInProject = false,
   projectContext,
+  resolveSessionProjectContext,
   creditActionsDisabledReason,
 }: AgentWorkspaceProps = {}) {
   const { companionPairingEnabled } = useExperimentalFlags();
@@ -433,6 +434,20 @@ export function AgentWorkspace({
   const [composerClearance, setComposerClearance] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  const projectContextRef = useRef(projectContext);
+  projectContextRef.current = projectContext;
+  const resolveSessionProjectContextRef = useRef(resolveSessionProjectContext);
+  resolveSessionProjectContextRef.current = resolveSessionProjectContext;
+  const preparePromptForSession = useCallback((storedSessionId: string, prompt: string) => {
+    const targetProjectContext =
+      resolveSessionProjectContextRef.current?.(storedSessionId) ??
+      (selectedIdRef.current === storedSessionId ? projectContextRef.current : undefined);
+    return prepareProjectPrompt(
+      prompt,
+      targetProjectContext,
+      projectContextSignaturesBySessionId.get(storedSessionId),
+    );
+  }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
   );
@@ -867,9 +882,10 @@ export function AgentWorkspace({
             const enabledSkillIds = (await agentRuntimeBindings.listSkills())
               .filter((skill) => skill.enabled)
               .map((skill) => skill.id);
+            const preparedPrompt = preparePromptForSession(session.id, message);
             await agentRuntimeBindings.startRun({
               sessionId: session.id,
-              prompt: message,
+              prompt: preparedPrompt.text,
               model: session.model,
               reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
                 | "minimal"
@@ -880,6 +896,7 @@ export function AgentWorkspace({
               enabledSkillIds,
               attachments: [],
             });
+            projectContextSignaturesBySessionId.set(session.id, preparedPrompt.contextSignature);
             await companionCompleteFrontendRequest(payload.operationId, {
               type: "agentAccepted",
               data: { storedSessionId: session.id },
@@ -933,7 +950,7 @@ export function AgentWorkspace({
       window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companionPairingEnabled]);
+  }, [companionPairingEnabled, preparePromptForSession, refreshSessions]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -1232,11 +1249,7 @@ export function AgentWorkspace({
       const enabledSkillIds = (await agentRuntimeBindings.listSkills())
         .filter((skill) => skill.enabled)
         .map((skill) => skill.id);
-      const preparedPrompt = prepareProjectPrompt(
-        prompt,
-        projectContext,
-        projectContextSignaturesBySessionId.get(activeSession.id),
-      );
+      const preparedPrompt = preparePromptForSession(activeSession.id, prompt);
       const run = await agentRuntimeBindings.startRun({
         sessionId: activeSession.id,
         prompt: preparedPrompt.text,

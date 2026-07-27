@@ -117,6 +117,7 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   listAgentTasks: vi.fn(),
   listAgentSessions: vi.fn(),
+  listSessionFolders: vi.fn(),
   listSessionPartitions: vi.fn(),
   listVeniceModels: vi.fn(),
   localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
@@ -222,7 +223,7 @@ vi.mock("../lib/tauri", () => ({
   deleteFolder: mocks.deleteFolder,
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
-  listSessionFolders: vi.fn(async () => []),
+  listSessionFolders: mocks.listSessionFolders,
   listCompletedSessions: vi.fn(async () => []),
   setSessionCompleted: vi.fn(async () => undefined),
   listSessionPartitions: mocks.listSessionPartitions,
@@ -471,6 +472,7 @@ describe("App shortcuts", () => {
     mocks.agentOpenReady.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
     mocks.listAgentSessions.mockResolvedValue([]);
+    mocks.listSessionFolders.mockResolvedValue([]);
     mocks.listSessionPartitions.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
@@ -781,6 +783,91 @@ describe("App shortcuts", () => {
         type: "agentAccepted",
         data: { storedSessionId: sandboxed.id },
       },
+    );
+  });
+
+  it("prepares companion sends with current project context and clearing markers", async () => {
+    const session = agentSession("session-project-companion", "Project session");
+    const folder = {
+      id: "folder-companion",
+      name: "Private launch",
+      description: "Local project",
+      instructions: "Answer with the current launch constraints.",
+      memoryDisabled: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [folder],
+      notes: [note()],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listSessionFolders.mockResolvedValue([{ sessionId: session.id, folderId: folder.id }]);
+    mocks.listSessionPartitions.mockResolvedValue([{ sessionId: session.id, profile: "default" }]);
+    const firstApp = render(<App />);
+
+    await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-project-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: session.id, message: "What changed?" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          prompt: expect.stringContaining(
+            "instructions:\nAnswer with the current launch constraints.",
+          ),
+        }),
+      ),
+    );
+
+    firstApp.unmount();
+    mocks.listeners.clear();
+    mocks.startAgentRun.mockClear();
+    mocks.listSessionFolders.mockClear();
+    mocks.listSessionFolders.mockResolvedValue([]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-project-cleared-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: session.id, message: "What now?" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          prompt: expect.stringContaining(
+            "This session is no longer filed in a project. Previous project instructions no longer apply",
+          ),
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining("\n[/June project context]\n\nWhat now?"),
+      }),
     );
   });
 
