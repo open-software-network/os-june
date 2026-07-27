@@ -46,7 +46,8 @@ export function mergeAgentRuntimeSnapshot(
 ): AgentRuntimeProjection {
   const snapshot = createAgentRuntimeProjection(input);
   const run = input.run;
-  if (!run || (run.status !== "running" && run.status !== "waiting_for_user")) return snapshot;
+  if (!run) return snapshot;
+  const activeRun = run.status === "running" || run.status === "waiting_for_user";
 
   const snapshotSequence =
     run.lastSequence ??
@@ -55,16 +56,16 @@ export function mergeAgentRuntimeSnapshot(
   for (const [key, deltas] of Object.entries(current.textDeltasByItem)) {
     if (!key.startsWith(`${run.id}:`)) continue;
     const pending = deltas
-      .filter((delta) => delta.sequence > snapshotSequence)
+      .filter((delta) => activeRun && delta.sequence > snapshotSequence)
       .sort((a, b) => a.sequence - b.sequence);
     if (pending.length > 0) textDeltasByItem[key] = pending;
   }
-  const newerItems = current.items.filter(
-    (item) =>
-      item.sessionId === input.session.id &&
-      item.runId === run.id &&
-      item.sequence > snapshotSequence,
-  );
+  const newerItems = current.items.filter((item) => {
+    if (item.sessionId !== input.session.id || item.runId !== run.id) return false;
+    if (activeRun) return item.sequence > snapshotSequence;
+    const persisted = snapshot.items.find((candidate) => candidate.id === item.id);
+    return !persisted || item.sequence > persisted.sequence;
+  });
   let items = snapshot.items;
   for (const newerItem of newerItems) {
     const persisted = items.find((item) => item.id === newerItem.id);
