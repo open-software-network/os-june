@@ -139,8 +139,8 @@ export function CollapsibleActionCard({
 
 /** The approval footer's primary control: a split button. "Approve" approves
  * "once"; the attached caret opens a small scope menu ("Approve once" /
- * "Approve for this session" / "Always approve", the last hidden when
- * `allowPermanent` is false). Dismisses on outside click or Escape and supports
+ * "Always approve", the last hidden when `allowPermanent` is false).
+ * Dismisses on outside click or Escape and supports
  * arrow-key navigation, mirroring the repo's other hand-rolled menus. */
 export function ApproveSplitButton({
   disabled,
@@ -188,7 +188,6 @@ export function ApproveSplitButton({
 
   const items: { choice: AgentApprovalChoice; label: string }[] = [
     { choice: "once", label: "Approve once" },
-    { choice: "session", label: "Approve for this session" },
     ...(allowPermanent
       ? [{ choice: "always" as AgentApprovalChoice, label: "Always approve" }]
       : []),

@@ -14,4 +14,6 @@ only where the content is literally code or a technical identifier the user is
 meant to read as such.
 
 **Exceptions.** The existing serif empty-state titles
-(`.empty-state-title`) are canon, not a violation.
+(`.empty-state-title`) are canon, not a violation, as is the Home thread's
+serif daily greeting (a display moment). Chat bodies everywhere - including
+June's Home replies - stay sans.

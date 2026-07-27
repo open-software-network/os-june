@@ -21,3 +21,17 @@ it("keeps the thinking status mounted for its exit handoff", () => {
     unmount();
   }
 });
+
+it("renders an accessible, layout-stable three-dot typing bubble", () => {
+  const { container } = render(<AgentThinking visible variant="typing-bubble" />);
+
+  const status = screen.getByRole("status");
+  expect(status).toHaveTextContent("June is typing");
+  expect(status).toHaveAttribute("aria-live", "polite");
+  expect(status).toHaveAttribute("aria-atomic", "true");
+  expect(status).toHaveAttribute("data-variant", "typing-bubble");
+
+  const dots = container.querySelector(".agent-typing-dots");
+  expect(dots).toHaveAttribute("aria-hidden", "true");
+  expect(dots?.children).toHaveLength(3);
+});

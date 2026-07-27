@@ -16,7 +16,7 @@ authoritative, reviewable version.
 
 ## Frontend — UI styling
 
-- [icons-central-only](icons-central-only.md) — icons from `central-icons` / `central-icons-filled` only
+- [icons-central-only](icons-central-only.md) — central icons on web; ADR-recorded platform symbols in native targets
 - [design-tokens](design-tokens.md) — use the variables in `src/styles/tokens.css`
 - [no-tabular-numerals](no-tabular-numerals.md) — UI numbers use proportional figures, never `tabular-nums`
 - [scroll-fade](scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
@@ -31,9 +31,9 @@ authoritative, reviewable version.
 
 - [control-sizes](control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 
-## Agent surface — MCP
+## Agent surface - tools
 
-- [mcp-tool-naming](mcp-tool-naming.md) — internal MCP tools are `verb_object`; the owning PRD names them before the code is written
+- [mcp-tool-naming](mcp-tool-naming.md) - June-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
 
 ## Tooling — dependencies
 

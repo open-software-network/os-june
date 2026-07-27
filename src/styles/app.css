@@ -306,6 +306,66 @@ input:focus-visible,
   opacity: 1;
 }
 
+/* Home keeps a real (if quiet) share of the hero's warm floor — the wash
+ * rising from the composer is what makes the thread feel like June's room
+ * rather than a console. Hero owns the full-strength moment. Home re-curves
+ * the gradient rather than opacity-scaling it: a taller, gentler ombre (felt
+ * from mid-canvas, never loud at the floor). */
+/* Home's top dissolve lives inside the workspace (the card-level fade is
+ * disabled for the home view, like the agent view): scrolled content melts at
+ * the card's top edge, and the listening bloom (z 4) sits crisp above the
+ * veil. The hero rim never renders in home, so its pseudo is free. */
+.agent-workspace[data-home="true"]::after {
+  bottom: auto;
+  height: var(--home-top-fade-size);
+  z-index: 3;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-mask-image: none;
+  mask-image: none;
+  background: linear-gradient(to bottom, var(--card), transparent);
+  /* Hidden at rest: a static veil hides the first message at scroll-top, and
+   * an inactive timeline must fail to NO veil, not a stuck one (the agent
+   * view's documented trap). The scroll animation below reveals it. */
+  opacity: 0;
+}
+
+/* Scroll-driven like the card fades: invisible at the very top of the
+ * thread, fading in as content scrolls beneath. */
+@supports (animation-timeline: scroll()) {
+  .agent-workspace[data-home="true"]::after {
+    animation: main-panel-fade-start linear both;
+    animation-timeline: --main-panel-scroll;
+  }
+}
+
+.agent-workspace[data-home="true"]::before {
+  opacity: 1;
+  /* Bottom-hugging: the top third stays pure canvas, then the warmth eases in
+   * and gathers at the floor (hero-strength at the very bottom). */
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 30%,
+    color-mix(in oklch, var(--brand) 1.5%, transparent) 55%,
+    color-mix(in oklch, var(--brand) 6%, transparent) 78%,
+    color-mix(in oklch, var(--brand) 14%, transparent) 100%
+  );
+}
+
+/* Dark canvas: full-chroma brand alpha over near-black greys into mud, so the
+ * dark wash leans on --brand-wash (the chroma-capped surface-tint companion)
+ * at lower strength - a quiet glow instead of a milky veil. */
+[data-theme="dark"] .agent-workspace[data-home="true"]::before {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 35%,
+    color-mix(in oklch, var(--brand-wash) 3%, transparent) 62%,
+    color-mix(in oklch, var(--brand-wash) 8%, transparent) 100%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .agent-workspace::before,
   .agent-workspace::after {
@@ -316,7 +376,8 @@ input:focus-visible,
 /* Agent view: stop the card body from scrolling (the breadcrumb would scroll
  * with it) and give the grid row a definite height so .agent-workspace fills
  * the card exactly. Scoped so every other view keeps the shared scroller. */
-.main-panel-body[data-active-view="agent"] {
+.main-panel-body[data-active-view="agent"],
+.main-panel-body[data-active-view="home"] {
   overflow: hidden;
   padding-bottom: 0;
 }
@@ -326,7 +387,8 @@ input:focus-visible,
   padding-bottom: 0;
 }
 
-.main-panel-body[data-active-view="agent"] .workspace {
+.main-panel-body[data-active-view="agent"] .workspace,
+.main-panel-body[data-active-view="home"] .workspace {
   grid-template-rows: minmax(0, 1fr);
   /* The column must be pinned like the row: an auto track can't shrink below
    * the breadcrumb bar's nowrap min-content, so a narrow card would lay the
@@ -346,7 +408,11 @@ input:focus-visible,
   .main-panel-body[data-active-view="agent"] {
     scroll-timeline: none;
   }
-  .main-panel-body[data-active-view="agent"] .agent-scroll {
+  .main-panel-body[data-active-view="home"] {
+    scroll-timeline: none;
+  }
+  .main-panel-body[data-active-view="agent"] .agent-scroll,
+  .main-panel-body[data-active-view="home"] .agent-scroll {
     scroll-timeline: --main-panel-scroll block;
   }
   /* The card-level bottom veil cannot paint beneath the composer — the
@@ -1643,8 +1709,7 @@ input:focus-visible,
 /* Action cards (approval, clarify) — a clean system card: card surface, subtle
  * border, soft shadow. */
 .agent-safety-panel,
-.agent-tool-event,
-.agent-hermes-event {
+.agent-tool-event {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--sp-3);
@@ -2244,6 +2309,600 @@ input:focus-visible,
   line-height: 1.55;
 }
 
+/* Home is a relationship thread: June speaks in plain text on the warm canvas
+ * (exactly like a focused session, so the two surfaces share one voice), and
+ * the person's messages sit in soft card bubbles that echo the composer they
+ * were just typed in. No solid accent fills — warmth comes from the canvas
+ * wash and the serif greeting, not from painting messages orange. */
+.agent-timeline[data-home="true"] {
+  gap: var(--sp-3);
+  padding-top: var(--sp-8);
+  /* Match the wrapped draft's optical text edge: composer hairline + frame
+   * padding + its multiline text inset. Replies and a growing draft now share
+   * one quiet rail instead of shifting a few pixels at the wrap boundary. */
+  padding-inline: calc(var(--sp-px) + var(--sp-1) + var(--sp-2));
+  /* Conversation gravity: a short thread (first open, first day) settles by
+   * the composer, where the transcript pins anyway once it grows — instead of
+   * floating at the top of a mostly-empty canvas. The timeline stretches to
+   * fill the scroller (flex: 1), so anchoring happens inside it; once content
+   * outgrows the viewport this is a no-op. */
+  justify-content: flex-end;
+}
+
+.agent-timeline[data-home="true"] .agent-assistant-turn,
+.agent-timeline[data-home="true"] .agent-user-turn {
+  margin-block: 0;
+}
+
+/* Exchange rhythm: the reply gets enough separation from the sent bubble to
+ * read as a new voice, while a new message after June's reply opens an even
+ * fuller breath. Conversations read in beats, not as one even-spaced list.
+ * Day markers carry their own margins at boundaries. */
+.agent-timeline[data-home="true"] .agent-user-turn + .agent-assistant-turn {
+  margin-top: var(--sp-5);
+}
+
+.agent-timeline[data-home="true"] .agent-assistant-turn + .agent-user-turn {
+  margin-top: var(--sp-8);
+}
+
+/* The bubble's shadow lives on the UNMASKED parent: masking applies after
+ * filtering, so a drop-shadow on the masked body itself is erased outside
+ * the silhouette (the same trap as clip-path clipping shadows). Filtering
+ * the parent shadows the child's already-masked raster — the shadow wraps
+ * the curl. One step up from sm so the white card reads against the
+ * unwashed canvas at the top of the thread. */
+.agent-timeline[data-home="true"] .agent-user-turn {
+  filter: var(--drop-shadow-md);
+}
+
+/* Sent messages: a soft borderless card whose little curl turns the surface
+ * into speech. This is one continuous silhouette, not a rounded rectangle with
+ * a tail glued behind it: the mask owns the side, concave neck, tip, return
+ * curve, and bottom edge in the same Bézier path. Nine-slice scaling preserves
+ * that drawn endcap while letting the middle grow for longer messages. */
+.agent-timeline[data-home="true"] .agent-user-turn-body {
+  --agent-home-bubble-radius: calc(var(--control-lg) / 2 + var(--sp-1));
+
+  position: relative;
+  max-width: 70%;
+  /* The mask's right band renders --sp-px wider than the left (the curl's
+   * slice), so the right padding carries the same extra to keep the text
+   * optically centered in the visible shape. */
+  padding-inline: var(--sp-5) calc(var(--sp-5) + var(--sp-px));
+  border: 0;
+  border-radius: var(--agent-home-bubble-radius);
+  background: var(--card);
+}
+
+/* Only the last message of a user run speaks the curl (iMessage grouping);
+ * earlier messages in the run stay fully rounded. The source slices are
+ * intrinsic coordinates from home-chat-bubble.svg. Render widths stay on
+ * June's radius/spacing tokens; when a one-line bubble is shorter than the
+ * two radius slices, WebKit scales them down together. */
+.agent-timeline[data-home="true"] .agent-user-turn[data-user-run-end="true"] .agent-user-turn-body {
+  border-radius: 0;
+  -webkit-mask-box-image-source: url("../assets/home-chat-bubble.svg");
+  -webkit-mask-box-image-slice: 29 34 29 29 fill;
+  -webkit-mask-box-image-width: var(--agent-home-bubble-radius)
+    calc(var(--agent-home-bubble-radius) + var(--sp-px)) var(--agent-home-bubble-radius)
+    var(--agent-home-bubble-radius);
+  -webkit-mask-box-image-repeat: stretch;
+}
+
+/* Home is the relationship surface, so private chain-of-thought chrome stays
+ * in focused sessions. The active state is a quiet set of typing dots. */
+.agent-timeline[data-home="true"] .agent-reasoning {
+  display: none;
+}
+
+/* June composing: bare dots at the reply position — no bubble chrome, since
+ * her messages render bare on the canvas too. The dots breathe (a slow
+ * opacity wave, no bounce) so the state reads as presence gathering itself
+ * rather than a keyboard clattering. */
+.agent-thinking[data-variant="typing-bubble"] {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: var(--control-md);
+  padding-inline: var(--sp-1);
+  color: var(--spinner-neutral);
+  line-height: 1;
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
+  opacity: 0.12;
+  filter: blur(var(--home-typing-blur));
+  animation: june-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
+  transform: none;
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(2) {
+  animation-delay: var(--t-slow);
+}
+
+.agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span:nth-child(3) {
+  animation-delay: calc(var(--t-slow) * 2);
+}
+
+/* Each dot drifts between a blurred haze and a brief moment of focus, so the
+ * passage between states is where the softness lives — thought resolving,
+ * not a cursor blinking. */
+@keyframes june-home-typing-breath {
+  0%,
+  100% {
+    opacity: 0.12;
+    filter: blur(var(--home-typing-blur));
+  }
+  50% {
+    opacity: 0.66;
+    filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
+    opacity: 0.5;
+    filter: none;
+    animation: none;
+  }
+}
+
+.agent-typing-dots {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+}
+
+.agent-typing-dots > span {
+  width: var(--sp-2);
+  height: var(--sp-2);
+  border-radius: var(--r-pill);
+  background: currentColor;
+  opacity: 0.42;
+  animation: agent-typing-dot calc(var(--t-slow) * 5) var(--ease-in-out) infinite;
+}
+
+.agent-typing-dots > span:nth-child(2) {
+  animation-delay: var(--t-fast);
+}
+
+.agent-typing-dots > span:nth-child(3) {
+  animation-delay: calc(var(--t-fast) * 2);
+}
+
+@keyframes agent-typing-dot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.42;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(calc(-1 * var(--sp-px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-typing-dots > span {
+    opacity: 0.72;
+    transform: none;
+    animation: none;
+  }
+}
+
+.agent-timeline[data-home="true"] .agent-turn-actions {
+  display: none;
+}
+
+/* June opens each day with a serif salutation — a display moment (per the
+ * font-families spec), not a message bubble, because the check-in is
+ * client-authored ambiance rather than a model reply. */
+.agent-home-greeting {
+  display: grid;
+  gap: var(--sp-2);
+  margin-block: var(--sp-4) var(--sp-2);
+}
+
+/* June's bloom above the salutation: the character standing in for an avatar
+ * row, warm but small — presence, not logo. The span carries the idle float so
+ * the svg's own transform stays free for the wink tilt. */
+.agent-home-greeting-mark {
+  display: inline-flex;
+  margin-bottom: var(--sp-1);
+  color: var(--brand);
+}
+
+/* The bloom's life signs: a slow float, a head-cock, and a periodic wink on a
+ * long cycle that runs out of phase with the float. The two eye states are
+ * FULL-BODY paths, so they must swap in a single frame (step-end): any
+ * crossfade has both bodies semi-transparent at once, dimming the whole
+ * flower into a visible flash. The wink reads through the held closed beat
+ * (~360ms) and the eased tilt, not through eyelid fades. Static open eyes
+ * under reduced motion. */
+.june-bloom {
+  display: block;
+  transform-origin: 50% 55%;
+}
+
+.june-bloom .june-bloom-wink {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-home-greeting-mark,
+  .agent-home-listening {
+    animation: june-bloom-float var(--home-presence-float-dur) var(--ease-in-out) infinite;
+  }
+
+  .june-bloom[data-animated] {
+    animation: june-bloom-tilt var(--home-presence-wink-dur) var(--ease-in-out) infinite;
+  }
+
+  .june-bloom[data-animated] .june-bloom-open {
+    animation: june-bloom-eyes-open var(--home-presence-wink-dur) step-end infinite;
+  }
+
+  .june-bloom[data-animated] .june-bloom-wink {
+    animation: june-bloom-eyes-wink var(--home-presence-wink-dur) step-end infinite;
+  }
+}
+
+@keyframes june-bloom-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(var(--home-presence-float-y));
+  }
+}
+
+/* step-end holds each segment's starting value, so the pair flips at exactly
+ * 80% and back at 81.9% (a ~360ms closed beat) with no intermediate frames.
+ * The keyframe positions must stay identical across both, or the face
+ * double-exposes. */
+@keyframes june-bloom-eyes-open {
+  0% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 0;
+  }
+  81.9%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes june-bloom-eyes-wink {
+  0% {
+    opacity: 0;
+  }
+  80% {
+    opacity: 1;
+  }
+  81.9%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes june-bloom-tilt {
+  0%,
+  79.3% {
+    transform: rotate(0deg);
+  }
+  80.4%,
+  81.9% {
+    transform: rotate(var(--home-presence-tilt));
+  }
+  83%,
+  100% {
+    transform: rotate(0deg);
+  }
+}
+
+/* The small listening bloom acknowledges direct attention with one wink. The
+ * periodic idle cycle yields to this short one-shot while hovered, then returns
+ * with open eyes. Reduced-motion users get the same state change without the
+ * timed head tilt. */
+.agent-home-listening:hover .june-bloom-open,
+.agent-home-greeting-mark:hover .june-bloom-open {
+  opacity: 0;
+}
+
+.agent-home-listening:hover .june-bloom-wink,
+.agent-home-greeting-mark:hover .june-bloom-wink {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-home-listening:hover .june-bloom[data-animated],
+  .agent-home-greeting-mark:hover .june-bloom[data-animated] {
+    animation: june-bloom-hover-tilt calc(var(--t-slow) * 2) var(--ease-out) 1;
+  }
+
+  .agent-home-listening:hover .june-bloom-open,
+  .agent-home-greeting-mark:hover .june-bloom-open {
+    opacity: 1;
+    animation: june-bloom-hover-eyes-open calc(var(--t-slow) * 2) step-end 1;
+  }
+
+  .agent-home-listening:hover .june-bloom-wink,
+  .agent-home-greeting-mark:hover .june-bloom-wink {
+    opacity: 0;
+    animation: june-bloom-hover-eyes-wink calc(var(--t-slow) * 2) step-end 1;
+  }
+}
+
+@keyframes june-bloom-hover-eyes-open {
+  0%,
+  24% {
+    opacity: 1;
+  }
+  25%,
+  58% {
+    opacity: 0;
+  }
+  59%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes june-bloom-hover-eyes-wink {
+  0%,
+  24% {
+    opacity: 0;
+  }
+  25%,
+  58% {
+    opacity: 1;
+  }
+  59%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes june-bloom-hover-tilt {
+  0%,
+  20%,
+  100% {
+    transform: rotate(0deg);
+  }
+  35%,
+  62% {
+    transform: rotate(var(--home-presence-tilt));
+  }
+}
+
+.agent-home-greeting h2 {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-2xl);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+.agent-home-greeting p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+}
+
+/* Centered day boundaries keep the persistent thread navigable — the continual
+ * stream was Dot's one pitfall, and these are the handrails. */
+.agent-home-day {
+  margin-block: var(--sp-5) var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+.agent-home-nudges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+/* The abandoned-draft re-offer hovers ABOVE the pill (absolute, so it never
+ * grows the composer's measured clearance or pushes the conversation up).
+ * The fixed composer column is pointer-events: none, so the chips restore
+ * their own interactivity. Chips cascade in with the hero chips' stagger. */
+.agent-home-nudges-idle {
+  position: absolute;
+  bottom: calc(100% + var(--sp-2));
+  left: 0;
+  right: 0;
+  /* Track the pill's column and align with its left edge (the + line). */
+  width: 100%;
+  max-width: min(var(--chat-max), var(--content-max));
+  margin: 0 auto;
+  padding-inline: 0;
+  pointer-events: auto;
+  justify-content: flex-start;
+}
+
+.agent-home-nudges-idle button {
+  animation: june-home-chip-in var(--t-slow) var(--ease-out) both;
+  animation-delay: calc(var(--chip-i, 0) * var(--t-fast));
+}
+
+@keyframes june-home-chip-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--sp-2));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-home-nudges-idle button {
+    animation: none;
+  }
+}
+
+.agent-home-nudges button {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  /* The chatbox's surface restraint: no drawn border - a 60%-alpha hairline
+   * ring composed into the shadow stack (the composer-box recipe), so the
+   * edge blends with the elevation instead of striking a line. */
+  border: var(--border-width) solid transparent;
+  border-radius: var(--r-pill);
+  background: var(--card);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.agent-home-nudges button:hover {
+  /* The standard light accent tint: over the chip's opaque card base it
+   * reads as a very light themed press. */
+  background: var(--brand-tint);
+}
+
+/* Dark chips lose their hairline at 60% alpha; a firmer ring keeps the edge
+ * legible without reading as a drawn border. */
+[data-theme="dark"] .agent-home-nudges button {
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 1px var(--border-subtle);
+}
+
+.agent-home-task-list {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.agent-home-task-card {
+  display: grid;
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: var(--border-width) solid var(--brand-line);
+  border-radius: var(--r-xl);
+  background: color-mix(in oklch, var(--card) 90%, var(--brand-tint));
+  box-shadow: var(--shadow-sm);
+}
+
+.agent-home-task-card[data-status="failed"] {
+  border-color: color-mix(in oklch, var(--destructive) 32%, var(--border));
+}
+
+.agent-home-task-icon {
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  border-radius: var(--r-md);
+  background: var(--brand-tint);
+  color: var(--brand);
+}
+
+.agent-home-task-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--sp-px);
+}
+
+.agent-home-task-copy strong {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-home-task-copy > span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-home-task-card > button {
+  min-height: var(--control-md);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--brand-tint);
+  color: var(--brand);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.agent-home-task-card > button:hover {
+  background: var(--brand-tint-strong);
+}
+
+.agent-home-task-message {
+  display: grid;
+  /* Tighter than the old pill gap: with no drawn surface, the button's own
+   * hit-target padding already contributes optical air above the label. */
+  gap: var(--sp-2);
+}
+
+.agent-home-task-message > span:first-child {
+  color: var(--foreground);
+}
+
+/* No pill: Home already stacks the suggestion chips over the composer
+ * capsule, and a third pill here read as one shape too many. The action is a
+ * quiet brand-colored line under June's sentence — the capsule exists only
+ * as the hover tint. The negative start margin cancels the hover padding so
+ * the label sits flush with the message text at rest. */
+.agent-home-task-message > button {
+  display: inline-flex;
+  width: fit-content;
+  min-height: var(--control-md);
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  margin-inline-start: calc(-1 * var(--sp-2));
+  border: 0;
+  border-radius: var(--r-pill);
+  background: none;
+  color: var(--brand);
+  /* Inherits the thread's --fs-lg: the link is a continuation of June's
+   * sentence, so it reads at the same size as the message text above it. */
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.agent-home-task-message > button:hover {
+  background: var(--brand-tint);
+}
+
+[data-theme="dark"] .agent-home-task-message > button {
+  color: var(--brand-bright);
+}
+
+.agent-home-task-pending {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  color: var(--muted-foreground);
+  line-height: 1;
+}
+
 .agent-user-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -2444,12 +3103,6 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
-.agent-hermes-message {
-  width: 100%;
-  padding: var(--sp-1) var(--sp-2);
-  color: var(--foreground);
-}
-
 .agent-markdown {
   color: var(--foreground);
   font-size: var(--fs-lg);
@@ -2463,10 +3116,10 @@ button.agent-user-attachment:hover {
 /* While a turn streams, each newly revealed word mounts as a span and fades
  * in over a deliberately long window: a quick rise to ~30% ink so new words
  * are readable at once, then a slow linear crawl to full. Because the crawl
- * far outlasts the gap between chunks, the last second-or-so of prose reads
+ * far outlasts the gap between word-paced steps, the last second-or-so of prose reads
  * as a soft ink gradient trailing the reveal — SmoothedStreamingMarkdown
- * batches deltas so words that arrived together mount together and settle
- * together. Opacity-only on purpose: batches land several times a second and
+ * decouples the visible cadence from provider delta sizes. Opacity-only on
+ * purpose: new words land several times a second and
  * blur/transform here would churn compositor layers in WKWebView. The
  * settle clock below derives from the same duration token and keeps the spans
  * mounted after completion so the tail finishes settling instead of popping
@@ -2620,6 +3273,11 @@ button.agent-user-attachment:hover {
 .agent-md-table td {
   border-bottom: 1px solid var(--border-subtle);
   padding: var(--sp-2) var(--sp-4) var(--sp-2) 0;
+  /* Preserve whole words in the table's intrinsic width calculation. The
+   * surrounding markdown uses `anywhere` for long paths and URLs, which made
+   * ordinary labels collapse into letter-wide columns here. */
+  overflow-wrap: break-word;
+  vertical-align: top;
 }
 
 .agent-md-table th {
@@ -2862,57 +3520,6 @@ button.agent-user-attachment:hover {
   font-style: italic;
 }
 
-.agent-hermes-note {
-  width: min(760px, 100%);
-  padding: 0 var(--sp-2);
-  color: var(--muted-foreground);
-  font-size: var(--fs-lg);
-}
-
-.agent-hermes-note summary {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  cursor: pointer;
-  list-style: none;
-  color: var(--muted-foreground);
-}
-
-.agent-hermes-note summary:hover {
-  color: var(--foreground);
-}
-
-.agent-hermes-note summary::-webkit-details-marker {
-  display: none;
-}
-
-.agent-hermes-note span {
-  font-weight: 400;
-}
-
-.agent-hermes-note > .agent-markdown {
-  margin: var(--sp-2) 0 0;
-  color: var(--muted-foreground);
-}
-
-.agent-hermes-note:not([open]) > .agent-markdown {
-  display: none;
-}
-
-.agent-hermes-event {
-  width: min(760px, 100%);
-  padding: var(--sp-3);
-  border-radius: var(--r-sm);
-}
-
-.agent-hermes-event p {
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-  line-height: 1.4;
-  white-space: pre-wrap;
-}
-
 /* Collapsed-by-default tool row: a single quiet line (icon · name · status),
  * with the raw output tucked behind a disclosure so it never floods the
  * conversation. */
@@ -3023,7 +3630,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Status sits beside the name (not floated to the far edge) so the row reads
- * as one phrase. StatusPill rows (hermes/tool events) flatten to the same
+ * as one phrase. StatusPill tool-event rows flatten to the same
  * quiet-word treatment inside disclosures. */
 .agent-tool-disclosure .agent-status-pill {
   min-height: 0;
@@ -4194,6 +4801,36 @@ button.agent-user-attachment:hover {
   white-space: nowrap;
 }
 
+.agent-usage-context,
+.agent-usage-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.agent-usage-context-track {
+  height: var(--sp-1);
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--muted);
+}
+
+.agent-usage-context-track > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transform-origin: left center;
+  transition: transform var(--t-slow) var(--ease-out);
+}
+
+.agent-usage-section-title {
+  margin: var(--sp-2) 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
 .agent-usage-fine-print {
   margin: 0;
   font-size: var(--fs-xs);
@@ -4872,8 +5509,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Reasoning + note bodies fade/slide in when expanded for a smooth reveal. */
-.agent-reasoning[open] .agent-reasoning-body,
-.agent-hermes-note[open] > .agent-markdown {
+.agent-reasoning[open] .agent-reasoning-body {
   animation: agent-reveal 160ms var(--ease-out);
 }
 
@@ -5069,6 +5705,33 @@ button.agent-user-attachment:hover {
   background: linear-gradient(to bottom, transparent, var(--card) 72%);
 }
 
+/* Home's dissolve must vanish into the warm floor, not paint a card-white
+ * band over it. The card layer still dissolves the scrolling conversation;
+ * the alpha-brand layer on top re-applies the wash's floor intensity with the
+ * same compositing math (brand alpha over card) as the workspace wash, so
+ * the veil is invisible against it. */
+.agent-workspace[data-home="true"] .agent-composer:not([data-hero="true"])::before {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in oklch, var(--brand) 13.5%, transparent) 72%
+    ),
+    linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
+[data-theme="dark"]
+  .agent-workspace[data-home="true"]
+  .agent-composer:not([data-hero="true"])::before {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent,
+      color-mix(in oklch, var(--brand-wash) 7.5%, transparent) 72%
+    ),
+    linear-gradient(to bottom, transparent, var(--card) 72%);
+}
+
 /* Floating "jump to live edge" pill. Absolute (never fixed on its own: a
  * composited fixed element gets clipped by the overflow-hidden card in
  * WKWebView), anchored inside the fixed .agent-composer column so it hovers
@@ -5101,6 +5764,7 @@ button.agent-user-attachment:hover {
   transition:
     opacity 120ms ease,
     transform 120ms ease,
+    bottom 120ms ease,
     background-color var(--t-fast) var(--ease-out);
 }
 
@@ -5698,7 +6362,7 @@ button.agent-user-attachment:hover {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
-/* Unsupported Hermes event notice: a quiet, recoverable banner at the top of
+/* Unsupported runtime event notice: a quiet, recoverable banner at the top of
  * the timeline. Uses the destructive-soft surface (same family as other
  * attention states) without shouting — the event is recoverable, not fatal. */
 .agent-unsupported-notice {
@@ -5806,177 +6470,6 @@ button.agent-user-attachment:hover {
 .agent-unsupported-notice-action:focus-visible {
   outline: 2px solid var(--ring-focus);
   outline-offset: 1px;
-}
-
-/* Dev/debug raw Hermes trace panel (feature 15). A bottom-anchored overlay
- * pinned to the viewport; never ships to users (gated on import.meta.env.DEV). */
-.hermes-trace-panel {
-  position: fixed;
-  inset: auto 0 0 0;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  max-height: 60%;
-  padding: var(--sp-4) var(--sp-5);
-  border-top: 1px solid var(--border);
-  background: var(--card);
-  box-shadow: 0 -8px 24px color-mix(in oklch, var(--foreground) 12%, transparent);
-}
-
-.hermes-trace-panel-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-3);
-  align-items: flex-end;
-  justify-content: space-between;
-}
-
-.hermes-trace-panel-title {
-  display: flex;
-  gap: var(--sp-2);
-  align-items: center;
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-medium);
-}
-
-.hermes-trace-panel-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  align-items: flex-end;
-}
-
-.hermes-trace-panel-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-field select {
-  padding: var(--sp-1) var(--sp-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.hermes-trace-panel-button {
-  display: inline-flex;
-  gap: var(--sp-1);
-  align-items: center;
-  padding: var(--sp-1) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  font-weight: 400;
-  cursor: pointer;
-}
-
-.hermes-trace-panel-button:hover {
-  background: var(--accent);
-}
-
-.hermes-trace-panel-button:focus-visible {
-  outline: 2px solid var(--ring-focus);
-  outline-offset: 1px;
-}
-
-.hermes-trace-copy-tip {
-  display: inline-flex;
-}
-
-.hermes-trace-panel-close {
-  padding: var(--sp-1) var(--sp-2);
-}
-
-.hermes-trace-panel-note {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-empty {
-  margin: var(--sp-2) 0;
-  font-size: var(--fs-md);
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-panel-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  margin: 0;
-  padding: 0;
-  overflow: auto;
-  list-style: none;
-}
-
-.hermes-trace-row {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--background);
-}
-
-.hermes-trace-row[data-unsupported="true"] {
-  border-color: color-mix(in oklch, var(--destructive) 36%, transparent);
-  background: var(--destructive-soft);
-}
-
-.hermes-trace-row-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-2);
-  align-items: center;
-  font-size: var(--fs-sm);
-}
-
-.hermes-trace-row-direction {
-  padding: 0 var(--sp-1);
-  border-radius: var(--r-xs);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  text-transform: capitalize;
-}
-
-.hermes-trace-row-type {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-}
-
-.hermes-trace-row-kind {
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-row-time {
-  margin-left: auto;
-  color: var(--muted-foreground);
-}
-
-.hermes-trace-row-message {
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--destructive);
-}
-
-.hermes-trace-row-payload {
-  margin: 0;
-  max-height: 160px;
-  overflow: auto;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .agent-composer[data-hidden="true"] {
@@ -6186,6 +6679,16 @@ button.agent-user-attachment:hover {
   overflow: hidden;
   color: var(--foreground);
   font-size: var(--fs-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-follow-up-status {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -6645,92 +7148,6 @@ button.agent-user-attachment:hover {
  * long model name. */
 .agent-composer-model-detail-name .agent-safety-badge {
   flex: 0 0 auto;
-}
-
-/* ============================================================================
- * Scroll fades (design system)
- *
- * A scroller melts its clipped edge when content is hidden above or below the
- * viewport. Driven by the `useScrollFade` hook, which sets `data-fade-top` /
- * `data-fade-bottom` only on the edge(s) with hidden content (so a fade never
- * shows when everything fits). Two flavors, one contract:
- *
- *  - `.scroll-fade`      — contained overlays: `::before`/`::after` gradients
- *    pinned to the wrapper's edges. WKWebView-safe for popovers (a mask on the
- *    scroller rides the scrolled content in WebKit and bleeds past the bounds).
- *    Put the class + data attributes on a non-scrolling wrapper; the scroller
- *    is its child. Tunables: `--scroll-fade-size`, `--scroll-fade-color`,
- *    `--scroll-fade-inset-right`.
- *  - `.scroll-fade-mask` — mask-image gradient on the scroller itself. Reveals
- *    the real content at the edge (clean in light + dark) for large panel
- *    scrollers. Put the class + data attributes on the scroller. Tunable:
- *    `--scroll-fade-size`.
- * ============================================================================ */
-.scroll-fade {
-  position: relative;
-}
-
-.scroll-fade::before,
-.scroll-fade::after {
-  content: "";
-  position: absolute;
-  right: var(--scroll-fade-inset-right, 0);
-  left: 0;
-  z-index: 1;
-  height: var(--scroll-fade-size, 24px);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity var(--t-fast) var(--ease-out);
-}
-
-.scroll-fade::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--scroll-fade-color, var(--popover)), transparent);
-}
-
-.scroll-fade::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--scroll-fade-color, var(--popover)), transparent);
-}
-
-.scroll-fade[data-fade-top]::before,
-.scroll-fade[data-fade-bottom]::after {
-  opacity: 1;
-}
-
-.scroll-fade-mask[data-fade-top][data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--scroll-fade-size, 28px),
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    transparent,
-    #000 var(--scroll-fade-size, 28px),
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-}
-
-.scroll-fade-mask[data-fade-top]:not([data-fade-bottom]) {
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
-  mask-image: linear-gradient(to bottom, transparent, #000 var(--scroll-fade-size, 28px));
-}
-
-.scroll-fade-mask:not([data-fade-top])[data-fade-bottom] {
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    #000 calc(100% - var(--scroll-fade-size, 28px)),
-    transparent
-  );
 }
 
 /* The card always shows the full description (no "Show more" toggle): a capped,
@@ -7470,6 +7887,17 @@ button.agent-user-attachment:hover {
   --scroll-fade-inset-right: var(--sp-1);
 }
 
+/* A composer fade may still be transitioning out after its data-fade flag is
+ * removed. Never let that residual overlay wash across the active first or
+ * final line: while the edge caret is visible, its overlay drops atomically.
+ * Scrolling the caret out of view removes data-caret-edge, so genuinely hidden
+ * content keeps the normal shared fade. */
+.agent-composer-editor-root[data-caret-edge="start"]::before,
+.agent-composer-editor-root[data-caret-edge="end"]::after {
+  opacity: 0;
+  transition: none;
+}
+
 .agent-composer-editor p {
   margin: 0;
 }
@@ -7848,6 +8276,15 @@ button.agent-user-attachment:hover {
   left: var(--sp-3);
   bottom: calc(var(--control-lg) + var(--sp-2));
   z-index: 40;
+}
+
+/* Home's pill insets its + tighter, so the menu tracks the trigger's left
+ * edge (and the shorter control height) to stay flush above it. The pill is
+ * centered inside the full-column form, so the anchor derives the pill's left
+ * offset instead of hugging the form edge. */
+.agent-workspace[data-home="true"] .agent-attach-menu {
+  left: max(var(--sp-1), calc((100% - min(var(--chat-max), var(--content-max))) / 2 + var(--sp-1)));
+  bottom: calc(var(--control-md) + var(--sp-2));
 }
 
 /* Issue report dialog extras. Chrome, textarea, field labels, and the
@@ -10165,6 +10602,12 @@ button.agent-user-attachment:hover {
   display: none;
 }
 
+/* Text-only tabs such as Home keep their identity when the strip is compact;
+ * there is no glyph to fall back to. */
+.tab-strip[data-size="icon"] .tab:not([data-active]):not([data-has-icon]) .tab-label {
+  display: block;
+}
+
 .tab-strip[data-size="icon"] .tab:not([data-active]) {
   justify-content: center;
   gap: 0;
@@ -12215,10 +12658,19 @@ button.agent-user-attachment:hover {
    * meter drives --level per frame; the 24ms transition smooths sub-frame steps
    * (sharpened from 40ms to match the HUD so the carrier shimmer reads crisp). */
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--foreground);
   transform: translateY(50%) scaleY(calc(0.1 + var(--level, 0) * 0.8));
   transition: transform 18ms linear;
+}
+
+/* Scaling the whole pill also flattens its corner radius, so the in-note bars
+ * read nearly square. A rounded inset clip changes the visible height while
+ * preserving the 3px capsule caps and the same 10%-to-90% level range. */
+.recorder-bar .waveform span::before {
+  clip-path: inset(calc(45% - var(--level, 0) * 40%) 0 round var(--r-pill));
+  transform: translateY(50%);
+  transition: clip-path 18ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {
@@ -13921,7 +14373,7 @@ button.agent-user-attachment:hover {
   line-height: 1.5;
 }
 
-/* Installed skills (Hermes admin surface). A native settings section: reuses
+/* Installed skills (retired agent admin surface). A native settings section: reuses
  * the settings-group / settings-card chrome, with a purpose-built toolbar,
  * category chips, lifecycle banner, and skill rows. Tokens only — matches the
  * agent capability list visually while reading as plain settings. */
@@ -14867,7 +15319,7 @@ button.agent-user-attachment:hover {
   width: 70%;
 }
 
-/* External skill directories manager (Hermes admin surface, spec 10). Lists the
+/* External skill directories manager (retired agent admin surface). Lists the
  * configured skills.external_dirs with filesystem status, shadowing, and the
  * shared-directory warning. Reuses the installed-skills chrome vocabulary;
  * tokens only. */
@@ -15196,7 +15648,7 @@ button.agent-user-attachment:hover {
   height: 14px;
 }
 
-/* Agent-managed skill write review queue (Hermes admin surface, spec 12). The
+/* Agent-managed skill write review queue (retired agent admin surface). The
  * human-in-the-loop gate: a write-approval toggle card, the lifecycle banner,
  * and a list of pending writes with expandable diffs and approve/reject. Reuses
  * the settings chrome; tokens only. */
@@ -15618,7 +16070,7 @@ button.agent-user-attachment:hover {
   height: 14px;
 }
 
-/* Skill config + required-secret setup (Hermes admin surface, spec 09). The
+/* Skill config + required-secret setup (retired agent admin surface). The
  * setup status badge sits inline in a skill row; the per-skill setup panel
  * expands inline below the row and spans both grid columns. Tokens only. */
 .installed-skill-setup-toggle {
@@ -15876,7 +16328,7 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-xs);
 }
 
-/* Skill detail viewer + safe editor (Hermes admin surface, spec 05). A sub-view
+/* Skill detail viewer + safe editor (retired agent admin surface). A sub-view
  * off the installed-skills list: metadata + supporting files + setup + a
  * SKILL.md read view or validated editor with a diff-before-save confirm.
  * Tokens only; sentence case; no dashes in copy. */
@@ -16389,7 +16841,7 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
-/* MCP servers (Hermes admin surface). Mirrors the installed-skills chrome:
+/* MCP servers (retired agent admin surface). Mirrors the installed-skills chrome:
  * settings-group / settings-card, a toolbar, a lifecycle banner, durable
  * notifications, and server rows with transport / risk / status pills. Tokens
  * only. */
@@ -19037,6 +19489,134 @@ button.memory-project:hover {
   -webkit-backdrop-filter: saturate(140%) blur(14px);
 }
 
+/* Home has no identity header — the canvas is the surface. Once the daily
+ * greeting retires, June's bloom keeps quiet watch from the top-left corner
+ * (floating and occasionally winking): she is listening. Decorative only, so
+ * it has no click action; its tiny hit area only acknowledges a direct hover. */
+.agent-home-listening {
+  position: absolute;
+  /* Equal inset from the CARD's corner: the workspace's left edge sits one
+   * --sp-8 gutter inside the card, so the bloom reaches back across it. */
+  top: var(--sp-4);
+  left: calc(var(--sp-4) - var(--sp-8));
+  z-index: 4;
+  display: inline-flex;
+  color: var(--brand);
+  pointer-events: auto;
+}
+
+/* Messages keeps its input as one compact row. Preserve June's model and
+ * attachment controls, but let them read as accessories to the conversation
+ * instead of a two-storey agent console. Controls align to the bottom edge so
+ * a wrapping draft grows upward above them; the radius is concentric with the
+ * send control (send radius + box padding) so the rounded edges nest evenly
+ * at one line and stay composed (not stadium-sided) at many. */
+.agent-workspace[data-home="true"] .agent-composer-box {
+  display: grid;
+  grid-template-columns: var(--control-md) minmax(0, 1fr) auto;
+  /* One row: everything optically centered in the pill. The workspace flags
+   * the box once the draft soft-wraps (see the measure effect), and only then
+   * do the controls pin to the bottom edge with the text growing above. */
+  align-items: center;
+  gap: var(--sp-1);
+  /* Fully round on one row regardless of the editor's height... */
+  border-radius: var(--r-pill);
+}
+
+/* Wrapped drafts use composed corners and pin the controls to the bottom row. */
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] {
+  border-radius: calc(var(--control-md) / 2 + var(--sp-1));
+  align-items: end;
+}
+
+/* The text takes the full width on top, and the controls hold their own row
+ * beneath it. The layout probe in AgentWorkspace measures the one-row width,
+ * so this expansion cannot feed back into the multiline decision. Attachment
+ * rules further down intentionally out-cascade these when both states apply. */
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-editor-root {
+  grid-row: 1;
+  grid-column: 1 / -1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-attach {
+  grid-row: 2;
+  grid-column: 1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-actions {
+  grid-row: 2;
+  grid-column: 3;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-send,
+.agent-workspace[data-home="true"] .agent-composer-attach,
+.agent-workspace[data-home="true"] .agent-composer-mic {
+  /* Circular controls one notch smaller than the shared composer's, nesting
+   * concentrically in the tighter pill so the draft sits closer to the +. */
+  width: var(--control-md);
+  height: var(--control-md);
+  border-radius: var(--r-pill);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-editor-root {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: stretch;
+  /* Follows the home editor's tighter one-line height so the 28px controls
+   * sit perfectly inset (--sp-1 all around) in the 38px pill. */
+  min-height: var(--control-md);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-editor {
+  /* One line sits at exactly --control-md (line box ~20px + 2x --sp-1), so
+   * the 28px circular controls are perfectly inset in the 38px pill: the
+   * same --sp-1 breathes on every side. Flex-centering the content removes
+   * the sub-pixel drift line metrics leave inside min-height. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: var(--control-md);
+  max-height: calc(var(--control-xl) * 4);
+  padding-block: var(--sp-1);
+  padding-inline: var(--sp-1);
+  font-size: var(--fs-md);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-box[data-multiline] .agent-composer-editor {
+  /* The full-width wrapped editor no longer has the leading + control as an
+   * inset. Give the text its own edge so it breathes like the top padding. */
+  padding-inline: var(--sp-2);
+}
+
+.agent-workspace[data-home="true"] .agent-composer-toolbar {
+  display: contents;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-attach {
+  grid-row: 1;
+  grid-column: 1;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-actions {
+  grid-row: 1;
+  grid-column: 3;
+}
+
+.agent-workspace[data-home="true"] .agent-composer-attachments,
+.agent-workspace[data-home="true"] .agent-composer-size-warning {
+  grid-column: 1 / -1;
+}
+
+.agent-workspace[data-home="true"]
+  .agent-composer-box[data-stacked="true"]
+  .agent-composer-editor-root,
+.agent-workspace[data-home="true"] .agent-composer-box[data-stacked="true"] .agent-composer-attach,
+.agent-workspace[data-home="true"]
+  .agent-composer-box[data-stacked="true"]
+  .agent-composer-actions {
+  grid-row: 2;
+}
+
 .detail-breadcrumb {
   min-width: 0;
   color: var(--muted-foreground);
@@ -19336,7 +19916,7 @@ button.memory-project:hover {
   margin-bottom: var(--sp-3);
 }
 
-/* Routines — Hermes scheduled automations. Shares the Dictation page chrome
+/* Routines - retired scheduled automations. Shares the Dictation page chrome
  * (.folders-* header/search) and the dictation row action buttons. */
 .routines-workspace,
 .routine-detail,
@@ -20830,8 +21410,7 @@ button.memory-project:hover {
   gap: var(--sp-4);
 }
 
-.folders-meetings-files,
-.folders-hermes-files {
+.folders-meetings-files {
   display: grid;
   gap: var(--sp-4);
   margin-top: var(--sp-8);
@@ -20841,25 +21420,11 @@ button.memory-project:hover {
   margin-top: 0;
 }
 
-.folders-hermes-header {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: var(--sp-4);
-}
-
-.folders-hermes-header h2,
 .folders-file-root-title h3 {
   margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
   font-weight: var(--fw-medium);
-}
-
-.folders-hermes-header p {
-  margin: var(--sp-1) 0 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
 }
 
 .folders-section-count {
@@ -24749,7 +25314,7 @@ button.memory-project:hover {
   animation: onboarding-rise var(--t-med) var(--ease-out);
 }
 
-/* Skills Hub browser (Hermes admin surface, spec 06). Reuses the settings-group
+/* Skills Hub browser (retired agent admin surface). Reuses the settings-group
  * / settings-card chrome with a search toolbar, source filter chips, result
  * cards with source + trust badges, an install action with live progress, and a
  * detail drawer. Tokens only; sentence case; matches the Installed Skills page. */
@@ -25423,7 +25988,7 @@ button.memory-project:hover {
   border-top: 1px solid var(--border-subtle);
 }
 
-/* Team skill taps manager (Hermes admin surface, spec 13). Lists configured
+/* Team skill taps manager (retired agent admin surface). Lists configured
  * GitHub skill taps, adds/removes them, and searches/installs a tap's skills by
  * reusing the Skills Hub install flow. Reuses the same token palette as the hub
  * surface so the two read as one family. */
@@ -25879,7 +26444,7 @@ button.memory-project:hover {
   font-size: var(--fs-sm);
 }
 
-/* Skill install security review (Hermes admin surface, spec 07). A native
+/* Skill install security review (retired agent admin surface). A native
  * dialog (the shared .dialog-card) shown before a non-trusted Skills Hub
  * install: it surfaces source/trust, the scan's findings + affected files, what
  * the skill bundles, the capabilities it may use, and the sandbox/full-mode
@@ -26144,7 +26709,7 @@ button.memory-project:hover {
   line-height: 1.45;
 }
 
-/* Toolsets inventory (Hermes admin surface, spec 04). A read-only settings
+/* Toolsets inventory (retired agent admin surface). A read-only settings
  * section: reuses the settings-group / settings-card chrome, with a search
  * toolbar, a last-refreshed line, toolset rows (status / mode / tools /
  * requirements), and a companion skill-availability card. Tokens only. */
@@ -28028,6 +28593,147 @@ button.connector-approvals-info {
 
 /* PDF export uses the platform print sheet. Strip the application chrome and
  * release every viewport-bound scroller so the full formatted note paginates. */
+.companion-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.companion-settings .settings-page-header {
+  margin-bottom: var(--sp-5);
+}
+
+.companion-pairing-card,
+.companion-device-heading,
+.companion-device-actions,
+.companion-pairing-flow,
+.companion-pairing-copy {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.companion-pairing-card,
+.companion-device-heading {
+  justify-content: space-between;
+}
+
+.companion-pairing-flow {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.companion-pairing-copy {
+  align-items: flex-start;
+  flex: 1;
+  flex-direction: column;
+  min-width: var(--companion-pairing-copy-min-w);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.companion-pairing-copy strong {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+}
+
+.companion-manual-pairing {
+  width: 100%;
+  padding-top: var(--sp-1);
+}
+
+.companion-manual-pairing summary {
+  color: var(--foreground);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.companion-manual-pairing p {
+  margin: var(--sp-2) 0;
+}
+
+.companion-manual-pairing code {
+  display: block;
+  padding: var(--sp-3);
+  border: var(--line-width) solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-subtle);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.companion-manual-pairing .primary-action {
+  margin-top: var(--sp-2);
+}
+
+.companion-pairing-qr {
+  display: block;
+  width: min(var(--companion-pairing-qr-size), 100%);
+  border: var(--sp-1) solid var(--background);
+  border-radius: var(--r-lg);
+  background: var(--companion-pairing-qr-canvas);
+}
+
+.companion-device-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.companion-device-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.companion-device-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.companion-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.companion-capability {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.companion-name-input {
+  height: var(--control-lg);
+  padding: 0 var(--sp-3);
+  border: var(--line-width) solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.companion-name-input:focus {
+  outline: none;
+  box-shadow: 0 0 0 var(--focus-outline-width) var(--focus-ring);
+}
+
+.companion-empty-device {
+  text-align: center;
+}
+
 @media print {
   @page {
     margin: 18mm;

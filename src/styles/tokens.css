@@ -162,6 +162,11 @@
   --control-xl: 36px;
   /* Shared width for the model picker's nested detail and choice panels. */
   --model-picker-nested-w: 248px;
+  --line-width: 1px;
+  --focus-outline-width: 3px;
+  --companion-pairing-copy-min-w: 220px;
+  --companion-pairing-qr-size: 256px;
+  --companion-pairing-qr-canvas: oklch(100% 0 none);
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */
@@ -375,6 +380,13 @@
   --t-med: 160ms;
   --t-slow: 240ms;
   --stream-word-fade-dur: 1500ms;
+  --home-typing-breath-dur: 1900ms;
+  --home-typing-blur: 2.5px;
+  --home-presence-float-dur: 7s;
+  --home-presence-float-y: -2px;
+  --home-presence-wink-dur: 19s;
+  --home-presence-tilt: -4deg;
+  --home-top-fade-size: 56px;
   --icon-swap-dur: 250ms;
   --icon-swap-blur: 2px;
   --icon-swap-start-scale: 0.25;
@@ -383,6 +395,16 @@
 
   /* Shadows ---------------------------------------------------------- */
   --shadow-sm: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 2px 4px oklch(24% 0.002 84.59 / 3%);
+  /* Filter twin of --shadow-sm for non-rectangular silhouettes (e.g. a masked
+   * chat bubble): drop-shadow follows rendered alpha, where box-shadow would
+   * outline the element's rectangular box. */
+  --drop-shadow-sm: drop-shadow(0 1px 2px oklch(24% 0.002 84.59 / 5%))
+    drop-shadow(0 2px 4px oklch(24% 0.002 84.59 / 3%));
+  /* One step up for silhouetted surfaces that must read against the bare
+   * card canvas (e.g. Home's sent bubbles at the unwashed top of the
+   * thread). */
+  --drop-shadow-md: drop-shadow(0 1px 2px oklch(24% 0.002 84.59 / 5%))
+    drop-shadow(0 4px 12px oklch(24% 0.002 84.59 / 6%));
   /* Compact overlay depth: fits inside the dictation HUD's transparent
    * native gutter, unlike --shadow-md's long card shadow. */
   --shadow-hud: 0 1px 2px oklch(24% 0.002 84.59 / 5%), 0 4px 12px oklch(24% 0.002 84.59 / 8%);
@@ -521,6 +543,10 @@
   --selection-foreground: var(--foreground);
 
   --shadow-sm: 0 1px 2px oklch(0% 0 none / 24%), 0 2px 4px oklch(0% 0 none / 12%);
+  --drop-shadow-sm: drop-shadow(0 1px 2px oklch(0% 0 none / 24%))
+    drop-shadow(0 2px 4px oklch(0% 0 none / 12%));
+  --drop-shadow-md: drop-shadow(0 1px 2px oklch(0% 0 none / 24%))
+    drop-shadow(0 4px 12px oklch(0% 0 none / 18%));
   --shadow-hud: 0 1px 2px oklch(0% 0 none / 18%), 0 4px 12px oklch(0% 0 none / 28%);
   /* Same ambient bias as light md: soft contact, weight in the wide blurs. */
   --shadow-md:

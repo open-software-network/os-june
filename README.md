@@ -66,10 +66,9 @@ verifiable.
   system audio, orders the transcript into conversation turns, and generates
   editable notes. Saved audio is kept so failed steps can be retried without
   recording again.
-- **Agent.** A local agent, built on the open source Hermes framework, that
-  helps with files, research, drafts, and scheduled routines. Sessions are
-  sandboxed by default and risky actions wait for your approval. Extend it
-  with skills, toolsets, and MCP servers.
+- **Agent.** A June-owned local agent built on the OpenAI Agents SDK that
+  helps with files, research, and drafts. Sessions are sandboxed by default
+  and risky actions wait for your approval. Extend it with skills.
 - **Image generation.** Create images from a prompt, through the same private
   routing as everything else.
 - **Your choice of models.** Pick generation, transcription, and dictation

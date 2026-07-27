@@ -26,8 +26,8 @@ import {
   triggerConfigFromDraft,
   triggerRequiredBundles,
   triggerScopeWarning,
+  UNRESTRICTED_AGENT_TOOLSETS,
 } from "../lib/connectors";
-import { UNRESTRICTED_ROUTINE_TOOLSETS } from "../lib/hermes-routines";
 import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
@@ -190,10 +190,7 @@ describe("routine connector toolsets", () => {
       ...policy.routine.readToolsets,
     ]);
     const unrestricted = routineToolsetsFor(policy, "read_only", { unrestricted: true });
-    expect(unrestricted).toEqual([
-      ...UNRESTRICTED_ROUTINE_TOOLSETS,
-      ...policy.routine.readToolsets,
-    ]);
+    expect(unrestricted).toEqual([...UNRESTRICTED_AGENT_TOOLSETS, ...policy.routine.readToolsets]);
     const approval = routineToolsetsFor(policy, "approval", { unrestricted: false });
     expect(approval).toEqual([
       ...policy.routine.sandboxedBaseToolsets,
@@ -231,7 +228,6 @@ describe("event triggers", () => {
       }),
     ).toEqual({ leadMinutes: 30, externalOnly: true });
     const draft = eventTriggerScheduleDraft();
-    expect(draft.paused).toBe(true);
     expect(new Date(draft.schedule).getFullYear()).toBeGreaterThanOrEqual(2099);
   });
 

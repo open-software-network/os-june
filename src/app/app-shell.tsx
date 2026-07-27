@@ -1,11 +1,13 @@
 import { IconBubble3 } from "central-icons/IconBubble3";
+import { IconHomeOpen } from "central-icons/IconHomeOpen";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
 import { IconZap } from "central-icons/IconZap";
 import type { ReactNode } from "react";
-import type { FolderDto, HermesSessionInfo, NoteDto, NoteListItemDto } from "../lib/tauri";
+import type { FolderDto, NoteDto, NoteListItemDto } from "../lib/tauri";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import { navEquals, type TabNav } from "./tabs/tabs";
 // "June is up to date." is a confirmation, not a call to action: linger, then
 // hide on its own. Failures persist until dismissed; busy statuses advance
@@ -76,8 +78,8 @@ export type AgentRecorderRequestPayload = {
   sourceMode?: unknown;
 };
 
-export function agentSessionTabTitle(session?: HermesSessionInfo): string | undefined {
-  return session?.title?.trim() || session?.preview?.trim() || undefined;
+export function agentSessionTabTitle(session?: AgentSessionDto): string | undefined {
+  return session?.title.trim() || undefined;
 }
 
 export function refreshedTabNav(current: TabNav, live: TabNav): TabNav | undefined {
@@ -100,10 +102,15 @@ export function tabMeta(
   nav: TabNav,
   notes: NoteListItemDto[],
   folders: FolderDto[],
-  sessions: HermesSessionInfo[],
+  sessions: AgentSessionDto[],
   settingsSectionLabel?: string,
 ): { title: string; icon: ReactNode } {
   switch (nav.view) {
+    case "home":
+      return {
+        title: "Home",
+        icon: <IconHomeOpen size={TAB_ICON_SIZE} />,
+      };
     case "meetings": {
       const note = nav.noteId ? notes.find((n) => n.id === nav.noteId) : undefined;
       return {

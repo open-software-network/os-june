@@ -70,6 +70,21 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: mocks.getCurrentWindow,
 }));
 
+vi.mock("../lib/experimental-flags", () => ({
+  INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE: { count: 0, startedAt: null },
+  experimentalBrowserUseEnabled: () => false,
+  registerExperimentalUnlockClick: vi.fn((state) => ({ state, unlocked: false })),
+  setExperimentalFlags: vi.fn(async (flags) => flags),
+  useExperimentalFlags: () => ({
+    unlocked: false,
+    browser_use: false,
+    companion_pairing: false,
+    loaded: true,
+    browserUseEnabled: false,
+    companionPairingEnabled: false,
+  }),
+}));
+
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
@@ -108,7 +123,7 @@ vi.mock("../lib/tauri", () => ({
   listSessionFolders: vi.fn(async () => []),
   listCompletedSessions: vi.fn(async () => []),
   setSessionCompleted: vi.fn(async () => undefined),
-  listSessionProfiles: vi.fn(async () => []),
+  listSessionPartitions: vi.fn(async () => []),
   assignSessionToFolder: vi.fn(async () => undefined),
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
@@ -144,9 +159,6 @@ vi.mock("../lib/tauri", () => ({
   pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
   acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
   startMeetingRecording: mocks.startMeetingRecording,
-  // The agent workspace mounts at launch; a quiet, not-running bridge keeps
-  // these tests focused on the meetings surfaces.
-  hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
   juneVerifyUrl: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
@@ -160,8 +172,6 @@ vi.mock("../lib/tauri", () => ({
     generationModel: "",
     veniceApiKeyConfigured: false,
   })),
-  hermesAgentCliAccess: vi.fn(async () => ({ enabled: false })),
-  hermesBrowserAccess: vi.fn(async () => ({ enabled: false })),
   listVeniceModels: vi.fn(async () => ({
     mode: "generation",
     modelType: "text",

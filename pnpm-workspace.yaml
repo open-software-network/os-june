@@ -3,7 +3,13 @@
 # Workspace packages: the app root plus the browser extension (JUN-287).
 packages:
   - '.'
+  - 'agent-runtime'
   - 'extension'
+
+# `@openai/agents` currently reaches fast-uri through MCP's schema validator.
+# Keep the patched parser pinned until that transitive chain updates itself.
+overrides:
+  fast-uri: 3.1.4
 
 # Supply-chain cooldown: refuse package versions published less than 7 days
 # ago (value is in minutes). Applies to all dependencies, including transitive
@@ -12,6 +18,8 @@ packages:
 # adds the patched version to minimumReleaseAgeExclude.
 minimumReleaseAge: 10080
 minimumReleaseAgeIgnoreMissingTime: false
+minimumReleaseAgeExclude:
+  - fast-uri@3.1.4
 
 # enableGlobalVirtualStore was tried and reverted: with the global virtual
 # store, tsc stops resolving @react-three/fiber's JSX type augmentation

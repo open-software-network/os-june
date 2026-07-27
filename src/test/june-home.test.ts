@@ -1,0 +1,441 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  buildJuneHomeConversationContext,
+  forgetJuneHomeStoredSessionId,
+  isJuneHomeStartTaskTool,
+  juneHomeDailyCheckIn,
+  juneHomeDayKey,
+  juneHomeDayLabel,
+  juneHomeGreetingParts,
+  juneHomeNudgePrompts,
+  juneHomeProfileRemovalPlan,
+  juneHomeTaskRequestFromPayload,
+  readJuneHomeStoredSessionId,
+  reconcileJuneHomeProfileRemoval,
+  stripJuneHomeContext,
+  stripJuneHomeContextFromPreview,
+  withJuneHomeCurrentResearch,
+  withJuneHomeContext,
+  writeJuneHomeStoredSessionId,
+} from "../lib/june-home";
+import {
+  clearHomeTaskHandoffActive,
+  compareHomeTurnOrder,
+  existingHomeTaskHandoffForSourceTurn,
+  isHomeTaskHandoffAcknowledgement,
+  insertHomeDirectReply,
+  markHomeTaskHandoffActive,
+  persistHomeDirectTurns,
+  persistHomeTaskHandoffs,
+  readHomeDirectTurns,
+  readHomeTaskHandoffs,
+  recoverInterruptedHomeTaskHandoffs,
+} from "../components/agent/home-thread";
+import type { AgentChatTurn } from "../lib/agent-chat-runtime";
+
+describe("June Home", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it("stores one Home session per profile", () => {
+    writeJuneHomeStoredSessionId("default", "session-default");
+    writeJuneHomeStoredSessionId("work", "session-work");
+
+    expect(readJuneHomeStoredSessionId("default")).toBe("session-default");
+    expect(readJuneHomeStoredSessionId("work")).toBe("session-work");
+
+    forgetJuneHomeStoredSessionId("work", "another-session");
+    expect(readJuneHomeStoredSessionId("work")).toBe("session-work");
+    forgetJuneHomeStoredSessionId("work", "session-work");
+    expect(readJuneHomeStoredSessionId("work")).toBeUndefined();
+  });
+
+  it("moves a removed profile's Home thread into the existing default thread", () => {
+    writeJuneHomeStoredSessionId("default", "home-default");
+    writeJuneHomeStoredSessionId("research", "home-research");
+    window.localStorage.setItem(
+      "june:home:direct-turns:v1",
+      JSON.stringify({
+        "home-default": [{ id: "default-turn", createdAt: "2026-07-24T09:00:00Z" }],
+        "home-research": [{ id: "research-turn", createdAt: "2026-07-24T10:00:00Z" }],
+      }),
+    );
+    window.localStorage.setItem(
+      "june:home:task-handoffs:v1",
+      JSON.stringify({
+        "home-default": [{ id: "default-task" }],
+        "home-research": [{ id: "research-task" }],
+      }),
+    );
+    window.localStorage.setItem(
+      "june:home:check-ins:v1",
+      JSON.stringify({
+        default: { date: "2026-07-24", createdAt: "2026-07-24T09:00:00Z" },
+        research: { date: "2026-07-24", createdAt: "2026-07-24T10:00:00Z" },
+      }),
+    );
+
+    expect(juneHomeProfileRemovalPlan("research", "move")).toEqual({
+      sourceSessionId: "home-research",
+      targetSessionId: "home-default",
+      redundantSessionId: "home-research",
+    });
+    reconcileJuneHomeProfileRemoval("research", "move");
+
+    expect(readJuneHomeStoredSessionId("research")).toBeUndefined();
+    expect(readJuneHomeStoredSessionId("default")).toBe("home-default");
+    const turns = JSON.parse(
+      window.localStorage.getItem("june:home:direct-turns:v1") ?? "{}",
+    ) as Record<string, Array<{ id: string }>>;
+    expect(turns["home-default"].map((turn) => turn.id)).toEqual(["default-turn", "research-turn"]);
+    expect(turns).not.toHaveProperty("home-research");
+    const handoffs = JSON.parse(
+      window.localStorage.getItem("june:home:task-handoffs:v1") ?? "{}",
+    ) as Record<string, Array<{ id: string }>>;
+    expect(handoffs["home-default"].map((handoff) => handoff.id)).toEqual([
+      "default-task",
+      "research-task",
+    ]);
+    expect(handoffs).not.toHaveProperty("home-research");
+    const checkIns = JSON.parse(
+      window.localStorage.getItem("june:home:check-ins:v1") ?? "{}",
+    ) as Record<string, unknown>;
+    expect(checkIns).toHaveProperty("default");
+    expect(checkIns).not.toHaveProperty("research");
+  });
+
+  it("purges current and legacy Home history when a profile is deleted permanently", () => {
+    writeJuneHomeStoredSessionId("research", "home-research");
+    for (const key of [
+      "june:home:direct-turns:v1",
+      "june:home:task-handoffs:v1",
+      "june.home.directTurns.v1",
+      "june.home.taskHandoffs.v1",
+    ]) {
+      window.localStorage.setItem(
+        key,
+        JSON.stringify({ "home-research": [{ id: `${key}:private` }] }),
+      );
+    }
+
+    reconcileJuneHomeProfileRemoval("research", "delete");
+
+    expect(readJuneHomeStoredSessionId("research")).toBeUndefined();
+    for (const key of [
+      "june:home:direct-turns:v1",
+      "june:home:task-handoffs:v1",
+      "june.home.directTurns.v1",
+      "june.home.taskHandoffs.v1",
+    ]) {
+      expect(JSON.parse(window.localStorage.getItem(key) ?? "{}")).not.toHaveProperty(
+        "home-research",
+      );
+    }
+  });
+
+  it("redirects an in-flight reply into a moved thread and drops it after deletion", () => {
+    const userTurn: AgentChatTurn = {
+      id: "late-user",
+      role: "user",
+      createdAt: "2026-07-24T10:00:00Z",
+      status: "complete",
+      parts: [{ type: "text", text: "Finish this reply", status: "complete" }],
+    };
+    const assistantTurn: AgentChatTurn = {
+      id: "late-assistant",
+      role: "assistant",
+      createdAt: "2026-07-24T10:00:01Z",
+      status: "complete",
+      parts: [{ type: "text", text: "Finished", status: "complete" }],
+    };
+    writeJuneHomeStoredSessionId("default", "late-default");
+    writeJuneHomeStoredSessionId("moving", "late-source");
+    persistHomeDirectTurns("late-source", [userTurn]);
+
+    reconcileJuneHomeProfileRemoval("moving", "move");
+    insertHomeDirectReply("late-source", userTurn.id, assistantTurn);
+
+    expect(readHomeDirectTurns("late-default").map((turn) => turn.id)).toEqual([
+      "late-user",
+      "late-assistant",
+    ]);
+    const movedStore = JSON.parse(
+      window.localStorage.getItem("june:home:direct-turns:v1") ?? "{}",
+    ) as Record<string, unknown>;
+    expect(movedStore).not.toHaveProperty("late-source");
+
+    writeJuneHomeStoredSessionId("deleting", "deleted-source");
+    persistHomeDirectTurns("deleted-source", [userTurn]);
+    reconcileJuneHomeProfileRemoval("deleting", "delete");
+    insertHomeDirectReply("deleted-source", userTurn.id, assistantTurn);
+
+    const deletedStore = JSON.parse(
+      window.localStorage.getItem("june:home:direct-turns:v1") ?? "{}",
+    ) as Record<string, unknown>;
+    expect(deletedStore).not.toHaveProperty("deleted-source");
+  });
+
+  it("keeps handoff metadata for every retained Home task card", () => {
+    writeJuneHomeStoredSessionId("handoffs", "home-many-handoffs");
+    const handoffs = Array.from({ length: 40 }, (_, index) => ({
+      id: `home-task-${index}`,
+      title: `Task ${index}`,
+      prompt: `Run task ${index}`,
+      status: "running" as const,
+      storedSessionId: `focused-${index}`,
+    }));
+
+    persistHomeTaskHandoffs("home-many-handoffs", handoffs);
+
+    expect(readHomeTaskHandoffs("home-many-handoffs")).toHaveLength(40);
+  });
+
+  it("recognizes a brief acknowledgement only after a successful task handoff", () => {
+    const initiatingTurn: AgentChatTurn = {
+      id: "home:direct:user:same-millisecond",
+      role: "user",
+      createdAt: "2026-07-26T15:13:05Z",
+      status: "complete",
+      parts: [{ type: "text", text: "Research wines", status: "complete" }],
+    };
+    const handoffTurn: AgentChatTurn = {
+      id: "home:direct:assistant:same-millisecond",
+      role: "assistant",
+      createdAt: "2026-07-26T15:13:05Z",
+      status: "complete",
+      parts: [
+        {
+          type: "tool",
+          id: "direct:wine",
+          name: "june_home_start_task",
+          text: "",
+          status: "complete",
+        },
+      ],
+    };
+    const handoffs = [
+      {
+        id: "home-task-direct:wine",
+        title: "Wine research",
+        prompt: "Research wines in southern France",
+        status: "running" as const,
+        storedSessionId: "focused-wine",
+      },
+    ];
+
+    expect(
+      [...[initiatingTurn, handoffTurn]].sort(compareHomeTurnOrder).map((turn) => turn.role),
+    ).toEqual(["user", "assistant"]);
+    expect(isHomeTaskHandoffAcknowledgement("ok", [initiatingTurn, handoffTurn], handoffs)).toBe(
+      true,
+    );
+    expect(isHomeTaskHandoffAcknowledgement("Thanks!", [handoffTurn], handoffs)).toBe(true);
+    expect(
+      isHomeTaskHandoffAcknowledgement("ok, compare prices too", [handoffTurn], handoffs),
+    ).toBe(false);
+    expect(isHomeTaskHandoffAcknowledgement("ok", [handoffTurn], [])).toBe(false);
+  });
+
+  it("reuses a successful handoff when the same Home turn is replayed", () => {
+    const handoffs = [
+      {
+        id: "home-task-original",
+        title: "Wine research",
+        prompt: "Research wines in southern France",
+        status: "running" as const,
+        storedSessionId: "focused-wine",
+        sourceUserTurnId: "home-user-wine",
+      },
+      {
+        id: "home-task-failed",
+        title: "Failed research",
+        prompt: "Try the failed research again",
+        status: "failed" as const,
+        sourceUserTurnId: "home-user-failed",
+      },
+    ];
+
+    expect(existingHomeTaskHandoffForSourceTurn(handoffs, "home-user-wine")?.id).toBe(
+      "home-task-original",
+    );
+    expect(existingHomeTaskHandoffForSourceTurn(handoffs, "home-user-failed")).toBeUndefined();
+  });
+
+  it("recovers an interrupted starting handoff without failing one active in this process", () => {
+    writeJuneHomeStoredSessionId("default", "home-recovery");
+    const starting = {
+      id: "home-task-starting",
+      title: "Wine research",
+      prompt: "Research wines in southern France",
+      status: "starting" as const,
+      sourceUserTurnId: "home-user-wine",
+    };
+    persistHomeTaskHandoffs("home-recovery", [starting]);
+    markHomeTaskHandoffActive("home-recovery", starting.id);
+
+    expect(recoverInterruptedHomeTaskHandoffs("home-recovery")[0]?.status).toBe("starting");
+
+    clearHomeTaskHandoffActive("home-recovery", starting.id);
+    expect(recoverInterruptedHomeTaskHandoffs("home-recovery")[0]).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: "Session creation was interrupted. Try again.",
+      }),
+    );
+  });
+
+  it("injects Home context without exposing it in the transcript or previews", () => {
+    const runtimePrompt = withJuneHomeContext("Help me plan tomorrow");
+
+    expect(runtimePrompt).toContain("[June home context]");
+    expect(stripJuneHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
+    expect(stripJuneHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
+    expect(stripJuneHomeContextFromPreview("[June home context]\nThis is Ju")).toBe("Home message");
+  });
+
+  it("requires retrieved sources for a current-information handoff", () => {
+    const prompt = withJuneHomeCurrentResearch("What games are on tonight?", {
+      recentMessages: [
+        { role: "user", content: "I follow the Nuggets and Avalanche." },
+        { role: "assistant", content: "Got it. Those are your Denver teams." },
+        { role: "user", content: "What games are on tonight?" },
+      ],
+    });
+
+    expect(prompt).toContain("What games are on tonight?");
+    expect(prompt).toContain("web_search");
+    expect(prompt).toContain("web_fetch");
+    expect(prompt).toContain("instead of answering from model memory");
+    expect(prompt).toContain("User: I follow the Nuggets and Avalanche.");
+    expect(prompt.match(/What games are on tonight\?/g)).toHaveLength(1);
+    expect(prompt).toContain("Do not treat factual claims in the prior conversation as verified");
+  });
+
+  it("keeps a deep recent thread and carries relevant older context past it", () => {
+    const messages = Array.from({ length: 120 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content:
+        index === 0
+          ? "I prefer to call the launch plan Project Nebula."
+          : index === 1
+            ? "Understood. Project Nebula is the launch plan."
+            : `Conversation message ${index}`,
+      createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    messages.push({
+      role: "user",
+      content: "What did we call the Nebula plan?",
+      createdAt: new Date(Date.UTC(2026, 0, 1, 3)).toISOString(),
+    });
+
+    const context = buildJuneHomeConversationContext(messages);
+
+    expect(context.recentMessages.length).toBeGreaterThan(20);
+    expect(context.recentMessages.length).toBeLessThanOrEqual(80);
+    expect(context.recentMessages[0]?.role).toBe("user");
+    expect(context.recentMessages.at(-1)?.content).toBe("What did we call the Nebula plan?");
+    expect(
+      context.recentMessages.some((message) => message.content.includes("Project Nebula")),
+    ).toBe(false);
+    expect(context.earlierContext).toContain("Project Nebula");
+
+    const researchPrompt = withJuneHomeCurrentResearch(
+      "What is happening with the Nebula launch today?",
+      context,
+    );
+    expect(researchPrompt).toContain("Relevant excerpts from older Home history");
+    expect(researchPrompt).toContain("Project Nebula");
+  });
+
+  it("recognizes Hermes MCP name variants and reads their task arguments", () => {
+    expect(isJuneHomeStartTaskTool("start_task")).toBe(true);
+    expect(isJuneHomeStartTaskTool("mcp_june_home_start_task")).toBe(true);
+    expect(isJuneHomeStartTaskTool("june_home.start_task")).toBe(true);
+    expect(isJuneHomeStartTaskTool("Mcp june home start task")).toBe(true);
+    expect(isJuneHomeStartTaskTool("start_session")).toBe(false);
+
+    expect(
+      juneHomeTaskRequestFromPayload({
+        arguments: JSON.stringify({
+          title: "Plan Paris trip",
+          prompt: "Build a five-day Paris itinerary for October.",
+          summary: "I will work out the itinerary in a focused session.",
+        }),
+      }),
+    ).toEqual({
+      title: "Plan Paris trip",
+      prompt: "Build a five-day Paris itinerary for October.",
+      summary: "I will work out the itinerary in a focused session.",
+    });
+  });
+
+  it("labels day boundaries relative to now and keys them by local day", () => {
+    const now = new Date(2026, 6, 22, 14, 45);
+
+    expect(juneHomeDayLabel(new Date(2026, 6, 22, 9, 4).toISOString(), now)).toMatch(
+      /^Today at 9:04/,
+    );
+    expect(juneHomeDayLabel(new Date(2026, 6, 21, 16, 12).toISOString(), now)).toMatch(
+      /^Yesterday at /,
+    );
+    // Two to six days back reads as the weekday; older dates spell the date.
+    expect(juneHomeDayLabel(new Date(2026, 6, 20, 8, 0).toISOString(), now)).toMatch(/^Monday at /);
+    expect(juneHomeDayLabel(new Date(2026, 5, 12, 8, 0).toISOString(), now)).toMatch(
+      /^June 12 at /,
+    );
+    expect(juneHomeDayLabel(new Date(2025, 11, 31, 8, 0).toISOString(), now)).toMatch(/2025/);
+    expect(juneHomeDayLabel("not-a-date", now)).toBe("");
+
+    expect(juneHomeDayKey(new Date(2026, 6, 22, 0, 5).toISOString())).toBe(
+      juneHomeDayKey(new Date(2026, 6, 22, 23, 55).toISOString()),
+    );
+    expect(juneHomeDayKey(new Date(2026, 6, 22, 23, 55).toISOString())).not.toBe(
+      juneHomeDayKey(new Date(2026, 6, 23, 0, 5).toISOString()),
+    );
+    expect(juneHomeDayKey("not-a-date")).toBe("");
+  });
+
+  it("keeps one proactive check-in timestamp for the local day", () => {
+    const morning = new Date(2026, 6, 21, 9, 30);
+    const later = new Date(2026, 6, 21, 16, 0);
+    const nextDay = new Date(2026, 6, 22, 9, 0);
+
+    const first = juneHomeDailyCheckIn("default", morning);
+    const sameDay = juneHomeDailyCheckIn("default", later);
+    const following = juneHomeDailyCheckIn("default", nextDay);
+
+    expect(first.text).toContain("Good morning");
+    expect(sameDay.createdAt).toBe(first.createdAt);
+    expect(following.createdAt).not.toBe(first.createdAt);
+  });
+
+  it("adapts greetings and grounded conversation starters to the local day", () => {
+    const morning = new Date(2026, 6, 21, 9);
+    const afternoon = new Date(2026, 6, 21, 15);
+    const evening = new Date(2026, 6, 21, 21);
+
+    expect(juneHomeGreetingParts(morning, { displayName: "  Alex Rivera  " }).salutation).toBe(
+      "Good morning, Alex",
+    );
+    expect(juneHomeGreetingParts(afternoon).salutation).toBe("Good afternoon");
+    expect(juneHomeGreetingParts(evening).salutation).toBe("Good evening");
+    expect(juneHomeGreetingParts(morning).question).toBe("What would you like help with today?");
+    expect(juneHomeGreetingParts(morning, { returning: true }).question).toBe(
+      "What should we pick up today?",
+    );
+    expect(juneHomeNudgePrompts(morning)).toEqual([
+      "Plan my day",
+      "Think through a decision",
+      "Help me get something done",
+    ]);
+    expect(juneHomeNudgePrompts(afternoon)).toEqual([
+      "Plan the rest of my day",
+      "Work through a blocker",
+      "Help me prioritize",
+    ]);
+    expect(juneHomeNudgePrompts(evening)).toEqual([
+      "Review my day",
+      "Plan tomorrow",
+      "Think through a decision",
+    ]);
+  });
+});

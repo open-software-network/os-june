@@ -13,7 +13,7 @@ import { IconCat } from "central-icons/IconCat";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconVideoClip } from "central-icons/IconVideoClip";
 
-import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { AgentSkillInfo } from "../../../lib/tauri";
 import type { BuiltinComposerSlashCommandDef } from "../../../lib/agent-composer-slash-commands";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
 
@@ -21,7 +21,7 @@ const SKILL_DETAIL_HOVER_INTENT_MS = 150;
 
 export type ComposerSlashCommandItem =
   | { kind: "builtin"; command: BuiltinComposerSlashCommandDef }
-  | { kind: "skill"; skill: HermesSkillInfo };
+  | { kind: "skill"; skill: AgentSkillInfo };
 
 export type CategorySuggestionListProps = {
   items: ComposerSlashCommandItem[];

@@ -10,9 +10,9 @@
       "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
       "../.tauri-helper/june-nm-shim": "native/bin/june-nm-shim",
       "../.tauri-helper/June Computer Use Driver.app": "native/bin/June Computer Use Driver.app",
-      "../.tauri-hermes/hermes": "native/hermes",
-      "../extension/dist": "native/extension",
-      "resources/hermes-skills": "native/hermes-skills"
+      "../.tauri-agent-runtime/june-agent-runtime": "native/bin/june-agent-runtime",
+      "../.tauri-agent-runtime/june-agent-runtime.sha256": "native/bin/june-agent-runtime.sha256",
+      "../extension/dist": "native/extension"
     },
     "macOS": {
       "bundleName": "June",

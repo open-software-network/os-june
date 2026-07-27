@@ -30,6 +30,7 @@ keys/
 .tmp/
 coverage
 .tauri-hermes/
+.tauri-agent-runtime/
 
 # Scratch verification captures (screenshots etc.). Root-anchored so committed
 # proof under docs/verification/ is unaffected.
@@ -48,3 +49,7 @@ CLAUDE.local.md
 # Ephemeral Phala CVM state (holds a per-run bearer token; mode 600).
 # The glob also covers write_state's atomic-rename temps (.json.XXXXXX).
 .ephemeral-june-api.json*
+
+# Local agent working files: task briefs and review/report scratch
+.briefs
+.reviews

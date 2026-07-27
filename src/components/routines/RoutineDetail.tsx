@@ -5,7 +5,6 @@ import { IconPlay } from "central-icons/IconPlay";
 import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPause } from "central-icons/IconPause";
-import { listen } from "@tauri-apps/api/event";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   TRIGGER_META,
@@ -24,7 +23,8 @@ import {
   routineUnrestricted,
   type RoutineJob,
   type RoutineUpdates,
-} from "../../lib/hermes-routines";
+} from "../../lib/agent-routines";
+import type { RoutineRunSession } from "../../lib/agent-routine-history";
 import {
   compactScheduleLabel,
   draftFromSchedule,
@@ -32,8 +32,6 @@ import {
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
 import {
-  BROWSER_TRANSPORT_POLICY_CHANGED_EVENT,
-  browserTransportPolicy,
   connectorTriggerDelete,
   connectorTriggerSet,
   connectorTriggersList,
@@ -45,17 +43,11 @@ import {
   routineBrowserAccessSet,
   type ConnectorAccount,
   type ConnectorTrigger,
-  type HermesSessionInfo,
   type RoutineTrust,
   type RoutineTrustMode,
   type RoutineBrowserAccess,
-  type BrowserTransportPolicy,
 } from "../../lib/tauri";
-import {
-  HERMES_SERVER_ERROR_MESSAGE,
-  isHermesServerError,
-  messageFromError,
-} from "../../lib/errors";
+import { messageFromError } from "../../lib/errors";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
 import { Switch } from "../ui/Switch";
@@ -84,7 +76,7 @@ function triggerDraftFromStored(stored: ConnectorTrigger): TriggerDraft {
 type RoutineDetailProps = {
   routine: RoutineJob;
   /** Past runs of this routine only. */
-  runs: HermesSessionInfo[];
+  runs: RoutineRunSession[];
   busy: boolean;
   saving: boolean;
   error: string | null;
@@ -94,13 +86,13 @@ type RoutineDetailProps = {
   onRunNow: () => Promise<void>;
   runNowDisabledReason?: string;
   onDelete: () => void;
-  onOpenRun: (run: HermesSessionInfo) => void;
+  onOpenRun: (run: RoutineRunSession) => void;
   onRetryLoad?: () => void;
   retrying?: boolean;
 };
 
 /** One routine, fully editable in place: schedule, instructions, access and
- * name save through the bridge's cron API, while activity (toggle, run now,
+ * name save through June's routine commands, while activity (toggle, run now,
  * run history) acts immediately. Mount with `key={routine.job_id}` — the
  * draft fields initialize from the routine once and reconcile through the
  * dirty comparison after saves refresh the prop. */
@@ -128,7 +120,7 @@ export function RoutineDetail({
   const [unrestricted, setUnrestricted] = useState(() => routineUnrestricted(routine));
   const [storedBrowserAccess, setStoredBrowserAccess] = useState<RoutineBrowserAccess | null>(null);
   const [browserAccess, setBrowserAccess] = useState(false);
-  const [managedTransportEnabled, setManagedTransportEnabled] = useState(true);
+  const managedTransportEnabled = true;
   // Connector trust + trigger. All loads degrade quietly: a routine without
   // a trust record (or a build without the connectors module) reads as
   // read only with no trigger, which is exactly the stored default.
@@ -205,26 +197,6 @@ export function RoutineDetail({
   }, [routine.job_id]);
 
   useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-    void browserTransportPolicy()
-      .then((policy) => {
-        if (!cancelled) setManagedTransportEnabled(policy.managedEnabled);
-      })
-      .catch(() => {});
-    void listen<BrowserTransportPolicy>(BROWSER_TRANSPORT_POLICY_CHANGED_EVENT, (event) => {
-      if (!cancelled) setManagedTransportEnabled(event.payload.managedEnabled);
-    }).then((cleanup) => {
-      if (cancelled) cleanup();
-      else unlisten = cleanup;
-    });
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
     const previousName = previousRoutineNameRef.current;
     previousRoutineNameRef.current = routine.name;
     setName((current) => {
@@ -276,7 +248,7 @@ export function RoutineDetail({
 
   function changeTrigger(next: TriggerDraft) {
     // Event routines store a far-future one-off schedule only as a dormant
-    // Hermes placeholder. Do not expose or resume that placeholder when the
+    // legacy placeholder. Do not expose or resume that placeholder when the
     // user switches back to scheduling; start from a useful daily default.
     if (
       trigger.source !== "schedule" &&
@@ -415,8 +387,8 @@ export function RoutineDetail({
       }
     }
 
-    // Fold the trigger's schedule change into the cron update so it lands
-    // atomically with the rest. The trigger row write and pause/resume are
+    // Fold the trigger's schedule change into the routine update so it lands
+    // atomically with the rest. The trigger row write and activation changes are
     // deferred until after onSave succeeds (below).
     const switchingToSchedule = triggerChanged && trigger.source === "schedule";
     const switchingFromSchedule = switchingToEvent && storedTriggerDraft.source === "schedule";
@@ -477,13 +449,13 @@ export function RoutineDetail({
     // Trigger side effects run only after the cron save succeeded, so a failed
     // onSave can never leave a trigger firing a routine whose schedule/toolsets
     // never saved. If a side effect here fails the routine stays dormant (the
-    // far-future schedule and paused/unpaused state already persisted), which is
+    // far-future schedule and active state already persisted), which is
     // safe: it under-fires rather than acting on stale config. Surface it so the
     // user can retry.
     if (triggerChanged) {
       try {
         if (trigger.source === "schedule") {
-          // Resume first so a gateway failure leaves the existing event
+          // Ensure the routine is active first so a runtime failure leaves the existing event
           // trigger untouched. Only remove that fallback after the scheduled
           // job is live again.
           await resumeRoutine(routine.job_id);
@@ -492,13 +464,13 @@ export function RoutineDetail({
               await connectorTriggerDelete(storedTrigger.id);
             }
           } catch (deleteError) {
-            // The trigger still exists. Restore the previous paused state so
+            // The trigger still exists. Restore the previous inactive state so
             // schedule and event sources cannot both fire this routine.
             try {
               await pauseRoutine(routine.job_id);
             } catch (restoreError) {
               toast.error(
-                `June could not restore the previous paused state: ${messageFromError(restoreError)}`,
+                `June could not restore the previous inactive state: ${messageFromError(restoreError)}`,
               );
             }
             throw deleteError;
@@ -512,9 +484,6 @@ export function RoutineDetail({
             config: triggerConfigFromDraft(trigger),
           });
           setStoredTrigger(stored);
-          if (switchingFromSchedule) {
-            await pauseRoutine(routine.job_id).catch(() => {});
-          }
         }
       } catch (err) {
         toast.error(messageFromError(err));
@@ -541,13 +510,7 @@ export function RoutineDetail({
     routine.last_status === "error"
       ? routine.last_error || routine.last_delivery_error || undefined
       : undefined;
-  // A stored Hermes 5xx reads as raw wire text; classify it before the
-  // generic failure wrapper (JUN-196).
-  const failure = storedFailure
-    ? isHermesServerError(storedFailure)
-      ? HERMES_SERVER_ERROR_MESSAGE
-      : userFacingFailureMessage(storedFailure)
-    : null;
+  const failure = storedFailure ? userFacingFailureMessage(storedFailure) : null;
 
   return (
     <section className="routine-detail" aria-label={routine.name}>
@@ -620,7 +583,7 @@ export function RoutineDetail({
             onChange={(event) => setName(event.currentTarget.value)}
           />
           {!completed ? (
-            <label
+            <div
               className="routine-detail-active-control"
               data-state={routine.state === "scheduled" ? "active" : "paused"}
             >
@@ -630,7 +593,7 @@ export function RoutineDetail({
                 aria-label={`${name.trim() || routine.name} active`}
                 onCheckedChange={onToggleActive}
               />
-            </label>
+            </div>
           ) : null}
         </div>
 
@@ -649,7 +612,7 @@ export function RoutineDetail({
             </HoverTip>
           ) : null}
           {paused ? (
-            <span className="routine-meta-pill" aria-label="Paused">
+            <span className="routine-meta-pill">
               <IconPause size={12} aria-hidden />
               Paused
             </span>

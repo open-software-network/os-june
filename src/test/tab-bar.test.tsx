@@ -95,6 +95,17 @@ function mockStripWidth(width: number) {
 }
 
 describe("TabBar", () => {
+  it("does not reserve icon space for a text-only tab", () => {
+    const { container } = renderTabBar({
+      tabs: [{ id: "home", title: "Home", icon: null }],
+      activeTabId: "home",
+    });
+
+    const homeTab = screen.getByRole("tab", { name: "Home" });
+    expect(homeTab).not.toHaveAttribute("data-has-icon");
+    expect(container.querySelector(".tab-icon")).toBeNull();
+  });
+
   it("centers tabs in the titlebar band while matching the card gap", () => {
     const barRule = cssRuleFor(".tab-bar");
     const stripRule = cssRuleFor(".tab-strip");

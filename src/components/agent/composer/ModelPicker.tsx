@@ -14,7 +14,11 @@ import {
 import { modelMatchesQuery } from "../../../lib/model-search";
 import { suggestedModelsForMode } from "../../../lib/suggested-models";
 import type { VeniceModelDto } from "../../../lib/tauri";
-import { thinkingOptionForLevel, type ThinkingLevel } from "../../../lib/thinking-level";
+import {
+  THINKING_LEVELS,
+  thinkingOptionForLevel,
+  type ThinkingLevel,
+} from "../../../lib/thinking-level";
 import { useScrollFade } from "../../../lib/use-scroll-fade";
 import { rectFromElement, type HoverBridgeRect } from "../../ui/hoverBridge";
 import { useCatalogHoverBridge, useModelDetailHoverBridge } from "../../ui/useModelHoverBridge";
@@ -139,9 +143,11 @@ export function ComposerModelPopover({
   popoverRef,
   searchRef,
   veniceApiKeyConfigured = false,
+  thinkingLevel,
   onFlyoutChange,
   onSearchChange,
   onSelect,
+  onSelectThinking,
 }: {
   flyout: ComposerModelFlyout;
   model?: VeniceModelDto;
@@ -156,9 +162,11 @@ export function ComposerModelPopover({
    * This popover has no Auto section, so the note is the only billing signal
    * on this surface (JUN-329). */
   veniceApiKeyConfigured?: boolean;
+  thinkingLevel?: ThinkingLevel;
   onFlyoutChange: (flyout: ComposerModelFlyout) => void;
   onSearchChange: (value: string) => void;
   onSelect: (modelId: string, costQuality?: number) => void;
+  onSelectThinking?: (level: ThinkingLevel) => void;
 }) {
   const flyoutRef = useRef<HTMLDivElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -528,6 +536,30 @@ export function ComposerModelPopover({
         <span className="agent-composer-model-row-name">All models</span>
         <IconChevronRightSmall size={12} aria-hidden className="agent-composer-model-row-chevron" />
       </button>
+      {thinkingLevel && onSelectThinking ? (
+        <button
+          type="button"
+          className="agent-composer-model-row agent-composer-model-all"
+          aria-haspopup="true"
+          aria-expanded={flyout?.kind === "effort"}
+          data-active={flyout?.kind === "effort" || undefined}
+          onMouseEnter={() => onFlyoutChange({ kind: "effort" })}
+          onFocus={() => onFlyoutChange({ kind: "effort" })}
+          onClick={() => onFlyoutChange({ kind: "effort" })}
+        >
+          <span className="agent-composer-model-row-copy">
+            <span className="agent-composer-model-row-name">Effort</span>
+            <span className="agent-composer-model-row-detail">
+              {thinkingOptionForLevel(thinkingLevel).label}
+            </span>
+          </span>
+          <IconChevronRightSmall
+            size={12}
+            aria-hidden
+            className="agent-composer-model-row-chevron"
+          />
+        </button>
+      ) : null}
       {detail && portalTarget
         ? createPortal(
             // Portaled to the body and fixed-positioned so the note-chat panel's
@@ -633,6 +665,40 @@ export function ComposerModelPopover({
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      ) : null}
+      {thinkingLevel && onSelectThinking && flyout?.kind === "effort" ? (
+        <div
+          ref={flyoutRef}
+          className="agent-composer-model-flyout"
+          role="radiogroup"
+          aria-label="Reasoning effort"
+        >
+          <div className="agent-composer-model-surface">
+            <p className="agent-composer-model-title">Effort</p>
+            {THINKING_LEVELS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                className="agent-composer-model-row"
+                role="radio"
+                aria-checked={option.id === thinkingLevel}
+                onClick={() => onSelectThinking(option.id)}
+              >
+                <span className="agent-composer-model-row-copy">
+                  <span className="agent-composer-model-row-name">{option.label}</span>
+                  <span className="agent-composer-model-row-detail">{option.blurb}</span>
+                </span>
+                {option.id === thinkingLevel ? (
+                  <IconCheckmark2Small
+                    size={14}
+                    aria-hidden
+                    className="agent-composer-model-row-check"
+                  />
+                ) : null}
+              </button>
+            ))}
           </div>
         </div>
       ) : null}

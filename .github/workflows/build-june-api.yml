@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "june-api/**"
+      - "crates/june-companion-protocol/**"
       - ".github/actions/phala-deploy/**"
       - ".github/workflows/build-june-api.yml"
   workflow_dispatch:
@@ -57,7 +58,8 @@ jobs:
           # rewrite-timestamp below) so the image digest is reproducible.
           SOURCE_DATE_EPOCH: ${{ steps.meta.outputs.epoch }}
         with:
-          context: june-api
+          # Root context: june-api path-depends on crates/june-companion-protocol.
+          context: .
           file: june-api/Dockerfile
           # `outputs` (not push:+tags:) so we can pass rewrite-timestamp, which
           # applies SOURCE_DATE_EPOCH to layer timestamps. Pushes both tags.

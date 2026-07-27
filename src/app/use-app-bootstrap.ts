@@ -1,14 +1,14 @@
 import { useEffect } from "react";
 import { bootstrapApp, createNote, getNote } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import { withFakeRecovery } from "./app-helpers";
 import type { UseAppBootstrapDependencies } from "./use-app-bootstrap-types";
 
 export function useAppBootstrap(dependencies: UseAppBootstrapDependencies) {
   const {
     appBlocked,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     dispatch,
     pendingCalendarContextAdoptionsRef,
@@ -31,9 +31,9 @@ export function useAppBootstrap(dependencies: UseAppBootstrapDependencies) {
           recordingStatusRef.current = activeRecording;
           dispatch({ type: "recordingStatusChanged", status: activeRecording });
           if (activeRecordingNoteId) {
-            calendarContextNoteProfilesRef.current.set(
+            calendarContextNotePartitionsRef.current.set(
               activeRecordingNoteId,
-              getActiveHermesProfileName(),
+              getCurrentDataPartitionName(),
             );
             pendingCalendarContextAdoptionsRef.current.add(activeRecordingNoteId);
             setRecordingNote(activeRecordingNoteId);

@@ -13,7 +13,7 @@ import {
   type CategorySuggestionListProps,
 } from "./CategorySuggestionList";
 import { reportCategoryDef, type ReportCategory } from "./reportCategory";
-import type { HermesSkillInfo } from "../../../lib/tauri";
+import type { AgentSkillInfo } from "../../../lib/tauri";
 import { matchSkillSlashSuggestions } from "../../../lib/skill-slash-commands";
 import {
   matchBuiltinComposerSlashCommands,
@@ -143,8 +143,9 @@ const CategoryChipBase = Mention.extend({
 });
 
 export type CategoryChipOptions = {
-  skills?: () => HermesSkillInfo[] | null | undefined;
+  skills?: () => AgentSkillInfo[] | null | undefined;
   onBuiltinCommand?: (name: BuiltinComposerSlashCommandName) => boolean;
+  hiddenBuiltinCommands?: () => readonly BuiltinComposerSlashCommandName[] | undefined;
 };
 
 export function createCategoryChip(options: CategoryChipOptions = {}) {
@@ -167,7 +168,8 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
       // A leading "/" only — typing a path like "src/foo" mid-word must not pop
       // the palette.
       allowSpaces: false,
-      items: ({ query }) => composerSlashCommandItems(query, options.skills?.()),
+      items: ({ query }) =>
+        composerSlashCommandItems(query, options.skills?.(), options.hiddenBuiltinCommands?.()),
       command: ({ editor, range, props }) => {
         const item = props as unknown as ComposerSlashCommandItem;
         if (item.kind === "builtin") {
@@ -258,7 +260,11 @@ export function createCategoryChip(options: CategoryChipOptions = {}) {
         function refreshItems() {
           if (!renderer || !latestProps) return;
           renderer.updateProps({
-            items: composerSlashCommandItems(latestProps.query, options.skills?.()),
+            items: composerSlashCommandItems(
+              latestProps.query,
+              options.skills?.(),
+              options.hiddenBuiltinCommands?.(),
+            ),
             command: latestProps.command,
           });
           position(latestProps);
@@ -337,12 +343,15 @@ export const CategoryChip = createCategoryChip();
 
 function composerSlashCommandItems(
   query: string,
-  skills: HermesSkillInfo[] | null | undefined,
+  skills: AgentSkillInfo[] | null | undefined,
+  hiddenBuiltins?: readonly BuiltinComposerSlashCommandName[],
 ): ComposerSlashCommandItem[] {
-  const builtins = matchBuiltinComposerSlashCommands(query).map((command) => ({
-    kind: "builtin" as const,
-    command,
-  }));
+  const builtins = matchBuiltinComposerSlashCommands(query)
+    .filter((command) => !hiddenBuiltins?.includes(command.name))
+    .map((command) => ({
+      kind: "builtin" as const,
+      command,
+    }));
   return [
     ...builtins,
     ...matchSkillSlashSuggestions(query, skills, SLASH_MENU_SKILL_LIMIT).map((skill) => ({

@@ -606,37 +606,6 @@ pub async fn os_accounts_status() -> Result<AccountStatus, AppError> {
     }
 }
 
-/// Routine Browser use is a paid capability: attended browsing remains
-/// available on Hobby, while managed routine browsing requires a live Pro or
-/// Max subscription. Legacy subscribed rows predate plan slugs and represent
-/// Pro, so a missing slug is admitted only when the subscription itself is
-/// active. Local development keeps the capability available for end-to-end
-/// testing without a live OS Accounts deployment.
-fn routine_browser_entitled(status: &AccountStatus) -> bool {
-    if status.local_dev {
-        return true;
-    }
-    let Some(subscription) = status.subscription.as_ref() else {
-        return false;
-    };
-    subscription.subscribed
-        && matches!(subscription.status.as_deref(), Some("active" | "trialing"))
-        && matches!(subscription.plan.as_deref(), None | Some("pro" | "max"))
-}
-
-#[cfg_attr(test, allow(dead_code))]
-pub(crate) async fn require_routine_browser_entitlement() -> Result<(), AppError> {
-    let status = os_accounts_status().await?;
-    if routine_browser_entitled(&status) {
-        Ok(())
-    } else {
-        Err(AppError::new(
-            "browser_routine_pro_required",
-            "Routine Browser use requires a Pro or Max plan.",
-        ))
-    }
-}
-
 /// Launch fast-path: derive signed-in state from the keychain alone, with no
 /// network I/O, so first paint doesn't block on the account snapshot. The
 /// user/balance/subscription returned here are the *last-known* values cached
@@ -682,10 +651,12 @@ pub async fn os_accounts_status_local() -> Result<AccountStatus, AppError> {
 
 #[tauri::command]
 pub async fn os_accounts_login(
+    app: tauri::AppHandle,
     flow: tauri::State<'_, LoginFlow>,
 ) -> Result<AccountStatus, AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
+        crate::companion::resume_account_transport(&app);
         return Ok(local_dev_account_status());
     }
     let cfg = Config::load();
@@ -730,6 +701,7 @@ pub async fn os_accounts_login(
     // Otherwise an in-flight operation for the previous User could land after
     // this token pair and attach its result to the new session.
     store_tokens(&StoredAccount::new(pair, None)).await?;
+    crate::companion::resume_account_transport(&app);
     let (user, balance, subscription) = fetch_snapshot(&cfg).await?;
     // Warm the cache from first sign-in so the next launch fast-path paints the
     // real identity instead of fallbacks.
@@ -767,10 +739,17 @@ pub fn os_accounts_cancel_login(flow: tauri::State<'_, LoginFlow>) -> Result<(),
 }
 
 #[tauri::command]
-pub async fn os_accounts_logout(request: Option<AccountsLogoutRequest>) -> Result<(), AppError> {
+pub async fn os_accounts_logout(
+    app: tauri::AppHandle,
+    request: Option<AccountsLogoutRequest>,
+) -> Result<(), AppError> {
     if local_dev_enabled() {
         set_cached_signed_in(true);
         return Ok(());
+    }
+    if let Err(error) = crate::companion::prepare_account_logout(&app).await {
+        crate::companion::resume_account_transport(&app);
+        return Err(error);
     }
     let cfg = Config::load();
     // Take locks in the same operation -> refresh order as status, login, and
@@ -1604,6 +1583,40 @@ pub async fn access_token() -> Result<String, AppError> {
     Ok(pair.access_token.clone())
 }
 
+pub(crate) async fn current_user_id() -> Result<String, AppError> {
+    if local_dev_enabled() {
+        return Ok(local_dev_user_id());
+    }
+    access_token_subject(&access_token().await?).ok_or_else(|| {
+        AppError::new(
+            "os_accounts_identity_invalid",
+            "The OS Accounts session has no user identity.",
+        )
+    })
+}
+
+/// Read the locally stored account subject without refreshing or contacting OS
+/// Accounts. Logout uses this path so an expired token plus an offline network
+/// cannot skip local, account-scoped companion cleanup.
+pub(crate) async fn stored_user_id() -> Result<Option<String>, AppError> {
+    if local_dev_enabled() {
+        return Ok(Some(local_dev_user_id()));
+    }
+    Ok(load_account_for_logout()
+        .await?
+        .as_ref()
+        .and_then(stored_account_user_id))
+}
+
+fn stored_account_user_id(stored: &StoredAccount) -> Option<String> {
+    access_token_subject(&stored.pair.access_token).or_else(|| {
+        stored
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.user.id.clone())
+    })
+}
+
 const ACCESS_TOKEN_REFRESH_SKEW_SECS: i64 = 30;
 
 fn access_token_is_stale(jwt: &str) -> bool {
@@ -1993,6 +2006,14 @@ async fn load_account() -> Option<StoredAccount> {
     load_platform_tokens().await
 }
 
+async fn load_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    #[cfg(debug_assertions)]
+    if use_dev_plaintext_token_store() {
+        return load_dev_plaintext_account_for_logout().await;
+    }
+    load_platform_account_for_logout().await
+}
+
 /// Token-only convenience for callers that don't need the cached snapshot.
 async fn load_tokens() -> Option<TokenPair> {
     load_account().await.map(|account| account.pair)
@@ -2011,9 +2032,35 @@ async fn load_platform_tokens() -> Option<StoredAccount> {
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let service = keychain_service().to_string();
+    let raw = tokio::task::spawn_blocking(move || {
+        let entry = keyring::Entry::new(&service, KEYCHAIN_USER)?;
+        match entry.get_password() {
+            Ok(raw) => Ok(Some(raw)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error),
+        }
+    })
+    .await
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?
+    .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?;
+    raw.map(|raw| {
+        serde_json::from_str(&raw)
+            .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
+    })
+    .transpose()
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn load_platform_tokens() -> Option<StoredAccount> {
     None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    Ok(None)
 }
 
 async fn clear_tokens() {
@@ -2119,6 +2166,27 @@ async fn load_dev_plaintext_tokens() -> Option<StoredAccount> {
         .ok()?
         .ok()?;
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(debug_assertions)]
+async fn load_dev_plaintext_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
+    let result =
+        tokio::task::spawn_blocking(|| std::fs::read_to_string(dev_plaintext_token_path()))
+            .await
+            .map_err(|error| AppError::new("dev_token_store_read_failed", error.to_string()))?;
+    let raw = match result {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(AppError::new(
+                "dev_token_store_read_failed",
+                error.to_string(),
+            ));
+        }
+    };
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|error| AppError::new("token_deserialize_failed", error.to_string()))
 }
 
 fn pkce() -> (String, String) {
@@ -2317,70 +2385,6 @@ mod tests {
             .as_ref()
             .map(|details| !details.to_string().contains(secret))
             .unwrap_or(true));
-    }
-
-    fn account_status_for_plan(
-        plan: Option<&str>,
-        subscription_status: Option<&str>,
-        subscribed: bool,
-    ) -> AccountStatus {
-        AccountStatus {
-            signed_in: true,
-            configured: true,
-            subscription: Some(AccountSubscription {
-                subscribed,
-                status: subscription_status.map(str::to_string),
-                plan: plan.map(str::to_string),
-                plan_credits: None,
-                trial_end: None,
-                current_period_end: None,
-                trial_period_days: None,
-                scheduled_plan: None,
-                scheduled_plan_credits: None,
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn routine_browser_entitlement_requires_a_live_pro_or_max_subscription() {
-        assert!(routine_browser_entitled(&account_status_for_plan(
-            Some("pro"),
-            Some("active"),
-            true,
-        )));
-        assert!(routine_browser_entitled(&account_status_for_plan(
-            Some("max"),
-            Some("trialing"),
-            true,
-        )));
-        assert!(routine_browser_entitled(&account_status_for_plan(
-            None,
-            Some("active"),
-            true,
-        )));
-        assert!(!routine_browser_entitled(&account_status_for_plan(
-            Some("hobby"),
-            Some("active"),
-            true,
-        )));
-        assert!(!routine_browser_entitled(&account_status_for_plan(
-            Some("pro"),
-            Some("past_due"),
-            true,
-        )));
-        assert!(!routine_browser_entitled(&account_status_for_plan(
-            Some("pro"),
-            Some("active"),
-            false,
-        )));
-        assert!(!routine_browser_entitled(&AccountStatus::default()));
-
-        let local_dev = AccountStatus {
-            local_dev: true,
-            ..Default::default()
-        };
-        assert!(routine_browser_entitled(&local_dev));
     }
 
     #[test]
@@ -3008,6 +3012,26 @@ mod tests {
         assert_eq!(
             access_token_subject(&sample_token_for_user("usr_abc")).as_deref(),
             Some("usr_abc")
+        );
+    }
+
+    #[test]
+    fn stored_account_subject_does_not_require_a_fresh_access_token() {
+        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"alg":"ES256","typ":"JWT"}"#);
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(r#"{"sub":"usr_offline","exp":1}"#);
+        let stored = StoredAccount::new(
+            TokenPair {
+                access_token: format!("{header}.{payload}.signature"),
+                refresh_token: "offline".to_string(),
+            },
+            None,
+        );
+
+        assert_eq!(
+            stored_account_user_id(&stored).as_deref(),
+            Some("usr_offline")
         );
     }
 

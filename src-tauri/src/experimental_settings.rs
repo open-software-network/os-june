@@ -19,11 +19,20 @@ pub struct ExperimentalSettings {
     pub unlocked: bool,
     #[serde(default)]
     pub browser_use: bool,
+    #[serde(default)]
+    pub companion_pairing: bool,
 }
 
 pub struct ExperimentalSettingsState {
     path: PathBuf,
     settings: Mutex<ExperimentalSettings>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ExperimentalSettingsSnapshot {
+    #[serde(flatten)]
+    pub settings: ExperimentalSettings,
+    pub companion_pairing_effective: bool,
 }
 
 pub fn setup(app: &mut tauri::App) -> Result<(), tauri::Error> {
@@ -53,7 +62,7 @@ pub fn set(
     app: &AppHandle,
     state: &ExperimentalSettingsState,
     settings: ExperimentalSettings,
-) -> Result<ExperimentalSettings, AppError> {
+) -> Result<ExperimentalSettingsSnapshot, AppError> {
     {
         let mut current = state.settings.lock().map_err(|_| {
             AppError::new(
@@ -72,8 +81,16 @@ pub fn set(
         crate::extension_host::ensure_listener_started(app.clone());
     }
 
-    let _ = app.emit(EXPERIMENTAL_FLAGS_CHANGED_EVENT, settings.clone());
-    Ok(settings)
+    let snapshot = snapshot(app, settings);
+    let _ = app.emit(EXPERIMENTAL_FLAGS_CHANGED_EVENT, snapshot.clone());
+    Ok(snapshot)
+}
+
+pub fn snapshot(app: &AppHandle, settings: ExperimentalSettings) -> ExperimentalSettingsSnapshot {
+    ExperimentalSettingsSnapshot {
+        settings,
+        companion_pairing_effective: crate::companion::effective_pairing_enabled(app),
+    }
 }
 
 /// Effective Browser use availability for native callers. The stored override
@@ -84,6 +101,16 @@ pub fn browser_use_enabled(app: &AppHandle) -> bool {
         .and_then(|state| get(state.inner()).ok())
         .unwrap_or_default();
     browser_use_enabled_with(crate::feature_flags::BROWSER_USE_ENABLED, &stored)
+}
+
+/// Companion transport availability for native callers. Unlike Browser use,
+/// this experiment has no public kill switch and stays off unless this install
+/// explicitly enables it.
+pub fn companion_pairing_enabled(app: &AppHandle) -> bool {
+    app.try_state::<ExperimentalSettingsState>()
+        .and_then(|state| get(state.inner()).ok())
+        .unwrap_or_default()
+        .companion_pairing
 }
 
 fn browser_use_enabled_with(kill_switch: bool, settings: &ExperimentalSettings) -> bool {
@@ -113,7 +140,7 @@ fn save_settings(path: &Path, settings: &ExperimentalSettings) -> Result<(), App
     let temporary_path = path.with_extension("json.tmp");
     fs::write(&temporary_path, serialized)
         .map_err(|error| AppError::new("experimental_settings_save_failed", error.to_string()))?;
-    crate::hermes_bridge::replace_file(&temporary_path, path).map_err(|error| {
+    crate::filesystem::replace_file(&temporary_path, path).map_err(|error| {
         let _ = fs::remove_file(&temporary_path);
         AppError::new("experimental_settings_save_failed", error.to_string())
     })
@@ -160,6 +187,7 @@ mod tests {
         let settings = ExperimentalSettings {
             unlocked: true,
             browser_use: true,
+            companion_pairing: true,
         };
 
         save_settings(&path, &settings).expect("save experimental settings");

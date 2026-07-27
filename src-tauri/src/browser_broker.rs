@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Preserved June browser policy broker; only cleanup is wired initially.
+
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -20,7 +22,7 @@ use crate::{
     extension_host::{ExtensionHost, ExtensionResponse},
 };
 
-pub(crate) const BROWSER_APPROVALS_CHANGED_EVENT: &str = "june://browser-approvals-changed";
+pub const BROWSER_APPROVALS_CHANGED_EVENT: &str = "june://browser-approvals-changed";
 const BROWSER_APPROVAL_TIMEOUT_MS: u64 = 600_000;
 
 fn constant_time_eq(left: &str, right: &str) -> bool {
@@ -422,18 +424,7 @@ impl BrowserBroker {
             return Ok(self.lock().routine_entitlement_override.unwrap_or(true));
         }
         #[cfg(not(test))]
-        {
-            crate::os_accounts::require_routine_browser_entitlement()
-                .await
-                .map(|()| true)
-                .or_else(|error| {
-                    if error.code == "browser_routine_pro_required" {
-                        Ok(false)
-                    } else {
-                        Err(error)
-                    }
-                })
-        }
+        Ok(false)
     }
 
     /// Re-check the current account tier at the broker boundary for every
@@ -822,7 +813,7 @@ impl BrowserBroker {
         Ok(released)
     }
 
-    pub(crate) async fn pending_approvals(&self) -> Result<Vec<PendingBrowserApproval>, AppError> {
+    pub async fn pending_approvals(&self) -> Result<Vec<PendingBrowserApproval>, AppError> {
         let _action = self.action_lock.lock().await;
         self.prune_expired_approvals().await?;
         let mut pending = self
@@ -1655,7 +1646,7 @@ impl BrowserBroker {
         Ok(parked_action_result(&approval_id))
     }
 
-    pub(crate) async fn respond_to_approval(
+    pub async fn respond_to_approval(
         &self,
         approval_id: &str,
         approve: bool,
@@ -1913,6 +1904,38 @@ impl BrowserBroker {
             },
         );
     }
+}
+
+#[tauri::command]
+pub async fn browser_approvals_pending(
+    broker: tauri::State<'_, std::sync::Arc<BrowserBroker>>,
+) -> Result<Vec<PendingBrowserApproval>, AppError> {
+    broker.pending_approvals().await
+}
+
+#[tauri::command]
+pub async fn browser_approval_respond(
+    broker: tauri::State<'_, std::sync::Arc<BrowserBroker>>,
+    approval_id: String,
+    approve: bool,
+    allow_site: bool,
+) -> Result<(), AppError> {
+    broker
+        .respond_to_approval(&approval_id, approve, allow_site)
+        .await
+}
+
+pub(crate) fn release_shared_tab(app: &tauri::AppHandle, tab_id: i64) {
+    use tauri::Manager;
+    let Some(broker) = app.try_state::<Arc<BrowserBroker>>() else {
+        return;
+    };
+    let broker = Arc::clone(broker.inner());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = broker.release_tab(tab_id).await {
+            tracing::error!(code = %error.code, "shared browser tab release was not recorded");
+        }
+    });
 }
 
 fn context_access_enabled(

@@ -1,7 +1,7 @@
 //! Connector trigger daemon.
 //!
 //! A background tokio task that polls Google for the events routines subscribe
-//! to and wakes the matching routine through the bridge cron `trigger` action.
+//! to and wakes the matching routine through the June-owned scheduler.
 //! The event is a wake-up only: the routine re-reads state through its tools.
 //!
 //! - `email_received`: Gmail `history.list` from a stored cursor (seeded from
@@ -114,15 +114,15 @@ async fn poll_kind(app: &AppHandle, kind: &str) -> bool {
 
     if kind == EMAIL_KIND {
         // One history.list per account, firing every job subscribed to it.
-        let mut by_account: HashMap<String, Vec<String>> = HashMap::new();
+        let mut by_account: HashMap<String, Vec<ConnectorTriggerRecord>> = HashMap::new();
         for trigger in relevant {
             by_account
-                .entry(trigger.account_id)
+                .entry(trigger.account_id.clone())
                 .or_default()
-                .push(trigger.job_id);
+                .push(trigger);
         }
-        for (account_id, job_ids) in by_account {
-            if let Err(error) = poll_email_account(app, &repos, &account_id, &job_ids).await {
+        for (account_id, triggers) in by_account {
+            if let Err(error) = poll_email_account(app, &repos, &account_id, &triggers).await {
                 tracing::warn!(error_code = %error.code, kind, "connector email trigger poll failed");
             }
         }
@@ -138,7 +138,7 @@ async fn poll_email_account(
     app: &AppHandle,
     repos: &Repositories,
     account_id: &str,
-    job_ids: &[String],
+    triggers: &[ConnectorTriggerRecord],
 ) -> Result<(), AppError> {
     let token = crate::connectors::google_access_token(app, account_id).await?;
     let cursor = repos.trigger_cursor(account_id, EMAIL_KIND).await?;
@@ -151,48 +151,93 @@ async fn poll_email_account(
             repos
                 .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
                 .await?;
+            for trigger in triggers {
+                repos
+                    .set_email_trigger_cursor_if_active(
+                        &trigger.id,
+                        &trigger.job_id,
+                        account_id,
+                        &history_id,
+                    )
+                    .await?;
+            }
         }
         return Ok(());
     };
 
-    let delta = match call_gmail_history(app, account_id, &token, &cursor).await {
-        Ok(delta) => delta,
-        Err(error) if error.code == "connector_history_cursor_expired" => {
-            // The stored history id fell out of Gmail's retention window (e.g.
-            // the machine slept for a long stretch). Reseed the baseline from
-            // the current profile so the next poll starts from a live cursor
-            // instead of retrying the dead one forever.
-            let profile = call_gmail_profile(app, account_id, &token).await?;
-            if let Some(history_id) = profile.history_id {
+    // Each routine owns an acknowledgement cursor. Jobs at the same cursor
+    // share one Gmail request, while a failed job can retry independently
+    // without replaying the delta into subscribers that already succeeded.
+    let mut jobs_by_cursor: HashMap<String, Vec<&ConnectorTriggerRecord>> = HashMap::new();
+    for trigger in triggers {
+        let kind = email_cursor_kind(&trigger.job_id);
+        let job_cursor = match repos.trigger_cursor(account_id, &kind).await? {
+            Some(cursor) => cursor,
+            None => cursor.clone(),
+        };
+        jobs_by_cursor.entry(job_cursor).or_default().push(trigger);
+    }
+
+    let mut latest_account_cursor = cursor;
+    for (job_cursor, cursor_jobs) in jobs_by_cursor {
+        let delta = match call_gmail_history(app, account_id, &token, &job_cursor).await {
+            Ok(delta) => delta,
+            Err(error) if error.code == "connector_history_cursor_expired" => {
+                // Reseed only the affected subscribers. Their cursor may lag
+                // because an earlier dispatch failed while peers advanced.
+                let profile = call_gmail_profile(app, account_id, &token).await?;
+                if let Some(history_id) = profile.history_id {
+                    latest_account_cursor =
+                        newer_history_id(latest_account_cursor, history_id.clone());
+                    for trigger in cursor_jobs {
+                        repos
+                            .set_email_trigger_cursor_if_active(
+                                &trigger.id,
+                                &trigger.job_id,
+                                account_id,
+                                &history_id,
+                            )
+                            .await?;
+                    }
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(history_id) = delta.history_id else {
+            continue;
+        };
+        latest_account_cursor = newer_history_id(latest_account_cursor, history_id.clone());
+        for trigger in cursor_jobs {
+            let acknowledged =
+                delta.added.is_empty() || email_outcome_acknowledged(fire(app, trigger).await);
+            if acknowledged {
                 repos
-                    .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
+                    .set_email_trigger_cursor_if_active(
+                        &trigger.id,
+                        &trigger.job_id,
+                        account_id,
+                        &history_id,
+                    )
                     .await?;
             }
-            return Ok(());
-        }
-        Err(error) => return Err(error),
-    };
-    // Only INBOX messages count; history_list already filters to INBOX adds.
-    let mut all_fired = true;
-    if !delta.added.is_empty() {
-        for job_id in job_ids {
-            if !fire(app, job_id).await {
-                all_fired = false;
-            }
         }
     }
-    // Advance the cursor only when every subscribed job was actually queued. A
-    // failed fire (bridge/gateway down) leaves the cursor so the next poll
-    // retries the mail rather than marking it handled; re-queuing a job that did
-    // fire is harmless since the routine re-reads state.
-    if all_fired {
-        if let Some(history_id) = delta.history_id {
-            repos
-                .set_trigger_cursor(account_id, EMAIL_KIND, &history_id)
-                .await?;
-        }
-    }
+    repos
+        .set_trigger_cursor(account_id, EMAIL_KIND, &latest_account_cursor)
+        .await?;
     Ok(())
+}
+
+fn email_cursor_kind(job_id: &str) -> String {
+    format!("{EMAIL_KIND}:{job_id}")
+}
+
+fn newer_history_id(current: String, candidate: String) -> String {
+    match (current.parse::<u128>(), candidate.parse::<u128>()) {
+        (Ok(current_id), Ok(candidate_id)) if current_id > candidate_id => current,
+        _ => candidate,
+    }
 }
 
 async fn call_gmail_profile(
@@ -468,9 +513,9 @@ async fn apply_calendar_events_to_trigger(
     let mut changed = fired.len() != before;
 
     // Wake the routine once for the batch, and record the events as fired only
-    // when the wake actually succeeded. A failed fire (bridge/gateway down)
-    // leaves them unrecorded so the next poll retries instead of skipping.
-    if !to_fire.is_empty() && fire(app, job_id).await {
+    // when the wake actually queued. A failed or temporarily ineligible wake
+    // leaves them unrecorded so this routine can retry independently.
+    if !to_fire.is_empty() && fire(app, trigger).await == FireOutcome::Queued {
         for (event_id, start_ts) in to_fire {
             fired.insert(event_id, start_ts);
         }
@@ -595,15 +640,39 @@ fn parse_event_start(start: &str) -> Option<DateTime<Utc>> {
 
 // --- Firing & battery ---------------------------------------------------------
 
-/// Wake a routine, returning whether it was actually queued. A false result
-/// (bridge or gateway unavailable) must leave the trigger's cursor unadvanced so
-/// the event is retried, not skipped.
-async fn fire(app: &AppHandle, job_id: &str) -> bool {
-    match crate::hermes_bridge::trigger_cron_job(app, job_id).await {
-        Ok(()) => true,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FireOutcome {
+    Queued,
+    NotQueued,
+    Failed,
+}
+
+fn email_outcome_acknowledged(outcome: FireOutcome) -> bool {
+    outcome != FireOutcome::Failed
+}
+
+/// Wake a routine and distinguish an ineligible subscription from a dispatch
+/// failure. Email delivery acknowledges ineligible subscriptions, while
+/// calendar delivery keeps its per-routine event pending.
+async fn fire(app: &AppHandle, trigger: &ConnectorTriggerRecord) -> FireOutcome {
+    match crate::routines::trigger_from_connector(
+        app,
+        &trigger.job_id,
+        &trigger.id,
+        &trigger.kind,
+        &trigger.account_id,
+    )
+    .await
+    {
+        Ok(true) => FireOutcome::Queued,
+        Ok(false) => FireOutcome::NotQueued,
         Err(error) => {
-            tracing::warn!(error_code = %error.code, "connector trigger fire failed");
-            false
+            tracing::warn!(
+                error_code = %error.code,
+                routine_id = %trigger.job_id,
+                "connector routine trigger failed"
+            );
+            FireOutcome::Failed
         }
     }
 }
@@ -655,6 +724,21 @@ mod tests {
     #[test]
     fn missing_percent_is_none() {
         assert_eq!(parse_battery_percent("no battery here"), None);
+    }
+
+    #[test]
+    fn email_cursor_acknowledges_ineligible_routines_but_retries_dispatch_failures() {
+        assert!(email_outcome_acknowledged(FireOutcome::Queued));
+        assert!(email_outcome_acknowledged(FireOutcome::NotQueued));
+        assert!(!email_outcome_acknowledged(FireOutcome::Failed));
+    }
+
+    #[test]
+    fn email_subscribers_have_independent_monotonic_cursors() {
+        assert_eq!(email_cursor_kind("routine-a"), "email_received:routine-a");
+        assert_eq!(email_cursor_kind("routine-b"), "email_received:routine-b");
+        assert_eq!(newer_history_id("105".into(), "103".into()), "105");
+        assert_eq!(newer_history_id("105".into(), "108".into()), "108");
     }
 
     #[test]

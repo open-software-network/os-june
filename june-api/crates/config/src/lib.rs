@@ -76,15 +76,13 @@ const IMAGE_EDIT_JSON_OVERHEAD_BYTES: usize = 16 * 1024;
 pub const DEFAULT_MAX_IMAGE_EDIT_BYTES: usize =
     base64_encoded_len(IMAGE_EDIT_SOURCE_MAX_BYTES) + IMAGE_EDIT_JSON_OVERHEAD_BYTES;
 /// Dedicated request-body cap for `/v1/chat/completions`. Sized to the
-/// desktop provider proxy's chat body cap
-/// (`JUNE_PROVIDER_PROXY_MAX_CHAT_BODY_BYTES`, 12 MiB, in
-/// `src-tauri/src/hermes_bridge.rs`) so an in-window agent chat request the
-/// proxy forwards is never rejected here by a stricter outer gate before
+/// desktop provider proxy's 12 MiB chat body cap so an in-window agent chat
+/// request the proxy forwards is never rejected here by a stricter outer gate before
 /// `validate_agent_chat_body` can size-check it (JUN-336). 12 MiB is the
 /// byte-image of the 6M-char semantic cap (`MAX_AGENT_TOTAL_STRING_CHARS`) at
 /// ~2 bytes/char, sized for a 1M-token context window. This is only an abuse
 /// ceiling above every valid agent chat request; semantic size rejection stays
-/// in `validate_agent_chat_body`. Keep this in sync with the proxy constant
+/// in `validate_agent_chat_body`. Keep this in sync with the desktop proxy
 /// across the src-tauri / june-api workspace boundary.
 pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 12 * 1024 * 1024;
 /// Global cap on the total in-flight request-body bytes buffered across the
@@ -168,6 +166,9 @@ pub struct AppConfig {
     /// feature cannot regress deployments that predate it.
     #[serde(default)]
     pub share: ShareConfig,
+    /// June companion relay persistence and optional opaque APNs wake hints.
+    #[serde(default)]
+    pub companion: CompanionConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
     /// Flat credits charged per generated image, keyed by image model id. Kept
     /// separate from `pricing` (the text/ASR catalog) so image models never leak
@@ -233,6 +234,7 @@ impl Debug for AppConfig {
             .field("issue_reports", &self.issue_reports)
             .field("computer_use", &self.computer_use)
             .field("share", &RedactedShare(&self.share))
+            .field("companion", &RedactedCompanion(&self.companion))
             .field("pricing", &self.pricing)
             .field("image_pricing", &self.image_pricing)
             .field("image_edit_pricing", &self.image_edit_pricing)
@@ -550,6 +552,57 @@ pub struct ShareConfig {
     /// Max accepted ciphertext, in bytes.
     #[serde(default = "default_share_max_ciphertext_bytes")]
     pub max_ciphertext_bytes: usize,
+}
+
+#[derive(Clone, Deserialize, Serialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct CompanionConfig {
+    /// Dedicated Postgres store for linked-device trust metadata. Empty
+    /// disables companion endpoints outside local development.
+    #[serde(default)]
+    pub database_url: String,
+    #[serde(default)]
+    pub apns_team_id: String,
+    #[serde(default)]
+    pub apns_key_id: String,
+    /// Apple .p8 signing key, injected as a secret environment value.
+    #[serde(default)]
+    pub apns_private_key_pem: String,
+    #[serde(default)]
+    pub apns_bundle_id: String,
+    /// False targets Apple's sandbox endpoint; true targets production APNs.
+    #[serde(default)]
+    pub apns_production: bool,
+}
+
+struct RedactedCompanion<'a>(&'a CompanionConfig);
+
+impl Debug for RedactedCompanion<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CompanionConfig")
+            .field(
+                "database_url",
+                &if self.0.database_url.is_empty() {
+                    "<unset>"
+                } else {
+                    REDACTED
+                },
+            )
+            .field("apns_team_id", &self.0.apns_team_id)
+            .field("apns_key_id", &self.0.apns_key_id)
+            .field(
+                "apns_private_key_pem",
+                &if self.0.apns_private_key_pem.is_empty() {
+                    "<unset>"
+                } else {
+                    REDACTED
+                },
+            )
+            .field("apns_bundle_id", &self.0.apns_bundle_id)
+            .field("apns_production", &self.0.apns_production)
+            .finish()
+    }
 }
 
 impl Default for ShareConfig {
@@ -1142,6 +1195,7 @@ impl Default for AppConfig {
             issue_reports: IssueReportsConfig::default(),
             computer_use: ComputerUseConfig::default(),
             share: ShareConfig::default(),
+            companion: CompanionConfig::default(),
             pricing: default_pricing(),
             image_pricing: default_image_pricing(),
             image_edit_pricing: default_image_edit_pricing(),

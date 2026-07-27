@@ -1,4 +1,4 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import type { NotesAction } from "./state/app-state";
@@ -8,7 +8,7 @@ export type UseRecordingStartActionsDependencies = {
   activeViewRef: React.MutableRefObject<SidebarView>;
   appBlocked: boolean;
   bootstrapped: boolean;
-  calendarContextNoteProfilesRef: React.MutableRefObject<Map<string, string>>;
+  calendarContextNotePartitionsRef: React.MutableRefObject<Map<string, string>>;
   calendarContextNoteUpdatesRef: React.MutableRefObject<Map<string, NoteDto>>;
   dispatch: React.Dispatch<NotesAction>;
   fundingRequired: boolean;

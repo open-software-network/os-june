@@ -1,7 +1,8 @@
 # Automatic private model rollout
 
 June supports `open-software/auto` while retaining explicit model selection. Auto persists a
-Cost-to-quality preference and forwards it through Hermes and note generation.
+cost-to-quality preference and forwards it through the June-owned agent runtime and note
+generation.
 
 The rollout remains reversible. Production compose pins
 `JUNE__UPSTREAMS__VENICE__BASE_URL` to `https://api.opensoftware.co/v1`; Phala's sealed

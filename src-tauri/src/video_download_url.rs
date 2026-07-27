@@ -516,6 +516,10 @@ mod tests {
                     Err(error) => panic!("test server accept failed: {error}"),
                 }
             };
+            // Accepted sockets inherit O_NONBLOCK from the listener on macOS.
+            // Restore blocking reads so a newly accepted request cannot race the
+            // client write and fail this deterministic redirect test with EAGAIN.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

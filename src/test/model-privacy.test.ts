@@ -4,6 +4,7 @@ import {
   E2EE_MODEL_DESCRIPTION,
   PRIVATE_MODEL_DESCRIPTION,
   modelIsPrivate,
+  modelAvailableForMode,
   modelPrivacyBadge,
   modelSupportsImageInput,
 } from "../lib/model-privacy";
@@ -71,6 +72,18 @@ describe("private catalog filter", () => {
     // A non-loopback custom endpoint reports "external" — no privacy claim.
     expect(modelIsPrivate({ privacy: "external", traits: [] })).toBe(false);
     expect(modelIsPrivate({ privacy: "", traits: [] })).toBe(false);
+  });
+});
+
+describe("model mode availability", () => {
+  it("keeps June Auto available without pretending it is a concrete tool model", () => {
+    expect(
+      modelAvailableForMode("generation", {
+        id: "open-software/auto",
+        provider: "june",
+        capabilities: [],
+      }),
+    ).toBe(true);
   });
 });
 

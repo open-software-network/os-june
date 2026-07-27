@@ -61,7 +61,7 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
         id: "agent.sessions",
         prompt: "Agent session started",
         buckets: &["event"],
-        decision: "Hermes runtime investment",
+        decision: "Agent runtime investment",
     },
     QuestionDef {
         question: Question::AgentPrivacyGuard,

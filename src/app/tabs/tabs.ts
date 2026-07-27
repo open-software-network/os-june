@@ -60,8 +60,8 @@ export function reorderTabs(tabs: Tab[], orderedVisibleIds: string[]): Tab[] {
   return next;
 }
 
-// A profile switch can leave inactive tabs pointing at notes from the previous
-// profile. Replace only those snapshots with the profile-neutral notes list;
+// A data partition switch can leave inactive tabs pointing at notes from the
+// previous partition. Replace only those snapshots with the neutral notes list;
 // callers may omit an active recording note from `noteIds` until the take ends.
 export function invalidateNoteTabs(tabs: Tab[], noteIds: ReadonlySet<string>): Tab[] {
   let changed = false;

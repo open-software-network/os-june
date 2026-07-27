@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Preserved June-owned Obsidian discovery for a neutral tool follow-up.
+
 use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
 use std::{

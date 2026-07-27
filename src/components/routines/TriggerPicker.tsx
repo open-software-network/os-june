@@ -14,8 +14,8 @@ const SOURCE_OPTIONS = [
 /**
  * The routine editor's "When" control: a schedule (the existing picker), or a
  * connector event trigger (new mail, or a lead time before a meeting). Event
- * triggers never touch the cron string — the routine is created paused with a
- * far-future one-time schedule and the trigger daemon fires it — so the two
+ * triggers never touch the schedule string. The routine stays active with a
+ * far-future one-time schedule and the trigger daemon fires it, so the two
  * models stay separate here too.
  */
 export function TriggerPicker({

@@ -49,10 +49,10 @@ use objc2::runtime::{AnyClass, AnyObject};
 const WINDOW_LABEL: &str = "meeting-hud";
 pub const RECORDING_TELEMETRY_EVENT: &str = "recording-telemetry";
 
-/// One native sample feeds both renderer surfaces. Their animation loops smooth
-/// between samples, so 10 Hz stays responsive without contending with the audio
-/// callback at the old combined 45 Hz status-read rate.
-const ACTIVE_TICK: Duration = Duration::from_millis(100);
+/// One native sample feeds both renderer surfaces. Twenty hertz matches the
+/// waveform's peak window and ballistics while remaining below half the old
+/// combined 45 Hz status-read rate.
+const ACTIVE_TICK: Duration = Duration::from_millis(50);
 const IDLE_TICK: Duration = Duration::from_millis(220);
 
 /// Logical pill size — must agree with `.mhud` in meeting-hud.css.
@@ -205,7 +205,7 @@ struct ZoneTracker {
     show_armed: bool,
 }
 
-/// Edge-tracks the menu-bar recording dot so the supervisor's 10 Hz poll only
+/// Edge-tracks the menu-bar recording dot so the supervisor's 20 Hz poll only
 /// notifies the tray when capture actually starts or stops, not every tick.
 static RECORDING_INDICATOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -820,11 +820,21 @@ fn make_nonactivating(hud: &WebviewWindow) {
 
 #[cfg(test)]
 mod tests {
-    use super::{PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
+    use super::{ACTIVE_TICK, PILL_SIZE, VERTICAL_PILL_LENGTH, WINDOW_SIZE};
     use crate::domain::types::{
         AudioLevelDto, RecordingSource, RecordingSourceMode, RecordingState, RecordingStatusDto,
         RecordingTelemetryDto, SourceState, SourceStatusDto,
     };
+    use std::time::Duration;
+
+    #[test]
+    fn active_telemetry_cadence_keeps_waveform_responsive() {
+        assert_eq!(
+            ACTIVE_TICK,
+            Duration::from_millis(50),
+            "the waveform peak window and ballistics are tuned for 20 Hz level targets"
+        );
+    }
 
     /// First `prop: <n>px` declaration inside the rule whose selector line
     /// contains `selector`. Good enough for the flat declarations this test

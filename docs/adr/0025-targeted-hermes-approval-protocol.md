@@ -1,7 +1,7 @@
 # ADR 0025: Targeted Hermes approval protocol
 
 Date: 2026-07-16
-Status: accepted
+Status: superseded by ADR-0038
 
 ## Context
 

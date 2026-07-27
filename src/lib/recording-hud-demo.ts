@@ -33,9 +33,9 @@ type DemoState = "recording" | "paused" | "vertical" | "horizontal" | "demo" | "
 const STATUS_EVENT = "meeting-hud-status";
 const ZONE_EVENT = "meeting-hud-zone";
 
-// Status pushes carry fresh peaks; ~90ms keeps the waveform alive without
-// pinning the loop.
-const STATUS_TICK_MS = 90;
+// Match the real active telemetry cadence so the standalone HUD has production
+// waveform timing during visual review.
+const STATUS_TICK_MS = 50;
 
 const HELP = [
   "Recording pill demo states (meeting-hud window):",

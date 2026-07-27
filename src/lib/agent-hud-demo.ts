@@ -19,7 +19,7 @@ import {
   type AgentSessionStatusDetail,
   type AgentSessionsChangedDetail,
 } from "./agent-events";
-import type { HermesSessionInfo } from "./tauri";
+import type { AgentSessionDto } from "./agent-runtime-contract";
 
 type AgentHudDemoOptions = {
   /** Dispatch window events on this page instead of emitting on the Tauri
@@ -92,15 +92,18 @@ export function registerAgentHudDemo({ local }: AgentHudDemoOptions) {
       .catch(() => {});
   }
 
-  function session(index: number, title: string): HermesSessionInfo {
+  function session(index: number, title: string): AgentSessionDto {
     const now = new Date().toISOString();
     return {
       id: `hud-demo-${index}`,
       title,
-      preview: title,
-      started_at: now,
-      last_active: now,
-      message_count: 2,
+      status: "idle",
+      model: "demo",
+      safetyMode: "sandboxed",
+      workspacePath: "",
+      source: "user",
+      createdAt: now,
+      updatedAt: now,
     };
   }
 

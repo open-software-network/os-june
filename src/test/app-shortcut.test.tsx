@@ -3,12 +3,15 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
+import { appSettingsTabsForCompanionPairing } from "../components/settings/AppSettings";
+import { settingsTabsForCompanionPairing } from "../components/settings/settings-config";
 import {
-  dispatchProfileDataChanged,
-  resetActiveHermesProfileForTests,
-  setActiveHermesProfileName,
-} from "../lib/active-hermes-profile";
+  dispatchDataPartitionChanged,
+  resetCurrentDataPartitionForTests,
+  setCurrentDataPartitionName,
+} from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
@@ -16,6 +19,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
 } from "../lib/agent-events";
 import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type {
   AccountStatus,
   BootstrapResponse,
@@ -83,6 +87,16 @@ const mocks = vi.hoisted(() => ({
   patchNote: vi.fn(),
   completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
+  companionCompleteFrontendRequest: vi.fn(),
+  companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
+  companionPairingEnabled: true,
+  listAgentItems: vi.fn().mockResolvedValue([]),
+  getAgentSession: vi.fn(),
+  createAgentSession: vi.fn(),
+  startAgentRun: vi.fn(),
+  getLatestAgentRun: vi.fn(),
+  cancelAgentRun: vi.fn(),
+  listAgentSkills: vi.fn().mockResolvedValue([]),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
   startMeetingRecording: vi.fn(),
@@ -101,16 +115,10 @@ const mocks = vi.hoisted(() => ({
   agentHudShow: vi.fn(),
   agentOpenReady: vi.fn().mockResolvedValue(null),
   agentHudHide: vi.fn(),
-  ensureHermesBridgeSession: vi.fn(),
-  finalizeHermesBridgeBranch: vi.fn(),
-  hermesAgentCliAccess: vi.fn(),
-  hermesBrowserAccess: vi.fn(),
-  hermesBridgeFilesystemSnapshot: vi.fn(),
-  hermesBridgeStatus: vi.fn(),
   listAgentTasks: vi.fn(),
-  listHermesSessionMessages: vi.fn(),
-  listHermesSessions: vi.fn(),
-  listSessionProfiles: vi.fn(),
+  listAgentSessions: vi.fn(),
+  listSessionFolders: vi.fn(),
+  listSessionPartitions: vi.fn(),
   listVeniceModels: vi.fn(),
   localVideoFileSrc: vi.fn((path: string) => `asset://${path}`),
   p3aSettings: vi.fn(),
@@ -121,7 +129,6 @@ const mocks = vi.hoisted(() => ({
   setP3aEnabled: vi.fn(),
   videoGenerate: vi.fn(),
   videoStatus: vi.fn(),
-  startHermesBridge: vi.fn(),
   startPeriodicJuneUpdateChecks: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
   gatewayRequest: vi.fn(),
@@ -136,6 +143,21 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: mocks.getCurrentWindow,
 }));
 
+vi.mock("../lib/experimental-flags", () => ({
+  INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE: { count: 0, startedAt: null },
+  experimentalBrowserUseEnabled: () => false,
+  registerExperimentalUnlockClick: vi.fn((state) => ({ state, unlocked: false })),
+  setExperimentalFlags: vi.fn(async (flags) => flags),
+  useExperimentalFlags: () => ({
+    unlocked: false,
+    browser_use: false,
+    companion_pairing: mocks.companionPairingEnabled,
+    loaded: true,
+    browserUseEnabled: false,
+    companionPairingEnabled: mocks.companionPairingEnabled,
+  }),
+}));
+
 vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: mocks.playRecordingSound,
   preloadRecordingSounds: mocks.preloadRecordingSounds,
@@ -143,27 +165,6 @@ vi.mock("../lib/recording-sounds", () => ({
 
 vi.mock("../lib/agent-sounds", () => ({
   preloadAgentSounds: mocks.preloadAgentSounds,
-}));
-
-vi.mock("../lib/hermes-adapter", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-adapter")>()),
-  listHermesSessionMessages: mocks.listHermesSessionMessages,
-  listHermesSessions: mocks.listHermesSessions,
-  titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
-}));
-
-vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
-  HermesGatewayClient: class {
-    connect = vi.fn();
-    close = vi.fn();
-    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
-      mocks.gatewayEventHandlers.add(handler);
-      return () => mocks.gatewayEventHandlers.delete(handler);
-    });
-    onClose = vi.fn(() => vi.fn());
-    request = mocks.gatewayRequest;
-  },
 }));
 
 vi.mock("../app/update-decision", async () => {
@@ -176,6 +177,23 @@ vi.mock("../app/update-decision", async () => {
 });
 
 vi.mock("../lib/tauri", () => ({
+  agentRuntimeBindings: {
+    listSessions: mocks.listAgentSessions,
+    getSession: mocks.getAgentSession,
+    getLatestRun: mocks.getLatestAgentRun,
+    createSession: mocks.createAgentSession,
+    renameSession: vi.fn(),
+    deleteSession: vi.fn(),
+    listItems: mocks.listAgentItems,
+    listArtifacts: vi.fn(async () => []),
+    startRun: mocks.startAgentRun,
+    cancelRun: mocks.cancelAgentRun,
+    retryRun: vi.fn(),
+    resolveInterruption: vi.fn(),
+    listSkills: mocks.listAgentSkills,
+    updateSkill: vi.fn(),
+  },
+  listAgentSessions: mocks.listAgentSessions,
   dictationCapabilities: vi.fn().mockResolvedValue({
     capabilities: {
       available: true,
@@ -205,10 +223,10 @@ vi.mock("../lib/tauri", () => ({
   deleteFolder: mocks.deleteFolder,
   renameFolder: mocks.renameFolder,
   assignNoteToFolder: mocks.assignNoteToFolder,
-  listSessionFolders: vi.fn(async () => []),
+  listSessionFolders: mocks.listSessionFolders,
   listCompletedSessions: vi.fn(async () => []),
   setSessionCompleted: vi.fn(async () => undefined),
-  listSessionProfiles: mocks.listSessionProfiles,
+  listSessionPartitions: mocks.listSessionPartitions,
   assignSessionToFolder: mocks.assignSessionToFolder,
   assignSessionToProfile: vi.fn(async () => undefined),
   removeSessionFromFolder: vi.fn(async () => undefined),
@@ -230,6 +248,9 @@ vi.mock("../lib/tauri", () => ({
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
+  companionPublishAgentEvent: mocks.companionPublishAgentEvent,
+  listAgentItems: mocks.listAgentItems,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -251,12 +272,6 @@ vi.mock("../lib/tauri", () => ({
   pendingMeetingStartRequest: mocks.readPendingMeetingStartRequest,
   acknowledgeMeetingStartRequest: mocks.acknowledgeMeetingStartRequest,
   startMeetingRecording: mocks.startMeetingRecording,
-  ensureHermesBridgeSession: mocks.ensureHermesBridgeSession,
-  finalizeHermesBridgeBranch: mocks.finalizeHermesBridgeBranch,
-  hermesAgentCliAccess: mocks.hermesAgentCliAccess,
-  hermesBrowserAccess: mocks.hermesBrowserAccess,
-  hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
-  hermesBridgeStatus: mocks.hermesBridgeStatus,
   listAgentTasks: mocks.listAgentTasks,
   juneVerifyUrl: vi.fn(async () => ""),
   p3aSettings: mocks.p3aSettings,
@@ -274,7 +289,6 @@ vi.mock("../lib/tauri", () => ({
     generationModel: "",
     veniceApiKeyConfigured: false,
   })),
-  startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
 }));
 
@@ -293,6 +307,28 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
     activeTab: "notes",
     ...overrides,
   };
+}
+
+function agentSession(id: string, title: string): AgentSessionDto {
+  return {
+    id,
+    title,
+    status: "idle",
+    model: "auto",
+    safetyMode: "sandboxed",
+    workspacePath: `/tmp/june-agent-workspaces/${id}`,
+    source: "user",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function recordingReadiness(systemReady: boolean): RecordingSourceReadinessDto {
@@ -354,6 +390,9 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.setItem("june:active-agent-profile", "default");
+    window.localStorage.removeItem("june:agent:last-open-session");
+    mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
       async () => mocks.pendingMeetingStartRequest ?? null,
@@ -363,8 +402,8 @@ describe("App shortcuts", () => {
       mocks.pendingMeetingStartRequest = undefined;
       return true;
     });
-    resetActiveHermesProfileForTests();
-    setActiveHermesProfileName("default");
+    resetCurrentDataPartitionForTests();
+    setCurrentDataPartitionName("default");
     const first = note();
     const created = note({
       id: "note-2",
@@ -399,6 +438,23 @@ describe("App shortcuts", () => {
         { source: "system", ready: true, permissionState: "granted" },
       ],
     });
+    mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
+    mocks.getAgentSession.mockImplementation(async (sessionId: string) => {
+      const sessions = await mocks.listAgentSessions();
+      const found = sessions.find((candidate: AgentSessionDto) => candidate.id === sessionId);
+      if (!found) throw new Error("missing session");
+      return found;
+    });
+    mocks.createAgentSession.mockResolvedValue(agentSession("session-new", "New session"));
+    mocks.startAgentRun.mockImplementation(async (request) => ({
+      id: "run-companion",
+      sessionId: request.sessionId,
+      status: "running",
+      model: request.model,
+    }));
+    mocks.getLatestAgentRun.mockResolvedValue(null);
+    mocks.cancelAgentRun.mockResolvedValue(undefined);
+    mocks.listAgentSkills.mockResolvedValue([]);
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -421,18 +477,11 @@ describe("App shortcuts", () => {
     mocks.osAccountsLogout.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
     mocks.osAccountsUpgrade.mockResolvedValue(undefined);
-    mocks.ensureHermesBridgeSession.mockResolvedValue({});
-    mocks.hermesAgentCliAccess.mockResolvedValue({ enabled: false });
-    mocks.hermesBrowserAccess.mockResolvedValue({ enabled: false });
-    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
-    mocks.hermesBridgeStatus.mockResolvedValue({
-      running: false,
-    });
     mocks.agentOpenReady.mockResolvedValue(null);
     mocks.listAgentTasks.mockResolvedValue({ items: [] });
-    mocks.listHermesSessionMessages.mockResolvedValue([]);
-    mocks.listHermesSessions.mockResolvedValue([]);
-    mocks.listSessionProfiles.mockResolvedValue([]);
+    mocks.listAgentSessions.mockResolvedValue([]);
+    mocks.listSessionFolders.mockResolvedValue([]);
+    mocks.listSessionPartitions.mockResolvedValue([]);
     mocks.listVeniceModels.mockResolvedValue({
       mode: "generation",
       modelType: "text",
@@ -455,9 +504,6 @@ describe("App shortcuts", () => {
         consentedAtWeek: null,
         consentVersion: 1,
       },
-    });
-    mocks.startHermesBridge.mockResolvedValue({
-      running: false,
     });
     mocks.startPeriodicJuneUpdateChecks.mockReturnValue(vi.fn());
     mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
@@ -509,6 +555,621 @@ describe("App shortcuts", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("serves companion agent reads without opening the agent workspace", async () => {
+    const user = userEvent.setup();
+    mocks.listAgentSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        model: "auto",
+        safetyMode: "sandboxed",
+        workspacePath: "/tmp/session-companion",
+        source: "user",
+        createdAt: "2026-07-16T09:00:00.000Z",
+        updatedAt: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const payload = {
+      operationId: "operation-companion",
+      intent: { type: "agentSessionsList", data: { limit: 50 } },
+    };
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") handler({ payload });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-companion", {
+        type: "agentSessions",
+        data: {
+          items: [
+            {
+              id: "session-companion",
+              title: "Companion planning",
+              status: "completed",
+              updatedAt: "2026-07-16T10:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
+  });
+
+  it("pages companion agent messages backward from the newest turns", async () => {
+    mocks.listAgentSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        model: "auto",
+        safetyMode: "sandboxed",
+        workspacePath: "/tmp/session-companion",
+        source: "user",
+        createdAt: "2026-07-16T09:00:00.000Z",
+        updatedAt: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    mocks.listAgentItems.mockResolvedValue([
+      {
+        id: "message-1",
+        sessionId: "session-companion",
+        sequence: 1,
+        kind: "message",
+        role: "user",
+        text: "Oldest question",
+        status: "complete",
+        createdAt: "2026-07-16T10:01:00.000Z",
+      },
+      {
+        id: "message-2",
+        sessionId: "session-companion",
+        sequence: 2,
+        kind: "message",
+        role: "assistant",
+        text: "Recent answer",
+        status: "complete",
+        createdAt: "2026-07-16T10:02:00.000Z",
+      },
+      {
+        id: "message-3",
+        sessionId: "session-companion",
+        sequence: 3,
+        kind: "message",
+        role: "user",
+        text: "Newest question",
+        status: "complete",
+        createdAt: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const dispatch = (cursor?: string) => {
+      const payload = {
+        operationId: cursor ? "operation-older" : "operation-latest",
+        intent: {
+          type: "agentMessagesList",
+          data: {
+            storedSessionId: "session-companion",
+            limit: 2,
+            ...(cursor ? { cursor } : {}),
+          },
+        },
+      };
+      act(() => {
+        for (const [event, handler] of mocks.listen.mock.calls) {
+          if (event === "june://companion-request") handler({ payload });
+        }
+      });
+    };
+
+    dispatch();
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-latest", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({ id: "message-2", text: "Recent answer" }),
+            expect.objectContaining({ id: "message-3", text: "Newest question" }),
+          ],
+          nextCursor: "2",
+        },
+      }),
+    );
+
+    dispatch("2");
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-older", {
+        type: "agentMessages",
+        data: {
+          items: [expect.objectContaining({ id: "message-1", text: "Oldest question" })],
+        },
+      }),
+    );
+  });
+
+  it("opens the stored agent session requested by the companion", async () => {
+    const focusedSession = {
+      id: "session-companion",
+      title: "Companion planning",
+      status: "completed" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-companion",
+      source: "user" as const,
+      createdAt: "2026-07-16T09:00:00.000Z",
+      updatedAt: "2026-07-16T10:03:00.000Z",
+    };
+    mocks.listAgentSessions.mockResolvedValue([focusedSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: focusedSession.id, profile: "default" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-focus")?.({
+        payload: { agent: { storedSessionId: "session-companion" } },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
+  });
+
+  it("uses the target session model and safety mode for companion sends", async () => {
+    const unrestricted = {
+      ...agentSession("session-unrestricted", "Unrestricted session"),
+      model: "unrestricted-model",
+      safetyMode: "unrestricted" as const,
+    };
+    const sandboxed = {
+      ...agentSession("session-sandboxed", "Sandboxed session"),
+      model: "sandboxed-model",
+      safetyMode: "sandboxed" as const,
+    };
+    mocks.listAgentSessions.mockResolvedValue([unrestricted, sandboxed]);
+    mocks.getAgentSession.mockImplementation(async (sessionId: string) =>
+      sessionId === sandboxed.id ? sandboxed : unrestricted,
+    );
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-sandboxed-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: sandboxed.id,
+              message: "Keep this run sandboxed",
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: sandboxed.id,
+          model: sandboxed.model,
+          safetyMode: sandboxed.safetyMode,
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: sandboxed.id,
+        safetyMode: unrestricted.safetyMode,
+      }),
+    );
+    expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+      "operation-sandboxed-send",
+      {
+        type: "agentAccepted",
+        data: { storedSessionId: sandboxed.id },
+      },
+    );
+  });
+
+  it("prepares companion sends with current project context and clearing markers", async () => {
+    const session = agentSession("session-project-companion", "Project session");
+    const folder = {
+      id: "folder-companion",
+      name: "Private launch",
+      description: "Local project",
+      instructions: "Answer with the current launch constraints.",
+      memoryDisabled: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [folder],
+      notes: [note()],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listSessionFolders.mockResolvedValue([{ sessionId: session.id, folderId: folder.id }]);
+    mocks.listSessionPartitions.mockResolvedValue([{ sessionId: session.id, profile: "default" }]);
+    const firstApp = render(<App />);
+
+    await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-project-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: session.id, message: "What changed?" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          prompt: expect.stringContaining(
+            "instructions:\nAnswer with the current launch constraints.",
+          ),
+        }),
+      ),
+    );
+
+    firstApp.unmount();
+    mocks.listeners.clear();
+    mocks.startAgentRun.mockClear();
+    mocks.listSessionFolders.mockClear();
+    mocks.listSessionFolders.mockResolvedValue([]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-project-cleared-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: session.id, message: "What now?" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          prompt: expect.stringContaining(
+            "This session is no longer filed in a project. Previous project instructions no longer apply",
+          ),
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: expect.stringContaining("\n[/June project context]\n\nWhat now?"),
+      }),
+    );
+  });
+
+  it("creates companion-started sessions with the sandboxed session defaults", async () => {
+    const created = {
+      ...agentSession("session-created-by-companion", "Companion request"),
+      model: "open-software/auto",
+      safetyMode: "sandboxed" as const,
+    };
+    mocks.createAgentSession.mockResolvedValue(created);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-new-session-send",
+          intent: {
+            type: "agentSend",
+            data: { message: "Start a safe session" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.createAgentSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "open-software/auto",
+          safetyMode: "sandboxed",
+          profile: "default",
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: created.id,
+        model: created.model,
+        safetyMode: created.safetyMode,
+      }),
+    );
+  });
+
+  it("rejects a cached companion send after the active partition changes", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-stale-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: cached.id, message: "Cross the boundary" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-stale-send", {
+        type: "error",
+        data: {
+          code: "not_found",
+          message: "That agent session is no longer available.",
+          retryable: false,
+        },
+      }),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a cached companion cancellation after the active partition changes", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-stale-cancel",
+          intent: {
+            type: "agentCancel",
+            data: { storedSessionId: cached.id },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-stale-cancel",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a companion send when the active partition changes while skills load", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const skills = deferred<never[]>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.listAgentSkills.mockReturnValue(skills.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: cached.id, message: "Cross the boundary" },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.listAgentSkills).toHaveBeenCalled());
+
+    setCurrentDataPartitionName("partition-b");
+    skills.resolve([]);
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-send",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a companion cancellation when the active partition changes while the run loads", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const latestRun = deferred<{
+      id: string;
+      sessionId: string;
+      status: "running";
+      model: string;
+    }>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.getLatestAgentRun.mockReturnValue(latestRun.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-cancel",
+          intent: {
+            type: "agentCancel",
+            data: { storedSessionId: cached.id },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.getLatestAgentRun).toHaveBeenCalledWith(cached.id));
+
+    setCurrentDataPartitionName("partition-b");
+    latestRun.resolve({
+      id: "run-partition-a",
+      sessionId: cached.id,
+      status: "running",
+      model: "auto",
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-cancel",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("returns no companion messages when the active partition changes while items load", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const items =
+      deferred<
+        Array<{
+          id: string;
+          sessionId: string;
+          sequence: number;
+          kind: "message";
+          role: "assistant";
+          text: string;
+          status: "complete";
+          createdAt: string;
+        }>
+      >();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.listAgentItems.mockReturnValue(items.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-messages",
+          intent: {
+            type: "agentMessagesList",
+            data: { storedSessionId: cached.id, limit: 50 },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.listAgentItems).toHaveBeenCalledWith(cached.id));
+
+    setCurrentDataPartitionName("partition-b");
+    items.resolve([
+      {
+        id: "message-partition-a",
+        sessionId: cached.id,
+        sequence: 1,
+        kind: "message",
+        role: "assistant",
+        text: "Partition A secret",
+        status: "complete",
+        createdAt: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-messages",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.companionCompleteFrontendRequest).not.toHaveBeenCalledWith(
+      "operation-mid-await-messages",
+      expect.objectContaining({ type: "agentMessages" }),
+    );
+  });
+
+  it("ignores a cached companion focus target after the active partition changes", async () => {
+    const user = userEvent.setup();
+    const cached = agentSession("session-partition-a", "Partition A session");
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
+    await screen.findByRole("heading", { name: /Meeting notes/ });
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    setCurrentDataPartitionName("partition-b");
+    act(() => {
+      mocks.listeners.get("june://companion-focus")?.({
+        payload: { agent: { storedSessionId: cached.id } },
+      });
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("textbox", { name: "Message June" })).not.toBeInTheDocument(),
+    );
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {
@@ -610,120 +1271,6 @@ describe("App shortcuts", () => {
     );
   });
 
-  it("blocks paid composer and recording actions while funding is required", async () => {
-    const user = userEvent.setup();
-    const failedNote = note({
-      processingStatus: "failed",
-      lastError: "Network unreachable",
-      audio: {
-        id: "audio-1",
-        source: "microphone",
-        format: "wav",
-        durationMs: 1200,
-        sizeBytes: 2048,
-        checksum: "abc",
-        createdAt: now,
-      },
-    });
-    mocks.bootstrapApp.mockResolvedValue({
-      folders: [],
-      notes: [failedNote],
-      activeRecoveries: [],
-      providerConfigured: true,
-    });
-    mocks.getNote.mockResolvedValue(failedNote);
-    mocks.osAccountsStatus.mockResolvedValue({
-      signedIn: true,
-      configured: true,
-      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
-      balance: { credits: 0, usdMillis: 0 },
-      subscription: { subscribed: false },
-    });
-
-    render(<App />);
-
-    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-
-    const composer = await screen.findByRole("textbox", { name: "Message June" });
-    await user.type(composer, "Summarize my notes");
-    expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
-    expect(
-      screen.getAllByText("Your starter credits are used up. Upgrade to keep using June.").length,
-    ).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute(
-      "title",
-      "Add credits to send messages or generate images and videos.",
-    );
-    fireEvent.submit(document.querySelector(".agent-composer") as HTMLFormElement);
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
-
-    await user.click(screen.getByRole("button", { name: "Meeting notes" }));
-    await user.click(await screen.findByText("First note"));
-
-    expect(await screen.findByRole("button", { name: "Recording needs credits" })).toBeDisabled();
-    // The editor footer docks the same funding notice the composers use
-    // (plus the copy inside the sidebar chip's collapsed reveal).
-    expect(
-      screen.getAllByText("Your starter credits are used up. Upgrade to keep using June.").length,
-    ).toBeGreaterThan(1);
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
-    expect(screen.getByText(/Add credits before retrying note generation\./)).toBeInTheDocument();
-    expect(mocks.startRecording).not.toHaveBeenCalled();
-    expect(mocks.retryProcessing).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Ask June" }));
-    expect(screen.getByRole("button", { name: "Dictate" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Dictate" })).toHaveAttribute(
-      "title",
-      "Add credits to send messages or generate images and videos.",
-    );
-
-    await act(async () => {
-      mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({});
-    });
-    expect(mocks.startRecording).not.toHaveBeenCalled();
-  });
-
-  it("preserves a dictated agent prompt without dispatching it while funding is required", async () => {
-    mocks.hermesBridgeStatus.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.startHermesBridge.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.osAccountsStatus.mockResolvedValue({
-      signedIn: true,
-      configured: true,
-      user: { id: "usr_123", handle: "alex", email: "alex@example.com" },
-      balance: { credits: 0, usdMillis: 0 },
-      subscription: { subscribed: false },
-    });
-
-    render(<App />);
-
-    await waitFor(() => expect(mocks.listeners.has("dictation-event")).toBe(true));
-
-    await act(async () => {
-      mocks.listeners.get("dictation-event")?.({
-        payload: JSON.stringify({
-          type: "agent_session_prompt",
-          payload: { prompt: "Summarize the launch plan" },
-        }),
-      });
-    });
-
-    await waitFor(() =>
-      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
-        "Summarize the launch plan",
-      ),
-    );
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
-    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("prompt.submit", expect.anything());
-  });
-
   it("keeps recoverable audio available while funding blocks recovery", async () => {
     const user = userEvent.setup();
     mocks.bootstrapApp.mockResolvedValue({
@@ -787,170 +1334,6 @@ describe("App shortcuts", () => {
     }
   });
 
-  it("opens a report draft from the account menu while a session is active", async () => {
-    const user = userEvent.setup();
-    const activeSession = {
-      id: "session-1",
-      title: "Existing session",
-      preview: "Existing session preview",
-      last_active: now,
-    };
-
-    render(<App />);
-
-    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
-          detail: {
-            sessions: [activeSession],
-            selectedSessionId: undefined,
-            workingSessionIds: [],
-            waitingSessionIds: [],
-          },
-        }),
-      );
-    });
-
-    for (const [menuItem, chipLabel] of [
-      ["Report a bug", "Bug report"],
-      ["Send feedback", "Feedback"],
-      ["Request a feature", "Feature request"],
-    ] as const) {
-      await user.click(await screen.findByRole("button", { name: "Existing session" }));
-      expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
-
-      await user.click(screen.getByRole("button", { name: /account menu/i }));
-      await user.click(screen.getByRole("menuitem", { name: menuItem }));
-
-      expect(await screen.findByText(chipLabel)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Start session" })).toBeDisabled();
-      expect(mocks.gatewayRequest).not.toHaveBeenCalledWith("session.create", expect.anything());
-    }
-  });
-
-  it("keeps a newly started chat attached to its tab before sessions hydrate", async () => {
-    const restoreNavigator = stubNavigatorPlatform(
-      "MacIntel",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-    );
-    const user = userEvent.setup();
-    mocks.hermesBridgeStatus.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.startHermesBridge.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.listHermesSessions.mockImplementation(() => new Promise(() => undefined));
-
-    try {
-      render(<App />);
-
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
-
-      window.dispatchEvent(
-        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
-          detail: { prompt: "plan the release" },
-        }),
-      );
-
-      await waitFor(() =>
-        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-          session_id: "runtime-session-2",
-          text: "plan the release",
-        }),
-      );
-      await waitFor(() =>
-        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(0),
-      );
-
-      const chatTab = await screen.findByRole("tab", {
-        name: "plan the release",
-      });
-      expect(chatTab).toHaveAttribute("data-active", "true");
-
-      await user.click(screen.getByRole("button", { name: "New tab" }));
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
-
-      fireEvent.keyDown(window, { key: "1", metaKey: true });
-
-      await waitFor(() =>
-        expect(screen.getAllByText("plan the release").length).toBeGreaterThan(0),
-      );
-      expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
-    } finally {
-      restoreNavigator();
-    }
-  });
-
-  it("fills restored session tab metadata from a follow-up before sessions hydrate", async () => {
-    const restoreNavigator = stubNavigatorPlatform(
-      "MacIntel",
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-    );
-    const user = userEvent.setup();
-    mocks.hermesBridgeStatus.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.startHermesBridge.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
-    mocks.listHermesSessions.mockImplementation(() => new Promise(() => undefined));
-
-    try {
-      render(<App />);
-
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
-
-      act(() => {
-        window.dispatchEvent(
-          new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
-            detail: {
-              sessions: [],
-              selectedSessionId: "session-1",
-              workingSessionIds: [],
-            },
-          }),
-        );
-      });
-
-      await waitFor(() =>
-        expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument(),
-      );
-
-      await user.click(screen.getByRole("button", { name: "New tab" }));
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
-
-      fireEvent.keyDown(window, { key: "1", metaKey: true });
-
-      const composer = await screen.findByRole("textbox");
-      await user.type(composer, "triage the launch checklist");
-      const send = screen.getByRole("button", { name: "Send message" });
-      await waitFor(() => expect(send).not.toBeDisabled());
-      await user.click(send);
-
-      await waitFor(() =>
-        expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
-          session_id: "runtime-session-2",
-          text: "triage the launch checklist",
-        }),
-      );
-      await waitFor(() =>
-        expect(screen.getByRole("tab", { name: "triage the launch checklist" })).toHaveAttribute(
-          "data-active",
-          "true",
-        ),
-      );
-    } finally {
-      restoreNavigator();
-    }
-  });
-
   it("keeps each agent tab tied to its selected session", async () => {
     const restoreNavigator = stubNavigatorPlatform(
       "MacIntel",
@@ -961,7 +1344,7 @@ describe("App shortcuts", () => {
     try {
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+      expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
 
       const firstSession = {
         id: "session-1",
@@ -978,6 +1361,9 @@ describe("App shortcuts", () => {
               workingSessionIds: [],
             },
           }),
+        );
+        window.dispatchEvent(
+          new CustomEvent(AGENT_OPEN_EVENT, { detail: { session: firstSession } }),
         );
       });
 
@@ -1108,6 +1494,76 @@ describe("App shortcuts", () => {
     expect(
       await screen.findByRole("heading", { name: "General" }, { timeout: 10_000 }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps every companion surface dark until the experiment is enabled", async () => {
+    mocks.companionPairingEnabled = false;
+    const disabled = render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
+    expect(mocks.listeners.has("june://companion-focus")).toBe(false);
+    expect(mocks.listeners.has("june://companion-request")).toBe(false);
+    expect(companionFrontendConsumerAvailable()).toBe(false);
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          method: "message.delta",
+          sessionId: "session-companion",
+          data: { delta: "Hidden companion update" },
+        },
+      });
+    });
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
+    expect(
+      appSettingsTabsForCompanionPairing(false).some((tab) => tab.id === "linked-devices"),
+    ).toBe(false);
+    expect(settingsTabsForCompanionPairing(false).some((tab) => tab.id === "linked-devices")).toBe(
+      false,
+    );
+
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    await screen.findByRole("heading", { name: "General" });
+    expect(screen.queryByRole("button", { name: "Linked devices" })).not.toBeInTheDocument();
+
+    disabled.unmount();
+    mocks.listeners.clear();
+    mocks.listen.mockClear();
+    mocks.companionPairingEnabled = true;
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    expect(mocks.listeners.has("june://companion-request")).toBe(true);
+    await waitFor(() => expect(companionFrontendConsumerAvailable()).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          method: "message.delta",
+          sessionId: "session-companion",
+          data: { delta: "Visible companion update" },
+        },
+      });
+    });
+    expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+      type: "delta",
+      data: {
+        storedSessionId: "session-companion",
+        text: "Visible companion update",
+      },
+    });
+    expect(
+      appSettingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices"),
+    ).toBe(true);
+    expect(settingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices")).toBe(
+      true,
+    );
+
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    expect(await screen.findByRole("button", { name: "Linked devices" })).toBeInTheDocument();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
@@ -1500,7 +1956,7 @@ describe("App shortcuts", () => {
       last_active: now,
     };
     window.localStorage.setItem("june:agent:last-open-session", staleSession.id);
-    mocks.listHermesSessions.mockResolvedValue([staleSession]);
+    mocks.listAgentSessions.mockResolvedValue([staleSession]);
     const sessionStorageSetItem = window.sessionStorage.setItem.bind(window.sessionStorage);
     const sessionStorageSetItemSpy = vi
       .spyOn(window.sessionStorage, "setItem")
@@ -1531,7 +1987,6 @@ describe("App shortcuts", () => {
       expect(screen.queryByRole("button", { name: "New note" })).not.toBeInTheDocument();
       expect(screen.queryByDisplayValue("First note")).not.toBeInTheDocument();
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-      expect(mocks.listHermesSessionMessages).not.toHaveBeenCalledWith(staleSession.id);
     } finally {
       sessionStorageSetItemSpy.mockRestore();
       window.localStorage.removeItem("june:agent:last-open-session");
@@ -1593,8 +2048,8 @@ describe("App shortcuts", () => {
     await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
-    // Clearing the gate lands on a fresh agent session, not a new note.
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    // Clearing the gate lands in the persistent June conversation, not a new note.
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
 
@@ -1656,7 +2111,7 @@ describe("App shortcuts", () => {
       subscription: { subscribed: true, status: "active" },
     });
 
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
   });
 
   it("bypasses account gates in dev when account status is unavailable", async () => {
@@ -1664,38 +2119,40 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
   });
 
-  it("refreshes profile-scoped chat sessions when the active profile switches", async () => {
+  it("refreshes partition-scoped chat sessions when the data partition switches", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
-    const callsBeforeSwitch = mocks.listHermesSessions.mock.calls.length;
+    await waitFor(() => expect(mocks.listAgentSessions).toHaveBeenCalled());
+    const callsBeforeSwitch = mocks.listAgentSessions.mock.calls.length;
 
     act(() => {
-      setActiveHermesProfileName("research");
+      setCurrentDataPartitionName("research");
     });
 
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch),
+      expect(mocks.listAgentSessions.mock.calls.length).toBeGreaterThan(callsBeforeSwitch),
     );
   });
 
-  it("exposes no sessions before the profile mapping has loaded successfully", async () => {
+  it("exposes no sessions before the data partition mapping has loaded successfully", async () => {
     const user = userEvent.setup();
     const privateSession = {
-      id: "profile-a-session",
-      title: "Named profile secret",
-      preview: "Private profile conversation",
+      id: "partition-a-session",
+      title: "Named data partition secret",
+      preview: "Private data partition conversation",
       last_active: now,
     };
-    mocks.listSessionProfiles.mockRejectedValue(new Error("session profile map unavailable"));
+    mocks.listSessionPartitions.mockRejectedValue(
+      new Error("session data partition map unavailable"),
+    );
 
     render(<App />);
-    await waitFor(() => expect(mocks.listSessionProfiles).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listSessionPartitions).toHaveBeenCalled());
 
     await act(async () => {
       window.dispatchEvent(
@@ -1715,32 +2172,32 @@ describe("App shortcuts", () => {
     expect(screen.queryByText(privateSession.title)).toBeNull();
   });
 
-  it("invalidates note tabs from the previous profile", async () => {
+  it("invalidates note tabs from the previous data partition", async () => {
     const user = userEvent.setup();
-    const profileANote = note({ id: "note-a", title: "Profile A private note" });
-    const profileBNote = note({ id: "note-b", title: "Profile B note" });
-    mocks.createNote.mockResolvedValue(profileANote);
+    const partitionANote = note({ id: "note-a", title: "Data partition A private note" });
+    const partitionBNote = note({ id: "note-b", title: "Data partition B note" });
+    mocks.createNote.mockResolvedValue(partitionANote);
 
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
     fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Profile A private note" })).toHaveAttribute(
+      expect(screen.getByRole("tab", { name: "Data partition A private note" })).toHaveAttribute(
         "data-active",
         "true",
       ),
     );
     await user.click(screen.getByRole("button", { name: "New tab" }));
 
-    mocks.listNotes.mockResolvedValue({ items: [profileBNote] });
+    mocks.listNotes.mockResolvedValue({ items: [partitionBNote] });
     mocks.listFolders.mockResolvedValue([]);
     mocks.getNote.mockImplementation(async (noteId: string) =>
-      noteId === profileBNote.id ? profileBNote : profileANote,
+      noteId === partitionBNote.id ? partitionBNote : partitionANote,
     );
-    act(() => setActiveHermesProfileName("profile-b"));
+    act(() => setCurrentDataPartitionName("partition-b"));
 
-    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(profileBNote.id));
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith(partitionBNote.id));
     mocks.getNote.mockClear();
 
     fireEvent.keyDown(window, { key: "1", metaKey: true });
@@ -1748,14 +2205,14 @@ describe("App shortcuts", () => {
     const invalidatedTab = await screen.findByRole("tab", { name: "Notes" });
     await waitFor(() => expect(invalidatedTab).toHaveAttribute("data-active", "true"));
     expect(mocks.getNote).not.toHaveBeenCalled();
-    expect(screen.queryByText("Profile A private note")).toBeNull();
+    expect(screen.queryByText("Data partition A private note")).toBeNull();
   });
 
-  it("abandons pending project intent when the active profile switches", async () => {
+  it("abandons pending project intent when the data partition switches", async () => {
     const user = userEvent.setup();
     const folder = {
       id: "folder-a",
-      name: "Profile A project",
+      name: "Data partition A project",
       memoryDisabled: false,
       createdAt: now,
       updatedAt: now,
@@ -1780,15 +2237,15 @@ describe("App shortcuts", () => {
 
     mocks.listNotes.mockResolvedValue({ items: [] });
     mocks.listFolders.mockResolvedValue([]);
-    act(() => setActiveHermesProfileName("profile-b"));
+    act(() => setCurrentDataPartitionName("partition-b"));
     await waitFor(() => expect(mocks.listFolders).toHaveBeenCalled());
 
     act(() => {
       window.dispatchEvent(
         new CustomEvent(AGENT_SESSIONS_CHANGED_EVENT, {
           detail: {
-            sessions: [{ id: "profile-b-session", title: "Profile B session" }],
-            selectedSessionId: "profile-b-session",
+            sessions: [{ id: "partition-b-session", title: "Data partition B session" }],
+            selectedSessionId: "partition-b-session",
             workingSessionIds: [],
           },
         }),
@@ -1801,34 +2258,27 @@ describe("App shortcuts", () => {
     expect(mocks.assignSessionToFolder).not.toHaveBeenCalled();
   });
 
-  it("refreshes visible data when rows move into the already-active profile", async () => {
+  it("refreshes visible data when rows move into the current data partition", async () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.listAgentSessions).toHaveBeenCalled());
     const noteCallsBeforeMove = mocks.listNotes.mock.calls.length;
-    const sessionCallsBeforeMove = mocks.listHermesSessions.mock.calls.length;
+    const sessionCallsBeforeMove = mocks.listAgentSessions.mock.calls.length;
 
     act(() => {
-      dispatchProfileDataChanged("default");
+      dispatchDataPartitionChanged("default");
     });
 
     await waitFor(() =>
       expect(mocks.listNotes.mock.calls.length).toBeGreaterThan(noteCallsBeforeMove),
     );
     await waitFor(() =>
-      expect(mocks.listHermesSessions.mock.calls.length).toBeGreaterThan(sessionCallsBeforeMove),
+      expect(mocks.listAgentSessions.mock.calls.length).toBeGreaterThan(sessionCallsBeforeMove),
     );
   });
 
   it("opens the chat for a notification click carrying a session id", async () => {
-    mocks.listHermesSessions.mockResolvedValue([
-      {
-        id: "session-9",
-        title: "Notified session",
-        preview: "Notified session preview",
-        last_active: now,
-      },
-    ]);
+    mocks.listAgentSessions.mockResolvedValue([agentSession("session-9", "Notified session")]);
 
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
@@ -1844,7 +2294,7 @@ describe("App shortcuts", () => {
   });
 
   it("falls back to the agent view when the notified chat is missing", async () => {
-    mocks.listHermesSessions.mockResolvedValue([]);
+    mocks.listAgentSessions.mockResolvedValue([]);
 
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
@@ -1860,34 +2310,22 @@ describe("App shortcuts", () => {
 
   it("navigates to the chat of a notification clicked before the webview was ready", async () => {
     mocks.agentOpenReady.mockResolvedValue("session-9");
-    mocks.listHermesSessions.mockResolvedValue([
-      {
-        id: "session-9",
-        title: "Notified session",
-        preview: "Notified session preview",
-        last_active: now,
-      },
-    ]);
+    mocks.listAgentSessions.mockResolvedValue([agentSession("session-9", "Notified session")]);
 
     render(<App />);
 
-    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument(),
+    );
   });
 
-  it("retries the notified-chat lookup while the Hermes bridge is still starting", async () => {
+  it("retries the notified-chat lookup while the agent runtime is still starting", async () => {
     mocks.agentOpenReady.mockResolvedValue("session-9");
     let sessionListCalls = 0;
-    mocks.listHermesSessions.mockImplementation(async () => {
+    mocks.listAgentSessions.mockImplementation(async () => {
       sessionListCalls += 1;
-      if (sessionListCalls <= 2) throw new Error("hermes_bridge_not_running");
-      return [
-        {
-          id: "session-9",
-          title: "Notified session",
-          preview: "Notified session preview",
-          last_active: now,
-        },
-      ];
+      if (sessionListCalls <= 2) throw new Error("agent_runtime_not_running");
+      return [agentSession("session-9", "Notified session")];
     });
 
     render(<App />);

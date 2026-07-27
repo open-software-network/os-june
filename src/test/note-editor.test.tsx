@@ -1062,7 +1062,14 @@ describe("NoteEditor", () => {
         })}
       />,
     );
-    await user.type(editor, " written live");
+    const manualText = editor.querySelector("p")?.firstChild;
+    if (!manualText) throw new Error("Expected the focused manual note text");
+    const caret = document.createRange();
+    caret.setStart(manualText, manualText.textContent?.length ?? 0);
+    caret.collapse(true);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(caret);
+    await user.type(editor, " written live", { skipClick: true });
     fireEvent.blur(editor);
 
     expect(onContentChange).toHaveBeenLastCalledWith(

@@ -121,7 +121,7 @@ describe("relaunchJune", () => {
     await relaunchJune();
 
     // Not the plugin `relaunch()`: the command runs the dictation-helper and
-    // Hermes teardown before restarting so the relaunched instance is not
+    // agent runtime teardown before restarting so the relaunched instance is not
     // blocked by an orphaned helper (JUN-338).
     expect(invokeMock).toHaveBeenCalledWith("relaunch_for_update");
   });

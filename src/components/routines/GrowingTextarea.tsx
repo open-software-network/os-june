@@ -13,7 +13,7 @@ export function GrowingTextarea(props: TextareaHTMLAttributes<HTMLTextAreaElemen
     // +2 covers the top/bottom border so the last line never clips into a
     // scrollbar flicker.
     el.style.height = `${el.scrollHeight + 2}px`;
-  }, [props.value]);
+  });
 
   return <textarea ref={ref} rows={1} {...props} />;
 }

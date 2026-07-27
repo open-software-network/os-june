@@ -1,23 +1,23 @@
-import type { HermesSessionInfo } from "../../lib/tauri";
+import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 
 export type SidebarSessionLists = {
-  pinned: HermesSessionInfo[];
-  visible: HermesSessionInfo[];
-  completed: HermesSessionInfo[];
+  pinned: AgentSessionDto[];
+  visible: AgentSessionDto[];
+  completed: AgentSessionDto[];
   pinnedTotal: number;
   visibleTotal: number;
   completedTotal: number;
 };
 
 export function buildSidebarSessionLists(
-  sessions: readonly HermesSessionInfo[],
+  sessions: readonly AgentSessionDto[],
   pinnedSessionIds: ReadonlySet<string>,
   completedSessionIds: Readonly<Record<string, string>>,
   limit: number,
 ): SidebarSessionLists {
-  const pinned: HermesSessionInfo[] = [];
-  const visible: HermesSessionInfo[] = [];
-  const completed: HermesSessionInfo[] = [];
+  const pinned: AgentSessionDto[] = [];
+  const visible: AgentSessionDto[] = [];
+  const completed: AgentSessionDto[] = [];
 
   for (const session of sessions) {
     if (completedSessionIds[session.id]) {

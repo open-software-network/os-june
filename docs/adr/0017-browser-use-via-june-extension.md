@@ -136,3 +136,5 @@ the opt-in retains the credential only for authentication and refusal, removes
 the server from rendered configuration, and makes the broker return
 `browser_routine_not_opted_in`. Attended credentials remain a separate class
 and never consult routine opt-ins.
+
+2026-07-27 addendum: ADR-0040 supersedes this ADR's `june_browser` MCP-server integration shape; the Browser use and Computer use product scope and broker policies remain binding.

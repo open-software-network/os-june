@@ -4,8 +4,13 @@ FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92e
 RUN cargo install cargo-chef --locked --version 0.1.77
 WORKDIR /app
 
+# The build context is the repository root: june-api depends on the shared
+# companion wire-protocol crate that lives outside this directory, so the
+# workspace and that crate are copied to the exact paths the Cargo path
+# dependency (../../../crates/june-companion-protocol) resolves to.
 FROM chef AS planner
-COPY . .
+COPY june-api/ .
+COPY crates/june-companion-protocol /crates/june-companion-protocol
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -14,8 +19,9 @@ FROM chef AS builder
 ENV CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/app=. --remap-path-prefix=/usr/local/cargo=/cargo"
 COPY --from=planner /app/recipe.json recipe.json
+COPY crates/june-companion-protocol /crates/june-companion-protocol
 RUN cargo chef cook --release --locked --recipe-path recipe.json
-COPY . .
+COPY june-api/ .
 RUN cargo build --release --locked --bin june
 
 FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
@@ -25,7 +31,7 @@ RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin june
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
 COPY --from=builder /app/target/release/june /usr/local/bin/june
-COPY config.toml /app/config.toml
+COPY june-api/config.toml /app/config.toml
 # Source commit stamped into the runtime env so /verify can report which
 # public commit this image was built from. Build-arg only: the same commit
 # always passes the same value, so the image digest stays reproducible, and

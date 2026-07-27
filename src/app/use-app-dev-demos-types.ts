@@ -1,7 +1,7 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type LiveTranscriptEventDto } from "../lib/tauri";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { LiveTranscriptEventDto } from "../lib/tauri";
 import type { RecordingStatusDto } from "../lib/tauri";
-import { type UpdateInstallProgress } from "./update-decision";
+import type { UpdateInstallProgress } from "./update-decision";
 import type { NotesAction } from "./state/app-state";
 import type { JuneUpdate } from "../lib/updater";
 import type { UpdatePromptPayload } from "./update-decision";

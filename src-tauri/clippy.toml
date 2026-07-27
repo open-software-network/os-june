@@ -4,7 +4,7 @@
 #     take several parameters plus injected State/AppHandle.
 #   - the std::env disallowed-methods ban is intentionally omitted: unlike
 #     june-api (typed config only), the desktop shell reads and sets process
-#     env at startup (JUNE_API_URL, OS_ACCOUNTS_*, spawning the Hermes runtime).
+#     env at startup (JUNE_API_URL, OS_ACCOUNTS_*, spawning native helpers).
 msrv = "1.80.0"
 cognitive-complexity-threshold = 30
 too-many-arguments-threshold = 8

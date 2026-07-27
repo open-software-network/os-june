@@ -33,7 +33,7 @@ const UNIT_OPTIONS = [
 /** Structured schedule editing for routines: one row where the cadence
  * select swaps its companion controls inline. Presets cover the schedules
  * people actually set (a clock time daily, on weekdays, or weekly, plus
- * simple intervals); Custom accepts anything Hermes parses and is where
+ * simple intervals); Custom accepts any preserved schedule expression and is where
  * un-presentable existing schedules land untouched. */
 export function SchedulePicker({
   draft,

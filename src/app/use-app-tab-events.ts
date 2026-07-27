@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef } from "react";
 import { NOTE_CALENDAR_CONTEXT_UPDATED_EVENT } from "../lib/tauri";
 import { isPrimaryShortcut } from "../lib/platform";
-import { getActiveHermesProfileName } from "../lib/active-hermes-profile";
+import { getCurrentDataPartitionName } from "../lib/data-partition";
 import { CLOSE_TAB_EVENT } from "../lib/menu-bar";
 import type { NoteDto } from "../lib/tauri";
 import type { UseAppTabEventsDependencies } from "./use-app-tab-events-types";
@@ -12,7 +12,7 @@ export function useAppTabEvents(dependencies: UseAppTabEventsDependencies) {
     activateTab,
     activeTabId,
     activeTabIdRef,
-    calendarContextNoteProfilesRef,
+    calendarContextNotePartitionsRef,
     calendarContextNoteUpdatesRef,
     closeTab,
     cycleTab,
@@ -53,9 +53,9 @@ export function useAppTabEvents(dependencies: UseAppTabEventsDependencies) {
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<NoteDto>(NOTE_CALENDAR_CONTEXT_UPDATED_EVENT, (event) => {
-      const noteProfile = calendarContextNoteProfilesRef.current.get(event.payload.id);
-      calendarContextNoteProfilesRef.current.delete(event.payload.id);
-      if (noteProfile !== getActiveHermesProfileName()) return;
+      const notePartition = calendarContextNotePartitionsRef.current.get(event.payload.id);
+      calendarContextNotePartitionsRef.current.delete(event.payload.id);
+      if (notePartition !== getCurrentDataPartitionName()) return;
       if (pendingCalendarContextAdoptionsRef.current.delete(event.payload.id)) {
         calendarContextNoteUpdatesRef.current.set(event.payload.id, event.payload);
       }

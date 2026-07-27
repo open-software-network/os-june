@@ -4,6 +4,7 @@ import AppKit
 import Carbon
 import CoreMedia
 import CoreGraphics
+import Darwin
 import SoundAnalysis
 
 struct HelperEvent: Encodable {
@@ -156,6 +157,55 @@ final class AccessibilityTrustMonitor {
         }
         lastTrusted = trusted
         emit("permission_status", permissionPayload())
+    }
+}
+
+/// Makes the helper self-terminating if the June process that spawned it dies.
+///
+/// The Rust shutdown coordinator normally sends an explicit shutdown command,
+/// but macOS can finalize an application through paths where only stdio closure
+/// reaches the helper. A pipe write descriptor inherited by another child can
+/// delay that EOF indefinitely, leaving the global event tap alive after June
+/// has exited. Rust passes the owning pid explicitly so the helper still knows
+/// what to watch even if June dies before Swift finishes initializing.
+final class ParentProcessMonitor {
+    static let shared = ParentProcessMonitor()
+
+    private let ownerPID: pid_t = {
+        guard
+            let raw = ProcessInfo.processInfo.environment["JUNE_OWNER_PID"],
+            let parsed = Int32(raw),
+            parsed > 1
+        else {
+            return getppid()
+        }
+        return parsed
+    }()
+    private var timer: DispatchSourceTimer?
+    private var didObserveOwnerExit = false
+
+    private init() {}
+
+    func start(onOwnerExit: @escaping () -> Void) {
+        guard ownerPID > 1 else {
+            return
+        }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
+        timer.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.didObserveOwnerExit else {
+                return
+            }
+            guard getppid() != self.ownerPID || kill(self.ownerPID, 0) != 0 else {
+                return
+            }
+            self.didObserveOwnerExit = true
+            self.timer?.cancel()
+            self.timer = nil
+            onOwnerExit()
+        }
+        self.timer = timer
+        timer.resume()
     }
 }
 
@@ -2499,6 +2549,9 @@ emit("ready")
 ShortcutKeyMonitor.shared.start()
 FocusTargetController.shared.start()
 AccessibilityTrustMonitor.shared.start()
+ParentProcessMonitor.shared.start {
+    dictation.shutdown()
+}
 dictation.emitDiagnostics()
 
 Thread.detachNewThread {
