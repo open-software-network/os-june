@@ -66,17 +66,42 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
       }
     }
 
+    function drainQueuedNotification() {
+      void agentOpenReady()
+        .then((storedSessionId) => {
+          if (!aborted && storedSessionId) {
+            void openAgentSessionByStoredId(storedSessionId);
+          }
+        })
+        .catch(() => {});
+    }
+
+    async function openNotificationSession(deliveredStoredSessionId: string) {
+      let storedSessionId = deliveredStoredSessionId;
+      try {
+        storedSessionId = (await agentOpenReady()) ?? deliveredStoredSessionId;
+      } catch {
+        // The event itself is authoritative when the queue handshake fails.
+      }
+      if (!aborted) await openAgentSessionByStoredId(storedSessionId);
+    }
+
     function handleOpenPayload(payload?: AgentOpenPayload) {
       if (payload?.session) {
         openAgentWorkspace(payload.session);
         return;
       }
-      const storedSessionId = payload?.storedSessionId ?? payload?.sessionId;
-      if (storedSessionId) {
-        void openAgentSessionByStoredId(storedSessionId);
+      if (payload?.storedSessionId) {
+        // Agent HUD opens are already authoritative and must not consume a
+        // notification click that happened to queue at the same time.
+        void openAgentSessionByStoredId(payload.storedSessionId);
+        return;
+      }
+      if (payload?.sessionId) {
         // The backend keeps the clicked session queued in case the emit
-        // raced a webview reload; this event was received, so drain it.
-        void agentOpenReady().catch(() => {});
+        // raced a webview reload. Acknowledge notification-originated events
+        // first so a newer queued click wins deterministically.
+        void openNotificationSession(payload.sessionId);
         return;
       }
       openAgentWorkspace(undefined);
@@ -97,11 +122,7 @@ export function useAppExternalEvents(dependencies: UseAppExternalEventsDependenc
 
     // Listeners are registered; drain a notification click that launched the
     // app before the webview could hear the open event.
-    void agentOpenReady()
-      .then((storedSessionId) => {
-        if (!aborted && storedSessionId) void openAgentSessionByStoredId(storedSessionId);
-      })
-      .catch(() => {});
+    drainQueuedNotification();
 
     return () => {
       aborted = true;
