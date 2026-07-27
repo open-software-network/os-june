@@ -328,7 +328,12 @@ describe("June Home", () => {
     );
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Research those apples in France again", [prior]),
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Can we continue chatting about something else?", [
+        prior,
+      ]),
+    ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
     ).toBe(true);
@@ -455,6 +460,26 @@ describe("June Home", () => {
         ],
       ),
     ).toBe(false);
+    const priorWineTask = {
+      id: "home-task-wine-replacement",
+      title: "Wine task",
+      prompt: "Research those wines.",
+      status: "running" as const,
+    };
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine task", prompt: "Summarize those wines." },
+        "Don't research those wines; summarize them",
+        [priorWineTask],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine task", prompt: "Summarize those wines." },
+        "Don't research those wines; those wines are expensive",
+        [priorWineTask],
+      ),
+    ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Wine research", prompt: "Research wines in Italy." },

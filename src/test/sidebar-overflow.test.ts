@@ -5,6 +5,7 @@ import {
   sidebarContextMenuGeometryFromStyles,
 } from "../components/sidebar/sidebar-context-menu";
 import appCss from "../styles/app.css?raw";
+import tokensCss from "../styles/tokens.css?raw";
 
 function cssRuleFor(selector: string) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -33,6 +34,9 @@ describe("sidebar overflow containment", () => {
     expect(cssRuleFor(".sidebar-agent-section")).toContain("overflow: hidden;");
     expect(cssRuleFor(".agent-sidebar-row .note-row-main")).toContain(
       "min-height: var(--control-sm);",
+    );
+    expect(tokensCss).toMatch(
+      /var\(--sidebar-section-title-h\)\s*\+\s*var\(--sp-1\)\s*\+\s*var\(--control-sm\)/,
     );
   });
 

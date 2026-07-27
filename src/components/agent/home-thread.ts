@@ -393,6 +393,32 @@ const HOME_TASK_POSITIVE_NEGATION_EXCEPTION = /\b(?:do not|don't|never)\s+forget
 const HOME_TASK_REPEAT_REQUEST = /\b(?:again|continue|redo|repeat|resume)\b/i;
 const HOME_TASK_CONTEXTUAL_REQUEST =
   /\b(?:do (?:it|that|this|the same)|one more|same for|start (?:it|that|this)|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_REPLACEMENT_LEADING_WORDS = new Set([
+  "a",
+  "also",
+  "an",
+  "and",
+  "can",
+  "could",
+  "instead",
+  "it",
+  "just",
+  "please",
+  "that",
+  "the",
+  "them",
+  "these",
+  "then",
+  "this",
+  "those",
+  "will",
+  "would",
+  "you",
+]);
+
+function normalizedHomeTaskWord(word: string): string {
+  return word.length > 3 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word;
+}
 
 function homeTaskGroundingTokens(value: string): Set<string> {
   return new Set(
@@ -400,11 +426,7 @@ function homeTaskGroundingTokens(value: string): Set<string> {
       .normalize("NFKC")
       .toLocaleLowerCase()
       .match(/[\p{L}\p{N}]+/gu)
-      ?.map((token) =>
-        token.length > 3 && token.endsWith("s") && !token.endsWith("ss")
-          ? token.slice(0, -1)
-          : token,
-      )
+      ?.map(normalizedHomeTaskWord)
       .filter((token) => token.length >= 2 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
   );
 }
@@ -462,6 +484,57 @@ function homeTaskSharesLatestGrounding(task: JuneHomeTaskRequest, latestMessage:
   return [...homeTaskGroundingTokens(latestMessage)].some((token) => taskTokens.has(token));
 }
 
+function homeTaskHasPositiveReplacementAfterNegation(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  matchingHandoffs: HomeTaskHandoff[],
+): boolean {
+  const taskWords = new Set(
+    normalizedHomeTaskIntent(`${task.title} ${task.prompt}`)
+      .toLocaleLowerCase()
+      .split(" ")
+      .map(normalizedHomeTaskWord),
+  );
+  const priorGrounding = matchingHandoffs.map((handoff) =>
+    homeTaskGroundingTokens(`${handoff.title} ${handoff.prompt}`),
+  );
+  const clauses = latestMessage
+    .normalize("NFKC")
+    .replace(/[’‘]/g, "'")
+    .replace(/\b(do not|don't|never),\s*please,\s*/giu, "$1 ")
+    .split(/(?:[;,]|\bbut\b|\binstead\b|\bthen\b)/iu);
+  let sawNegatedClause = false;
+
+  for (const clause of clauses) {
+    const intentText = normalizedHomeTaskIntent(clause).toLocaleLowerCase();
+    if (!intentText) continue;
+    if (
+      HOME_TASK_REPEAT_NEGATION.test(intentText) ||
+      HOME_TASK_CONTEXTUAL_NEGATION.test(intentText) ||
+      HOME_TASK_ACTION_NEGATION.test(intentText)
+    ) {
+      sawNegatedClause = true;
+      continue;
+    }
+    if (!sawNegatedClause) continue;
+    const leadingWordCandidate = intentText
+      .split(" ")
+      .find((word) => !HOME_TASK_REPLACEMENT_LEADING_WORDS.has(word));
+    const leadingWord = leadingWordCandidate
+      ? normalizedHomeTaskWord(leadingWordCandidate)
+      : undefined;
+    if (
+      leadingWord &&
+      taskWords.has(leadingWord) &&
+      priorGrounding.every((tokens) => !tokens.has(leadingWord))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function isHomeTaskReplayWithoutNewIntent(
   task: JuneHomeTaskRequest,
   latestMessage: string,
@@ -477,11 +550,14 @@ export function isHomeTaskReplayWithoutNewIntent(
   const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
   if (grounding.taskUsesNovelGrounding) return false;
   if (HOME_TASK_POSITIVE_NEGATION_EXCEPTION.test(intentText)) return false;
+  if (homeTaskHasPositiveReplacementAfterNegation(task, latestMessage, matchingHandoffs)) {
+    return false;
+  }
   if (negatesRepeat || negatesContext || negatesAction) return true;
+  if (grounding.hasNovelGrounding) return true;
   if (HOME_TASK_REPEAT_REQUEST.test(intentText) || HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)) {
     return false;
   }
-  if (grounding.hasNovelGrounding) return true;
   return !homeTaskSharesLatestGrounding(task, latestMessage);
 }
 
