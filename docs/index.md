@@ -49,6 +49,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - June's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
 - [adr/0038](adr/0038-june-owned-openai-agents-runtime.md) - June owns the local agent harness, persistence, tools, approvals, and stdio protocol on top of the OpenAI Agents SDK
 - [adr/0039](adr/0039-june-owned-routines-and-mcp.md) - June owns routine scheduling and user-configured MCP transport, persistence, safety, and migration
+- [adr/0040](adr/0040-plugin-capabilities-as-host-tools.md) - June-owned plugin capabilities are in-loop host tools (brokered helpers for risky engines), never June-managed MCP servers
 
 ## Enforceable rules (spec/)
 
