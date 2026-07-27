@@ -307,6 +307,20 @@ describe("June Home", () => {
     ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
+        { title: "Denver weather", prompt: "What is the weather in Denver?" },
+        "What is the weather in Denver?",
+        [
+          {
+            id: "home-task-denver-weather",
+            title: "Denver weather",
+            prompt: "What is the weather in Denver?",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
         { title: "Apple research Mexico", prompt: "Research apples in Mexico." },
         "Hey June, look into Mexican apple farming",
         [

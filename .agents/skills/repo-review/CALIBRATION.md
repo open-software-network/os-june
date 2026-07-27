@@ -191,3 +191,4 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #985 submitted-scroll follow-up | Standards (final) | 0 | — | clean on the explicit user-submit scroll signal, tests, terminology, and the formatting-only CI repair |
 | #985 submitted-scroll follow-up | Spec (final) | 1 | 0 | implementation aligned; the sole finding incorrectly required live browser metrics to be duplicated in the unit test, while the recorded walkthrough proved 1,281 px to 0 px and the test deterministically proved the scroll request |
 | #985 submitted-scroll follow-up | Adversarial (final) | 0 | — | approved after tracing queued, ordinary, new-session, and Home submit paths plus navigation and missing-scroller behavior |
+| #985 Codex exact-head review | Codex (bot) | 2 | 2 | caught active Sessions losing all space before Completed in short windows and repeated current-information requests being rejected as stale Home task replays; both received focused regressions |

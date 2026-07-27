@@ -9866,9 +9866,12 @@ button.agent-user-attachment:hover {
   flex: 0 0 auto;
 }
 
-/* A flexible section may resolve shorter than its title and scrollport. Clip
- * that internal overflow so it cannot paint through Completed or the footer. */
+/* Keep the active list's title and first row available before Completed claims
+ * space. Clip any remaining internal overflow so it cannot paint through the
+ * lower sections or footer. */
 .sidebar-agent-section {
+  flex: 1 0 var(--sidebar-active-section-min-h);
+  min-height: var(--sidebar-active-section-min-h);
   overflow: hidden;
 }
 

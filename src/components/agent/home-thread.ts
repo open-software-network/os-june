@@ -380,6 +380,14 @@ function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskReques
   return shared / Math.max(leftTokens.size, rightTokens.size);
 }
 
+function homeMessageTaskSimilarity(task: JuneHomeTaskRequest, message: string): number {
+  const messageTokens = homeTaskGroundingTokens(message);
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  if (messageTokens.size === 0 || taskTokens.size === 0) return 0;
+  const shared = [...messageTokens].filter((messageToken) => taskTokens.has(messageToken)).length;
+  return shared / Math.max(messageTokens.size, taskTokens.size);
+}
+
 export function isHomeTaskReplayWithoutNewIntent(
   task: JuneHomeTaskRequest,
   latestMessage: string,
@@ -399,6 +407,7 @@ export function isHomeTaskReplayWithoutNewIntent(
   const latestTokens = homeTaskGroundingTokens(latestMessage);
   const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
   if (
+    homeMessageTaskSimilarity(task, latestMessage) >= 0.6 ||
     (HOME_TASK_ACTION_REQUEST.test(intentText) &&
       homeTaskTokensOverlap(latestTokens, taskTokens)) ||
     (HOME_TASK_GROUNDED_CONTEXTUAL_REQUEST.test(intentText) &&

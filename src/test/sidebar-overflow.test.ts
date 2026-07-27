@@ -21,6 +21,12 @@ describe("sidebar overflow containment", () => {
     expect(cssRuleFor(".sidebar-completed-section .notes-nav.sidebar-completed-list")).toContain(
       "min-height: 0;",
     );
+    expect(cssRuleFor(".sidebar-agent-section")).toContain(
+      "flex: 1 0 var(--sidebar-active-section-min-h);",
+    );
+    expect(cssRuleFor(".sidebar-agent-section")).toContain(
+      "min-height: var(--sidebar-active-section-min-h);",
+    );
     expect(cssRuleFor(".sidebar-agent-section")).toContain("overflow: hidden;");
   });
 
