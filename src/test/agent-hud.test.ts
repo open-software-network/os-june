@@ -4,7 +4,10 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AGENT_SESSION_STATUS_EVENT,
 } from "../lib/agent-events";
-import { AGENT_HUD_VISIBILITY_CHANGED_EVENT } from "../lib/agent-hud-settings";
+import {
+  AGENT_HUD_PLACEMENT_CHANGED_EVENT,
+  AGENT_HUD_VISIBILITY_CHANGED_EVENT,
+} from "../lib/agent-hud-settings";
 
 type TauriListener = (event: { payload: unknown }) => unknown;
 
@@ -31,6 +34,8 @@ describe("agent HUD", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.invoke.mockReset().mockResolvedValue(undefined);
+    mocks.emit.mockReset().mockResolvedValue(undefined);
     mocks.listeners.clear();
     vi.useRealTimers();
     localStorage.clear();
@@ -61,7 +66,7 @@ describe("agent HUD", () => {
     expect(stackElement().querySelector(".dot-spinner > span")).toBeTruthy();
     expect(stackElement()).toHaveAttribute("aria-hidden", "true");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0 },
+      request: { expanded: false, cardCount: 0, placement: "top-right" },
     });
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show");
   });
@@ -80,7 +85,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0, width: 112, height: 32 },
+      request: { expanded: false, cardCount: 0, placement: "top-right", width: 112, height: 32 },
     });
   });
 
@@ -114,12 +119,13 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0, width: 96, height: 32 },
+      request: { expanded: false, cardCount: 0, placement: "top-right", width: 96, height: 32 },
     });
   });
 
   it("sizes the native window to the final expanded height during the reveal", async () => {
     const surface = surfaceElement();
+    surface.style.setProperty("--sp-1", "4px");
     vi.spyOn(surface, "offsetWidth", "get").mockReturnValue(248);
     vi.spyOn(surface, "offsetHeight", "get").mockReturnValue(36);
     vi.spyOn(pillElement(), "offsetHeight", "get").mockReturnValue(36);
@@ -134,7 +140,10 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1, width: 248, height: 86 },
+      // 36 pill + 50 stack + the last row's 4px bottom margin, which
+      // scrollHeight leaves out (the old measurement clipped the panel's
+      // bottom corner on first load).
+      request: { expanded: true, cardCount: 1, placement: "top-right", width: 248, height: 90 },
     });
   });
 
@@ -163,8 +172,59 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1, width: 248, height: 32 },
+      request: { expanded: true, cardCount: 1, placement: "top-right", width: 248, height: 32 },
     });
+  });
+
+  it("keeps the native window at the final bounds after a rapid collapse and re-expand", async () => {
+    const surface = surfaceElement();
+    let renderedWidth = 68;
+    vi.spyOn(surface, "offsetWidth", "get").mockImplementation(() => renderedWidth);
+    vi.spyOn(surface, "offsetHeight", "get").mockImplementation(() =>
+      hudElement().dataset.expanded === "true" ? 88 : 32,
+    );
+    vi.spyOn(pillElement(), "offsetHeight", "get").mockReturnValue(34);
+    vi.spyOn(stackElement(), "scrollHeight", "get").mockReturnValue(50);
+    vi.spyOn(surface, "getBoundingClientRect").mockImplementation(
+      () => ({ width: renderedWidth }) as DOMRect,
+    );
+    surface.style.setProperty("--hud-expanded-w", "248px");
+    surface.style.setProperty("--control-xl", "36px");
+    surface.style.setProperty("--sp-1", "4px");
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Review the branch.",
+      summary: "Working.",
+    });
+    await flushPromises();
+
+    renderedWidth = 248;
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: true, cardCount: 1, placement: "top-right", width: 248, height: 90 },
+    });
+
+    vi.useFakeTimers();
+    renderedWidth = 68;
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+
+    // The collapsed-width transition is still in flight when the user
+    // re-opens the panel, so the rendered width is neither endpoint.
+    renderedWidth = 144;
+    mocks.invoke.mockClear();
+    pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(200);
+    await flushPromises();
+
+    // The native window never shrank: the pending collapse was cancelled,
+    // and the already-applied expanded endpoint needs no redundant IPC.
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_set_layout", expect.anything());
   });
 
   it("uses the context-menu fallback until the menu has measurable bounds", async () => {
@@ -186,7 +246,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: false, cardCount: 0, contextMenuOpen: true },
+      request: { expanded: false, cardCount: 0, placement: "top-right", contextMenuOpen: true },
     });
   });
 
@@ -216,6 +276,7 @@ describe("agent HUD", () => {
       request: {
         expanded: false,
         cardCount: 0,
+        placement: "top-right",
         contextMenuOpen: true,
         width: 148,
         height: 80,
@@ -315,7 +376,7 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
-      request: { expanded: true, cardCount: 1 },
+      request: { expanded: true, cardCount: 1, placement: "top-right" },
     });
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
@@ -962,6 +1023,29 @@ describe("agent HUD", () => {
     });
   });
 
+  it("deep-links a row that only knows its stored session id", async () => {
+    await loadAgentHud();
+
+    // A terminal status for a session the sessions list never reported: the
+    // row renders from the pending record, and its click should still land
+    // on that session rather than the generic agents view.
+    emitStatus({
+      sessionId: "sess-9",
+      status: "completed",
+      title: "Wrapped up",
+      summary: "All done.",
+    });
+    await flushPromises();
+
+    document.querySelector<HTMLButtonElement>(".agent-hud-row-body")?.click();
+    await flushPromises();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_open_agent", {
+      session: undefined,
+      storedSessionId: "sess-9",
+    });
+  });
+
   it("hides the HUD from the pill context menu action", async () => {
     await loadAgentHud();
 
@@ -1002,6 +1086,137 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
+  });
+
+  it("re-parks the window when the placement setting changes", async () => {
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+    expect(hudElement().dataset.placement).toBe("top-right");
+
+    mocks.listeners.get(AGENT_HUD_PLACEMENT_CHANGED_EVENT)?.({
+      payload: { placement: "bottom-left" },
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.placement).toBe("bottom-left");
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_set_layout", {
+      request: { expanded: false, cardCount: 0, placement: "bottom-left" },
+    });
+  });
+
+  it("re-shows after focus returns while a native hide is still in flight", async () => {
+    let resolveHide: (() => void) | undefined;
+    let hideCallCount = 0;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "agent_hud_hide") {
+        hideCallCount += 1;
+        if (hideCallCount === 1) return Promise.resolve(undefined);
+        return new Promise<void>((resolve) => {
+          resolveHide = resolve;
+        });
+      }
+      return Promise.resolve(command === "agent_hud_main_focused" ? false : undefined);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "agent_hud_show"),
+    ).toHaveLength(1);
+
+    vi.useFakeTimers();
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+    expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
+
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    await flushPromises();
+    resolveHide?.();
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("true");
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "agent_hud_show"),
+    ).toHaveLength(2);
+  });
+
+  it("does not re-show after focus changes during a native layout request", async () => {
+    let resolveLayout: (() => void) | undefined;
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "agent_hud_set_layout") {
+        return new Promise<void>((resolve) => {
+          resolveLayout = resolve;
+        });
+      }
+      return Promise.resolve(command === "agent_hud_main_focused" ? false : undefined);
+    });
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+    expect(resolveLayout).toBeDefined();
+
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    await flushPromises();
+    resolveLayout?.();
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
+  });
+
+  it("stays down while the June main window is focused", async () => {
+    await loadAgentHud();
+
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("false");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
+
+    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("true");
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_show"));
+  });
+
+  it("suppresses the HUD when the app starts focused", async () => {
+    mocks.invoke.mockImplementation((command: string) =>
+      Promise.resolve(command === "agent_hud_main_focused" ? true : undefined),
+    );
+    await loadAgentHud();
+
+    emitStatus({
+      status: "running",
+      title: "Summarize this",
+      summary: "Working",
+    });
+    await flushPromises();
+
+    expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
   });
 });
@@ -1050,9 +1265,9 @@ function sessionFixture(id: string, title: string) {
 }
 
 async function flushPromises() {
-  // The layout sync awaits set_layout before show, so a couple of extra
-  // microtask turns are needed for the whole chain to settle.
-  for (let i = 0; i < 6; i += 1) {
+  // Startup first confirms the native window is hidden, then layout sync
+  // awaits set_layout before show. Give both serialized chains time to settle.
+  for (let i = 0; i < 12; i += 1) {
     await Promise.resolve();
   }
 }

@@ -3,6 +3,7 @@ import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "../lib/june-spinner-grid";
 import agentHudCss from "../styles/agent-hud.css?raw";
 import appCss from "../styles/app.css?raw";
 import spinnerCss from "../styles/dot-spinner.css?raw";
+import hudCss from "../styles/hud.css?raw";
 import tokensCss from "../styles/tokens.css?raw";
 
 describe("June spinner grid", () => {
@@ -136,7 +137,13 @@ describe("June spinner grid", () => {
     expect(spinnerCss).not.toMatch(/scale\(1\.\d+\)/);
     expect(spinnerCss).toContain("animation-name: june-sweep-lg;");
     expect(spinnerCss).toContain("animation-name: june-sweep-lg, june-scale-lg;");
-    expect(spinnerCss).toContain("var(--june-order) * var(--june-frame)");
+    expect(normalizedCss).toContain(
+      "var(--june-order) * var(--june-frame) - var(--june-dur) - var(--june-phase, 0ms)",
+    );
+    expect(hudCss).toMatch(/\.hud-spinner \.dot-spinner\s*{[^}]*--june-phase:\s*var\(--t-med\)/s);
+    expect(hudCss).toMatch(
+      /\.hud-spinner\.hud-spinner-reset \.dot-spinner > span\s*{[^}]*animation:\s*none/s,
+    );
     expect(spinnerCss).toContain('.dot-spinner[data-size="md"]');
     expect(spinnerCss).toContain("--june-dot: 3px;");
     expect(spinnerCss).toContain("color: var(--spinner-color, var(--spinner-neutral));");

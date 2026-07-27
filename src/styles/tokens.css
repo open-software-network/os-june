@@ -160,6 +160,8 @@
   --control-md: 28px;
   --control-lg: 32px;
   --control-xl: 36px;
+  /* Compact icon controls inside the Dictation HUD. */
+  --control-hud: var(--sp-8);
   /* Shared width for the model picker's nested detail and choice panels. */
   --model-picker-nested-w: 248px;
   --line-width: 1px;

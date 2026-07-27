@@ -2277,7 +2277,7 @@ describe("App shortcuts", () => {
     );
   });
 
-  it("opens the chat for a notification click carrying a session id", async () => {
+  it("opens the chat for an Agent HUD click carrying a stored session id", async () => {
     mocks.listAgentSessions.mockResolvedValue([agentSession("session-9", "Notified session")]);
 
     render(<App />);
@@ -2285,7 +2285,7 @@ describe("App shortcuts", () => {
 
     act(() => {
       window.dispatchEvent(
-        new CustomEvent(AGENT_OPEN_EVENT, { detail: { sessionId: "session-9" } }),
+        new CustomEvent(AGENT_OPEN_EVENT, { detail: { storedSessionId: "session-9" } }),
       );
     });
 
