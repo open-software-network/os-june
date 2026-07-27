@@ -862,6 +862,7 @@ export function AgentWorkspace({
           case "agentSend": {
             const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
             let session: AgentSessionDto | undefined;
+            let createdSessionPartition: string | undefined;
             if (requestedStoredSessionId) {
               session = await companionSessionInActivePartition(requestedStoredSessionId).catch(
                 () => undefined,
@@ -871,35 +872,48 @@ export function AgentWorkspace({
                 return;
               }
             } else {
+              createdSessionPartition = getCurrentDataPartitionName();
               session = await agentRuntimeBindings.createSession({
                 title: titleFromPrompt(message),
                 model: DEFAULT_MODEL,
                 safetyMode: "sandboxed",
-                profile: getCurrentDataPartitionName(),
+                profile: createdSessionPartition,
               });
               void refreshSessions().catch(() => undefined);
             }
             const enabledSkillIds = (await agentRuntimeBindings.listSkills())
               .filter((skill) => skill.enabled)
               .map((skill) => skill.id);
-            const preparedPrompt = preparePromptForSession(session.id, message);
+            const authorizedSession = requestedStoredSessionId
+              ? await companionSessionInActivePartition(session.id).catch(() => undefined)
+              : createdSessionPartition === getCurrentDataPartitionName()
+                ? session
+                : undefined;
+            if (!authorizedSession) {
+              await rejectUnavailableCompanionSession(payload.operationId);
+              return;
+            }
+            const preparedPrompt = preparePromptForSession(authorizedSession.id, message);
             await agentRuntimeBindings.startRun({
-              sessionId: session.id,
+              sessionId: authorizedSession.id,
               prompt: preparedPrompt.text,
-              model: session.model,
+              model: authorizedSession.model,
               reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
                 | "minimal"
                 | "medium"
                 | "high",
-              safetyMode: session.safetyMode,
-              workspacePath: session.workspacePath,
+              safetyMode: authorizedSession.safetyMode,
+              workspacePath: authorizedSession.workspacePath,
               enabledSkillIds,
               attachments: [],
             });
-            projectContextSignaturesBySessionId.set(session.id, preparedPrompt.contextSignature);
+            projectContextSignaturesBySessionId.set(
+              authorizedSession.id,
+              preparedPrompt.contextSignature,
+            );
             await companionCompleteFrontendRequest(payload.operationId, {
               type: "agentAccepted",
-              data: { storedSessionId: session.id },
+              data: { storedSessionId: authorizedSession.id },
             });
             return;
           }
@@ -918,6 +932,12 @@ export function AgentWorkspace({
                 run.status === "running" ||
                 run.status === "waiting_for_user")
             ) {
+              if (
+                !(await companionSessionInActivePartition(storedSessionId).catch(() => undefined))
+              ) {
+                await rejectUnavailableCompanionSession(payload.operationId);
+                return;
+              }
               await agentRuntimeBindings.cancelRun(run.id);
             }
             await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });

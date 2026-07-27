@@ -1130,7 +1130,22 @@ export function App() {
               });
               return;
             }
-            const messages = companionAgentMessagesFromItems(await listAgentItems(storedSessionId));
+            const items = await listAgentItems(storedSessionId);
+            const stillKnownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            if (!stillKnownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const messages = companionAgentMessagesFromItems(items);
             const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
             page?.items.reverse();
             await companionCompleteFrontendRequest(

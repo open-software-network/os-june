@@ -323,6 +323,14 @@ function agentSession(id: string, title: string): AgentSessionDto {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function recordingReadiness(systemReady: boolean): RecordingSourceReadinessDto {
   return {
     sourceMode: "microphonePlusSystem",
@@ -980,6 +988,161 @@ describe("App shortcuts", () => {
       ),
     );
     expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a companion send when the active partition changes while skills load", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const skills = deferred<never[]>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.listAgentSkills.mockReturnValue(skills.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-send",
+          intent: {
+            type: "agentSend",
+            data: { storedSessionId: cached.id, message: "Cross the boundary" },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.listAgentSkills).toHaveBeenCalled());
+
+    setCurrentDataPartitionName("partition-b");
+    skills.resolve([]);
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-send",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("rejects a companion cancellation when the active partition changes while the run loads", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const latestRun = deferred<{
+      id: string;
+      sessionId: string;
+      status: "running";
+      model: string;
+    }>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.getLatestAgentRun.mockReturnValue(latestRun.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-cancel",
+          intent: {
+            type: "agentCancel",
+            data: { storedSessionId: cached.id },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.getLatestAgentRun).toHaveBeenCalledWith(cached.id));
+
+    setCurrentDataPartitionName("partition-b");
+    latestRun.resolve({
+      id: "run-partition-a",
+      sessionId: cached.id,
+      status: "running",
+      model: "auto",
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-cancel",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("returns no companion messages when the active partition changes while items load", async () => {
+    const cached = agentSession("session-partition-a", "Partition A session");
+    const items = deferred<
+      Array<{
+        id: string;
+        sessionId: string;
+        sequence: number;
+        kind: "message";
+        role: "assistant";
+        text: string;
+        status: "complete";
+        createdAt: string;
+      }>
+    >();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([cached]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: cached.id, profile: "partition-a" },
+    ]);
+    mocks.listAgentItems.mockReturnValue(items.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-mid-await-messages",
+          intent: {
+            type: "agentMessagesList",
+            data: { storedSessionId: cached.id, limit: 50 },
+          },
+        },
+      });
+    });
+    await waitFor(() => expect(mocks.listAgentItems).toHaveBeenCalledWith(cached.id));
+
+    setCurrentDataPartitionName("partition-b");
+    items.resolve([
+      {
+        id: "message-partition-a",
+        sessionId: cached.id,
+        sequence: 1,
+        kind: "message",
+        role: "assistant",
+        text: "Partition A secret",
+        status: "complete",
+        createdAt: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-mid-await-messages",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.companionCompleteFrontendRequest).not.toHaveBeenCalledWith(
+      "operation-mid-await-messages",
+      expect.objectContaining({ type: "agentMessages" }),
+    );
   });
 
   it("ignores a cached companion focus target after the active partition changes", async () => {
