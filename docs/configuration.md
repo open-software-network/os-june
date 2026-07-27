@@ -36,8 +36,7 @@ built-in fallback ← `config.toml` ← the **live Venice catalog at boot**.
 | `OS_NOTETAKER_TRANSCRIPTION_LANGUAGE` | Optional ISO-639-1 language hint | unset |
 
 Dev-only toggles also read in code: `OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE`,
-`OS_JUNE_USE_PROD_ACCOUNTS_TOKENS`, `OS_JUNE_USE_PROD_DATA_DIR`,
-`JUNE_HERMES_DISABLE_SANDBOX`.
+`OS_JUNE_USE_PROD_ACCOUNTS_TOKENS`, `OS_JUNE_USE_PROD_DATA_DIR`.
 
 When set to `1`, `true`, `yes`, or `on`, `OS_JUNE_USE_PROD_DATA_DIR` opts a
 debug build into the production app data directory and the production

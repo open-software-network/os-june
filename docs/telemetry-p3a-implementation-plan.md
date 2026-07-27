@@ -125,7 +125,9 @@ catalog CI test green.
   - dictation session completed → `dictation.rs`
   - recording completed + audio source mode → recording finalize path in
     `commands.rs` / `audio/`
-  - agent session started → `hermes_bridge.rs`
+  - agent session started → `agent_runtime/api.rs` (session creation /
+    `start_agent_run`; the plan predates the ADR-0038 runtime migration and
+    originally named the removed `hermes_bridge.rs`)
   - model/privacy-mode selection → `providers/mod.rs`
   - app foreground day → `lib.rs` setup / focus handler
   - Frontend-originated signals (onboarding completed) go through one

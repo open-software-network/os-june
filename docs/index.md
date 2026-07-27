@@ -15,12 +15,12 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0003](adr/0003-release-candidate-channel-and-promotion.md) — rc channel + promote-to-stable (every stable release starts as an RC)
 - [adr/0004](adr/0004-out-of-process-system-audio-helper.md) — macOS system audio via an out-of-process helper (file IPC + Unix signals)
 - [adr/0005](adr/0005-source-separated-audio-capture.md) — one WAV per source, re-interleaved as turns
-- [adr/0006](adr/0006-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes
+- [adr/0006](adr/0006-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes (superseded by ADR-0038)
 - [adr/0007](adr/0007-model-capability-source-of-truth.md) — model capabilities come from the live Venice catalog, not marketing traits
 - [adr/0008](adr/0008-image-generation-and-editing-tools.md) — image generation/editing: `/image` fast path + LLM tools, via Venice
-- [adr/0009](adr/0009-hermes-config-shared-ownership-merge.md) — config.yaml is shared with the Hermes dashboard; June deep-merges on spawn, never overwrites
+- [adr/0009](adr/0009-hermes-config-shared-ownership-merge.md) — config.yaml is shared with the Hermes dashboard; June deep-merges on spawn, never overwrites (superseded by ADR-0038)
 - [adr/0010](adr/0010-note-references-in-agent-chat.md) — note references in agent chat: `@note:<id>` text token + `get_meeting_note` fetch-by-id
-- [adr/0011](adr/0011-bundled-hermes-skills.md) — selected Hermes skills ship as read-only app resources when the runtime pin cannot move
+- [adr/0011](adr/0011-bundled-hermes-skills.md) — selected Hermes skills ship as read-only app resources when the runtime pin cannot move (superseded by ADR-0038)
 - [adr/0012](adr/0012-direct-issue-report-submission.md) — issue reports submit directly (no client model turn, nothing to charge); June API generates the team-facing diagnosis
 - [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
@@ -34,11 +34,11 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0022](adr/0022-venice-private-first-model-routing.md) — service-managed text uses Venice private zero-retention first with Phala TEE fallback; existing `/v1` provider semantics stay compatible and pricing is fallback-safe
 - [adr/0023](adr/0023-attested-os-api-service-chain.md) - superseded by ADR-0024
 - [adr/0024](adr/0024-independent-product-verification.md) - June, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
-- [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement
+- [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement (superseded by ADR-0038)
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
 - [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
 - [adr/0028](adr/0028-private-stdio-broker-for-computer-use.md) - Computer use runs through a June-owned private stdio driver broker with signed-helper TCC identity, task-scoped app authorization, and exact-window Stage Manager restoration
-- [adr/0029](adr/0029-dual-architecture-hermes-runtime.md) - the universal macOS app carries complete arm64 and x86_64 Hermes runtime trees and executes both before release
+- [adr/0029](adr/0029-dual-architecture-hermes-runtime.md) - the universal macOS app carries complete arm64 and x86_64 Hermes runtime trees and executes both before release (superseded by ADR-0038)
 - [adr/0030](adr/0030-explicit-per-session-profile-targeting.md) — profile switching writes the sticky active profile AND threads it explicitly on session.create; no per-profile Hermes process
 - [adr/0031](adr/0031-per-profile-data-isolation.md) — profiles isolate user data (notes/dictation/projects via a `profile` column, chat sessions via a `session_profiles` map); profile is the first data-partition key; delete prompts move-to-default vs delete
 - [adr/0032](adr/0032-session-completion-june-owned-local-state.md) — marking a session complete is June-owned local SQLite state keyed by the stored Hermes session id, orthogonal to Hermes' archive flag; mirrors the `session_folders` stack

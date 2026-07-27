@@ -1,5 +1,15 @@
 # Computer use cua-driver sandbox spike (JUN-288)
 
+> **Historical — findings predate the runtime migration.** This spike was
+> written against the embedded Hermes runtime architecture, which has been
+> replaced by the June-owned OpenAI Agents runtime
+> ([ADR-0038](adr/0038-june-owned-openai-agents-runtime.md)). The Seatbelt
+> findings and spawn-topology recommendation may still inform computer use,
+> but the broker/runtime integration points described below no longer exist
+> as written; see ADR-0038 and
+> [ADR-0028](adr/0028-private-stdio-broker-for-computer-use.md) for the
+> current architecture. Kept unrewritten as a findings record.
+
 A timeboxed spike answering one phase-2 question for **Computer use** (see
 [browser-computer-use-prd.md](browser-computer-use-prd.md) "Computer use (phase
 2)" and [ADR-0017](adr/0017-browser-use-via-june-extension.md)): when June

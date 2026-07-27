@@ -1,7 +1,7 @@
 # ADR 0011: Bundle selected Hermes skills as read-only resources
 
 Date: 2026-07-03
-Status: accepted
+Status: superseded by ADR-0038
 
 ## Context
 

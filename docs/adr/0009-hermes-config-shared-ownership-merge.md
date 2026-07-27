@@ -1,7 +1,7 @@
 # ADR 0009: config.yaml is shared with the Hermes dashboard; June merges, never overwrites
 
 Date: 2026-07-03
-Status: accepted
+Status: superseded by ADR-0038
 
 ## Context
 

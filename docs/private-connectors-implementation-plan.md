@@ -3,6 +3,14 @@
 **Owner:** CTO · **Date:** 2026-07-09 · **Status:** Draft for review · **PRD:** [private-connectors-prd.md](private-connectors-prd.md)
 **Repos:** `os-june` (app + June API), `os-accounts` (metering/action slugs), `os-marketing-page` (verify page, comparison copy)
 
+> **Stale integration point.** This plan predates the runtime migration:
+> "Hermes" and "the Hermes bridge" refer to the removed embedded Hermes
+> runtime. Agent-facing MCP registration is now June-owned per
+> [ADR-0038](adr/0038-june-owned-openai-agents-runtime.md) and
+> [ADR-0039](adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below as
+> "the June agent runtime" and route MCP registration through the ADR-0039
+> mechanism.
+
 > File-level references were re-verified against `origin/main` on 2026-07-09
 > when this doc was ported into the repo (confirmed: `june_context`/`june_web`
 > MCP registration in the Hermes bridge, the agent approval surface, cron

@@ -1,5 +1,14 @@
 # Implementation plan: Documents plugin
 
+> **Stale integration point.** This plan predates the runtime migration:
+> "Hermes" (and any Hermes bridge commands such as
+> `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
+> Agent-facing MCP registration is now June-owned per
+> [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
+> [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
+> as "the June agent runtime" and route MCP registration through the ADR-0039
+> mechanism.
+
 - **Mode:** CTO
 - **Date:** 2026-07-13
 - **Status:** Proposed; artifact-engine spike required
