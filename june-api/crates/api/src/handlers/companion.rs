@@ -487,9 +487,6 @@ pub(crate) async fn relay_socket(
     state
         .companion()
         .authorize_connection(&user_id, query.device_id)?;
-    if !state.companion().admit_reconnect(query.device_id) {
-        return Err(ApiError::service_overloaded());
-    }
     Ok(upgrade.on_upgrade(move |socket| relay_connection(state, user_id, query.device_id, socket)))
 }
 
@@ -712,18 +709,6 @@ impl CompanionRelay {
             return true;
         }
         state.proof_requests_by_pairing.allow(pairing_id, now)
-    }
-
-    fn admit_reconnect(&self, device_id: Uuid) -> bool {
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        allow_within_window(
-            state.reconnect_times.entry(device_id).or_default(),
-            MAX_RECONNECTS_PER_MINUTE,
-            Instant::now(),
-        )
     }
 
     fn allow_relay_message(&self, device_id: Uuid) -> bool {
@@ -1152,6 +1137,13 @@ impl CompanionRelay {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.connections.contains_key(&device_id) {
+            return Err(ApiError::service_overloaded());
+        }
+        if !allow_within_window(
+            state.reconnect_times.entry(device_id).or_default(),
+            MAX_RECONNECTS_PER_MINUTE,
+            Instant::now(),
+        ) {
             return Err(ApiError::service_overloaded());
         }
         state
@@ -2031,14 +2023,27 @@ RIka62gMy7ZimPaKaOpY0TuAiZjxiQ7MsSwyGrt766jyZ3XWBg3s4tWO\n\
         assert!(!limiter.request_times.contains_key("recent"));
     }
 
-    #[test]
-    fn reconnect_admission_is_throttled() {
-        let relay = CompanionRelay::default();
-        let device_id = Uuid::new_v4();
+    #[tokio::test]
+    async fn reconnect_admission_is_throttled() {
+        let (relay, desktop, _) = linked_relay().await;
         for _ in 0..MAX_RECONNECTS_PER_MINUTE {
-            assert!(relay.admit_reconnect(device_id));
+            let (_, connection_id) = relay.connect(&user(), desktop).unwrap();
+            relay.disconnect(desktop, connection_id);
         }
-        assert!(!relay.admit_reconnect(device_id));
+        assert!(relay.connect(&user(), desktop).is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_duplicate_reconnects_do_not_exhaust_admission() {
+        let (relay, desktop, _) = linked_relay().await;
+        let (_, stale_connection_id) = relay.connect(&user(), desktop).unwrap();
+
+        for _ in 0..MAX_RECONNECTS_PER_MINUTE * 2 {
+            assert!(relay.connect(&user(), desktop).is_err());
+        }
+
+        relay.disconnect(desktop, stale_connection_id);
+        assert!(relay.connect(&user(), desktop).is_ok());
     }
 
     #[tokio::test]

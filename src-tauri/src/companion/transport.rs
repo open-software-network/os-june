@@ -188,10 +188,10 @@ async fn reconnect_loop(app: AppHandle) {
         }
 
         match connect_once(&app).await {
-            Ok(()) => attempt = 0,
+            Ok(()) => attempt = next_reconnect_attempt(attempt, true),
             Err(error) => {
                 tracing::warn!(code = %error.code, "companion relay connection ended");
-                attempt = attempt.saturating_add(1).min(8);
+                attempt = next_reconnect_attempt(attempt, false);
             }
         }
         drop(activity);
@@ -202,13 +202,35 @@ async fn reconnect_loop(app: AppHandle) {
         {
             return;
         }
-        let cap = 2_u64
-            .saturating_pow(attempt)
-            .clamp(1, MAX_RECONNECT_DELAY_SECS);
+        let cap = reconnect_delay_cap(attempt);
         let delay = rand::thread_rng().gen_range(0..=cap);
         if !wait_for_account_retry(&app, Duration::from_secs(delay)).await {
             return;
         }
+    }
+}
+
+fn next_reconnect_attempt(attempt: u32, connection_succeeded: bool) -> u32 {
+    if connection_succeeded {
+        0
+    } else {
+        attempt.saturating_add(1).min(8)
+    }
+}
+
+fn reconnect_delay_cap(attempt: u32) -> u64 {
+    2_u64
+        .saturating_pow(attempt)
+        .clamp(1, MAX_RECONNECT_DELAY_SECS)
+}
+
+fn relay_close_result(exchanged_frame: bool) -> Result<(), AppError> {
+    if exchanged_frame {
+        Ok(())
+    } else {
+        Err(transport_error(
+            "The companion relay closed before exchanging a frame.",
+        ))
     }
 }
 
@@ -249,11 +271,14 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
     let _connection_guard = RelayConnectionGuard { runtime: &runtime };
     let mut delta_tick = tokio::time::interval(Duration::from_millis(750));
     let mut pending_deltas: HashMap<String, String> = HashMap::new();
+    let mut exchanged_frame = false;
 
     loop {
         tokio::select! {
             message = socket.next() => {
-                let Some(message) = message else { return Ok(()); };
+                let Some(message) = message else {
+                    return relay_close_result(exchanged_frame);
+                };
                 let message = message.map_err(|_| transport_error("The companion relay disconnected."))?;
                 let bytes = match message {
                     Message::Binary(bytes) => bytes.to_vec(),
@@ -265,10 +290,14 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                         ).await
                             .map_err(|_| transport_error("The companion relay send timed out."))?
                             .map_err(|_| transport_error("The companion relay disconnected."))?;
+                        exchanged_frame = true;
                         continue;
                     }
-                    Message::Pong(_) | Message::Frame(_) => continue,
-                    Message::Close(_) => return Ok(()),
+                    Message::Pong(_) | Message::Frame(_) => {
+                        exchanged_frame = true;
+                        continue;
+                    }
+                    Message::Close(_) => return relay_close_result(exchanged_frame),
                 };
                 let envelope: RelayEnvelope = serde_json::from_slice(&bytes)
                     .map_err(|_| transport_error("The companion relay frame is invalid."))?;
@@ -281,6 +310,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                     &mut outbound_sequence,
                     envelope,
                 ).await?;
+                exchanged_frame = true;
             }
             event = event_receiver.recv() => {
                 let Some(event) = event else { return Ok(()); };
@@ -829,6 +859,22 @@ mod tests {
         );
         drop(socket);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn immediate_relay_closes_increase_reconnect_backoff() {
+        let mut attempt = 0;
+        let mut delay_caps = Vec::new();
+        for _ in 0..4 {
+            let result = relay_close_result(false);
+            attempt = next_reconnect_attempt(attempt, result.is_ok());
+            delay_caps.push(reconnect_delay_cap(attempt));
+        }
+
+        assert_eq!(delay_caps, vec![2, 4, 8, 16]);
+        let result = relay_close_result(true);
+        attempt = next_reconnect_attempt(attempt, result.is_ok());
+        assert_eq!(attempt, 0);
     }
 
     #[test]
