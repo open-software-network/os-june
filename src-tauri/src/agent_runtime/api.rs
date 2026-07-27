@@ -98,6 +98,30 @@ pub async fn get_agent_session(app: AppHandle, session_id: String) -> Result<Val
 }
 
 #[tauri::command]
+pub async fn get_agent_session_snapshot(
+    app: AppHandle,
+    session_id: String,
+) -> Result<Value, AppError> {
+    let (session, run, items) = repository(&app)
+        .await?
+        .session_snapshot(&session_id)
+        .await?;
+    let active_run_id = run
+        .as_ref()
+        .filter(|run| matches!(run.status.as_str(), "running" | "waiting_for_user"))
+        .map(|run| run.id.as_str());
+    let items = items
+        .into_iter()
+        .map(|item| item_json_with_active_run(item, active_run_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({
+        "session": session_json(session),
+        "run": run.map(run_json),
+        "items": items,
+    }))
+}
+
+#[tauri::command]
 pub async fn get_latest_agent_run(
     app: AppHandle,
     session_id: String,
@@ -1631,7 +1655,7 @@ fn session_json(session: super::AgentSessionDto) -> Value {
     json!({ "id": session.id, "title": session.title, "status": session.status, "model": session.model, "safetyMode": session.safety_mode, "workspacePath": session.workspace_path.unwrap_or_default(), "source": match session.source.as_str() { "legacy_routine" => "legacy_routine", "routine" => "routine", "user" => "user", _ => "legacy_task" }, "createdAt": session.created_at, "updatedAt": session.updated_at, "error": session.last_error })
 }
 fn run_json(run: super::AgentRunDto) -> Value {
-    json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })
+    json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "lastSequence": run.last_sequence, "error": run.error_message })
 }
 
 fn item_json_with_active_run(
@@ -1906,6 +1930,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn run_json_carries_the_persisted_event_watermark() {
+        let value = run_json(super::super::AgentRunDto {
+            id: "run-1".into(),
+            session_id: "session-1".into(),
+            status: "running".into(),
+            model: "auto".into(),
+            reasoning_effort: None,
+            started_at: "2026-07-26T12:00:00Z".into(),
+            updated_at: "2026-07-26T12:00:01Z".into(),
+            completed_at: None,
+            usage: None,
+            interrupted_state: None,
+            last_sequence: 7,
+            error_code: None,
+            error_message: None,
+        });
+
+        assert_eq!(value["lastSequence"], 7);
+    }
+
+    #[test]
     fn retry_uses_the_prompt_owned_by_the_selected_run() {
         let item = |id: &str, run_id: &str, content: &str, sequence: i64| AgentItemDto {
             id: id.into(),
@@ -1972,6 +2017,57 @@ mod tests {
             .expect("branch profile")
             .get("profile");
         assert_eq!(profile, "private");
+    }
+
+    #[tokio::test]
+    async fn session_snapshots_include_the_matching_run_watermark_and_items() {
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool);
+        let session = repository
+            .create_session("Snapshot", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .append_assistant_message_delta(
+                &session.id,
+                &run.id,
+                7,
+                "Current response",
+                "assistant:run-1",
+            )
+            .await
+            .expect("assistant delta");
+
+        let (snapshot_session, snapshot_run, snapshot_items) = repository
+            .session_snapshot(&session.id)
+            .await
+            .expect("snapshot");
+
+        assert_eq!(snapshot_session.id, session.id);
+        assert_eq!(
+            snapshot_run.as_ref().map(|run| run.id.as_str()),
+            Some(run.id.as_str())
+        );
+        assert_eq!(snapshot_run.map(|run| run.last_sequence), Some(7));
+        assert_eq!(snapshot_items.len(), 1);
+        assert_eq!(snapshot_items[0].run_id.as_deref(), Some(run.id.as_str()));
+        assert!(matches!(
+            &snapshot_items[0].payload,
+            AgentItemPayload::AssistantMessage(message) if message.content == "Current response"
+        ));
     }
 
     #[test]

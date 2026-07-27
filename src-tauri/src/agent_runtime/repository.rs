@@ -106,6 +106,44 @@ impl AgentRepository {
         .map(session_from_row)
     }
 
+    pub async fn session_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<(AgentSessionDto, Option<AgentRunDto>, Vec<AgentItemDto>), sqlx::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let session = query(
+            "SELECT id, title, status, model, safety_mode, workspace_path, source,
+                    created_at, updated_at, completed_at, last_error
+             FROM agent_sessions WHERE id = ?",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map(session_from_row)?;
+        let run = query(
+            "SELECT id, session_id, status, model, reasoning_effort, started_at, updated_at, completed_at,
+                    usage_json, interrupted_state_json, last_sequence, error_code, error_message
+             FROM agent_runs WHERE session_id = ? ORDER BY started_at DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .map(run_from_row);
+        let rows = query(
+            "SELECT id, session_id, run_id, sequence, kind, payload_json, external_id, created_at
+             FROM agent_items WHERE session_id = ? ORDER BY sequence ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let items = rows
+            .into_iter()
+            .map(item_from_row)
+            .collect::<Result<_, _>>()?;
+        transaction.commit().await?;
+        Ok((session, run, items))
+    }
+
     pub async fn list_sessions(&self) -> Result<Vec<AgentSessionDto>, sqlx::Error> {
         query(
             "SELECT id, title, status, model, safety_mode, workspace_path, source,

@@ -154,6 +154,25 @@ describe("note chat sessions", () => {
     });
   });
 
+  it("installs the runtime listener before hydrating a saved session", async () => {
+    rememberNoteChatSession("note-1", "note-session");
+    mocks.getSession.mockResolvedValue(session());
+    mocks.listItems.mockResolvedValue([]);
+    let finishListening: ((dispose: () => void) => void) | undefined;
+    mocks.listen.mockReturnValue(
+      new Promise<() => void>((resolve) => {
+        finishListening = resolve;
+      }),
+    );
+
+    renderHook(() => useNoteChat({ id: "note-1", title: "Planning" }));
+
+    await waitFor(() => expect(mocks.listen).toHaveBeenCalledOnce());
+    expect(mocks.getSession).not.toHaveBeenCalled();
+    await act(async () => finishListening?.(() => undefined));
+    await waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith("note-session"));
+  });
+
   it("cancels the active runtime run", async () => {
     mocks.createSession.mockResolvedValue(session());
     mocks.startRun.mockResolvedValue(run());

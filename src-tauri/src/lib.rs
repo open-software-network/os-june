@@ -174,6 +174,7 @@ pub fn run() {
             commands::bootstrap_app,
             agent_runtime::api::list_agent_sessions,
             agent_runtime::api::get_agent_session,
+            agent_runtime::api::get_agent_session_snapshot,
             agent_runtime::api::get_latest_agent_run,
             agent_runtime::api::compact_agent_session,
             agent_runtime::api::create_agent_session,

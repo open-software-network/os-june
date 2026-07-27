@@ -48,6 +48,7 @@ export type AgentRunDto = {
   sessionId: string;
   status: AgentRunStatus;
   model: string;
+  lastSequence?: number;
   reasoningEffort?: "minimal" | "medium" | "high";
   startedAt?: string;
   completedAt?: string;
@@ -291,6 +292,11 @@ export type ResolveAgentInterruptionRequest = {
 export type AgentRuntimeBindings = {
   listSessions(): Promise<AgentSessionDto[]>;
   getSession(sessionId: string): Promise<AgentSessionDto>;
+  getSnapshot?(sessionId: string): Promise<{
+    session: AgentSessionDto;
+    run?: AgentRunDto;
+    items: AgentItemDto[];
+  }>;
   getLatestRun?(sessionId: string): Promise<AgentRunDto | null>;
   compactSession?(sessionId: string): Promise<{
     compacted: boolean;

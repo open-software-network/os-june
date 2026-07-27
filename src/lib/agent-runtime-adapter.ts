@@ -18,6 +18,8 @@ export type AgentRuntimeProjection = {
   items: AgentItemDto[];
   lastSequenceByRun: Record<string, number>;
   processedEventIds: Set<string>;
+  textDeltasByItem: Record<string, Array<{ sequence: number; delta: string }>>;
+  eventsByRun: Record<string, AgentRuntimeEvent[]>;
 };
 
 export function createAgentRuntimeProjection(
@@ -29,6 +31,8 @@ export function createAgentRuntimeProjection(
     items: [...(input.items ?? [])].sort(compareAgentItems),
     lastSequenceByRun: {},
     processedEventIds: new Set(),
+    textDeltasByItem: {},
+    eventsByRun: {},
   };
 }
 
@@ -44,60 +48,35 @@ export function mergeAgentRuntimeSnapshot(
 ): AgentRuntimeProjection {
   const snapshot = createAgentRuntimeProjection(input);
   const run = input.run;
-  if (!run || (run.status !== "running" && run.status !== "waiting_for_user")) return snapshot;
-
-  const liveItems = current.items.filter(
-    (item) =>
-      item.sessionId === input.session.id &&
-      item.runId === run.id &&
-      (item.kind === "message" || item.kind === "reasoning") &&
-      item.status === "streaming",
-  );
-  let items = snapshot.items;
-  for (const liveItem of liveItems) {
-    const persisted = items.find((item) => item.id === liveItem.id);
-    if (
-      persisted &&
-      (persisted.kind === "message" || persisted.kind === "reasoning") &&
-      persisted.kind === liveItem.kind
-    ) {
-      const text = mergeStreamText(persisted.text, liveItem.text);
-      items = upsertItem(items, { ...persisted, text, status: "streaming" });
-    } else {
-      items = upsertItem(items, liveItem);
-    }
+  if (!run || run.lastSequence === undefined) return snapshot;
+  if (current.run && current.run.id !== run.id && currentRunIsNewer(current.run, run)) {
+    return current;
   }
-
-  const currentRun = current.run?.id === run.id ? current.run : undefined;
-  const currentRunFinished =
-    currentRun &&
-    (currentRun.status === "completed" ||
-      currentRun.status === "cancelled" ||
-      currentRun.status === "failed");
-  return {
+  const snapshotSequence = run.lastSequence;
+  let merged: AgentRuntimeProjection = {
     ...snapshot,
-    run: currentRunFinished ? currentRun : run,
-    items,
     lastSequenceByRun: {
-      ...snapshot.lastSequenceByRun,
-      ...(current.lastSequenceByRun[run.id] === undefined
-        ? {}
-        : { [run.id]: current.lastSequenceByRun[run.id] }),
+      [run.id]: snapshotSequence,
     },
-    processedEventIds: new Set(current.processedEventIds),
   };
+  const pendingEvents = (current.eventsByRun[run.id] ?? [])
+    .filter((event) => event.sequence > snapshotSequence)
+    .sort((left, right) => left.sequence - right.sequence);
+  for (const event of pendingEvents) merged = applyAgentRuntimeEvent(merged, event);
+  return merged;
 }
 
-function mergeStreamText(persisted: string, live: string) {
-  if (live.startsWith(persisted)) return live;
-  if (persisted.startsWith(live)) return persisted;
-  const maxOverlap = Math.min(persisted.length, live.length);
-  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
-    if (persisted.endsWith(live.slice(0, overlap))) {
-      return persisted + live.slice(overlap);
-    }
+function currentRunIsNewer(current: AgentRunDto, snapshot: AgentRunDto) {
+  const currentStartedAt = current.startedAt ? Date.parse(current.startedAt) : Number.NaN;
+  const snapshotStartedAt = snapshot.startedAt ? Date.parse(snapshot.startedAt) : Number.NaN;
+  if (Number.isFinite(currentStartedAt) && Number.isFinite(snapshotStartedAt)) {
+    return currentStartedAt >= snapshotStartedAt;
   }
-  return persisted + live;
+  return (
+    current.status === "queued" ||
+    current.status === "running" ||
+    current.status === "waiting_for_user"
+  );
 }
 
 export function applyAgentRuntimeEvent(
@@ -115,6 +94,11 @@ export function applyAgentRuntimeEvent(
     items: [...projection.items],
     lastSequenceByRun: { ...projection.lastSequenceByRun, [event.runId]: event.sequence },
     processedEventIds: new Set(projection.processedEventIds).add(event.eventId),
+    textDeltasByItem: { ...projection.textDeltasByItem },
+    eventsByRun: {
+      ...projection.eventsByRun,
+      [event.runId]: [...(projection.eventsByRun[event.runId] ?? []), event],
+    },
   };
 
   switch (event.method) {
@@ -135,6 +119,10 @@ export function applyAgentRuntimeEvent(
       }
       break;
     case "message.delta":
+      next.textDeltasByItem[textDeltaKey(event.runId, event.data.itemId)] = [
+        ...(next.textDeltasByItem[textDeltaKey(event.runId, event.data.itemId)] ?? []),
+        { sequence: event.sequence, delta: event.data.delta },
+      ];
       next.items = appendTextDelta(next.items, event, "message");
       break;
     case "message.completed":
@@ -151,6 +139,10 @@ export function applyAgentRuntimeEvent(
       });
       break;
     case "reasoning.delta":
+      next.textDeltasByItem[textDeltaKey(event.runId, event.data.itemId)] = [
+        ...(next.textDeltasByItem[textDeltaKey(event.runId, event.data.itemId)] ?? []),
+        { sequence: event.sequence, delta: event.data.delta },
+      ];
       next.items = appendTextDelta(next.items, event, "reasoning");
       break;
     case "steering.consumed":
@@ -439,6 +431,10 @@ function generatedVideoPart(output: unknown): AgentChatPart | undefined {
 
 function toolCallKey(runId: string | undefined, callId: string) {
   return `${runId ?? ""}:${callId}`;
+}
+
+function textDeltaKey(runId: string, itemId: string) {
+  return `${runId}:${itemId}`;
 }
 
 function interruptionToPart(

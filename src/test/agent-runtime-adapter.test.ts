@@ -135,6 +135,7 @@ describe("agent runtime adapter", () => {
       status: "running" as const,
       model: "auto",
       startedAt: "2026-07-22T12:00:00Z",
+      lastSequence: 3,
     };
     let current = createAgentRuntimeProjection({ session, run });
     current = applyAgentRuntimeEvent(current, {
@@ -192,6 +193,240 @@ describe("agent runtime adapter", () => {
     expect(continued.items[0]).toMatchObject({
       text: "Everything said before opening plus the newest words and the continuation",
     });
+  });
+
+  it("keeps a completion received while an older active snapshot is loading", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:00:01Z",
+    };
+    const run = {
+      id: "run-1",
+      sessionId: session.id,
+      status: "running" as const,
+      model: "auto",
+      startedAt: "2026-07-22T12:00:00Z",
+      lastSequence: 3,
+    };
+    let current = createAgentRuntimeProjection({ session, run });
+    current = applyAgentRuntimeEvent(current, {
+      ...frame,
+      eventId: "event-live-delta",
+      sequence: 4,
+      method: "message.delta",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        delta: "partial",
+        createdAt: "2026-07-22T12:00:02Z",
+      },
+    });
+    current = applyAgentRuntimeEvent(current, {
+      ...frame,
+      eventId: "event-live-completion",
+      sequence: 5,
+      method: "message.completed",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        text: "final answer",
+        createdAt: "2026-07-22T12:00:03Z",
+      },
+    });
+
+    const hydrated = mergeAgentRuntimeSnapshot(current, {
+      session,
+      run,
+      items: [
+        {
+          id: "assistant:run-1",
+          sessionId: session.id,
+          runId: run.id,
+          sequence: 3,
+          createdAt: "2026-07-22T12:00:01Z",
+          kind: "message",
+          role: "assistant",
+          text: "part",
+          status: "streaming",
+        },
+      ],
+    });
+
+    expect(hydrated.items).toMatchObject([
+      { id: "assistant:run-1", text: "final answer", status: "complete", sequence: 5 },
+    ]);
+    expect(hydrated.lastSequenceByRun[run.id]).toBe(5);
+  });
+
+  it("does not replace a newer active run with a stale terminal snapshot", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:01:00Z",
+    };
+    const current = createAgentRuntimeProjection({
+      session,
+      run: {
+        id: "run-new",
+        sessionId: session.id,
+        status: "running",
+        model: "auto",
+        startedAt: "2026-07-22T12:01:00Z",
+      },
+      items: [
+        {
+          id: "new-question",
+          sessionId: session.id,
+          runId: "run-new",
+          sequence: 6,
+          createdAt: "2026-07-22T12:01:00Z",
+          kind: "message",
+          role: "user",
+          text: "New question",
+          status: "complete",
+        },
+      ],
+    });
+
+    const hydrated = mergeAgentRuntimeSnapshot(current, {
+      session: { ...session, status: "idle" },
+      run: {
+        id: "run-old",
+        sessionId: session.id,
+        status: "completed",
+        model: "auto",
+        startedAt: "2026-07-22T12:00:00Z",
+        lastSequence: 5,
+      },
+      items: [],
+    });
+
+    expect(hydrated).toBe(current);
+    expect(hydrated.run?.id).toBe("run-new");
+    expect(hydrated.items[0]).toMatchObject({ id: "new-question", text: "New question" });
+  });
+
+  it("uses the persisted run watermark to ignore delayed duplicate deltas", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:00:01Z",
+    };
+    const run = {
+      id: "run-1",
+      sessionId: session.id,
+      status: "running" as const,
+      model: "auto",
+      startedAt: "2026-07-22T12:00:00Z",
+      lastSequence: 4,
+    };
+    const hydrated = mergeAgentRuntimeSnapshot(createAgentRuntimeProjection({ session, run }), {
+      session,
+      run,
+      items: [
+        {
+          id: "assistant:run-1",
+          sessionId: session.id,
+          runId: run.id,
+          sequence: 4,
+          createdAt: "2026-07-22T12:00:01Z",
+          kind: "message",
+          role: "assistant",
+          text: "persisted once",
+          status: "streaming",
+        },
+      ],
+    });
+
+    const delayed = applyAgentRuntimeEvent(hydrated, {
+      ...frame,
+      eventId: "event-delayed",
+      sequence: 4,
+      method: "message.delta",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        delta: "persisted once",
+        createdAt: "2026-07-22T12:00:01Z",
+      },
+    });
+
+    expect(delayed).toBe(hydrated);
+    expect(delayed.items[0]).toMatchObject({ text: "persisted once" });
+  });
+
+  it("preserves intentional repeated text across an active hydration race", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:00:01Z",
+    };
+    const run = {
+      id: "run-1",
+      sessionId: session.id,
+      status: "running" as const,
+      model: "auto",
+      startedAt: "2026-07-22T12:00:00Z",
+      lastSequence: 3,
+    };
+    let current = createAgentRuntimeProjection({ session, run });
+    current = applyAgentRuntimeEvent(current, {
+      ...frame,
+      eventId: "event-repeated-delta",
+      sequence: 4,
+      method: "message.delta",
+      data: {
+        itemId: "assistant:run-1",
+        role: "assistant",
+        delta: "ha!",
+        createdAt: "2026-07-22T12:00:02Z",
+      },
+    });
+
+    const hydrated = mergeAgentRuntimeSnapshot(current, {
+      session,
+      run,
+      items: [
+        {
+          id: "assistant:run-1",
+          sessionId: session.id,
+          runId: run.id,
+          sequence: 3,
+          createdAt: "2026-07-22T12:00:01Z",
+          kind: "message",
+          role: "assistant",
+          text: "ha",
+          status: "streaming",
+        },
+      ],
+    });
+
+    expect(hydrated.items[0]).toMatchObject({ text: "haha!", status: "streaming" });
   });
 
   it("replaces compacted transcript items with the visible context summary", () => {

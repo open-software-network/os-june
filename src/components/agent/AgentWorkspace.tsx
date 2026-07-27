@@ -625,27 +625,31 @@ export function AgentWorkspace({
       const requestId = crypto.randomUUID();
       hydrationRequestRef.current = requestId;
       if (selectedIdRef.current === sessionId) setHydratedSelectionId(undefined);
-      const [session, items, files, latestRun] = await Promise.all([
-        agentRuntimeBindings.getSession(sessionId),
-        agentRuntimeBindings.listItems(sessionId),
+      const [snapshot, files] = await Promise.all([
+        agentRuntimeBindings.getSnapshot
+          ? agentRuntimeBindings.getSnapshot(sessionId)
+          : Promise.all([
+              agentRuntimeBindings.getSession(sessionId),
+              agentRuntimeBindings.listItems(sessionId),
+              agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
+            ]).then(([session, items, run]) => ({ session, items, run: run ?? undefined })),
         agentRuntimeBindings.listArtifacts(sessionId),
-        agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
       ]);
       if (selectedIdRef.current !== sessionId || hydrationRequestRef.current !== requestId) {
         return;
       }
       setProjection((current) =>
         mergeAgentRuntimeSnapshot(current, {
-          session,
-          items,
-          run: latestRun ?? undefined,
+          session: snapshot.session,
+          items: snapshot.items,
+          run: snapshot.run,
         }),
       );
       updateQueuedFollowUps((current) =>
         reconcileConsumedAgentFollowUp(
           current,
           sessionId,
-          items.map((item) => item.id),
+          snapshot.items.map((item) => item.id),
         ),
       );
       setHydratedSelectionId(sessionId);
@@ -653,15 +657,17 @@ export function AgentWorkspace({
       if (homeMode) {
         setModel(AUTO_MODEL_ID);
       } else {
-        applySessionModel(loadSessionModels()[session.id] ?? session.model);
+        applySessionModel(loadSessionModels()[snapshot.session.id] ?? snapshot.session.model);
       }
       setThinkingLevel(
-        homeMode ? "instant" : (loadSessionThinkingLevels()[session.id] ?? loadThinkingLevel()),
+        homeMode
+          ? "instant"
+          : (loadSessionThinkingLevels()[snapshot.session.id] ?? loadThinkingLevel()),
       );
-      setSafetyMode(homeMode ? "sandboxed" : session.safetyMode);
+      setSafetyMode(homeMode ? "sandboxed" : snapshot.session.safetyMode);
       setNewSessionMode(false);
       if (!homeMode) writeLastOpenSessionId(sessionId);
-      onSessionSelected?.(session);
+      onSessionSelected?.(snapshot.session);
     },
     [applySessionModel, homeMode, onSessionSelected, updateQueuedFollowUps],
   );
