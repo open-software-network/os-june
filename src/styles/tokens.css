@@ -187,6 +187,11 @@
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 56px;
   --sidebar-section-title-h: 22px;
+  --sidebar-active-section-min-h: calc(
+    var(--sidebar-section-title-h) +
+    var(--sp-1) +
+    var(--control-sm)
+  );
   --sidebar-pinned-list-max-h: 134px;
   --titlebar-h: 28px;
   /* macOS traffic lights live in the titlebar strip and their geometry is
