@@ -12240,14 +12240,18 @@ button.agent-user-attachment:hover {
   overflow: hidden;
 }
 
+/* Width, not scaleX — a scaled layer squishes its corner radius, and the
+ * drain's moving edge should carry the button's own rounding. */
 .record-dock .meeting-end-notice .meeting-end-stop::before {
   content: "";
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(var(--meeting-end-remaining, 1) * 100%);
+  border-radius: inherit;
   background: color-mix(in oklch, currentColor 12%, transparent);
-  transform: scaleX(var(--meeting-end-remaining, 1));
-  transform-origin: left center;
-  transition: transform 1s linear;
+  transition: width 1s linear;
   pointer-events: none;
 }
 
