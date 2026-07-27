@@ -1052,7 +1052,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [heroMode, homeMode, selectedSession]);
+  }, [heroMode]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");

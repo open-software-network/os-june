@@ -60,23 +60,23 @@ const newSession: AgentSessionDto = {
 };
 
 function mockAgentLayoutBounds() {
-  return vi
-    .spyOn(HTMLElement.prototype, "getBoundingClientRect")
-    .mockImplementation(function (this: HTMLElement) {
-      const top = this.classList.contains("agent-composer") ? 520 : 0;
-      const bottom = this.classList.contains("agent-scroll") ? 640 : top;
-      return {
-        x: 0,
-        y: top,
-        top,
-        right: 0,
-        bottom,
-        left: 0,
-        width: 0,
-        height: Math.max(0, bottom - top),
-        toJSON: () => ({}),
-      } as DOMRect;
-    });
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const top = this.classList.contains("agent-composer") ? 520 : 0;
+    const bottom = this.classList.contains("agent-scroll") ? 640 : top;
+    return {
+      x: 0,
+      y: top,
+      top,
+      right: 0,
+      bottom,
+      left: 0,
+      width: 0,
+      height: Math.max(0, bottom - top),
+      toJSON: () => ({}),
+    } as DOMRect;
+  });
 }
 
 describe("AgentWorkspace runtime wiring", () => {
