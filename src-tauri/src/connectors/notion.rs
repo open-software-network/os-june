@@ -3826,7 +3826,7 @@ mod tests {
             summarize_action("notion-update-page", &arguments)
         );
         assert_eq!(command, format!("Update Notion page\n{preview}"));
-        assert!(command.contains("Page: page-123"));
+        assert!(command.contains("Target: page-123"));
         assert!(command.contains("new_str: Replacement markdown for the whole page"));
     }
 
