@@ -384,7 +384,9 @@ async fn companion_proof_admission_middleware(
     next: Next,
 ) -> Result<Response, ApiError> {
     if let Some(pairing_id) = handlers::companion::pairing_id_from_proof_path(request.uri().path())
-        && !state.companion().admit_proof_request(pairing_id)
+        && !state
+            .companion()
+            .admit_proof_request(pairing_id, auth::client_address(request.headers()))
     {
         return Err(ApiError::service_overloaded());
     }

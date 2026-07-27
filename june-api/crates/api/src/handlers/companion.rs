@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    hash::Hash,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -54,8 +55,10 @@ const MAX_PENDING_PAIRINGS_PER_USER: usize = 8;
 const MAX_PENDING_PAIRINGS_TOTAL: usize = 4_096;
 const MAX_ACTIVE_DEVICES_PER_USER: usize = 32;
 const MAX_PROOF_REQUESTS_PER_MINUTE: usize = 30;
+const MAX_PROOF_REQUESTS_PER_IP_PER_MINUTE: usize = 120;
 const MAX_RECONNECTS_PER_MINUTE: usize = 30;
 const MAX_PROOF_RATE_KEYS: usize = 4_096;
+const MAX_PROOF_IP_RATE_KEYS: usize = 4_096;
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 pub(crate) struct CompanionRelay {
@@ -65,16 +68,66 @@ pub(crate) struct CompanionRelay {
     push: Option<ApnsClient>,
 }
 
-#[derive(Default)]
 struct RelayState {
     pairings: HashMap<Uuid, Pairing>,
     devices: HashMap<Uuid, Device>,
     links: HashSet<DeviceLink>,
     connections: HashMap<Uuid, Connection>,
     last_push_at: HashMap<Uuid, Instant>,
-    proof_request_times: HashMap<Uuid, VecDeque<Instant>>,
+    proof_requests_by_pairing: BoundedRateLimiter<Uuid>,
+    proof_requests_by_ip: BoundedRateLimiter<String>,
     reconnect_times: HashMap<Uuid, VecDeque<Instant>>,
     message_times: HashMap<Uuid, VecDeque<Instant>>,
+}
+
+struct BoundedRateLimiter<K> {
+    request_times: HashMap<K, VecDeque<Instant>>,
+    least_recently_used: VecDeque<K>,
+    request_limit: usize,
+    max_keys: usize,
+}
+
+impl<K> BoundedRateLimiter<K>
+where
+    K: Clone + Eq + Hash,
+{
+    fn new(request_limit: usize, max_keys: usize) -> Self {
+        Self {
+            request_times: HashMap::new(),
+            least_recently_used: VecDeque::new(),
+            request_limit,
+            max_keys,
+        }
+    }
+
+    fn allow(&mut self, key: K, now: Instant) -> bool {
+        self.request_times.retain(|_, times| {
+            prune_request_times(times, now);
+            !times.is_empty()
+        });
+        let live_keys = &self.request_times;
+        self.least_recently_used
+            .retain(|candidate| live_keys.contains_key(candidate));
+
+        if !self.request_times.contains_key(&key) {
+            while self.request_times.len() >= self.max_keys {
+                let Some(oldest) = self.least_recently_used.pop_front() else {
+                    return false;
+                };
+                self.request_times.remove(&oldest);
+            }
+        }
+
+        let allowed = allow_within_window(
+            self.request_times.entry(key.clone()).or_default(),
+            self.request_limit,
+            now,
+        );
+        self.least_recently_used
+            .retain(|candidate| candidate != &key);
+        self.least_recently_used.push_back(key);
+        allowed
+    }
 }
 
 #[derive(Clone)]
@@ -552,17 +605,21 @@ fn allow_message(times: &mut VecDeque<Instant>) -> bool {
 }
 
 fn allow_within_window(times: &mut VecDeque<Instant>, limit: usize, now: Instant) -> bool {
+    prune_request_times(times, now);
+    if times.len() >= limit {
+        return false;
+    }
+    times.push_back(now);
+    true
+}
+
+fn prune_request_times(times: &mut VecDeque<Instant>, now: Instant) {
     while times
         .front()
         .is_some_and(|at| now.duration_since(*at) >= Duration::from_mins(1))
     {
         times.pop_front();
     }
-    if times.len() >= limit {
-        return false;
-    }
-    times.push_back(now);
-    true
 }
 
 fn validate_device(public_key: &[u8], display_name: &str) -> Result<[u8; 32], ApiError> {
@@ -615,7 +672,14 @@ impl CompanionRelay {
                 links,
                 connections: HashMap::new(),
                 last_push_at: HashMap::new(),
-                proof_request_times: HashMap::new(),
+                proof_requests_by_pairing: BoundedRateLimiter::new(
+                    MAX_PROOF_REQUESTS_PER_MINUTE,
+                    MAX_PROOF_RATE_KEYS,
+                ),
+                proof_requests_by_ip: BoundedRateLimiter::new(
+                    MAX_PROOF_REQUESTS_PER_IP_PER_MINUTE,
+                    MAX_PROOF_IP_RATE_KEYS,
+                ),
                 reconnect_times: HashMap::new(),
                 message_times: HashMap::new(),
             }),
@@ -633,31 +697,21 @@ impl CompanionRelay {
         }
     }
 
-    pub(crate) fn admit_proof_request(&self, pairing_id: Uuid) -> bool {
+    pub(crate) fn admit_proof_request(&self, pairing_id: Uuid, client_ip: String) -> bool {
         let now = Instant::now();
         let mut state = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        state.proof_request_times.retain(|_, times| {
-            while times
-                .front()
-                .is_some_and(|at| now.duration_since(*at) >= Duration::from_mins(1))
-            {
-                times.pop_front();
-            }
-            !times.is_empty()
-        });
-        if !state.proof_request_times.contains_key(&pairing_id)
-            && state.proof_request_times.len() >= MAX_PROOF_RATE_KEYS
-        {
+        if !state.proof_requests_by_ip.allow(client_ip, now) {
             return false;
         }
-        allow_within_window(
-            state.proof_request_times.entry(pairing_id).or_default(),
-            MAX_PROOF_REQUESTS_PER_MINUTE,
-            now,
-        )
+
+        prune_pairings(&mut state, now_ms());
+        if !state.pairings.contains_key(&pairing_id) {
+            return true;
+        }
+        state.proof_requests_by_pairing.allow(pairing_id, now)
     }
 
     fn admit_reconnect(&self, device_id: Uuid) -> bool {
@@ -1908,11 +1962,73 @@ RIka62gMy7ZimPaKaOpY0TuAiZjxiQ7MsSwyGrt766jyZ3XWBg3s4tWO\n\
     #[test]
     fn proof_admission_is_bounded_before_body_parsing() {
         let relay = CompanionRelay::default();
-        let pairing_id = Uuid::new_v4();
+        let desktop = Uuid::new_v4();
+        let pairing_id = relay
+            .create_pairing(
+                user(),
+                device(desktop, [1; SECRET_BYTES], "Mac"),
+                [3; SECRET_BYTES],
+            )
+            .unwrap()
+            .pairing_id;
         for _ in 0..MAX_PROOF_REQUESTS_PER_MINUTE {
-            assert!(relay.admit_proof_request(pairing_id));
+            assert!(relay.admit_proof_request(pairing_id, "198.51.100.1".to_string()));
         }
-        assert!(!relay.admit_proof_request(pairing_id));
+        assert!(!relay.admit_proof_request(pairing_id, "198.51.100.1".to_string()));
+    }
+
+    #[test]
+    fn proof_admission_limits_each_client_ip_before_pairing_keys() {
+        let relay = CompanionRelay::default();
+        for _ in 0..MAX_PROOF_REQUESTS_PER_IP_PER_MINUTE {
+            assert!(relay.admit_proof_request(Uuid::new_v4(), "198.51.100.2".to_string()));
+        }
+        assert!(!relay.admit_proof_request(Uuid::new_v4(), "198.51.100.2".to_string()));
+    }
+
+    #[test]
+    fn random_pairing_ids_cannot_starve_a_real_pairing() {
+        let relay = CompanionRelay::default();
+        let desktop = Uuid::new_v4();
+        let real_pairing_id = relay
+            .create_pairing(
+                user(),
+                device(desktop, [1; SECRET_BYTES], "Mac"),
+                [3; SECRET_BYTES],
+            )
+            .unwrap()
+            .pairing_id;
+
+        for _ in 0..MAX_PROOF_RATE_KEYS {
+            let _ = relay.admit_proof_request(Uuid::new_v4(), "203.0.113.9".to_string());
+        }
+
+        assert!(relay.admit_proof_request(real_pairing_id, "198.51.100.3".to_string()));
+        let state = relay
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.proof_requests_by_pairing.request_times.len(), 1);
+        assert!(
+            state
+                .proof_requests_by_pairing
+                .request_times
+                .contains_key(&real_pairing_id)
+        );
+    }
+
+    #[test]
+    fn bounded_rate_limiter_evicts_the_least_recently_used_key() {
+        let mut limiter = BoundedRateLimiter::new(10, 2);
+        let now = Instant::now();
+        assert!(limiter.allow("oldest", now));
+        assert!(limiter.allow("recent", now));
+        assert!(limiter.allow("oldest", now));
+        assert!(limiter.allow("new", now));
+
+        assert!(limiter.request_times.contains_key("oldest"));
+        assert!(limiter.request_times.contains_key("new"));
+        assert!(!limiter.request_times.contains_key("recent"));
     }
 
     #[test]
