@@ -113,9 +113,10 @@ body:active {
 
 /* End-of-meeting card --------------------------------------------------- */
 
-/* The auto-stop grace period grows the pill into a card, shown top-right,
+/* The auto-stop grace period grows the pill into a card, shown top-center,
  * notification-style, and only while June is inactive (the record dock's
- * inline notice owns the frontmost case). Surface discipline matches the
+ * inline notice owns the frontmost case; top-center keeps clear of the agent
+ * HUD's top-right home). Surface discipline matches the
  * compact pill: the frost is a native NSVisualEffectView that meeting_hud.rs
  * reframes to the card, and depth is the native NSWindow shadow — no CSS
  * border or shadow. The shimmering June mark stays (recording is still live

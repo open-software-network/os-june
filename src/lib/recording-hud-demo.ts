@@ -57,7 +57,7 @@ const HELP = [
   '"end" in the dev app arms the REAL meeting-end countdown on the live',
   "recording (start one first): the record dock shows the draining notice",
   "while June is frontmost, and backgrounding June pops the native card",
-  "top-right; Keep/Stop/expiry drive the actual session — Stop now and the",
+  "top-center; Keep/Stop/expiry drive the actual session — Stop now and the",
   '15s lapse genuinely finish the recording; "clear" suppresses it like Keep',
   "recording. On the standalone page the same card is faked in place and the",
   "seconds arg works.",

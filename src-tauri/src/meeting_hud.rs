@@ -584,8 +584,10 @@ fn position_window(app: &AppHandle, hud: &WebviewWindow) {
     }
 }
 
-/// Top-right of the work area, notification-style — the card only appears
-/// while June is inactive, so it should land where transient system alerts do.
+/// Top-center of the work area, notification-style — the card only appears
+/// while June is inactive, so it should land like a transient alert. Centered,
+/// not top-right: the agent HUD's default anchor is the top-right corner
+/// (agent_hud.rs), and the card must never cover a running session HUD.
 fn position_end_prompt(hud: &WebviewWindow) {
     const MARGIN: i32 = 16;
     let scale = hud.scale_factor().unwrap_or(1.0);
@@ -600,7 +602,7 @@ fn position_end_prompt(hud: &WebviewWindow) {
         return;
     };
     let work = monitor.work_area();
-    let x = work.position.x + work.size.width as i32 - width - MARGIN;
+    let x = work.position.x + (work.size.width as i32 - width) / 2;
     let y = work.position.y + MARGIN;
     let _ = hud.set_position(PhysicalPosition::new(x, y));
 }
