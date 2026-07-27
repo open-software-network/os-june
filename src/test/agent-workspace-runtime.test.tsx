@@ -285,6 +285,85 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByRole("button", { name: "Open session" })).toBeVisible();
   });
 
+  it("does not create another Home task when the user acknowledges a handoff", async () => {
+    const user = userEvent.setup();
+    const homeSession: AgentSessionDto = {
+      ...session,
+      id: "home-ack-session",
+      title: "Home",
+      workspacePath: "/tmp/home-ack-session",
+    };
+    const focusedSession: AgentSessionDto = {
+      ...newSession,
+      id: "focused-wine-session",
+      title: "Wine research",
+      workspacePath: "/tmp/focused-wine-session",
+    };
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "list_agent_sessions") return [homeSession, focusedSession];
+      if (command === "get_agent_session") return homeSession;
+      if (command === "list_agent_items" || command === "list_agent_artifacts") return [];
+      if (command === "list_agent_skills") return [];
+      if (command === "list_venice_models") {
+        return {
+          mode: "generation",
+          selectedModel: "open-software/auto",
+          modelType: "text",
+          models: [],
+        };
+      }
+      if (command === "provider_model_settings") {
+        return {
+          settings: { costQuality: 20 },
+          effectiveSettings: { veniceApiKeyConfigured: false },
+        };
+      }
+      if (command === "june_home_chat") {
+        return {
+          task: {
+            title: "Wine research",
+            prompt: "Research good wines near southern France.",
+          },
+        };
+      }
+      if (command === "create_agent_session") return focusedSession;
+      if (command === "start_agent_run") {
+        return {
+          id: "focused-run",
+          sessionId: focusedSession.id,
+          status: "running",
+          model: "fast",
+        };
+      }
+      return undefined;
+    });
+
+    render(<AgentWorkspace homeMode initialSession={homeSession} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Research good wines near southern France");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByRole("button", { name: "Open session" })).toBeVisible();
+    await waitFor(() =>
+      expect(
+        mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+      ).toHaveLength(1),
+    );
+
+    const nextComposer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(nextComposer, "ok");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Got it.")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+  });
+
   it("repairs a stale Home mapping when its June-owned session is missing", async () => {
     writeJuneHomeStoredSessionId("default", "missing-home-session");
     mocks.invoke.mockImplementation(async (command: string) => {

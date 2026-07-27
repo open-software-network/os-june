@@ -80,6 +80,13 @@ direct thread while WebView storage allows it. If a storage quota rejects the
 full record, persistence retries with recent tails of 2,000, 1,000, and finally
 400 turns so the newest exchange is not lost.
 
+A short acknowledgement immediately after a successful handoff stays in Home
+and does not call the lightweight model or create another focused session. Each
+handoff also records its originating Home turn id, so replaying the same turn
+cannot create a second session under a rewritten title. Acknowledgements with
+additional work, such as "ok, compare prices too", continue through the normal
+conversation path.
+
 Each lightweight model request gets up to the newest 80 eligible messages or
 48,000 characters, whichever boundary comes first. It drops a leading orphan
 assistant turn if that window cuts through an exchange. From the older

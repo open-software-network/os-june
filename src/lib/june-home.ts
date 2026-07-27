@@ -416,6 +416,7 @@ export function withJuneHomeContext(prompt: string): string {
     "Keep quick answers, conversation, clarifying questions, and preference updates in Home.",
     "When a concrete request benefits from focused work or background execution, call the june_home start_task tool exactly once with a short title and a complete standalone prompt. Do not perform that focused task in Home after handing it off.",
     "After start_task returns, stop working on that task in Home. Reply with one short handoff acknowledgement only; the Home UI adds the session button. Never include findings, progress, or a second answer from the focused task in Home.",
+    "A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation. It does not request another task or session.",
     JUNE_HOME_CONTEXT_CLOSE,
     "",
     visiblePrompt,

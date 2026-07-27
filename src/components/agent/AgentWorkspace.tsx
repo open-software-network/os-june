@@ -136,7 +136,9 @@ import {
 import type { AgentChatTurn } from "../../lib/agent-chat-runtime";
 import {
   enqueueHomeDirectChat,
+  existingHomeTaskHandoffForSourceTurn,
   homeConversationContextFromTurns,
+  isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
   persistHomeDirectTurns,
@@ -1104,15 +1106,23 @@ export function AgentWorkspace({
     homeStoredSessionId: string,
     profile: string,
     taskAttachments: string[] = [],
+    sourceUserTurnId?: string,
   ) {
     const activeHomeSessionId = resolveJuneHomeThreadSessionId(homeStoredSessionId);
     if (!activeHomeSessionId) return;
     if (handledHomeTaskToolCallsRef.current.has(toolCallId)) return;
     const handoffId = `home-task-${toolCallId}`;
-    const existing = readHomeTaskHandoffs(homeStoredSessionId).find(
-      (handoff) => handoff.id === handoffId,
-    );
+    const storedHandoffs = readHomeTaskHandoffs(homeStoredSessionId);
+    const existing = storedHandoffs.find((handoff) => handoff.id === handoffId);
     if (existing && existing.status !== "failed") {
+      handledHomeTaskToolCallsRef.current.add(toolCallId);
+      return;
+    }
+    const existingForSourceTurn = existingHomeTaskHandoffForSourceTurn(
+      storedHandoffs,
+      sourceUserTurnId,
+    );
+    if (existingForSourceTurn) {
       handledHomeTaskToolCallsRef.current.add(toolCallId);
       return;
     }
@@ -1122,9 +1132,9 @@ export function AgentWorkspace({
       id: handoffId,
       status: "starting",
       profile,
+      ...(sourceUserTurnId ? { sourceUserTurnId } : {}),
       ...(taskAttachments.length ? { attachments: taskAttachments } : {}),
     };
-    const storedHandoffs = readHomeTaskHandoffs(homeStoredSessionId);
     const nextHandoffs = storedHandoffs.some((handoff) => handoff.id === handoffId)
       ? storedHandoffs.map((handoff) => (handoff.id === handoffId ? starting : handoff))
       : [...storedHandoffs, starting];
@@ -1208,6 +1218,7 @@ export function AgentWorkspace({
       homeStoredSessionId,
       handoff.profile ?? getCurrentDataPartitionName(),
       handoff.attachments ?? [],
+      handoff.sourceUserTurnId,
     );
   }
 
@@ -1246,7 +1257,28 @@ export function AgentWorkspace({
           })),
         ],
       };
-      commitHomeDirectTurns(storedSessionId, [...readHomeDirectTurns(storedSessionId), userTurn]);
+      const priorDirectTurns = readHomeDirectTurns(storedSessionId);
+      const acknowledgesTaskHandoff = isHomeTaskHandoffAcknowledgement(
+        message,
+        priorDirectTurns,
+        readHomeTaskHandoffs(storedSessionId),
+      );
+      commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+
+      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+        const assistantTurn: AgentChatTurn = {
+          id: `home:direct:assistant:${suffix}`,
+          role: "assistant",
+          createdAt: new Date().toISOString(),
+          status: "complete",
+          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+        };
+        const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
+        homeDirectTurnsRef.current = nextTurns;
+        setHomeDirectTurns(nextTurns);
+        setError(undefined);
+        return;
+      }
 
       // Attachments and commands need the full June tool/runtime context. Home
       // hands them to a focused session deterministically instead of running a
@@ -1279,6 +1311,7 @@ export function AgentWorkspace({
           storedSessionId,
           profile,
           messageAttachments,
+          userTurn.id,
         );
         setError(undefined);
         return;
@@ -1364,6 +1397,8 @@ export function AgentWorkspace({
             conversation,
             storedSessionId as string,
             profile,
+            [],
+            userTurn.id,
           );
         }
       });
