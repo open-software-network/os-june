@@ -48,6 +48,7 @@ export type AgentRunDto = {
   sessionId: string;
   status: AgentRunStatus;
   model: string;
+  lastSequence?: number;
   reasoningEffort?: "minimal" | "medium" | "high";
   startedAt?: string;
   completedAt?: string;
