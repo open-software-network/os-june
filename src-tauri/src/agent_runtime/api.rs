@@ -1343,6 +1343,13 @@ async fn resolve_agent_interruption_inner(
         .request("run.resume", &session.id, &run.id, params)
         .await
     {
+        if is_duplicate_resume_error(&error) {
+            return Ok(run_json(
+                repository
+                    .update_run_status(&run.id, "running", None, None, None)
+                    .await?,
+            ));
+        }
         let restore_result: Result<bool, sqlx::Error> = async {
             let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
             let run_restored = sqlx::query::query(
@@ -1444,6 +1451,10 @@ fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|model| crate::june_api::is_canonical_agent_model(model))
+}
+
+fn is_duplicate_resume_error(error: &AppError) -> bool {
+    error.code == "agent_runtime_request_failed" && error.message == "Run is already active"
 }
 
 async fn mark_dispatch_failed(repository: &AgentRepository, run_id: &str, error: &AppError) {
@@ -2427,6 +2438,22 @@ mod tests {
             None
         );
         assert_eq!(resolved_model_from_usage(None), None);
+    }
+
+    #[test]
+    fn only_the_sidecar_duplicate_resume_error_is_idempotent() {
+        assert!(is_duplicate_resume_error(&AppError::new(
+            "agent_runtime_request_failed",
+            "Run is already active",
+        )));
+        assert!(!is_duplicate_resume_error(&AppError::new(
+            "agent_runtime_request_failed",
+            "Run is already active after a worker crash",
+        )));
+        assert!(!is_duplicate_resume_error(&AppError::new(
+            "agent_runtime_request_timed_out",
+            "Run is already active",
+        )));
     }
 
     #[test]
