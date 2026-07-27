@@ -19,6 +19,7 @@ export type AgentRuntimeProjection = {
   lastSequenceByRun: Record<string, number>;
   processedEventIds: Set<string>;
   textDeltasByItem: Record<string, Array<{ sequence: number; delta: string }>>;
+  eventsByRun: Record<string, AgentRuntimeEvent[]>;
 };
 
 export function createAgentRuntimeProjection(
@@ -31,6 +32,7 @@ export function createAgentRuntimeProjection(
     lastSequenceByRun: {},
     processedEventIds: new Set(),
     textDeltasByItem: {},
+    eventsByRun: {},
   };
 }
 
@@ -46,62 +48,19 @@ export function mergeAgentRuntimeSnapshot(
 ): AgentRuntimeProjection {
   const snapshot = createAgentRuntimeProjection(input);
   const run = input.run;
-  if (!run) return snapshot;
-  const activeRun = run.status === "running" || run.status === "waiting_for_user";
-
-  const snapshotSequence =
-    run.lastSequence ??
-    snapshot.items.reduce((latest, item) => Math.max(latest, item.sequence), -1);
-  const textDeltasByItem: AgentRuntimeProjection["textDeltasByItem"] = {};
-  for (const [key, deltas] of Object.entries(current.textDeltasByItem)) {
-    if (!key.startsWith(`${run.id}:`)) continue;
-    const pending = deltas
-      .filter((delta) => activeRun && delta.sequence > snapshotSequence)
-      .sort((a, b) => a.sequence - b.sequence);
-    if (pending.length > 0) textDeltasByItem[key] = pending;
-  }
-  const newerItems = current.items.filter((item) => {
-    if (item.sessionId !== input.session.id || item.runId !== run.id) return false;
-    if (activeRun) return item.sequence > snapshotSequence;
-    const persisted = snapshot.items.find((candidate) => candidate.id === item.id);
-    return !persisted || item.sequence > persisted.sequence;
-  });
-  let items = snapshot.items;
-  for (const newerItem of newerItems) {
-    const persisted = items.find((item) => item.id === newerItem.id);
-    if (
-      persisted &&
-      (persisted.kind === "message" || persisted.kind === "reasoning") &&
-      persisted.kind === newerItem.kind &&
-      newerItem.status === "streaming"
-    ) {
-      const deltas = textDeltasByItem[textDeltaKey(run.id, newerItem.id)] ?? [];
-      items = upsertItem(items, {
-        ...newerItem,
-        text: persisted.text + deltas.map((delta) => delta.delta).join(""),
-      });
-    } else {
-      items = upsertItem(items, newerItem);
-    }
-  }
-
-  const currentRun = current.run?.id === run.id ? current.run : undefined;
-  const currentRunFinished =
-    currentRun &&
-    (currentRun.status === "completed" ||
-      currentRun.status === "cancelled" ||
-      currentRun.status === "failed");
-  return {
+  if (!run || run.lastSequence === undefined) return snapshot;
+  const snapshotSequence = run.lastSequence;
+  let merged: AgentRuntimeProjection = {
     ...snapshot,
-    run: currentRunFinished ? currentRun : run,
-    items,
     lastSequenceByRun: {
-      ...snapshot.lastSequenceByRun,
-      [run.id]: Math.max(snapshotSequence, current.lastSequenceByRun[run.id] ?? -1),
+      [run.id]: snapshotSequence,
     },
-    processedEventIds: new Set(current.processedEventIds),
-    textDeltasByItem,
   };
+  const pendingEvents = (current.eventsByRun[run.id] ?? [])
+    .filter((event) => event.sequence > snapshotSequence)
+    .sort((left, right) => left.sequence - right.sequence);
+  for (const event of pendingEvents) merged = applyAgentRuntimeEvent(merged, event);
+  return merged;
 }
 
 export function applyAgentRuntimeEvent(
@@ -120,6 +79,10 @@ export function applyAgentRuntimeEvent(
     lastSequenceByRun: { ...projection.lastSequenceByRun, [event.runId]: event.sequence },
     processedEventIds: new Set(projection.processedEventIds).add(event.eventId),
     textDeltasByItem: { ...projection.textDeltasByItem },
+    eventsByRun: {
+      ...projection.eventsByRun,
+      [event.runId]: [...(projection.eventsByRun[event.runId] ?? []), event],
+    },
   };
 
   switch (event.method) {

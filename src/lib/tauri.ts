@@ -67,6 +67,11 @@ export async function juneHomeChat(
 export const agentRuntimeBindings: AgentRuntimeBindings = {
   listSessions: () => invoke<AgentSessionDto[]>("list_agent_sessions"),
   getSession: (sessionId) => invoke<AgentSessionDto>("get_agent_session", { sessionId }),
+  getSnapshot: (sessionId) =>
+    invoke<{ session: AgentSessionDto; run?: AgentRunDto; items: AgentItemDto[] }>(
+      "get_agent_session_snapshot",
+      { sessionId },
+    ),
   getLatestRun: (sessionId) => invoke<AgentRunDto | null>("get_latest_agent_run", { sessionId }),
   compactSession: (sessionId) =>
     invoke<{ compacted: boolean; removedItems: number; estimatedTokens?: number }>(

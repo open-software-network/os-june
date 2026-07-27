@@ -81,20 +81,16 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
 
   const hydrate = useCallback(async (sessionId: string) => {
-    const [session, items, latestRun] = await Promise.all([
-      agentRuntimeBindings.getSession(sessionId),
-      agentRuntimeBindings.listItems(sessionId),
-      agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
-    ]);
+    const snapshot = agentRuntimeBindings.getSnapshot
+      ? await agentRuntimeBindings.getSnapshot(sessionId)
+      : await Promise.all([
+          agentRuntimeBindings.getSession(sessionId),
+          agentRuntimeBindings.listItems(sessionId),
+          agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
+        ]).then(([session, items, run]) => ({ session, items, run: run ?? undefined }));
     if (sessionIdRef.current !== sessionId) return;
-    setProjection((current) =>
-      mergeAgentRuntimeSnapshot(current, {
-        session,
-        items,
-        run: latestRun ?? undefined,
-      }),
-    );
-    setModel(session.model || DEFAULT_MODEL);
+    setProjection((current) => mergeAgentRuntimeSnapshot(current, snapshot));
+    setModel(snapshot.session.model || DEFAULT_MODEL);
   }, []);
 
   useEffect(() => {

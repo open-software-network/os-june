@@ -97,6 +97,30 @@ pub async fn get_agent_session(app: AppHandle, session_id: String) -> Result<Val
 }
 
 #[tauri::command]
+pub async fn get_agent_session_snapshot(
+    app: AppHandle,
+    session_id: String,
+) -> Result<Value, AppError> {
+    let (session, run, items) = repository(&app)
+        .await?
+        .session_snapshot(&session_id)
+        .await?;
+    let active_run_id = run
+        .as_ref()
+        .filter(|run| matches!(run.status.as_str(), "running" | "waiting_for_user"))
+        .map(|run| run.id.as_str());
+    let items = items
+        .into_iter()
+        .map(|item| item_json_with_active_run(item, active_run_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({
+        "session": session_json(session),
+        "run": run.map(run_json),
+        "items": items,
+    }))
+}
+
+#[tauri::command]
 pub async fn get_latest_agent_run(
     app: AppHandle,
     session_id: String,
@@ -1957,6 +1981,57 @@ mod tests {
             .expect("branch profile")
             .get("profile");
         assert_eq!(profile, "private");
+    }
+
+    #[tokio::test]
+    async fn session_snapshots_include_the_matching_run_watermark_and_items() {
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool);
+        let session = repository
+            .create_session("Snapshot", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .append_assistant_message_delta(
+                &session.id,
+                &run.id,
+                7,
+                "Current response",
+                "assistant:run-1",
+            )
+            .await
+            .expect("assistant delta");
+
+        let (snapshot_session, snapshot_run, snapshot_items) = repository
+            .session_snapshot(&session.id)
+            .await
+            .expect("snapshot");
+
+        assert_eq!(snapshot_session.id, session.id);
+        assert_eq!(
+            snapshot_run.as_ref().map(|run| run.id.as_str()),
+            Some(run.id.as_str())
+        );
+        assert_eq!(snapshot_run.map(|run| run.last_sequence), Some(7));
+        assert_eq!(snapshot_items.len(), 1);
+        assert_eq!(snapshot_items[0].run_id.as_deref(), Some(run.id.as_str()));
+        assert!(matches!(
+            &snapshot_items[0].payload,
+            AgentItemPayload::AssistantMessage(message) if message.content == "Current response"
+        ));
     }
 
     #[test]

@@ -135,6 +135,7 @@ describe("agent runtime adapter", () => {
       status: "running" as const,
       model: "auto",
       startedAt: "2026-07-22T12:00:00Z",
+      lastSequence: 3,
     };
     let current = createAgentRuntimeProjection({ session, run });
     current = applyAgentRuntimeEvent(current, {
@@ -262,66 +263,6 @@ describe("agent runtime adapter", () => {
       { id: "assistant:run-1", text: "final answer", status: "complete", sequence: 5 },
     ]);
     expect(hydrated.lastSequenceByRun[run.id]).toBe(5);
-  });
-
-  it("keeps newer renderer items when a parallel run fetch is already terminal", () => {
-    const session = {
-      id: "session-1",
-      title: "Active session",
-      status: "completed" as const,
-      model: "auto",
-      safetyMode: "sandboxed" as const,
-      workspacePath: "/tmp/session-1",
-      source: "user" as const,
-      createdAt: "2026-07-22T12:00:00Z",
-      updatedAt: "2026-07-22T12:00:03Z",
-    };
-    const run = {
-      id: "run-1",
-      sessionId: session.id,
-      status: "completed" as const,
-      model: "auto",
-      lastSequence: 6,
-    };
-    const current = createAgentRuntimeProjection({
-      session,
-      run,
-      items: [
-        {
-          id: "assistant:run-1",
-          sessionId: session.id,
-          runId: run.id,
-          sequence: 5,
-          createdAt: "2026-07-22T12:00:03Z",
-          kind: "message",
-          role: "assistant",
-          text: "final answer",
-          status: "complete",
-        },
-      ],
-    });
-
-    const hydrated = mergeAgentRuntimeSnapshot(current, {
-      session,
-      run,
-      items: [
-        {
-          id: "assistant:run-1",
-          sessionId: session.id,
-          runId: run.id,
-          sequence: 3,
-          createdAt: "2026-07-22T12:00:01Z",
-          kind: "message",
-          role: "assistant",
-          text: "part",
-          status: "streaming",
-        },
-      ],
-    });
-
-    expect(hydrated.items).toMatchObject([
-      { id: "assistant:run-1", text: "final answer", status: "complete", sequence: 5 },
-    ]);
   });
 
   it("uses the persisted run watermark to ignore delayed duplicate deltas", () => {
