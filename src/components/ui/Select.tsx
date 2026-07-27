@@ -143,8 +143,10 @@ export function Select({
   onChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
-  /** Match the trigger for compact option sets such as the accent presets. */
-  popoverWidth?: "content" | "trigger";
+  /** Match the trigger for compact option sets such as the accent presets, or
+   * an explicit minimum px width for triggers that hug their content (ghost
+   * filter triggers), where neither the trigger nor the 260px default fits. */
+  popoverWidth?: "content" | "trigger" | number;
 }) {
   const [open, setOpen] = useState(false);
   const [placement, setPlacement] = useState<SelectPopoverPlacement>("align-selected");
@@ -213,7 +215,11 @@ export function Select({
   const horizontalStyle = anchor
     ? selectPopoverHorizontalStyle(
         anchor,
-        popoverWidth === "trigger" ? Math.max(anchor.width, 1) : POPOVER_MIN_WIDTH,
+        typeof popoverWidth === "number"
+          ? popoverWidth
+          : popoverWidth === "trigger"
+            ? Math.max(anchor.width, 1)
+            : POPOVER_MIN_WIDTH,
       )
     : undefined;
   const fixedStyle: CSSProperties | undefined =

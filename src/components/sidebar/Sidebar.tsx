@@ -21,7 +21,7 @@ import { IconMoveFolder } from "central-icons/IconMoveFolder";
 import { IconNoteText } from "central-icons/IconNoteText";
 import { IconPencil } from "central-icons/IconPencil";
 import { IconPin } from "central-icons/IconPin";
-import { IconCircleCheck } from "central-icons/IconCircleCheck";
+import { IconArchive } from "central-icons/IconArchive";
 import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
 import { IconPhone } from "central-icons/IconPhone";
@@ -78,6 +78,11 @@ import {
   osAccountsReferralSummary,
 } from "../../lib/tauri";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
+import {
+  SIDEBAR_DEMO_SESSIONS_EVENT,
+  type SidebarDemoSessionsDetail,
+} from "../../lib/completed-sessions-demo-ids";
+import { useClampedMenuTop } from "../../lib/use-clamped-menu-top";
 import { useCurrentDataPartitionName } from "../../lib/data-partition";
 import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
@@ -158,8 +163,9 @@ type SidebarProps = {
   /** Project membership per stored session id; drives the session menu's
    * project items (optional so tests can skip the plumbing). */
   sessionFolderIds?: Record<string, string[]>;
-  /** stored session id -> completed_at ISO. Completed sessions are filed under
-   * a collapsible Completed section instead of the active list. */
+  /** stored session id -> completed_at ISO (JUN-203). "Archived" is the
+   * user-facing term; archived sessions leave the sidebar entirely and live
+   * under the sessions page's Archived status filter. */
   completedSessionIds?: Record<string, string>;
   onToggleSessionCompleted?: (sessionId: string, completed: boolean) => void;
   onOpenSessionMoveDialog?: (sessionId: string) => void;
@@ -388,7 +394,6 @@ export function Sidebar({
   const [pinnedAgentSessionIds, setPinnedAgentSessionIds] = useState<Set<string>>(() =>
     readPinnedAgentSessionIds(),
   );
-  const [completedCollapsed, setCompletedCollapsed] = useState(true);
   const [selectedAgentSessionId, setSelectedAgentSessionId] = useState<string>();
   const [agentSessionToDelete, setAgentSessionToDelete] = useState<AgentSessionDto | null>(null);
   const [agentSessionDeleteError, setAgentSessionDeleteError] = useState<string | null>(null);
@@ -472,10 +477,7 @@ export function Sidebar({
   );
   const pinnedAgentSessions = sidebarSessionLists.pinned;
   const visibleAgentSessions = sidebarSessionLists.visible;
-  const completedAgentSessions = sidebarSessionLists.completed;
   const hasMorePinnedAgentSessions = sidebarSessionLists.pinnedTotal > pinnedAgentSessions.length;
-  const hasMoreCompletedAgentSessions =
-    sidebarSessionLists.completedTotal > completedAgentSessions.length;
 
   async function loadReferralSummary() {
     if (!account.signedIn || account.localDev) return;
@@ -833,6 +835,24 @@ export function Sidebar({
     waitingAgentSessionIds,
     workingAgentSessionIds,
   ]);
+
+  // __completedDemo (lib/completed-sessions-demo.ts) seeds sessions here too,
+  // since the sidebar owns its local list. Unmapped demo ids resolve to the
+  // "default" partition, so a null partition map just becomes empty.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const onDemoSessions = (event: Event) => {
+      const detail = (event as CustomEvent<SidebarDemoSessionsDetail>).detail;
+      if (!detail?.clearPrefix) return;
+      setAgentSessions((current) => [
+        ...current.filter((session) => !session.id.startsWith(detail.clearPrefix)),
+        ...(detail.sessions ?? []),
+      ]);
+      if (detail.sessions?.length) setSessionPartitions((prev) => prev ?? {});
+    };
+    window.addEventListener(SIDEBAR_DEMO_SESSIONS_EVENT, onDemoSessions);
+    return () => window.removeEventListener(SIDEBAR_DEMO_SESSIONS_EVENT, onDemoSessions);
+  }, []);
 
   function dispatchAgentEvent<T>(name: string, detail?: T) {
     window.setTimeout(() => {
@@ -1325,61 +1345,6 @@ export function Sidebar({
               </div>
             </div>
           </section>
-
-          {completedAgentSessions.length > 0 ? (
-            <section
-              className="sidebar-section sidebar-completed-section"
-              aria-label="Completed agent sessions"
-            >
-              <div className="section-title section-title-with-action">
-                <button
-                  type="button"
-                  className="section-title-label section-title-open"
-                  aria-expanded={!completedCollapsed}
-                  onClick={() => setCompletedCollapsed((v) => !v)}
-                >
-                  Completed
-                </button>
-                <span className="sidebar-section-title-meta">
-                  <span className="folders-count">{sidebarSessionLists.completedTotal}</span>
-                  {hasMoreCompletedAgentSessions ? (
-                    <button
-                      type="button"
-                      className="section-view-all"
-                      onClick={() => onChangeView("agent-sessions")}
-                    >
-                      View all
-                    </button>
-                  ) : null}
-                </span>
-              </div>
-              {completedCollapsed ? null : (
-                <div className="notes-nav sidebar-completed-list">
-                  {completedAgentSessions.map((session) => (
-                    <AgentSessionRow
-                      key={session.id}
-                      session={session}
-                      selected={activeView === "agent" && selectedAgentSessionId === session.id}
-                      working={workingAgentSessionIds.has(session.id)}
-                      waiting={waitingAgentSessionIds.has(session.id)}
-                      unread={unreadAgentSessionIds.has(session.id)}
-                      deleting={deletingAgentSessionIds.has(session.id)}
-                      renaming={renamingAgentSessionId === session.id}
-                      dateFormat={dateFormat}
-                      menuOpen={menu?.kind === "agent-session" && menu.sessionId === session.id}
-                      onSelect={() => {
-                        setSelectedAgentSessionId(session.id);
-                        onSelectAgentSession(session);
-                      }}
-                      onRename={(title) => onRenameAgentSession(session.id, title)}
-                      onRenameEnd={() => setRenamingAgentSessionId(null)}
-                      onOpenMenu={(anchor) => openMenuForAgentSession(session.id, anchor)}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          ) : null}
         </>
       )}
 
@@ -1449,13 +1414,13 @@ export function Sidebar({
       {menu?.kind === "agent-session" && menuAgentSession ? (
         <AgentSessionContextMenu
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
-          completed={Boolean(completedSessionIds[menuAgentSession.id])}
+          archived={Boolean(completedSessionIds[menuAgentSession.id])}
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
           right={menu.right}
           top={menu.top}
           folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
-          onToggleCompleted={
+          onToggleArchived={
             onToggleSessionCompleted
               ? () =>
                   onToggleSessionCompleted(
@@ -2287,13 +2252,13 @@ function AgentSessionRow({
 
 function AgentSessionContextMenu({
   pinned,
-  completed,
+  archived,
   deleting,
   right,
   top,
   folderId,
   onTogglePinned,
-  onToggleCompleted,
+  onToggleArchived,
   onRename,
   onMoveToProject,
   onRemoveFromProject,
@@ -2301,50 +2266,28 @@ function AgentSessionContextMenu({
   onClose,
 }: {
   pinned: boolean;
-  completed: boolean;
+  archived: boolean;
   deleting: boolean;
   right: number;
   top: number;
   folderId?: string;
   onTogglePinned: () => void;
-  onToggleCompleted?: () => void;
+  onToggleArchived?: () => void;
   onRename: () => void;
   onMoveToProject?: () => void;
   onRemoveFromProject?: (folderId: string) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
+  const { ref, clampedTop } = useClampedMenuTop<HTMLDivElement>(top);
   return (
     <div
+      ref={ref}
       className="context-menu"
-      style={{ right, top }}
+      style={{ right, top: clampedTop }}
       role="menu"
       onClick={(event) => event.stopPropagation()}
     >
-      <button
-        type="button"
-        role="menuitem"
-        onClick={() => {
-          onTogglePinned();
-          onClose();
-        }}
-      >
-        {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
-        {pinned ? "Unpin session" : "Pin session"}
-      </button>
-      {onToggleCompleted ? (
-        <button
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            onToggleCompleted();
-            onClose();
-          }}
-        >
-          {completed ? <IconArrowUndoUp size={14} /> : <IconCircleCheck size={14} />}
-          {completed ? "Mark as active" : "Mark as complete"}
-        </button>
-      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -2354,7 +2297,18 @@ function AgentSessionContextMenu({
         }}
       >
         <IconPencil size={14} />
-        Rename session
+        Rename
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          onTogglePinned();
+          onClose();
+        }}
+      >
+        {pinned ? <IconUnpin size={14} /> : <IconPin size={14} />}
+        {pinned ? "Unpin" : "Pin"}
       </button>
       {onMoveToProject ? (
         <button
@@ -2382,6 +2336,19 @@ function AgentSessionContextMenu({
           Remove from project
         </button>
       ) : null}
+      {onToggleArchived ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onToggleArchived();
+            onClose();
+          }}
+        >
+          {archived ? <IconArrowUndoUp size={14} /> : <IconArchive size={14} />}
+          {archived ? "Unarchive" : "Archive"}
+        </button>
+      ) : null}
       <div className="context-menu-separator" role="separator" />
       <button
         type="button"
@@ -2394,7 +2361,7 @@ function AgentSessionContextMenu({
         }}
       >
         <IconTrashCan size={14} />
-        Delete session
+        Delete
       </button>
     </div>
   );
@@ -2439,11 +2406,13 @@ function NoteContextMenu({
   const note = notes.find((item) => item.id === noteId);
   const currentFolderId = note?.folderIds[0];
   const hasFolder = Boolean(currentFolderId);
+  const { ref, clampedTop } = useClampedMenuTop<HTMLDivElement>(top);
 
   return (
     <div
+      ref={ref}
       className="context-menu"
-      style={{ right, top }}
+      style={{ right, top: clampedTop }}
       role="menu"
       onClick={(event) => event.stopPropagation()}
     >

@@ -253,7 +253,7 @@ describe("folders UI", () => {
         name: "Actions for Fetch os platform issues",
       }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "Pin session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Pin" }));
 
     expect(screen.getByRole("region", { name: "Pinned agent sessions" })).toBeInTheDocument();
     expect(
@@ -268,7 +268,7 @@ describe("folders UI", () => {
         name: "Actions for Fetch os platform issues",
       }),
     );
-    await user.click(screen.getByRole("menuitem", { name: "Unpin session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
 
     expect(screen.queryByRole("region", { name: "Pinned agent sessions" })).toBeNull();
     expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe("[]");
@@ -450,7 +450,7 @@ describe("folders UI", () => {
     expect(await screen.findByText("Researching Google")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Actions for Researching Google" }));
-    await user.click(screen.getByRole("menuitem", { name: "Delete session" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog", {
       name: 'Delete "Researching Google"?',
     });

@@ -9849,16 +9849,14 @@ button.agent-user-attachment:hover {
   gap: var(--sp-1);
 }
 
-.sidebar-pinned-section,
-.sidebar-completed-section {
+.sidebar-pinned-section {
   flex: 0 0 auto;
 }
 
-/* Doubled class so these beat the later .notes-nav rule, whose height: 100%
+/* Doubled class so this beats the later .notes-nav rule, whose height: 100%
  * and 16px fade padding are meant for the open-ended agent list — the pinned
  * list hugs its rows instead. */
-.notes-nav.sidebar-pinned-list,
-.notes-nav.sidebar-completed-list {
+.notes-nav.sidebar-pinned-list {
   height: auto;
   max-height: var(--sidebar-pinned-list-max-h);
   overflow-y: auto;
@@ -9938,12 +9936,6 @@ button.agent-user-attachment:hover {
 .section-count {
   color: var(--muted-foreground);
   font-weight: 400;
-}
-
-.sidebar-section-title-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
 }
 
 .sidebar[data-collapsed="true"] .section-title-label,
@@ -10144,7 +10136,9 @@ button.agent-user-attachment:hover {
   height: var(--control-xs);
   padding: 0;
   border: 0;
-  border-radius: var(--r-xs);
+  /* Clickable icon square: --r-sm per the radius tiers in
+   * docs/design/conventions.md, even at 22px (--r-xs reads as a badge). */
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   opacity: 0;
@@ -10165,9 +10159,16 @@ button.agent-user-attachment:hover {
   opacity: 1;
 }
 
+/* The button sits on an already-hovered row (--sidebar-accent, which --muted
+ * nearly matches), so the nested hover is an overlay wash - stepped darker in
+ * light, lighter in dark (a black wash is invisible on near-black). */
 .note-row-menu:hover {
   background: oklch(0% 0 none / 6%);
   color: var(--foreground);
+}
+
+[data-theme="dark"] .note-row-menu:hover {
+  background: oklch(100% 0 none / 8%);
 }
 
 .note-row-menu:disabled {
@@ -22210,30 +22211,42 @@ button.memory-project:hover {
   gap: 2px;
 }
 
-.agent-sessions-completed {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-.agent-sessions-completed-toggle {
-  display: inline-flex;
-  align-items: baseline;
-  align-self: flex-start;
-  gap: var(--sp-2);
-  padding: 0;
-  border: 0;
+/* The status lens on the sessions page: a ghost select balanced against the
+ * search field on the controls row - no border, content-hugging, chevron snug
+ * against the label instead of the shared trigger's reserved chevron slot.
+ * Archived is the user-facing term for the persisted completed_at mark
+ * (JUN-203). */
+.agent-sessions-filter .select-trigger {
+  min-width: 0;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border-color: transparent;
   background: transparent;
   color: var(--muted-foreground);
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: 400;
-  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.agent-sessions-completed-toggle:hover,
-.agent-sessions-completed-toggle:focus-visible {
+.agent-sessions-filter .select-trigger:hover,
+.agent-sessions-filter .select-trigger[aria-expanded="true"] {
+  background: var(--sidebar-accent);
   color: var(--foreground);
+}
+
+.agent-sessions-filter .select-trigger > span:first-child {
+  flex: none;
+}
+
+.agent-sessions-filter .select-trigger svg {
+  position: static;
+  transform: none;
+}
+
+/* Archived rows recede when listed (the Archived and All lenses): the title
+ * drops to the muted voice so live work reads first. */
+.agent-session-row[data-archived] .folder-note-title {
+  color: var(--muted-foreground);
 }
 
 /* Flush edges, Granola-style: the row's hover/selected background box sits
