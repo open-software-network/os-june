@@ -38,6 +38,7 @@ import {
   type RefObject,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -103,6 +104,7 @@ import {
   type DateFormatPreference,
 } from "../../lib/date-format";
 import { buildSidebarSessionLists } from "./sidebar-session-lists";
+import { positionSidebarContextMenu, type SidebarContextMenuAnchor } from "./sidebar-context-menu";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
@@ -173,8 +175,8 @@ type SidebarProps = {
 };
 
 type MenuState =
-  | { kind: "note"; noteId: string; right: number; top: number }
-  | { kind: "agent-session"; sessionId: string; right: number; top: number };
+  | { kind: "note"; noteId: string; anchor: SidebarContextMenuAnchor }
+  | { kind: "agent-session"; sessionId: string; anchor: SidebarContextMenuAnchor };
 
 type CommandPromptItem = {
   id: string;
@@ -1001,20 +1003,19 @@ export function Sidebar({
     };
   }, []);
 
-  // Right-aligns the popover with the overflow button and parks it just
-  // below — keeps it tucked next to the trigger rather than flying off to
-  // the right. Clicking the same button again toggles it closed.
+  // Right-aligns the popover with the overflow button. The menu measures and
+  // flips itself above this anchor when there is not enough viewport below.
+  // Clicking the same button again toggles it closed.
   function openMenuForNote(noteId: string, anchor: HTMLElement) {
     if (menu?.kind === "note" && menu.noteId === noteId) {
       setMenu(null);
       return;
     }
-    const rect = anchor.getBoundingClientRect();
+    const { top, bottom, right } = anchor.getBoundingClientRect();
     setMenu({
       kind: "note",
       noteId,
-      right: window.innerWidth - rect.right,
-      top: rect.bottom + 4,
+      anchor: { top, bottom, right },
     });
   }
 
@@ -1023,12 +1024,11 @@ export function Sidebar({
       setMenu(null);
       return;
     }
-    const rect = anchor.getBoundingClientRect();
+    const { top, bottom, right } = anchor.getBoundingClientRect();
     setMenu({
       kind: "agent-session",
       sessionId,
-      right: window.innerWidth - rect.right,
-      top: rect.bottom + 4,
+      anchor: { top, bottom, right },
     });
   }
 
@@ -1437,8 +1437,7 @@ export function Sidebar({
       {menu?.kind === "note" ? (
         <NoteContextMenu
           noteId={menu.noteId}
-          right={menu.right}
-          top={menu.top}
+          anchor={menu.anchor}
           notes={notes}
           onOpenMoveDialog={onOpenMoveDialog}
           onRemoveNoteFromFolder={onRemoveNoteFromFolder}
@@ -1451,8 +1450,7 @@ export function Sidebar({
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
           completed={Boolean(completedSessionIds[menuAgentSession.id])}
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
-          right={menu.right}
-          top={menu.top}
+          anchor={menu.anchor}
           folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
           onToggleCompleted={
@@ -2289,8 +2287,7 @@ function AgentSessionContextMenu({
   pinned,
   completed,
   deleting,
-  right,
-  top,
+  anchor,
   folderId,
   onTogglePinned,
   onToggleCompleted,
@@ -2303,8 +2300,7 @@ function AgentSessionContextMenu({
   pinned: boolean;
   completed: boolean;
   deleting: boolean;
-  right: number;
-  top: number;
+  anchor: SidebarContextMenuAnchor;
   folderId?: string;
   onTogglePinned: () => void;
   onToggleCompleted?: () => void;
@@ -2315,12 +2311,7 @@ function AgentSessionContextMenu({
   onClose: () => void;
 }) {
   return (
-    <div
-      className="context-menu"
-      style={{ right, top }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-    >
+    <SidebarContextMenu anchor={anchor}>
       <button
         type="button"
         role="menuitem"
@@ -2396,7 +2387,7 @@ function AgentSessionContextMenu({
         <IconTrashCan size={14} />
         Delete session
       </button>
-    </div>
+    </SidebarContextMenu>
   );
 }
 
@@ -2419,8 +2410,7 @@ function formatSessionTime(iso: string, dateFormat: DateFormatPreference): strin
 
 function NoteContextMenu({
   noteId,
-  right,
-  top,
+  anchor,
   notes,
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
@@ -2428,8 +2418,7 @@ function NoteContextMenu({
   onClose,
 }: {
   noteId: string;
-  right: number;
-  top: number;
+  anchor: SidebarContextMenuAnchor;
   notes: NoteListItemDto[];
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
@@ -2441,12 +2430,7 @@ function NoteContextMenu({
   const hasFolder = Boolean(currentFolderId);
 
   return (
-    <div
-      className="context-menu"
-      style={{ right, top }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-    >
+    <SidebarContextMenu anchor={anchor}>
       <button
         type="button"
         role="menuitem"
@@ -2484,7 +2468,51 @@ function NoteContextMenu({
         <IconTrashCan size={14} />
         Delete note
       </button>
-    </div>
+    </SidebarContextMenu>
+  );
+}
+
+function SidebarContextMenu({
+  anchor,
+  children,
+}: {
+  anchor: SidebarContextMenuAnchor;
+  children: ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{ right: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const { width, height } = menu.getBoundingClientRect();
+    setPosition(
+      positionSidebarContextMenu(
+        anchor,
+        { width, height },
+        { width: window.innerWidth, height: window.innerHeight },
+      ),
+    );
+  }, [anchor]);
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="context-menu sidebar-context-menu"
+      style={
+        position
+          ? { right: position.right, top: position.top }
+          : {
+              right: window.innerWidth - anchor.right,
+              top: anchor.bottom + 4,
+              visibility: "hidden",
+            }
+      }
+      role="menu"
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 
