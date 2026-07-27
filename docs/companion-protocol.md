@@ -59,8 +59,9 @@ conflict.
 
 The only grants are notes read/edit, agent read/chat/cancel, safe settings
 read/edit, existing-recording state/pause/resume/stop, app focus, and
-self-device read/revoke. Body-to-capability equality is validated before
-dispatch.
+self-device read/revoke. Linked devices may also receive the separate
+`filesUpload` and `filesBrowse` grants described below. Body-to-capability
+equality is validated before dispatch.
 
 The encrypted `deviceGetSelf` result may include the Desktop's user-facing
 device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
@@ -92,7 +93,39 @@ content.
 
 There is no variant for arbitrary Tauri/Hermes calls, recording start, note
 delete, approvals, unrestricted mode, filesystem, shell, credentials,
-connectors, updates, account deletion, or adding a device.
+connectors, updates, account deletion, or adding a device. The bounded browse
+variants below are not a general filesystem capability and do not return file
+contents.
+
+## Attachments and granted Mac roots
+
+Phone attachments use `uploadBegin`, `uploadChunk`, and `uploadCommit` under
+`filesUpload`. Begin declares a UUID reservation id, UTF-8 file name, optional
+media type, exact byte count, and lowercase hexadecimal SHA-256. A file is at
+most 25 MiB and a raw chunk is at most 32 KiB. Offsets are contiguous. Commit
+returns a short-lived opaque attachment reference only after the byte count and
+digest match.
+
+Mac browsing uses `browseRootsList`, paginated `browseDirList`, and
+`browseFileStat` under `filesBrowse`. Roots exist only after the signed-in user
+selects a directory in June Desktop Settings. Requests carry an opaque root id
+and a relative path; responses contain bounded display labels, names, entry
+kinds, sizes, modification times, and cursors. `browseFileStat` mints a
+short-lived opaque Mac-file attachment reference. Absolute paths never cross
+the companion protocol.
+
+`agentSend` accepts an additive optional `attachmentReferenceIds` array of at
+most eight unique non-nil UUIDs. Legacy payloads without the field still decode
+and an empty array is omitted when encoding. Desktop resolves each reference
+for the authenticated account and linked device, revalidates a Mac target
+against a still-granted canonical root, and passes the local path to the normal
+agent attachment copier. There is no `fileRead`, download, write, move, delete,
+symlink traversal, hidden-file traversal, or implicit root in protocol v1.
+
+The maximum 32 KiB chunk expands to 43,692 base64 characters. A worst-case
+request frame encodes to 43,988 bytes, leaving 1,068 bytes below the 44 KiB
+plaintext ceiling. Existing Noise and relay-envelope ceilings therefore remain
+unchanged.
 
 ## Idempotency and reconnect
 

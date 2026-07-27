@@ -13,6 +13,13 @@ pub const MAX_RELAY_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const MAX_TEXT_BYTES: usize = 32 * 1024;
 pub const MAX_PAGE_SIZE: u16 = 100;
 pub const MAX_DEVICE_DISPLAY_NAME_BYTES: usize = 128;
+pub const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
+pub const MAX_UPLOAD_CHUNK_BYTES: usize = 32 * 1024;
+pub const MAX_ATTACHMENT_REFERENCES: usize = 8;
+pub const MAX_BROWSE_ROOTS: usize = 16;
+pub const MAX_FILE_NAME_BYTES: usize = 255;
+pub const MAX_MEDIA_TYPE_BYTES: usize = 127;
+pub const MAX_RELATIVE_PATH_BYTES: usize = 2 * 1024;
 pub const DEFAULT_CONTROL_TTL_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -27,6 +34,8 @@ pub enum Capability {
     SettingsEditSafe,
     RecordingControlExisting,
     AppFocus,
+    FilesUpload,
+    FilesBrowse,
     DevicesReadSelf,
     DevicesRevokeSelf,
 }
@@ -95,6 +104,21 @@ pub enum Body {
         page: PageRequest,
     },
     AgentSend(AgentSendRequest),
+    UploadBegin(UploadBeginRequest),
+    UploadChunk(UploadChunkRequest),
+    UploadCommit {
+        reservation_id: Uuid,
+    },
+    BrowseRootsList,
+    BrowseDirList {
+        root_id: Uuid,
+        relative_path: String,
+        page: PageRequest,
+    },
+    BrowseFileStat {
+        root_id: Uuid,
+        relative_path: String,
+    },
     AgentCancel {
         stored_session_id: String,
     },
@@ -125,6 +149,9 @@ impl Body {
             self,
             Self::NoteEdit(_)
                 | Self::AgentSend(_)
+                | Self::UploadBegin(_)
+                | Self::UploadChunk(_)
+                | Self::UploadCommit { .. }
                 | Self::AgentCancel { .. }
                 | Self::SettingsEditSafe(_)
                 | Self::RecordingPause { .. }
@@ -141,6 +168,12 @@ impl Body {
             Self::NoteEdit(_) => Capability::NotesEdit,
             Self::AgentSessionsList(_) | Self::AgentMessagesList { .. } => Capability::AgentRead,
             Self::AgentSend(_) => Capability::AgentChat,
+            Self::UploadBegin(_) | Self::UploadChunk(_) | Self::UploadCommit { .. } => {
+                Capability::FilesUpload
+            }
+            Self::BrowseRootsList | Self::BrowseDirList { .. } | Self::BrowseFileStat { .. } => {
+                Capability::FilesBrowse
+            }
             Self::AgentCancel { .. } => Capability::AgentCancel,
             Self::SettingsGet => Capability::SettingsRead,
             Self::SettingsEditSafe(_) => Capability::SettingsEditSafe,
@@ -181,6 +214,32 @@ impl Body {
             } => validate_id(note_id),
             Self::NoteEdit(request) => request.validate(),
             Self::AgentSend(request) => request.validate(),
+            Self::UploadBegin(request) => request.validate(),
+            Self::UploadChunk(request) => request.validate(),
+            Self::UploadCommit { reservation_id } if reservation_id.is_nil() => {
+                Err(ProtocolError::InvalidIdentifier)
+            }
+            Self::BrowseDirList {
+                root_id,
+                relative_path,
+                page,
+                ..
+            } => {
+                if root_id.is_nil() {
+                    return Err(ProtocolError::InvalidIdentifier);
+                }
+                validate_relative_path(relative_path, true)?;
+                page.validate()
+            }
+            Self::BrowseFileStat {
+                root_id,
+                relative_path,
+            } => {
+                if root_id.is_nil() {
+                    return Err(ProtocolError::InvalidIdentifier);
+                }
+                validate_relative_path(relative_path, false)
+            }
             Self::SettingsEditSafe(patch) if patch.is_empty() => Err(ProtocolError::EmptyPatch),
             Self::Event(Event::AgentDelta {
                 stored_session_id,
@@ -192,13 +251,13 @@ impl Body {
             Self::Event(Event::AgentStatus {
                 stored_session_id, ..
             }) => validate_id(stored_session_id),
-            Self::Response(Response {
-                result: ResultPayload::Device(device),
-                ..
-            }) => {
-                validate_text(&device.display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
-                if let Some(desktop_display_name) = &device.desktop_display_name {
-                    validate_text(desktop_display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
+            Self::Response(response) => {
+                response.validate()?;
+                if let ResultPayload::Device(device) = &response.result {
+                    validate_text(&device.display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
+                    if let Some(desktop_display_name) = &device.desktop_display_name {
+                        validate_text(desktop_display_name, MAX_DEVICE_DISPLAY_NAME_BYTES)?;
+                    }
                 }
                 Ok(())
             }
@@ -264,6 +323,8 @@ impl NoteEditRequest {
 pub struct AgentSendRequest {
     pub stored_session_id: Option<String>,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_reference_ids: Vec<Uuid>,
 }
 
 impl AgentSendRequest {
@@ -271,7 +332,66 @@ impl AgentSendRequest {
         if let Some(stored_session_id) = &self.stored_session_id {
             validate_id(stored_session_id)?;
         }
-        validate_text(&self.message, MAX_TEXT_BYTES)
+        validate_text(&self.message, MAX_TEXT_BYTES)?;
+        if self.attachment_reference_ids.len() > MAX_ATTACHMENT_REFERENCES
+            || self.attachment_reference_ids.iter().any(Uuid::is_nil)
+            || self
+                .attachment_reference_ids
+                .iter()
+                .enumerate()
+                .any(|(index, id)| self.attachment_reference_ids[..index].contains(id))
+        {
+            return Err(ProtocolError::InvalidAttachmentReferences);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadBeginRequest {
+    pub reservation_id: Uuid,
+    pub name: String,
+    pub media_type: Option<String>,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+impl UploadBeginRequest {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.reservation_id.is_nil() {
+            return Err(ProtocolError::InvalidIdentifier);
+        }
+        validate_file_name(&self.name)?;
+        validate_media_type(self.media_type.as_deref())?;
+        if self.size_bytes == 0 || self.size_bytes > MAX_UPLOAD_BYTES {
+            return Err(ProtocolError::UploadTooLarge);
+        }
+        validate_sha256(&self.sha256)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadChunkRequest {
+    pub reservation_id: Uuid,
+    pub offset_bytes: u64,
+    #[serde(with = "base64_bytes")]
+    pub bytes: Vec<u8>,
+}
+
+impl UploadChunkRequest {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.reservation_id.is_nil() {
+            return Err(ProtocolError::InvalidIdentifier);
+        }
+        if self.bytes.is_empty()
+            || self.bytes.len() > MAX_UPLOAD_CHUNK_BYTES
+            || self.offset_bytes.saturating_add(self.bytes.len() as u64) > MAX_UPLOAD_BYTES
+        {
+            return Err(ProtocolError::InvalidUploadChunk);
+        }
+        Ok(())
     }
 }
 
@@ -311,6 +431,40 @@ pub struct Response {
     pub result: ResultPayload,
 }
 
+impl Response {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        match &self.result {
+            ResultPayload::Upload(progress) => progress.validate(),
+            ResultPayload::BrowseRoots(roots) => {
+                if roots.len() > MAX_BROWSE_ROOTS {
+                    return Err(ProtocolError::InvalidPageSize);
+                }
+                for root in roots {
+                    root.validate()?;
+                }
+                Ok(())
+            }
+            ResultPayload::BrowseEntries(page) => {
+                if page.items.len() > MAX_PAGE_SIZE as usize
+                    || page
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|value| value.len() > 512)
+                {
+                    return Err(ProtocolError::InvalidPageSize);
+                }
+                for entry in &page.items {
+                    entry.validate()?;
+                }
+                Ok(())
+            }
+            ResultPayload::BrowseFile(file) => file.validate(),
+            ResultPayload::Error(failure) => validate_text(&failure.message, 2 * 1024),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum ResultPayload {
@@ -320,6 +474,10 @@ pub enum ResultPayload {
     AgentSessions(Page<AgentSession>),
     AgentMessages(Page<AgentMessage>),
     AgentAccepted { stored_session_id: String },
+    Upload(UploadProgress),
+    BrowseRoots(Vec<BrowseRoot>),
+    BrowseEntries(Page<BrowseEntry>),
+    BrowseFile(BrowseFile),
     Settings(SafeSettings),
     Recording(ActiveRecordingSnapshot),
     Device(DeviceSelf),
@@ -332,6 +490,130 @@ pub enum ResultPayload {
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadProgress {
+    pub reservation_id: Uuid,
+    pub accepted_bytes: u64,
+    pub size_bytes: u64,
+    pub expires_at_ms: u64,
+    pub attachment: Option<AttachmentReference>,
+}
+
+impl UploadProgress {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.reservation_id.is_nil()
+            || self.size_bytes == 0
+            || self.size_bytes > MAX_UPLOAD_BYTES
+            || self.accepted_bytes > self.size_bytes
+        {
+            return Err(ProtocolError::InvalidUploadChunk);
+        }
+        if let Some(attachment) = &self.attachment {
+            attachment.validate()?;
+            if self.accepted_bytes != self.size_bytes || attachment.size_bytes != self.size_bytes {
+                return Err(ProtocolError::InvalidUploadChunk);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentReference {
+    pub reference_id: Uuid,
+    pub source: AttachmentSource,
+    pub name: String,
+    pub media_type: Option<String>,
+    pub size_bytes: u64,
+    pub expires_at_ms: u64,
+}
+
+impl AttachmentReference {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.reference_id.is_nil() || self.size_bytes == 0 || self.size_bytes > MAX_UPLOAD_BYTES
+        {
+            return Err(ProtocolError::InvalidAttachmentReferences);
+        }
+        validate_file_name(&self.name)?;
+        validate_media_type(self.media_type.as_deref())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AttachmentSource {
+    PhoneUpload,
+    MacFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseRoot {
+    pub root_id: Uuid,
+    pub name: String,
+}
+
+impl BrowseRoot {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.root_id.is_nil() {
+            return Err(ProtocolError::InvalidIdentifier);
+        }
+        validate_text(&self.name, 128)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseEntry {
+    pub name: String,
+    pub relative_path: String,
+    pub kind: BrowseEntryKind,
+    pub size_bytes: Option<u64>,
+    pub modified_at: Option<String>,
+}
+
+impl BrowseEntry {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_file_name(&self.name)?;
+        validate_relative_path(&self.relative_path, false)?;
+        if self.size_bytes.is_some_and(|size| size > MAX_UPLOAD_BYTES) {
+            return Err(ProtocolError::UploadTooLarge);
+        }
+        validate_optional_text(self.modified_at.as_deref(), 64)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BrowseEntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseFile {
+    pub entry: BrowseEntry,
+    pub attachment: AttachmentReference,
+}
+
+impl BrowseFile {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        self.entry.validate()?;
+        self.attachment.validate()?;
+        if self.entry.kind != BrowseEntryKind::File
+            || self.entry.size_bytes != Some(self.attachment.size_bytes)
+            || self.entry.name != self.attachment.name
+            || self.attachment.source != AttachmentSource::MacFile
+        {
+            return Err(ProtocolError::InvalidAttachmentReferences);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +742,8 @@ pub enum FailureCode {
     MacOffline,
     Busy,
     OutcomeUnknown,
+    LimitExceeded,
+    IntegrityMismatch,
     Internal,
 }
 
@@ -575,6 +859,20 @@ pub enum ProtocolError {
     InvalidIdentifier,
     #[error("page size is outside the supported range")]
     InvalidPageSize,
+    #[error("upload exceeds the supported size")]
+    UploadTooLarge,
+    #[error("upload chunk is empty, too large, or outside the file")]
+    InvalidUploadChunk,
+    #[error("attachment references are invalid or exceed the supported count")]
+    InvalidAttachmentReferences,
+    #[error("file name is invalid")]
+    InvalidFileName,
+    #[error("media type is invalid")]
+    InvalidMediaType,
+    #[error("content hash must be a lowercase SHA-256 hex digest")]
+    InvalidContentHash,
+    #[error("relative path is invalid")]
+    InvalidRelativePath,
     #[error("patch has no editable fields")]
     EmptyPatch,
     #[error("relay route is invalid")]
@@ -602,6 +900,77 @@ fn validate_text(value: &str, max: usize) -> Result<(), ProtocolError> {
 fn validate_optional_text(value: Option<&str>, max: usize) -> Result<(), ProtocolError> {
     if value.is_some_and(|value| value.len() > max) {
         Err(ProtocolError::TextTooLarge)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_file_name(value: &str) -> Result<(), ProtocolError> {
+    if value.is_empty()
+        || value.len() > MAX_FILE_NAME_BYTES
+        || value == "."
+        || value == ".."
+        || value.starts_with('.')
+        || value
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\' | ':'))
+    {
+        Err(ProtocolError::InvalidFileName)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_media_type(value: Option<&str>) -> Result<(), ProtocolError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if value.is_empty()
+        || value.len() > MAX_MEDIA_TYPE_BYTES
+        || value.matches('/').count() != 1
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || !value.is_ascii()
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        Err(ProtocolError::InvalidMediaType)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_sha256(value: &str) -> Result<(), ProtocolError> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err(ProtocolError::InvalidContentHash)
+    }
+}
+
+fn validate_relative_path(value: &str, allow_empty: bool) -> Result<(), ProtocolError> {
+    if value.len() > MAX_RELATIVE_PATH_BYTES
+        || (!allow_empty && value.is_empty())
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.contains('\\')
+        || value.contains(':')
+        || (!value.is_empty()
+            && value.split('/').any(|component| {
+                component.is_empty()
+                    || component == "."
+                    || component == ".."
+                    || component.starts_with('.')
+                    || component.len() > MAX_FILE_NAME_BYTES
+                    || component.chars().any(char::is_control)
+            }))
+    {
+        Err(ProtocolError::InvalidRelativePath)
     } else {
         Ok(())
     }
@@ -676,7 +1045,32 @@ mod tests {
             Body::AgentSend(AgentSendRequest {
                 stored_session_id: None,
                 message: "hello".to_string(),
+                attachment_reference_ids: Vec::new(),
             })
+            .is_mutation()
+        );
+        assert!(
+            Body::UploadBegin(UploadBeginRequest {
+                reservation_id: Uuid::new_v4(),
+                name: "brief.pdf".to_string(),
+                media_type: Some("application/pdf".to_string()),
+                size_bytes: 10,
+                sha256: "a".repeat(64),
+            })
+            .is_mutation()
+        );
+        assert!(
+            Body::UploadChunk(UploadChunkRequest {
+                reservation_id: Uuid::new_v4(),
+                offset_bytes: 0,
+                bytes: vec![1],
+            })
+            .is_mutation()
+        );
+        assert!(
+            Body::UploadCommit {
+                reservation_id: Uuid::new_v4(),
+            }
             .is_mutation()
         );
         assert!(
@@ -708,6 +1102,7 @@ mod tests {
             Body::AgentSend(AgentSendRequest {
                 stored_session_id: None,
                 message,
+                attachment_reference_ids: Vec::new(),
             }),
         );
         assert!(matches!(
@@ -723,6 +1118,184 @@ mod tests {
             page.validate(),
             Err(ProtocolError::InvalidPageSize)
         ));
+    }
+
+    #[test]
+    fn file_contract_round_trips_with_explicit_capabilities() {
+        let reservation_id = Uuid::new_v4();
+        let root_id = Uuid::new_v4();
+        let requests = [
+            (
+                Capability::FilesUpload,
+                Body::UploadBegin(UploadBeginRequest {
+                    reservation_id,
+                    name: "brief.pdf".to_string(),
+                    media_type: Some("application/pdf".to_string()),
+                    size_bytes: 123,
+                    sha256: "a".repeat(64),
+                }),
+            ),
+            (
+                Capability::FilesUpload,
+                Body::UploadChunk(UploadChunkRequest {
+                    reservation_id,
+                    offset_bytes: 0,
+                    bytes: vec![1, 2, 3],
+                }),
+            ),
+            (
+                Capability::FilesUpload,
+                Body::UploadCommit { reservation_id },
+            ),
+            (Capability::FilesBrowse, Body::BrowseRootsList),
+            (
+                Capability::FilesBrowse,
+                Body::BrowseDirList {
+                    root_id,
+                    relative_path: "Project/briefs".to_string(),
+                    page: PageRequest::default(),
+                },
+            ),
+            (
+                Capability::FilesBrowse,
+                Body::BrowseFileStat {
+                    root_id,
+                    relative_path: "Project/briefs/jca-8.md".to_string(),
+                },
+            ),
+        ];
+
+        for (index, (capability, body)) in requests.into_iter().enumerate() {
+            let frame = Frame::new(Uuid::new_v4(), index as u64 + 1, 100, capability, body);
+            let encoded = encode_frame(&frame).unwrap();
+            assert_eq!(decode_frame(&encoded, 100).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn legacy_agent_send_without_attachments_remains_compatible() {
+        let request: AgentSendRequest =
+            serde_json::from_str(r#"{"storedSessionId":"stored-1","message":"Hello"}"#).unwrap();
+        assert!(request.attachment_reference_ids.is_empty());
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"storedSessionId": "stored-1", "message": "Hello"})
+        );
+    }
+
+    #[test]
+    fn maximum_upload_chunk_stays_below_the_44_kib_plaintext_ceiling() {
+        let frame = Frame::new(
+            Uuid::from_u128(u128::MAX),
+            u64::MAX,
+            1_000_000,
+            Capability::FilesUpload,
+            Body::UploadChunk(UploadChunkRequest {
+                reservation_id: Uuid::from_u128(u128::MAX),
+                offset_bytes: MAX_UPLOAD_BYTES - MAX_UPLOAD_CHUNK_BYTES as u64,
+                bytes: vec![u8::MAX; MAX_UPLOAD_CHUNK_BYTES],
+            }),
+        );
+        let encoded = encode_frame(&frame).unwrap();
+        assert!(
+            encoded.len() <= MAX_ENCODED_FRAME_BYTES,
+            "encoded maximum chunk was {} bytes",
+            encoded.len()
+        );
+        assert!(MAX_ENCODED_FRAME_BYTES - encoded.len() >= 1_000);
+        assert_eq!(decode_frame(&encoded, 1_000_000).unwrap(), frame);
+    }
+
+    #[test]
+    fn rejects_oversized_uploads_chunks_references_and_traversal() {
+        let oversized = Frame::new(
+            Uuid::new_v4(),
+            1,
+            100,
+            Capability::FilesUpload,
+            Body::UploadBegin(UploadBeginRequest {
+                reservation_id: Uuid::new_v4(),
+                name: "large.bin".to_string(),
+                media_type: Some("application/octet-stream".to_string()),
+                size_bytes: MAX_UPLOAD_BYTES + 1,
+                sha256: "a".repeat(64),
+            }),
+        );
+        assert!(matches!(
+            oversized.validate(100),
+            Err(ProtocolError::UploadTooLarge)
+        ));
+
+        let chunk = UploadChunkRequest {
+            reservation_id: Uuid::new_v4(),
+            offset_bytes: 0,
+            bytes: vec![0; MAX_UPLOAD_CHUNK_BYTES + 1],
+        };
+        assert!(matches!(
+            chunk.validate(),
+            Err(ProtocolError::InvalidUploadChunk)
+        ));
+
+        let send = AgentSendRequest {
+            stored_session_id: None,
+            message: "Read these".to_string(),
+            attachment_reference_ids: (0..=MAX_ATTACHMENT_REFERENCES)
+                .map(|_| Uuid::new_v4())
+                .collect(),
+        };
+        assert!(matches!(
+            send.validate(),
+            Err(ProtocolError::InvalidAttachmentReferences)
+        ));
+
+        for path in [
+            "../secret.txt",
+            "/Users/me/secret.txt",
+            "Project/.env",
+            "Project//secret.txt",
+            r"C:\secret.txt",
+        ] {
+            assert!(matches!(
+                validate_relative_path(path, false),
+                Err(ProtocolError::InvalidRelativePath)
+            ));
+        }
+    }
+
+    #[test]
+    fn file_results_round_trip_without_exposing_a_mac_path() {
+        let attachment = AttachmentReference {
+            reference_id: Uuid::new_v4(),
+            source: AttachmentSource::MacFile,
+            name: "brief.md".to_string(),
+            media_type: Some("text/markdown".to_string()),
+            size_bytes: 42,
+            expires_at_ms: 1_000_000,
+        };
+        let result = BrowseFile {
+            entry: BrowseEntry {
+                name: "brief.md".to_string(),
+                relative_path: "Project/brief.md".to_string(),
+                kind: BrowseEntryKind::File,
+                size_bytes: Some(42),
+                modified_at: Some("2026-07-28T12:00:00Z".to_string()),
+            },
+            attachment,
+        };
+        let frame = Frame::new(
+            Uuid::new_v4(),
+            1,
+            100,
+            Capability::FilesBrowse,
+            Body::Response(Response {
+                capability: Capability::FilesBrowse,
+                result: ResultPayload::BrowseFile(result),
+            }),
+        );
+        let encoded = encode_frame(&frame).unwrap();
+        let encoded_text = String::from_utf8(encoded.clone()).unwrap();
+        assert!(!encoded_text.contains("/Users/"));
+        assert_eq!(decode_frame(&encoded, 100).unwrap(), frame);
     }
 
     #[test]
