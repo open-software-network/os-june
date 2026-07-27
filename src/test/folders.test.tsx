@@ -326,7 +326,7 @@ describe("folders UI", () => {
       });
 
     try {
-      render(
+      const { rerender } = render(
         <Sidebar
           notes={notes}
           activeView="notes"
@@ -406,6 +406,31 @@ describe("folders UI", () => {
       scrollportRect = { top: 100, bottom: 280, left: 8, right: 232 };
       anchorRect = { top: 60, bottom: 82, right: 232 };
       act(() => trigger.dispatchEvent(new Event("scroll")));
+
+      await waitFor(() => {
+        expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+      });
+
+      scrollportRect = { top: 100, bottom: 580, left: 8, right: 232 };
+      anchorRect = { top: 300, bottom: 328, right: 232 };
+      await user.click(trigger);
+      expect(await screen.findByRole("menu")).toBeInTheDocument();
+
+      rerender(
+        <Sidebar
+          notes={notes}
+          activeView="notes"
+          collapsed
+          onChangeView={vi.fn()}
+          onSelectNote={vi.fn()}
+          onDeleteNote={vi.fn()}
+          onOpenMoveDialog={vi.fn()}
+          onRemoveNoteFromFolder={vi.fn()}
+          onNewAgentSession={vi.fn()}
+          onRenameAgentSession={vi.fn()}
+          onSelectAgentSession={vi.fn()}
+        />,
+      );
 
       await waitFor(() => {
         expect(screen.queryByRole("menu")).not.toBeInTheDocument();

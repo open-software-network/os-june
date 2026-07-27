@@ -2488,9 +2488,20 @@ function SidebarContextMenu({
   const [position, setPosition] = useState<{ right: number; top: number } | null>(null);
 
   useLayoutEffect(() => {
+    const sidebar = anchor.closest<HTMLElement>(".sidebar");
+    const appShell = anchor.closest<HTMLElement>(".app-shell");
+
     function updatePosition() {
       const menu = menuRef.current;
       if (!menu) return;
+      if (
+        !anchor.isConnected ||
+        sidebar?.dataset.collapsed === "true" ||
+        appShell?.dataset.sidebar === "collapsed"
+      ) {
+        onClose();
+        return;
+      }
       const viewport = { width: window.innerWidth, height: window.innerHeight };
       const anchorRect = anchor.getBoundingClientRect();
       const scrollport = anchor.closest<HTMLElement>(".notes-nav");
@@ -2509,9 +2520,23 @@ function SidebarContextMenu({
     updatePosition();
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
+    const ownerObserver = new MutationObserver(updatePosition);
+    if (sidebar) {
+      ownerObserver.observe(sidebar, {
+        attributes: true,
+        attributeFilter: ["data-collapsed"],
+      });
+    }
+    if (appShell) {
+      ownerObserver.observe(appShell, {
+        attributes: true,
+        attributeFilter: ["data-sidebar"],
+      });
+    }
     return () => {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
+      ownerObserver.disconnect();
     };
   }, [anchor, onClose]);
 
