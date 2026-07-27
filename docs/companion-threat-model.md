@@ -4,7 +4,8 @@
 
 Desktop OS Accounts tokens, mobile device credentials, device private keys,
 pairing secrets, session keys, note/chat/settings plaintext, recording
-control authority, linked-device grants, and APNs signing material.
+control authority, linked-device grants, companion attachment bytes, granted
+Mac browse roots, file names and metadata, and APNs signing material.
 
 ## Trust boundaries and mitigations
 
@@ -34,6 +35,26 @@ control authority, linked-device grants, and APNs signing material.
 - Replay, tampering, oversized payloads, stale controls, cross-user routes,
   duplicate connections, unbounded queues, and excessive frame rates fail
   closed.
+- Phone attachments land only in a June-owned app-data staging directory.
+  Upload reservations, files, chunks, names, media types, hashes, counts, and
+  lifetimes are bounded. Chunks are offset-checked and a commit succeeds only
+  after the declared byte count and SHA-256 digest match. The staged file is
+  non-executable, is never opened automatically, and reaches an agent run only
+  through June's existing attachment copier.
+- Mac browsing begins with a root the user selected in June Desktop Settings.
+  There is no implicit home-directory grant. Roots are account-scoped,
+  persisted by canonical path, individually revocable, and represented to the
+  phone by opaque ids and local display labels rather than absolute paths.
+- Browse requests accept relative paths only. Empty, absolute, parent,
+  platform-prefix, hidden, non-UTF-8, unreadable, special-file, and symlink
+  entries fail closed or are omitted. Every directory listing, file stat, and
+  attachment use canonicalizes again and proves the target is still inside a
+  still-granted root. Revoking a root invalidates outstanding references.
+- Browse v1 returns bounded directory pages and regular-file metadata. It has
+  no file-content read or download variant. A file becomes readable only when
+  the phone includes its short-lived opaque reference in an agent message, at
+  which point the Mac copies it through the normal safety-controlled
+  attachment path.
 - The mobile bundle has no OS Accounts client, callback, account token, OS
   Accounts App API key, provider key, APNs signing key, relay secret, or
   prebuilt bearer token. Pairing never copies the Desktop account session.
@@ -47,7 +68,12 @@ and OS Accounts observe account/device/IP/timing/size metadata. APNs observes
 that a generic wake was sent. Push delivery and iOS background execution are
 best effort. The MVP relay is single-replica and a restart temporarily drops
 availability. Post-quantum security, traffic padding, multi-desktop routing,
-horizontal relay scale, and peer-to-peer anonymity are not provided.
+horizontal relay scale, peer-to-peer anonymity, and companion attachment
+malware scanning are not provided. File names and metadata disclosed from an
+approved root remain sensitive even without file contents. An attacker already
+able to replace files on the Mac can race metadata checks; June revalidates at
+agent-send time, while a fully compromised endpoint remains outside the
+companion boundary.
 
 Production claims require review of the C ABI, Noise patterns, Keychain access
 classes, pairing proof and device credential authorization, APNs configuration,
