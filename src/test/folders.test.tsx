@@ -283,6 +283,12 @@ describe("folders UI", () => {
       bottom: 576,
       right: 232,
     };
+    let scrollportRect = {
+      top: 100,
+      bottom: 580,
+      left: 8,
+      right: 232,
+    };
     const innerWidthSpy = vi
       .spyOn(window, "innerWidth", "get")
       .mockImplementation(() => viewportWidth);
@@ -303,6 +309,16 @@ describe("folders UI", () => {
             y: 0,
             width: 156,
             height: 220,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.classList.contains("notes-nav")) {
+          return {
+            ...scrollportRect,
+            x: scrollportRect.left,
+            y: scrollportRect.top,
+            width: scrollportRect.right - scrollportRect.left,
+            height: scrollportRect.bottom - scrollportRect.top,
             toJSON: () => ({}),
           } as DOMRect;
         }
@@ -387,7 +403,8 @@ describe("folders UI", () => {
         expect(menuShell).toHaveStyle({ right: "408px", top: "76px" });
       });
 
-      anchorRect = { top: -40, bottom: -18, right: 232 };
+      scrollportRect = { top: 100, bottom: 280, left: 8, right: 232 };
+      anchorRect = { top: 60, bottom: 82, right: 232 };
       act(() => trigger.dispatchEvent(new Event("scroll")));
 
       await waitFor(() => {

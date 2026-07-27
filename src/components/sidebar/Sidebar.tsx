@@ -2493,7 +2493,9 @@ function SidebarContextMenu({
       if (!menu) return;
       const viewport = { width: window.innerWidth, height: window.innerHeight };
       const anchorRect = anchor.getBoundingClientRect();
-      if (!sidebarContextMenuAnchorIsVisible(anchorRect, viewport)) {
+      const scrollport = anchor.closest<HTMLElement>(".notes-nav");
+      const clippingBoundaries = scrollport ? [scrollport.getBoundingClientRect()] : [];
+      if (!sidebarContextMenuAnchorIsVisible(anchorRect, viewport, clippingBoundaries)) {
         onClose();
         return;
       }

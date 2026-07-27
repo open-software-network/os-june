@@ -71,4 +71,24 @@ describe("sidebar overflow containment", () => {
       sidebarContextMenuAnchorIsVisible({ top: -40, bottom: -18, left: 206, right: 228 }, viewport),
     ).toBe(false);
   });
+
+  it("detects when a scrollport clips a trigger that remains in the viewport", () => {
+    const viewport = { width: 900, height: 620 };
+    const scrollport = { top: 200, bottom: 500, left: 8, right: 232 };
+
+    expect(
+      sidebarContextMenuAnchorIsVisible(
+        { top: 300, bottom: 322, left: 206, right: 228 },
+        viewport,
+        [scrollport],
+      ),
+    ).toBe(true);
+    expect(
+      sidebarContextMenuAnchorIsVisible(
+        { top: 150, bottom: 172, left: 206, right: 228 },
+        viewport,
+        [scrollport],
+      ),
+    ).toBe(false);
+  });
 });
