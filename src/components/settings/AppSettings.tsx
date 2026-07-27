@@ -2863,8 +2863,12 @@ export function AppSettings({
                     <div className="settings-row-info">
                       <h3 className="settings-row-title">Companion pairing</h3>
                       <p className="settings-row-description">
-                        Enable Linked devices and the June Companion runtime on this install. The
-                        change applies after June restarts.
+                        {experimentalFlags.companion_pairing ===
+                        experimentalFlags.companionPairingEnabled
+                          ? "Enable Linked devices and the June Companion runtime on this install. Changes apply after June restarts."
+                          : experimentalFlags.companionPairingEnabled
+                            ? "Companion pairing remains available until June restarts. It is saved as off for the next launch."
+                            : "Companion pairing is saved as on and will become available after June restarts."}
                       </p>
                     </div>
                     <div className="settings-row-control">

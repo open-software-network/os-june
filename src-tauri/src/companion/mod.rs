@@ -15,7 +15,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Mutex,
+        Mutex, OnceLock,
     },
     time::Duration,
 };
@@ -44,6 +44,7 @@ pub struct CompanionRuntime {
     account_session_changed: Notify,
     account_activity: AtomicUsize,
     account_activity_changed: Notify,
+    effective_enabled: OnceLock<bool>,
 }
 
 impl Default for CompanionRuntime {
@@ -62,7 +63,18 @@ impl Default for CompanionRuntime {
             account_session_changed: Notify::new(),
             account_activity: AtomicUsize::new(0),
             account_activity_changed: Notify::new(),
+            effective_enabled: OnceLock::new(),
         }
+    }
+}
+
+impl CompanionRuntime {
+    fn latch_effective_enabled(&self, enabled: bool) -> bool {
+        *self.effective_enabled.get_or_init(|| enabled)
+    }
+
+    fn effective_enabled(&self) -> bool {
+        self.effective_enabled.get().copied().unwrap_or(false)
     }
 }
 
@@ -198,10 +210,9 @@ pub struct RenameDeviceRequest {
 
 #[tauri::command]
 pub async fn companion_begin_pairing(
-    app: AppHandle,
     runtime: State<'_, CompanionRuntime>,
 ) -> Result<PairingQrPayload, AppError> {
-    ensure_companion_pairing_enabled(&app)?;
+    ensure_companion_pairing_enabled(&runtime)?;
     let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     let account_user_id = crate::os_accounts::current_user_id().await?;
     let identity = load_or_create_identity(&account_user_id)?;
@@ -280,7 +291,11 @@ fn remember_pending_pairing(
 }
 
 #[tauri::command]
-pub async fn companion_pairing_status(pairing_id: Uuid) -> Result<PairingStatus, AppError> {
+pub async fn companion_pairing_status(
+    runtime: State<'_, CompanionRuntime>,
+    pairing_id: Uuid,
+) -> Result<PairingStatus, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     companion_get(&format!("/v1/companion/pairings/{pairing_id}")).await
 }
 
@@ -291,7 +306,7 @@ pub async fn companion_approve_pairing(
     pairing_id: Uuid,
     mobile_device_id: Uuid,
 ) -> Result<PairingStatus, AppError> {
-    ensure_companion_pairing_enabled(&app)?;
+    ensure_companion_pairing_enabled(&runtime)?;
     let _account_activity = CompanionAccountActivityGuard::begin(&runtime)?;
     {
         let pending = runtime
@@ -504,7 +519,11 @@ fn has_pending_pairing(runtime: &CompanionRuntime) -> bool {
 }
 
 #[tauri::command]
-pub async fn companion_list_devices(app: AppHandle) -> Result<Vec<LinkedDeviceDto>, AppError> {
+pub async fn companion_list_devices(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+) -> Result<Vec<LinkedDeviceDto>, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let account_user_id = crate::os_accounts::current_user_id().await?;
     Ok(repositories(&app)
         .await?
@@ -541,8 +560,10 @@ fn companion_capabilities() -> Vec<Capability> {
 #[tauri::command]
 pub async fn companion_rename_device(
     app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
     request: RenameDeviceRequest,
 ) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let name = request.display_name.trim();
     if name.is_empty() || name.len() > MAX_DEVICE_NAME_BYTES {
         return Err(AppError::new(
@@ -562,7 +583,12 @@ pub async fn companion_rename_device(
 }
 
 #[tauri::command]
-pub async fn companion_revoke_device(app: AppHandle, device_id: Uuid) -> Result<(), AppError> {
+pub async fn companion_revoke_device(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    device_id: Uuid,
+) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let account_user_id = crate::os_accounts::current_user_id().await?;
     revoke_device_remote(device_id).await?;
     repositories(&app)
@@ -587,6 +613,7 @@ pub fn companion_complete_frontend_request(
     operation_id: Uuid,
     result: ResultPayload,
 ) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let sender = runtime
         .pending_frontend
         .lock()
@@ -617,6 +644,7 @@ pub fn companion_cancel_frontend_request(
     runtime: State<'_, CompanionRuntime>,
     operation_id: Uuid,
 ) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let removed = runtime
         .pending_frontend
         .lock()
@@ -694,6 +722,7 @@ pub async fn companion_publish_agent_event(
     runtime: State<'_, CompanionRuntime>,
     request: CompanionAgentEventRequest,
 ) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
     let (stored_session_id, text) = match &request {
         CompanionAgentEventRequest::Delta {
             stored_session_id,
@@ -752,8 +781,20 @@ pub async fn companion_publish_agent_event(
     })
 }
 
+pub fn setup(app: &AppHandle) {
+    let stored_enabled = crate::experimental_settings::companion_pairing_enabled(app);
+    app.state::<CompanionRuntime>()
+        .latch_effective_enabled(stored_enabled);
+    start(app);
+}
+
+pub fn effective_pairing_enabled(app: &AppHandle) -> bool {
+    app.try_state::<CompanionRuntime>()
+        .is_some_and(|runtime| runtime.effective_enabled())
+}
+
 pub fn start(app: &AppHandle) {
-    if crate::experimental_settings::companion_pairing_enabled(app) {
+    if effective_pairing_enabled(app) {
         transport::start(app);
     }
 }
@@ -840,10 +881,8 @@ pub fn resume_account_transport(app: &AppHandle) {
     start(app);
 }
 
-fn ensure_companion_pairing_enabled(app: &AppHandle) -> Result<(), AppError> {
-    ensure_companion_pairing_enabled_with(crate::experimental_settings::companion_pairing_enabled(
-        app,
-    ))
+pub(crate) fn ensure_companion_pairing_enabled(runtime: &CompanionRuntime) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled_with(runtime.effective_enabled())
 }
 
 fn ensure_companion_pairing_enabled_with(enabled: bool) -> Result<(), AppError> {
@@ -1130,6 +1169,27 @@ mod tests {
         assert_eq!(
             error.message,
             "June Companion is off. Enable Companion pairing in Experiments, then restart June."
+        );
+    }
+
+    #[test]
+    fn stored_disable_does_not_stop_an_effective_companion_runtime() {
+        let runtime = CompanionRuntime::default();
+
+        assert!(runtime.latch_effective_enabled(true));
+        assert!(runtime.latch_effective_enabled(false));
+        assert!(ensure_companion_pairing_enabled(&runtime).is_ok());
+    }
+
+    #[test]
+    fn stored_enable_does_not_start_an_ineffective_companion_runtime() {
+        let runtime = CompanionRuntime::default();
+
+        assert!(!runtime.latch_effective_enabled(false));
+        assert!(!runtime.latch_effective_enabled(true));
+        assert_eq!(
+            ensure_companion_pairing_enabled(&runtime).unwrap_err().code,
+            "companion_experimental_disabled"
         );
     }
 

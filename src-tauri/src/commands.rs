@@ -229,9 +229,11 @@ pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError
 
 #[tauri::command]
 pub fn experimental_flags_get(
+    app: AppHandle,
     state: tauri::State<'_, crate::experimental_settings::ExperimentalSettingsState>,
-) -> Result<crate::experimental_settings::ExperimentalSettings, AppError> {
+) -> Result<crate::experimental_settings::ExperimentalSettingsSnapshot, AppError> {
     crate::experimental_settings::get(state.inner())
+        .map(|settings| crate::experimental_settings::snapshot(&app, settings))
 }
 
 #[tauri::command]
@@ -239,7 +241,7 @@ pub fn experimental_flags_set(
     app: AppHandle,
     state: tauri::State<'_, crate::experimental_settings::ExperimentalSettingsState>,
     request: crate::experimental_settings::ExperimentalSettings,
-) -> Result<crate::experimental_settings::ExperimentalSettings, AppError> {
+) -> Result<crate::experimental_settings::ExperimentalSettingsSnapshot, AppError> {
     crate::experimental_settings::set(&app, state.inner(), request)
 }
 

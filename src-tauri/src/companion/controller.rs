@@ -71,6 +71,7 @@ impl Controller {
         frame: Frame,
         now_ms: u64,
     ) -> Result<ControllerOutcome, AppError> {
+        super::ensure_companion_pairing_enabled(&app.state::<super::CompanionRuntime>())?;
         frame
             .validate(now_ms)
             .map_err(|error| AppError::new("companion_frame_invalid", error.to_string()))?;

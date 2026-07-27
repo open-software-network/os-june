@@ -6,6 +6,7 @@ import {
   initializeExperimentalFlags,
   registerExperimentalUnlockClick,
   setExperimentalFlags,
+  useExperimentalFlags,
 } from "../lib/experimental-flags";
 import { BROWSER_ACCESS_REQUEST_TOKEN, hasBrowserAccessRequest } from "../lib/browser-access";
 
@@ -124,6 +125,46 @@ describe("experimental flags", () => {
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(result.current.unlocked).toBe(true);
     expect(result.current.companionPairingEnabled).toBe(true);
+    unmount();
+  });
+
+  it("keeps Companion pairing effective until restart after it is stored off", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      unlocked: true,
+      browser_use: false,
+      companion_pairing: false,
+      companion_pairing_effective: true,
+    });
+
+    await setExperimentalFlags({
+      unlocked: true,
+      browser_use: false,
+      companion_pairing: false,
+    });
+    const { result, unmount } = renderHook(() => useExperimentalFlags());
+
+    expect(result.current.companion_pairing).toBe(false);
+    expect(result.current.companionPairingEnabled).toBe(true);
+    unmount();
+  });
+
+  it("keeps Companion pairing ineffective until restart after it is stored on", async () => {
+    mocks.invoke.mockResolvedValueOnce({
+      unlocked: true,
+      browser_use: false,
+      companion_pairing: true,
+      companion_pairing_effective: false,
+    });
+
+    await setExperimentalFlags({
+      unlocked: true,
+      browser_use: false,
+      companion_pairing: true,
+    });
+    const { result, unmount } = renderHook(() => useExperimentalFlags());
+
+    expect(result.current.companion_pairing).toBe(true);
+    expect(result.current.companionPairingEnabled).toBe(false);
     unmount();
   });
 });

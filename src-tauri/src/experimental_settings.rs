@@ -28,6 +28,13 @@ pub struct ExperimentalSettingsState {
     settings: Mutex<ExperimentalSettings>,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct ExperimentalSettingsSnapshot {
+    #[serde(flatten)]
+    pub settings: ExperimentalSettings,
+    pub companion_pairing_effective: bool,
+}
+
 pub fn setup(app: &mut tauri::App) -> Result<(), tauri::Error> {
     let path = experimental_settings_path(app.handle())?;
     let settings = load_settings(&path);
@@ -55,7 +62,7 @@ pub fn set(
     app: &AppHandle,
     state: &ExperimentalSettingsState,
     settings: ExperimentalSettings,
-) -> Result<ExperimentalSettings, AppError> {
+) -> Result<ExperimentalSettingsSnapshot, AppError> {
     {
         let mut current = state.settings.lock().map_err(|_| {
             AppError::new(
@@ -74,8 +81,16 @@ pub fn set(
         crate::extension_host::ensure_listener_started(app.clone());
     }
 
-    let _ = app.emit(EXPERIMENTAL_FLAGS_CHANGED_EVENT, settings.clone());
-    Ok(settings)
+    let snapshot = snapshot(app, settings);
+    let _ = app.emit(EXPERIMENTAL_FLAGS_CHANGED_EVENT, snapshot.clone());
+    Ok(snapshot)
+}
+
+pub fn snapshot(app: &AppHandle, settings: ExperimentalSettings) -> ExperimentalSettingsSnapshot {
+    ExperimentalSettingsSnapshot {
+        settings,
+        companion_pairing_effective: crate::companion::effective_pairing_enabled(app),
+    }
 }
 
 /// Effective Browser use availability for native callers. The stored override
