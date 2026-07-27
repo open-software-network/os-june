@@ -434,6 +434,7 @@ export function AgentWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(0);
+  const [submittedScrollRevision, setSubmittedScrollRevision] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const projectContextRef = useRef(projectContext);
@@ -449,6 +450,9 @@ export function AgentWorkspace({
       targetProjectContext,
       projectContextSignaturesBySessionId.get(storedSessionId),
     );
+  }, []);
+  const requestSubmittedMessageScroll = useCallback(() => {
+    setSubmittedScrollRevision((revision) => revision + 1);
   }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
@@ -981,6 +985,13 @@ export function AgentWorkspace({
     }
   }, [projection.items]);
 
+  useLayoutEffect(() => {
+    if (submittedScrollRevision === 0) return;
+    const scroller = scrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [submittedScrollRevision]);
+
   useEffect(() => {
     if (
       running ||
@@ -1117,6 +1128,7 @@ export function AgentWorkspace({
       }));
       setComposerDraft("");
       setAttachments([]);
+      requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
         void agentRuntimeBindings
@@ -1258,6 +1270,7 @@ export function AgentWorkspace({
           session: activeSession,
           items: [...current.items, optimistic],
         }));
+        requestSubmittedMessageScroll();
       }
       if (
         !queuedSnapshot &&
@@ -1573,6 +1586,7 @@ export function AgentWorkspace({
       const greetingReply = homeConversationGreetingReply(message);
       const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      requestSubmittedMessageScroll();
 
       if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {

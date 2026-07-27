@@ -974,10 +974,22 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop June" })).toBeVisible());
 
+    const scroller = document.querySelector<HTMLElement>(".agent-scroll");
+    expect(scroller).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(scroller as HTMLElement, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 400 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
     const activeComposer = screen.getByRole("textbox", { name: "Message June" });
     activeComposer.textContent = "Use the launch plan";
     fireEvent.input(activeComposer);
     await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" }));
 
     const steerCall = mocks.invoke.mock.calls.find(([command]) => command === "steer_agent_run");
     expect(steerCall?.[1]).toMatchObject({
