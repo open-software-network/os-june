@@ -10,6 +10,7 @@ pub mod browser;
 mod browser_broker;
 pub mod claude_projects;
 pub mod commands;
+pub mod companion;
 pub mod computer_use;
 mod computer_use_cursor;
 mod computer_use_permission_drag;
@@ -215,6 +216,15 @@ pub fn run() {
             june_api::june_home_chat,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
+            companion::companion_begin_pairing,
+            companion::companion_pairing_status,
+            companion::companion_approve_pairing,
+            companion::companion_list_devices,
+            companion::companion_rename_device,
+            companion::companion_revoke_device,
+            companion::companion_complete_frontend_request,
+            companion::companion_cancel_frontend_request,
+            companion::companion_publish_agent_event,
             commands::create_note,
             commands::list_notes,
             commands::get_note,
@@ -399,6 +409,7 @@ pub fn run() {
         .manage(Arc::new(browser_broker::BrowserBroker::default()))
         .manage(computer_use::ComputerUseState::default())
         .manage(shutdown::ShutdownCoordinator::default())
+        .manage(companion::CompanionRuntime::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(extension_host::ExtensionHost::default())
         .manage(connectors::ConnectFlow::default())
@@ -418,6 +429,7 @@ pub fn run() {
             notifications::setup(app);
             meeting_detection::setup(app);
             extension_host::setup(app);
+            companion::start(app.handle());
             routines::start_scheduler(app.handle());
             // Poll Google for the events routines subscribe to (email arrivals
             // and upcoming meetings) and wake the matching durable routine.

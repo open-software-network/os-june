@@ -29,10 +29,23 @@ struct ListNotesCursor {
     created_at: String,
     rowid: i64,
 }
+const COMPANION_OPERATION_RETENTION_DAYS: i64 = 7;
+const MAX_COMPANION_OPERATIONS_PER_DEVICE: i64 = 1_024;
+const MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE: i64 = 128;
 
 #[derive(Clone)]
 pub struct Repositories {
     pub pool: SqlitePool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompanionDeviceRecord {
+    pub id: String,
+    pub display_name: String,
+    pub public_key: Vec<u8>,
+    pub linked_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked_at: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,6 +236,55 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn upsert_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+        display_name: &str,
+        public_key: &[u8],
+    ) -> Result<CompanionDeviceRecord, sqlx::error::Error> {
+        let now = timestamp();
+        query(
+            "INSERT INTO companion_devices (account_user_id, id, display_name, public_key, linked_at)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               account_user_id = excluded.account_user_id,
+               display_name = excluded.display_name,
+               public_key = excluded.public_key,
+               revoked_at = NULL
+             WHERE companion_devices.account_user_id = excluded.account_user_id
+                OR companion_devices.account_user_id = ''",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .bind(display_name)
+        .bind(public_key)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let device = self
+            .companion_device(account_user_id, id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        self.remember_companion_account(account_user_id).await?;
+        Ok(device)
+    }
+
+    pub async fn remember_companion_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "INSERT INTO companion_account_state (singleton, account_user_id)
+             VALUES (1, ?)
+             ON CONFLICT(singleton) DO UPDATE SET account_user_id = excluded.account_user_id",
+        )
+        .bind(account_user_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn evaluate_browser_action(
         &self,
         id: &str,
@@ -375,6 +437,274 @@ impl Repositories {
             expired: nonnegative_u64(row.get("expired")),
             cancelled_by_task_end: nonnegative_u64(row.get("cancelled_by_task_end")),
         })
+    }
+
+    pub async fn companion_account_user_id(&self) -> Result<Option<String>, sqlx::error::Error> {
+        query("SELECT account_user_id FROM companion_account_state WHERE singleton = 1")
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.try_get("account_user_id"))
+            .transpose()
+    }
+
+    pub async fn companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<Option<CompanionDeviceRecord>, sqlx::error::Error> {
+        let row = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices WHERE account_user_id = ? AND id = ?",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(companion_device_from_row))
+    }
+
+    pub async fn list_companion_devices(
+        &self,
+        account_user_id: &str,
+    ) -> Result<Vec<CompanionDeviceRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT id, display_name, public_key, linked_at, last_seen_at, revoked_at
+             FROM companion_devices
+             WHERE account_user_id = ?
+             ORDER BY linked_at DESC",
+        )
+        .bind(account_user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(companion_device_from_row).collect())
+    }
+
+    pub async fn rename_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+        display_name: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE companion_devices SET display_name = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(display_name)
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn revoke_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "UPDATE companion_devices SET revoked_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ? AND id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn revoke_companion_devices_for_account(
+        &self,
+        account_user_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "UPDATE companion_devices
+             SET revoked_at = ?
+             WHERE account_user_id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "DELETE FROM companion_operations
+             WHERE device_id IN (
+               SELECT id FROM companion_devices WHERE account_user_id = ?
+             )",
+        )
+        .bind(account_user_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn delete_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query("DELETE FROM companion_devices WHERE account_user_id = ? AND id = ?")
+            .bind(account_user_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn touch_companion_device(
+        &self,
+        account_user_id: &str,
+        id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE companion_devices SET last_seen_at = ?
+             WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL",
+        )
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+    ) -> Result<Option<Vec<u8>>, sqlx::error::Error> {
+        let row = query(
+            "SELECT operations.response
+             FROM companion_operations AS operations
+             JOIN companion_devices AS devices ON devices.id = operations.device_id
+             WHERE devices.account_user_id = ?
+               AND devices.revoked_at IS NULL
+               AND operations.device_id = ?
+               AND operations.operation_id = ?",
+        )
+        .bind(account_user_id)
+        .bind(device_id)
+        .bind(operation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| row.try_get("response")).transpose()
+    }
+
+    pub async fn remember_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub async fn reserve_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        pending_response: &[u8],
+    ) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = query(
+            "INSERT OR IGNORE INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'pending', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )
+               AND (
+                 SELECT COUNT(*) FROM companion_operations
+                 WHERE device_id = ? AND operation_state = 'pending'
+               ) < ?",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(pending_response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .bind(device_id)
+        .bind(MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            == 1;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(inserted)
+    }
+
+    pub async fn complete_companion_operation(
+        &self,
+        account_user_id: &str,
+        device_id: &str,
+        operation_id: &str,
+        response: &[u8],
+    ) -> Result<(), sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        query(
+            "INSERT INTO companion_operations
+             (device_id, operation_id, response, operation_state, created_at)
+             SELECT ?, ?, ?, 'completed', ?
+             WHERE EXISTS (
+               SELECT 1 FROM companion_devices
+               WHERE account_user_id = ? AND id = ? AND revoked_at IS NULL
+             )
+             ON CONFLICT(device_id, operation_id) DO UPDATE SET
+               response = excluded.response,
+               operation_state = 'completed'",
+        )
+        .bind(device_id)
+        .bind(operation_id)
+        .bind(response)
+        .bind(timestamp())
+        .bind(account_user_id)
+        .bind(device_id)
+        .execute(&mut *transaction)
+        .await?;
+        prune_companion_operations(&mut transaction, device_id).await?;
+        transaction.commit().await?;
+        Ok(())
     }
 
     pub async fn increment_p3a_counter(
@@ -1813,7 +2143,7 @@ impl Repositories {
 
     pub async fn get_note(&self, note_id: &str) -> Result<NoteDto, sqlx::error::Error> {
         let row = query(
-            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, last_error,
+            "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
                     calendar_event_end_at, calendar_account_email
              FROM notes WHERE id = ?",
@@ -1852,6 +2182,7 @@ impl Repositories {
             folder_ids,
             created_at: row.get("created_at"),
             updated_at: row.get("updated_at"),
+            revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
             duration_ms: None,
             calendar_event: note_calendar_event_from_row(&row),
             generated_content: row.get("generated_content"),
@@ -1941,7 +2272,7 @@ impl Repositories {
                             1,
                             {NOTE_PREVIEW_CHAR_LIMIT}
                         ) AS preview,
-                        n.processing_status, n.created_at, n.updated_at
+                        n.processing_status, n.created_at, n.updated_at, n.revision
                  FROM notes n"
         ));
         if folder_id.is_some() {
@@ -1978,7 +2309,7 @@ impl Repositories {
             "
              )
              SELECT page.note_rowid, page.id, page.title, page.preview,
-                    page.processing_status, page.created_at, page.updated_at,
+                    page.processing_status, page.created_at, page.updated_at, page.revision,
                     CASE WHEN f.id IS NOT NULL THEN nf.folder_id END AS folder_id
              FROM page
              LEFT JOIN note_folders nf ON nf.note_id = page.id
@@ -2014,6 +2345,7 @@ impl Repositories {
                     folder_ids: folder_id.into_iter().collect(),
                     created_at: created_at.clone(),
                     updated_at: row.get("updated_at"),
+                    revision: row.get::<i64, _>("revision").try_into().unwrap_or(1),
                     duration_ms: None,
                 },
                 ListNotesCursor {
@@ -2608,7 +2940,7 @@ impl Repositories {
             .push_bind(active_tab)
             .push(", active_tab, 'notes'), updated_at = ")
             .push_bind(timestamp())
-            .push(" WHERE id = ")
+            .push(", revision = revision + 1 WHERE id = ")
             .push_bind(note_id)
             .push(
                 " RETURNING id, title, generated_content, edited_content, active_tab, updated_at",
@@ -2630,6 +2962,44 @@ impl Repositories {
             active_tab: row.get("active_tab"),
             updated_at: row.get("updated_at"),
         })
+    }
+
+    /// Compare-and-swap update for linked devices. A stale writer receives the
+    /// current note in structured error details instead of overwriting edits.
+    pub async fn update_note_cas(
+        &self,
+        note_id: &str,
+        expected_revision: u64,
+        title: Option<String>,
+        edited_content: Option<String>,
+    ) -> Result<NoteDto, AppError> {
+        let current = self.get_note(note_id).await.map_err(AppError::from)?;
+        let next_title = title.unwrap_or(current.title.clone());
+        let next_content = edited_content.or(current.edited_content.clone());
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| AppError::new("note_revision_invalid", "The note revision is invalid."))?;
+        let result = query(
+            "UPDATE notes
+             SET title = ?, edited_content = ?, updated_at = ?, revision = revision + 1
+             WHERE id = ? AND revision = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(timestamp())
+        .bind(note_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await
+        .map_err(AppError::from)?;
+        if result.rows_affected() == 0 {
+            let current = self.get_note(note_id).await.map_err(AppError::from)?;
+            return Err(AppError {
+                code: "note_revision_conflict".to_string(),
+                message: "The note changed on another device.".to_string(),
+                details: serde_json::to_value(current).ok(),
+            });
+        }
+        self.get_note(note_id).await.map_err(AppError::from)
     }
 
     pub async fn audio_artifact_paths_for_note(
@@ -3032,7 +3402,8 @@ impl Repositories {
                  active_tab = 'notes',
                  processing_status = 'ready',
                  last_error = NULL,
-                 updated_at = ?
+                 updated_at = ?,
+                 revision = revision + 1
              WHERE id = ?",
         )
         .bind(current.title.as_str())
@@ -5894,6 +6265,48 @@ fn dictation_history_cutoff_timestamp() -> String {
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+fn companion_operation_cutoff_timestamp() -> String {
+    (Utc::now() - Duration::days(COMPANION_OPERATION_RETENTION_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+async fn prune_companion_operations(
+    transaction: &mut sqlx::transaction::Transaction<'_, sqlx_sqlite::Sqlite>,
+    device_id: &str,
+) -> Result<(), sqlx::error::Error> {
+    query("DELETE FROM companion_operations WHERE created_at < ?")
+        .bind(companion_operation_cutoff_timestamp())
+        .execute(&mut **transaction)
+        .await?;
+    query(
+        "DELETE FROM companion_operations
+         WHERE device_id = ? AND operation_state = 'completed'
+           AND operation_id NOT IN (
+             SELECT operation_id FROM companion_operations
+             WHERE device_id = ? AND operation_state = 'completed'
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?
+           )",
+    )
+    .bind(device_id)
+    .bind(device_id)
+    .bind(MAX_COMPANION_OPERATIONS_PER_DEVICE)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+fn companion_device_from_row(row: sqlx_sqlite::SqliteRow) -> CompanionDeviceRecord {
+    CompanionDeviceRecord {
+        id: row.get("id"),
+        display_name: row.get("display_name"),
+        public_key: row.get("public_key"),
+        linked_at: row.get("linked_at"),
+        last_seen_at: row.get("last_seen_at"),
+        revoked_at: row.get("revoked_at"),
+    }
+}
+
 fn preview_for(title: &str, content: &str) -> String {
     let source = if content.trim().is_empty() {
         title
@@ -5938,7 +6351,10 @@ fn validation_summary_recorded_silence(summary: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::Repositories;
+    use super::{
+        Repositories, MAX_COMPANION_OPERATIONS_PER_DEVICE,
+        MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE,
+    };
     use crate::domain::types::{
         NoteCalendarEventDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
         NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode,
@@ -5947,6 +6363,7 @@ mod tests {
     use sqlx::row::Row;
     use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::time::Duration as StdDuration;
+    use uuid::Uuid;
 
     async fn test_repositories() -> Repositories {
         let pool = SqlitePoolOptions::new()
@@ -7789,6 +8206,358 @@ mod tests {
         ] {
             assert!(!serialized.contains(sentinel));
         }
+    }
+
+    #[tokio::test]
+    async fn companion_note_edits_use_compare_and_swap_revisions() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("create note");
+        assert_eq!(note.revision, 1);
+
+        let updated = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                Some("From iPhone".to_string()),
+                Some("Encrypted edit".to_string()),
+            )
+            .await
+            .expect("first compare-and-swap update");
+        assert_eq!(updated.revision, 2);
+
+        let conflict = repos
+            .update_note_cas(
+                &note.id,
+                note.revision,
+                None,
+                Some("Stale edit".to_string()),
+            )
+            .await
+            .expect_err("stale revision must not overwrite the note");
+        assert_eq!(conflict.code, "note_revision_conflict");
+        assert_eq!(
+            conflict
+                .details
+                .as_ref()
+                .and_then(|value| value["revision"].as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            repos
+                .get_note(&note.id)
+                .await
+                .expect("current note")
+                .edited_content
+                .as_deref(),
+            Some("Encrypted edit")
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_operation_history_is_bounded_and_cleared_on_revocation() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+        repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-mutation",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("reserve pending mutation");
+
+        for index in 0..=MAX_COMPANION_OPERATIONS_PER_DEVICE {
+            repos
+                .remember_companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{index:04}"),
+                    b"accepted",
+                )
+                .await
+                .expect("remember operation");
+        }
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "operation-0000")
+                .await
+                .expect("read pruned operation"),
+            None
+        );
+        assert_eq!(
+            repos
+                .companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read retained operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-mutation")
+                .await
+                .expect("read retained pending mutation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+
+        repos
+            .revoke_companion_device("usr_test", &device_id)
+            .await
+            .expect("revoke companion device");
+        assert_eq!(
+            repos
+                .companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("operation-{MAX_COMPANION_OPERATIONS_PER_DEVICE:04}"),
+                )
+                .await
+                .expect("read revoked operation"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_mutation_reservation_survives_until_a_final_response_replaces_it() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        assert!(repos
+            .reserve_companion_operation("usr_test", &device_id, "mutation-1", b"outcome-unknown",)
+            .await
+            .expect("reserve mutation"));
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "mutation-1",
+                b"different-reservation",
+            )
+            .await
+            .expect("reject duplicate reservation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read reservation")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+
+        repos
+            .complete_companion_operation("usr_test", &device_id, "mutation-1", b"accepted")
+            .await
+            .expect("complete mutation");
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "mutation-1")
+                .await
+                .expect("read completed response")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_legacy_mutation_reservations_migrate_to_outcome_unknown() {
+        use june_companion_protocol::{
+            Capability, FailureCode, ProtocolFailure, Response, ResultPayload,
+        };
+
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+        let legacy = Response {
+            capability: Capability::AgentChat,
+            result: ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::Busy,
+                message: "This request may already have reached June. Check your Mac before trying a different request."
+                    .to_string(),
+                retryable: true,
+            }),
+        };
+        query(
+            "INSERT INTO companion_operations (device_id, operation_id, response, created_at)
+             VALUES (?, 'legacy-reservation', ?, '2026-07-17T00:00:00.000Z')",
+        )
+        .bind(&device_id)
+        .bind(serde_json::to_vec(&legacy).expect("encode legacy reservation"))
+        .execute(&repos.pool)
+        .await
+        .expect("insert legacy reservation");
+
+        crate::db::migrations::run_migrations(&repos.pool)
+            .await
+            .expect("rerun migrations");
+
+        let row = query(
+            "SELECT operation_state, response FROM companion_operations
+             WHERE device_id = ? AND operation_id = 'legacy-reservation'",
+        )
+        .bind(&device_id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("read migrated reservation");
+        assert_eq!(row.get::<String, _>("operation_state"), "pending");
+        let encoded: Vec<u8> = row.get("response");
+        let migrated: Response =
+            serde_json::from_slice(&encoded).expect("decode migrated response");
+        assert!(matches!(
+            migrated.result,
+            ResultPayload::Error(ProtocolFailure {
+                code: FailureCode::OutcomeUnknown,
+                retryable: false,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn companion_pending_mutation_limit_refuses_new_work_without_evicting_reservations() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        for index in 0..MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE {
+            assert!(repos
+                .reserve_companion_operation(
+                    "usr_test",
+                    &device_id,
+                    &format!("pending-{index:03}"),
+                    b"outcome-unknown",
+                )
+                .await
+                .expect("reserve pending operation"));
+        }
+        assert!(!repos
+            .reserve_companion_operation(
+                "usr_test",
+                &device_id,
+                "pending-over-limit",
+                b"outcome-unknown",
+            )
+            .await
+            .expect("refuse excess pending operation"));
+        assert_eq!(
+            repos
+                .companion_operation("usr_test", &device_id, "pending-000")
+                .await
+                .expect("oldest pending operation remains")
+                .as_deref(),
+            Some(b"outcome-unknown".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn companion_device_mutations_are_account_scoped() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_owner", &device_id, "Owner phone", &[4; 32])
+            .await
+            .expect("create owner device");
+        repos
+            .remember_companion_operation("usr_owner", &device_id, "operation-1", b"accepted")
+            .await
+            .expect("remember owner operation");
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("read persisted companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
+
+        assert!(repos
+            .companion_device("usr_other", &device_id)
+            .await
+            .expect("look up other account")
+            .is_none());
+        assert!(repos
+            .upsert_companion_device("usr_other", &device_id, "Other phone", &[4; 32])
+            .await
+            .is_err());
+        assert_eq!(
+            repos
+                .companion_account_user_id()
+                .await
+                .expect("retain owner companion account")
+                .as_deref(),
+            Some("usr_owner")
+        );
+        repos
+            .rename_companion_device("usr_other", &device_id, "Renamed")
+            .await
+            .expect("ignore cross-account rename");
+        repos
+            .touch_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account touch");
+        repos
+            .revoke_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account revoke");
+        repos
+            .delete_companion_device("usr_other", &device_id)
+            .await
+            .expect("ignore cross-account delete");
+        assert!(repos
+            .companion_operation("usr_other", &device_id, "operation-1")
+            .await
+            .expect("ignore cross-account operation read")
+            .is_none());
+        repos
+            .remember_companion_operation(
+                "usr_other",
+                &device_id,
+                "cross-account-operation",
+                b"unexpected",
+            )
+            .await
+            .expect("ignore cross-account operation write");
+        assert!(repos
+            .companion_operation("usr_owner", &device_id, "cross-account-operation")
+            .await
+            .expect("read owner operation history")
+            .is_none());
+
+        let owner = repos
+            .companion_device("usr_owner", &device_id)
+            .await
+            .expect("look up owner account")
+            .expect("owner device remains");
+        assert_eq!(owner.display_name, "Owner phone");
+        assert!(owner.last_seen_at.is_none());
+        assert!(owner.revoked_at.is_none());
+        assert_eq!(
+            repos
+                .companion_operation("usr_owner", &device_id, "operation-1")
+                .await
+                .expect("read owner operation")
+                .as_deref(),
+            Some(b"accepted".as_slice())
+        );
     }
 
     #[tokio::test]

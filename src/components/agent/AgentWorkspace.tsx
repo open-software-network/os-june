@@ -41,6 +41,10 @@ import type {
 } from "../../lib/agent-runtime-contract";
 import {
   agentRuntimeBindings,
+  companionCompleteFrontendRequest,
+  companionPublishAgentEvent,
+  type CompanionAgentStatus,
+  type CompanionFrontendRequest,
   assignSessionToProfile,
   downloadAgentArtifact,
   dictationHelperCommand,
@@ -54,6 +58,11 @@ import {
 import { shouldBlockTextOnFunding } from "../../lib/account-gate";
 import { dispatchAgentSessionStatus, dispatchAgentSessionsChanged } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
+import {
+  COMPANION_FRONTEND_QUEUE_EVENT,
+  registerCompanionFrontendConsumer,
+  takeCompanionFrontendRequests,
+} from "../../lib/companion-frontend-router";
 import { persistAgentDefaultModel } from "../../lib/agent-default-model";
 import { agentModelSelection, agentRunModelId } from "../../lib/agent-model-selection";
 import {
@@ -343,6 +352,8 @@ export function AgentWorkspace({
   const [safetyMode, setSafetyMode] = useState<AgentSafetyMode>(
     initialAgentSession?.safetyMode ?? "sandboxed",
   );
+  const safetyModeRef = useRef(safetyMode);
+  safetyModeRef.current = safetyMode;
   const [draft, setDraft] = useState(pendingRequestRef.current?.prompt ?? "");
   const [draftRevision, setDraftRevision] = useState(0);
   const draftRef = useRef(draft);
@@ -739,6 +750,30 @@ export function AgentWorkspace({
           clearQueuedAgentFollowUpSteering(current, payload.sessionId),
         );
       }
+      if (payload.method === "message.delta" && payload.data.delta) {
+        void companionPublishAgentEvent({
+          type: "delta",
+          data: { storedSessionId: payload.sessionId, text: payload.data.delta },
+        }).catch(() => undefined);
+      }
+      const companionStatus: CompanionAgentStatus | undefined =
+        payload.method === "interruption.requested"
+          ? "waitingForUser"
+          : payload.method === "run.completed"
+            ? "completed"
+            : payload.method === "run.cancelled"
+              ? "cancelled"
+              : payload.method === "run.failed"
+                ? "failed"
+                : payload.method === "run.started"
+                  ? "running"
+                  : undefined;
+      if (companionStatus) {
+        void companionPublishAgentEvent({
+          type: "status",
+          data: { storedSessionId: payload.sessionId, status: companionStatus },
+        }).catch(() => undefined);
+      }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
         return;
@@ -770,6 +805,95 @@ export function AgentWorkspace({
       unlisten?.();
     };
   }, [hydrate, refreshSessions, updateQueuedFollowUps]);
+
+  useEffect(() => {
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
+      try {
+        switch (payload.intent.type) {
+          case "agentSessionsList":
+          case "agentMessagesList":
+            return;
+          case "agentSend": {
+            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            let session: AgentSessionDto | undefined;
+            if (requestedStoredSessionId) {
+              session = await agentRuntimeBindings
+                .getSession(requestedStoredSessionId)
+                .catch(() => undefined);
+              if (!session) throw new Error("That agent session is no longer available.");
+            } else {
+              session = await agentRuntimeBindings.createSession({
+                title: titleFromPrompt(message),
+                model: agentRunModelId(modelRef.current, costQualityRef.current),
+                safetyMode: safetyModeRef.current,
+                profile: getCurrentDataPartitionName(),
+              });
+              void refreshSessions().catch(() => undefined);
+            }
+            const enabledSkillIds = (await agentRuntimeBindings.listSkills())
+              .filter((skill) => skill.enabled)
+              .map((skill) => skill.id);
+            await agentRuntimeBindings.startRun({
+              sessionId: session.id,
+              prompt: message,
+              model: agentRunModelId(modelRef.current, costQualityRef.current),
+              reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
+                | "minimal"
+                | "medium"
+                | "high",
+              safetyMode: safetyModeRef.current,
+              workspacePath: session.workspacePath,
+              enabledSkillIds,
+              attachments: [],
+            });
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "agentAccepted",
+              data: { storedSessionId: session.id },
+            });
+            return;
+          }
+          case "agentCancel": {
+            const { storedSessionId } = payload.intent.data;
+            const run = await agentRuntimeBindings.getLatestRun?.(storedSessionId);
+            if (
+              run &&
+              (run.status === "queued" ||
+                run.status === "running" ||
+                run.status === "waiting_for_user")
+            ) {
+              await agentRuntimeBindings.cancelRun(run.id);
+            }
+            await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });
+            return;
+          }
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    function consumeQueuedRequests() {
+      for (const request of takeCompanionFrontendRequests()) {
+        void handleCompanionRequest(request);
+      }
+    }
+
+    const unregisterConsumer = registerCompanionFrontendConsumer();
+    window.addEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    consumeQueuedRequests();
+    return () => {
+      unregisterConsumer();
+      window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const scroller = scrollRef.current;

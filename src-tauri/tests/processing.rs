@@ -7,6 +7,7 @@ const NOW: &str = "2026-05-21T10:00:00Z";
 
 fn note(overrides: impl FnOnce(&mut NoteDto)) -> NoteDto {
     let mut note = NoteDto {
+        revision: 1,
         id: "note-1".to_string(),
         title: "Note".to_string(),
         preview: String::new(),

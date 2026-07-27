@@ -131,6 +131,7 @@ import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { AgentMcpServersSection } from "./AgentMcpServersSection";
 import { ConnectorsSection } from "./ConnectorsSection";
+import { LinkedDevicesSection } from "./LinkedDevicesSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
@@ -319,6 +320,7 @@ export type SettingsTab =
   | "agent"
   | "memory"
   | "connectors"
+  | "linked-devices"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -332,6 +334,7 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "memory", label: "Memory" },
   { id: "connectors", label: "Plugins" },
+  { id: "linked-devices", label: "Linked devices" },
   { id: "about", label: "About" },
 ];
 
@@ -2611,6 +2614,8 @@ export function AppSettings({
             <AgentMcpServersSection />
           </>
         ) : null}
+
+        {activeTab === "linked-devices" ? <LinkedDevicesSection /> : null}
 
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">

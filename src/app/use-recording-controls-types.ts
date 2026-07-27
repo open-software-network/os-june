@@ -1,6 +1,6 @@
 import type { RecordNoticesDemoApi } from "../lib/record-notices-demo";
-import { type SidebarView } from "../components/sidebar/Sidebar";
-import { type Tab } from "./tabs/tabs";
+import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { Tab } from "./tabs/tabs";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type { RecordingSourceMode } from "../lib/tauri";
 import type { NotesAction, NotesState } from "./state/app-state";

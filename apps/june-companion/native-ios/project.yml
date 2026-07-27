@@ -1,0 +1,102 @@
+name: JuneCompanion
+options:
+  minimumXcodeGenVersion: 2.45.4
+  bundleIdPrefix: co.opensoftware.june
+  xcodeVersion: "26.0"
+  deploymentTarget:
+    iOS: "17.0"
+  groupSortPosition: top
+  createIntermediateGroups: true
+  generateEmptyDirectories: false
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+
+targets:
+  JuneCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: JuneCompanion
+        excludes:
+          - Resources
+      - path: JuneCompanion/Resources/Assets.xcassets
+        buildPhase: resources
+      - path: JuneCompanion/Resources/Fonts
+        buildPhase: resources
+      - path: JuneCompanion/Resources/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: JuneCompanion/Resources/Info.plist
+        buildPhase: none
+    preBuildScripts:
+      - name: Build companion crypto
+        script: /bin/sh "$SRCROOT/scripts/build-ios-crypto.sh"
+        inputFiles:
+          - "$(SRCROOT)/scripts/build-ios-crypto.sh"
+          - "$(SRCROOT)/../../../crates/june-companion-crypto/Cargo.toml"
+          - "$(SRCROOT)/../../../crates/june-companion-crypto/src/lib.rs"
+        outputFiles:
+          - "$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)/libjune_companion_crypto.a"
+        basedOnDependencyAnalysis: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.opensoftware.june.companion
+        PRODUCT_NAME: June Companion
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: JuneCompanion/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: JuneCompanion/Resources/JuneCompanion.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: JuneCompanion/Services/JuneCompanion-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/CompanionCrypto/include"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/CompanionCrypto/lib/$(PLATFORM_NAME)"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-ljune_companion_crypto"
+          - "-framework"
+          - "Security"
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+        DEAD_CODE_STRIPPING: YES
+        ENABLE_PREVIEWS: YES
+        SWIFT_EMIT_LOC_STRINGS: YES
+        SWIFT_STRICT_CONCURRENCY: complete
+      configs:
+        Debug:
+          APS_ENVIRONMENT: development
+        Release:
+          APS_ENVIRONMENT: production
+    scheme:
+      testTargets:
+        - JuneCompanionTests
+      gatherCoverageData: true
+
+  JuneCompanionTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: JuneCompanionTests
+    dependencies:
+      - target: JuneCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.opensoftware.june.companion.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/June Companion.app/June Companion"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/CompanionCrypto/include"

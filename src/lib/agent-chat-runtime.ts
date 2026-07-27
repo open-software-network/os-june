@@ -1,3 +1,5 @@
+import type { AgentItemDto } from "./agent-runtime-contract";
+
 export type AgentChatTextPart = { type: "text"; text: string; status?: "running" | "complete" };
 export type AgentChatReasoningPart = {
   type: "reasoning";
@@ -123,6 +125,60 @@ export type AgentChatTurn = {
   parts: AgentChatPart[];
   isScheduledRun?: boolean;
 };
+
+export type CompanionAgentMessageView = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  text: string;
+  createdAt: string;
+  streaming: false;
+};
+
+const COMPANION_MESSAGE_TEXT_BYTES = 30 * 1024;
+
+export function boundedCompanionText(text: string, maxBytes: number, suffix = "...") {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).byteLength <= maxBytes) return text;
+  const suffixBytes = encoder.encode(suffix).byteLength;
+  const pieces: string[] = [];
+  let bytes = 0;
+  for (const character of text) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (bytes + characterBytes + suffixBytes > maxBytes) break;
+    pieces.push(character);
+    bytes += characterBytes;
+  }
+  return `${pieces.join("").trimEnd()}${suffix}`;
+}
+
+/**
+ * Projects persisted agent runtime items onto the companion's deliberately
+ * small transcript contract. Selecting completed message items only keeps
+ * reasoning, tools, approvals, secrets, and media internals on the Mac.
+ */
+export function companionAgentMessagesFromItems(
+  items: AgentItemDto[],
+): CompanionAgentMessageView[] {
+  return items.flatMap((item) => {
+    if (item.kind !== "message" || item.status !== "complete") return [];
+    const text = item.text.trim();
+    if (!text) return [];
+    const suffix = "\n\n[Message truncated on companion]";
+    const message: CompanionAgentMessageView = {
+      id: item.id,
+      role: item.role,
+      text: boundedCompanionText(text, COMPANION_MESSAGE_TEXT_BYTES, suffix),
+      createdAt: item.createdAt,
+      streaming: false,
+    };
+    // JSON escaping can expand control-heavy text beyond its UTF-8 size. Keep
+    // one item below the frame budget even in that pathological case.
+    if (new TextEncoder().encode(JSON.stringify(message)).byteLength > 34 * 1024) {
+      message.text = boundedCompanionText(text, 5 * 1024, suffix);
+    }
+    return [message];
+  });
+}
 
 const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;
 

@@ -50,6 +50,14 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0038](adr/0038-june-owned-openai-agents-runtime.md) - June owns the local agent harness, persistence, tools, approvals, and stdio protocol on top of the OpenAI Agents SDK
 - [adr/0039](adr/0039-june-owned-routines-and-mcp.md) - June owns routine scheduling and user-configured MCP transport, persistence, safety, and migration
 - [adr/0040](adr/0040-plugin-capabilities-as-host-tools.md) - June-owned plugin capabilities are in-loop host tools (brokered helpers for risky engines), never June-managed MCP servers
+- [adr/0041](adr/0041-june-companion-trust-boundaries.md) - original companion trust boundaries, relay-first E2EE, and desktop authority
+- [adr/0042](adr/0042-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADRs 0043, 0046, and 0047
+- [adr/0043](adr/0043-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its authorization model is current again through ADR 0047
+- [adr/0044](adr/0044-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
+- [adr/0045](adr/0045-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
+- [adr/0046](adr/0046-companion-native-os-accounts-login.md) - superseded by ADR-0047
+- [adr/0047](adr/0047-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
+- [adr/0048](adr/0048-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
 
 ## Enforceable rules (spec/)
 
@@ -85,6 +93,12 @@ Per-repo config the engineering skills read before acting (see the
 ## Subsystems
 
 - [home-assistant.md](home-assistant.md) - persistent Home conversation and focused-session handoff contract
+- [companion-architecture.md](companion-architecture.md) - iPhone/iPad companion topology, responsibility split, data flow, and limits
+- [companion-protocol.md](companion-protocol.md) - versioned encrypted application protocol and capability allowlist
+- [companion-threat-model.md](companion-threat-model.md) - assets, attackers, mitigations, and accepted risks
+- [companion-privacy.md](companion-privacy.md) - relay-visible metadata and data that remains end-to-end encrypted
+- [companion-revocation.md](companion-revocation.md) - online and future-connection revocation behavior
+- [companion-development.md](companion-development.md) - local relay, desktop, iPhone, and iPad development workflow
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
 - [release-extension.md](release-extension.md) - Chrome Web Store publisher setup, RC review gate, stable promotion, and recovery runbook
 - [computer-use-cua-driver-spike.md](computer-use-cua-driver-spike.md) — spike (JUN-288): run the bundled cua-driver outside the write jail as a broker-owned, separately-signed daemon (recommended on identity/lifecycle grounds; a fully relocated daemon does start in-jail, up to the TCC gate); pinning + installer-never-runs confirmed
@@ -128,6 +142,10 @@ Per-repo config the engineering skills read before acting (see the
 
 ## Release & ops runbooks
 
+- [companion-relay-runbook.md](companion-relay-runbook.md) - relay deployment, health, limits, and incident response
+- [companion-apns-setup.md](companion-apns-setup.md) - Apple push setup for content-free wake hints
+- [companion-app-store-readiness.md](companion-app-store-readiness.md) - TestFlight and App Store checklist
+- [companion-security-review.md](companion-security-review.md) - required independent review checklist
 - [release-macos.md](release-macos.md) / [release-windows.md](release-windows.md) — the release runbooks
 - [desktop-release-runner.md](desktop-release-runner.md) — Mac Studio self-hosted runner setup for signed desktop releases
 - [reproducible-builds.md](reproducible-builds.md) — June API source → TEE trust chain (Phase A shipped)

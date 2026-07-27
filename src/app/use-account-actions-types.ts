@@ -1,5 +1,5 @@
 import type { AccountStatus } from "../lib/tauri";
-import { type MaxUpgradeTransport } from "../lib/billing-actions";
+import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
 import type * as React from "react";
 

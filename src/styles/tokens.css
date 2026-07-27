@@ -162,6 +162,11 @@
   --control-xl: 36px;
   /* Shared width for the model picker's nested detail and choice panels. */
   --model-picker-nested-w: 248px;
+  --line-width: 1px;
+  --focus-outline-width: 3px;
+  --companion-pairing-copy-min-w: 220px;
+  --companion-pairing-qr-size: 256px;
+  --companion-pairing-qr-canvas: oklch(100% 0 none);
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */

@@ -84,6 +84,9 @@ const mocks = vi.hoisted(() => ({
   patchNote: vi.fn(),
   completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
+  companionCompleteFrontendRequest: vi.fn(),
+  companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
+  listAgentItems: vi.fn().mockResolvedValue([]),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
   startMeetingRecording: vi.fn(),
@@ -154,7 +157,7 @@ vi.mock("../lib/tauri", () => ({
     createSession: vi.fn(),
     renameSession: vi.fn(),
     deleteSession: vi.fn(),
-    listItems: vi.fn(async () => []),
+    listItems: mocks.listAgentItems,
     listArtifacts: vi.fn(async () => []),
     startRun: vi.fn(),
     cancelRun: vi.fn(),
@@ -218,6 +221,9 @@ vi.mock("../lib/tauri", () => ({
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
+  companionPublishAgentEvent: mocks.companionPublishAgentEvent,
+  listAgentItems: mocks.listAgentItems,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -394,6 +400,7 @@ describe("App shortcuts", () => {
         { source: "system", ready: true, permissionState: "granted" },
       ],
     });
+    mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -493,6 +500,187 @@ describe("App shortcuts", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("serves companion agent reads without opening the agent workspace", async () => {
+    const user = userEvent.setup();
+    mocks.listAgentSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        model: "auto",
+        safetyMode: "sandboxed",
+        workspacePath: "/tmp/session-companion",
+        source: "user",
+        createdAt: "2026-07-16T09:00:00.000Z",
+        updatedAt: "2026-07-16T10:00:00.000Z",
+      },
+    ]);
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const payload = {
+      operationId: "operation-companion",
+      intent: { type: "agentSessionsList", data: { limit: 50 } },
+    };
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") handler({ payload });
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-companion", {
+        type: "agentSessions",
+        data: {
+          items: [
+            {
+              id: "session-companion",
+              title: "Companion planning",
+              status: "completed",
+              updatedAt: "2026-07-16T10:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
+  });
+
+  it("pages companion agent messages backward from the newest turns", async () => {
+    mocks.listAgentSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        model: "auto",
+        safetyMode: "sandboxed",
+        workspacePath: "/tmp/session-companion",
+        source: "user",
+        createdAt: "2026-07-16T09:00:00.000Z",
+        updatedAt: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    mocks.listAgentItems.mockResolvedValue([
+      {
+        id: "message-1",
+        sessionId: "session-companion",
+        sequence: 1,
+        kind: "message",
+        role: "user",
+        text: "Oldest question",
+        status: "complete",
+        createdAt: "2026-07-16T10:01:00.000Z",
+      },
+      {
+        id: "message-2",
+        sessionId: "session-companion",
+        sequence: 2,
+        kind: "message",
+        role: "assistant",
+        text: "Recent answer",
+        status: "complete",
+        createdAt: "2026-07-16T10:02:00.000Z",
+      },
+      {
+        id: "message-3",
+        sessionId: "session-companion",
+        sequence: 3,
+        kind: "message",
+        role: "user",
+        text: "Newest question",
+        status: "complete",
+        createdAt: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    const dispatch = (cursor?: string) => {
+      const payload = {
+        operationId: cursor ? "operation-older" : "operation-latest",
+        intent: {
+          type: "agentMessagesList",
+          data: {
+            storedSessionId: "session-companion",
+            limit: 2,
+            ...(cursor ? { cursor } : {}),
+          },
+        },
+      };
+      act(() => {
+        for (const [event, handler] of mocks.listen.mock.calls) {
+          if (event === "june://companion-request") handler({ payload });
+        }
+      });
+    };
+
+    dispatch();
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-latest", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({ id: "message-2", text: "Recent answer" }),
+            expect.objectContaining({ id: "message-3", text: "Newest question" }),
+          ],
+          nextCursor: "2",
+        },
+      }),
+    );
+
+    dispatch("2");
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-older", {
+        type: "agentMessages",
+        data: {
+          items: [expect.objectContaining({ id: "message-1", text: "Oldest question" })],
+        },
+      }),
+    );
+  });
+
+  it("opens the stored agent session requested by the companion", async () => {
+    mocks.listAgentSessions.mockResolvedValue([
+      {
+        id: "session-companion",
+        title: "Companion planning",
+        status: "completed",
+        model: "auto",
+        safetyMode: "sandboxed",
+        workspacePath: "/tmp/session-companion",
+        source: "user",
+        createdAt: "2026-07-16T09:00:00.000Z",
+        updatedAt: "2026-07-16T10:03:00.000Z",
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-focus")).toBe(
+        true,
+      ),
+    );
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-focus") {
+          handler({ payload: { agent: { storedSessionId: "session-companion" } } });
+        }
+      }
+    });
+
+    expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {

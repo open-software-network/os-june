@@ -1,4 +1,4 @@
-import { type Tab } from "./tabs/tabs";
+import type { Tab } from "./tabs/tabs";
 import type { NotesAction } from "./state/app-state";
 import type { NoteDto } from "../lib/tauri";
 import type * as React from "react";

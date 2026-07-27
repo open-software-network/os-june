@@ -16,7 +16,7 @@ authoritative, reviewable version.
 
 ## Frontend — UI styling
 
-- [icons-central-only](icons-central-only.md) — icons from `central-icons` / `central-icons-filled` only
+- [icons-central-only](icons-central-only.md) — central icons on web; ADR-recorded platform symbols in native targets
 - [design-tokens](design-tokens.md) — use the variables in `src/styles/tokens.css`
 - [no-tabular-numerals](no-tabular-numerals.md) — UI numbers use proportional figures, never `tabular-nums`
 - [scroll-fade](scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
