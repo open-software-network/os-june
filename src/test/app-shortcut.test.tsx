@@ -1082,18 +1082,19 @@ describe("App shortcuts", () => {
 
   it("returns no companion messages when the active partition changes while items load", async () => {
     const cached = agentSession("session-partition-a", "Partition A session");
-    const items = deferred<
-      Array<{
-        id: string;
-        sessionId: string;
-        sequence: number;
-        kind: "message";
-        role: "assistant";
-        text: string;
-        status: "complete";
-        createdAt: string;
-      }>
-    >();
+    const items =
+      deferred<
+        Array<{
+          id: string;
+          sessionId: string;
+          sequence: number;
+          kind: "message";
+          role: "assistant";
+          text: string;
+          status: "complete";
+          createdAt: string;
+        }>
+      >();
     setCurrentDataPartitionName("partition-a");
     mocks.listAgentSessions.mockResolvedValue([cached]);
     mocks.listSessionPartitions.mockResolvedValue([
