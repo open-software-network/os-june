@@ -105,11 +105,18 @@ export class OpenAIAgentsEngine implements AgentEngine {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     let summary = "";
-    for await (const event of response) {
-      if (event.type === "output_text_delta") summary += event.delta;
+    try {
+      for await (const event of response) {
+        if (event.type === "output_text_delta") summary += event.delta;
+      }
+    } catch (cause) {
+      const error = new Error(errorMessage(cause), { cause }) as Error & {
+        usage?: RuntimeUsage;
+      };
+      error.usage = modelProvider.totalUsage;
+      throw error;
     }
     summary = summary.trim();
-    if (!summary) throw new Error("June model route returned an empty context summary");
     return { text: summary, usage: modelProvider.totalUsage };
   }
 

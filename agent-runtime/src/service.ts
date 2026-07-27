@@ -113,19 +113,24 @@ export class RuntimeService {
       onFallback: (error) =>
         this.logCompactionFallback(error, sessionId, runId),
       summarize: async (history) => {
-        const summary = await this.engine.summarize({
-          sessionId,
-          runId,
-          model: parsed.model,
-          history,
-          contextWindow: parsed.contextWindow,
-          ...(parsed.maxOutputTokens === undefined
-            ? {}
-            : { maxOutputTokens: parsed.maxOutputTokens }),
-          signal: active.controller.signal,
-        });
-        compactionUsage = mergeUsage(compactionUsage, summary.usage);
-        return summary.text;
+        try {
+          const summary = await this.engine.summarize({
+            sessionId,
+            runId,
+            model: parsed.model,
+            history,
+            contextWindow: parsed.contextWindow,
+            ...(parsed.maxOutputTokens === undefined
+              ? {}
+              : { maxOutputTokens: parsed.maxOutputTokens }),
+            signal: active.controller.signal,
+          });
+          compactionUsage = mergeUsage(compactionUsage, summary.usage);
+          return summary.text;
+        } catch (error) {
+          compactionUsage = mergeUsage(compactionUsage, summaryErrorUsage(error));
+          throw error;
+        }
       },
     });
     throwIfAborted(active.controller.signal);
@@ -224,19 +229,24 @@ export class RuntimeService {
       ...(model
         ? {
             summarize: async (items) => {
-              const summary = await this.engine.summarize({
-                sessionId,
-                runId,
-                model,
-                history: items,
-                contextWindow:
-                  typeof params.contextWindow === "number"
-                    ? params.contextWindow
-                    : 128_000,
-                ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-              });
-              compactionUsage = mergeUsage(compactionUsage, summary.usage);
-              return summary.text;
+              try {
+                const summary = await this.engine.summarize({
+                  sessionId,
+                  runId,
+                  model,
+                  history: items,
+                  contextWindow:
+                    typeof params.contextWindow === "number"
+                      ? params.contextWindow
+                      : 128_000,
+                  ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+                });
+                compactionUsage = mergeUsage(compactionUsage, summary.usage);
+                return summary.text;
+              } catch (error) {
+                compactionUsage = mergeUsage(compactionUsage, summaryErrorUsage(error));
+                throw error;
+              }
             },
           }
         : {}),
@@ -369,6 +379,12 @@ function mergeUsage(earlier: RuntimeUsage, later: RuntimeUsage): RuntimeUsage {
     privacyLevel: later.privacyLevel ?? earlier.privacyLevel,
     endpoint: later.endpoint ?? earlier.endpoint,
   });
+}
+
+function summaryErrorUsage(error: unknown): RuntimeUsage {
+  if (typeof error !== "object" || error === null || !("usage" in error)) return {};
+  const usage = error.usage;
+  return typeof usage === "object" && usage !== null ? (usage as RuntimeUsage) : {};
 }
 
 function addDefined(left?: number, right?: number): number | undefined {

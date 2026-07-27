@@ -452,6 +452,34 @@ test("keeps manual compaction available when model summarization fails", async (
   );
 });
 
+test("retains billable summary usage when model summarization falls back", async () => {
+  const engine = new FailingSummaryWithUsageEngine();
+  const { service } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `item-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `Message ${index}`,
+  }));
+
+  const result = await service.handle(
+    request("history.compact", {
+      history,
+      model: "private-auto",
+      contextWindow: 128_000,
+    }),
+  );
+
+  assert.deepEqual((result as { usage?: JsonObject }).usage, {
+    inputTokens: 20,
+    outputTokens: 3,
+    totalTokens: 23,
+    requests: 1,
+    latestInputTokens: 20,
+  });
+});
+
 class FakeEngine implements AgentEngine {
   readonly result: EngineResult;
   readonly summaryInputs: EngineSummaryInput[] = [];
@@ -486,6 +514,17 @@ class FailingSummaryEngine extends FakeEngine {
   override async summarize(input: EngineSummaryInput) {
     this.summaryInputs.push(input);
     throw new Error("model request timed out");
+  }
+}
+
+class FailingSummaryWithUsageEngine extends FakeEngine {
+  override async summarize(input: EngineSummaryInput) {
+    this.summaryInputs.push(input);
+    const error = new Error("model request failed after usage") as Error & {
+      usage?: RuntimeUsage;
+    };
+    error.usage = { inputTokens: 20, outputTokens: 3, totalTokens: 23, requests: 1 };
+    throw error;
   }
 }
 
