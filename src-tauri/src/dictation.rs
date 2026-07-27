@@ -18,7 +18,7 @@ use std::{
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
         Arc, Mutex, OnceLock,
     },
     thread,
@@ -282,7 +282,7 @@ enum DictationFinalizedTake {
 #[derive(Default)]
 pub struct DictationTakeState {
     current: Mutex<Option<DictationTakeToken>>,
-    start_attempt_generation: AtomicU64,
+    start_attempt_generation: Mutex<u64>,
 }
 
 impl DictationTakeState {
@@ -346,14 +346,25 @@ impl DictationTakeState {
         current.as_ref().is_some_and(DictationTakeToken::cancel)
     }
 
-    fn begin_start_attempt(&self) -> u64 {
-        self.start_attempt_generation
-            .fetch_add(1, Ordering::SeqCst)
-            .wrapping_add(1)
+    fn run_new_start_attempt<T>(&self, operation: impl FnOnce() -> T) -> (u64, T) {
+        let mut generation = self
+            .start_attempt_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *generation = generation.wrapping_add(1);
+        (*generation, operation())
     }
 
-    fn is_current_start_attempt(&self, generation: u64) -> bool {
-        self.start_attempt_generation.load(Ordering::SeqCst) == generation
+    fn run_if_current_start_attempt<T>(
+        &self,
+        expected_generation: u64,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let generation = self
+            .start_attempt_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*generation == expected_generation).then(operation)
     }
 }
 
@@ -1347,12 +1358,6 @@ pub fn dictation_helper_command(
     }
     if matches!(
         command_type.as_str(),
-        "start_listening" | "toggle_listening"
-    ) {
-        begin_dictation_start_attempt(&app);
-    }
-    if matches!(
-        command_type.as_str(),
         "register_composer_delivery" | "unregister_composer_delivery"
     ) {
         if window.label() != "main" {
@@ -1431,6 +1436,17 @@ pub fn dictation_helper_command(
         .unwrap_or(true)
     {
         return handle_missing_helper_command(&app, &command);
+    }
+
+    if matches!(
+        command_type.as_str(),
+        "start_listening" | "toggle_listening"
+    ) {
+        if let Some(take_state) = app.try_state::<DictationTakeState>() {
+            let (_, result) =
+                take_state.run_new_start_attempt(|| send_helper_command(&state, command));
+            return result;
+        }
     }
 
     send_helper_command(&state, command)
@@ -2565,16 +2581,6 @@ fn cancel_current_dictation_take(app: &AppHandle) {
     cancel_dictation_take(app, None);
 }
 
-fn begin_dictation_start_attempt(app: &AppHandle) -> Option<u64> {
-    app.try_state::<DictationTakeState>()
-        .map(|state| state.begin_start_attempt())
-}
-
-fn is_current_dictation_start_attempt(app: &AppHandle, generation: u64) -> bool {
-    app.try_state::<DictationTakeState>()
-        .is_some_and(|state| state.is_current_start_attempt(generation))
-}
-
 fn acknowledge_shortcut_toggle(app: &AppHandle) {
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
@@ -2621,13 +2627,28 @@ fn send_dictation_command(
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
-    let start_attempt = matches!(
+    let starts_or_toggles = matches!(
         command,
         DictationCommand::StartListening | DictationCommand::ToggleListening
-    )
-    .then(|| begin_dictation_start_attempt(app))
-    .flatten();
-    let forwarded = forward_dictation_command(app, command, shortcut_label, starts_recording);
+    );
+    let (start_attempt, forwarded) = if starts_or_toggles {
+        if let Some(take_state) = app.try_state::<DictationTakeState>() {
+            let (generation, forwarded) = take_state.run_new_start_attempt(|| {
+                forward_dictation_command(app, command, shortcut_label, starts_recording)
+            });
+            (Some(generation), forwarded)
+        } else {
+            (
+                None,
+                forward_dictation_command(app, command, shortcut_label, starts_recording),
+            )
+        }
+    } else {
+        (
+            None,
+            forward_dictation_command(app, command, shortcut_label, starts_recording),
+        )
+    };
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
     }
@@ -2646,15 +2667,22 @@ fn send_dictation_command(
                 // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
-                    if !is_current_dictation_start_attempt(&app, start_attempt) {
+                    let Some(take_state) = app.try_state::<DictationTakeState>() else {
+                        return;
+                    };
+                    if take_state
+                        .run_if_current_start_attempt(start_attempt, || {
+                            forward_dictation_command(
+                                &app,
+                                DictationCommand::DiscardListening,
+                                &label,
+                                false,
+                            )
+                        })
+                        .is_none()
+                    {
                         return;
                     }
-                    forward_dictation_command(
-                        &app,
-                        DictationCommand::DiscardListening,
-                        &label,
-                        false,
-                    );
                     notify_dictation_not_signed_in(&app);
                     reset_shortcut_activation(&app);
                 }
@@ -8987,13 +9015,72 @@ mod tests {
     #[test]
     fn a_new_start_attempt_invalidates_an_older_auth_result() {
         let state = DictationTakeState::default();
-        let first = state.begin_start_attempt();
-        assert!(state.is_current_start_attempt(first));
+        let (first, ()) = state.run_new_start_attempt(|| ());
+        assert!(state.run_if_current_start_attempt(first, || ()).is_some());
 
-        let second = state.begin_start_attempt();
+        let (second, ()) = state.run_new_start_attempt(|| ());
 
-        assert!(!state.is_current_start_attempt(first));
-        assert!(state.is_current_start_attempt(second));
+        assert!(state.run_if_current_start_attempt(first, || ()).is_none());
+        assert!(state.run_if_current_start_attempt(second, || ()).is_some());
+    }
+
+    #[test]
+    fn start_attempt_waits_for_current_auth_discard_to_finish() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        let (first, ()) = state.run_new_start_attempt(|| ());
+        let (auth_entered_tx, auth_entered_rx) = mpsc::channel();
+        let (release_auth_tx, release_auth_rx) = mpsc::channel();
+        let auth_state = Arc::clone(&state);
+        let auth = thread::spawn(move || {
+            let result = auth_state.run_if_current_start_attempt(first, || {
+                auth_entered_tx
+                    .send(())
+                    .expect("test should observe the auth discard");
+                release_auth_rx
+                    .recv()
+                    .expect("test should release the auth discard");
+            });
+            assert!(result.is_some());
+        });
+        auth_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("auth discard should acquire the generation lock");
+
+        let (start_attempted_tx, start_attempted_rx) = mpsc::channel();
+        let (start_finished_tx, start_finished_rx) = mpsc::channel();
+        let start_state = Arc::clone(&state);
+        let start = thread::spawn(move || {
+            start_attempted_tx
+                .send(())
+                .expect("test should observe the replacement start attempt");
+            let (generation, ()) = start_state.run_new_start_attempt(|| ());
+            start_finished_tx
+                .send(generation)
+                .expect("test should observe the replacement start");
+        });
+        start_attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should reach the serialized operation");
+        assert!(matches!(
+            start_finished_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_auth_tx
+            .send(())
+            .expect("test should release the auth discard");
+        auth.join().expect("auth discard thread should finish");
+        start
+            .join()
+            .expect("replacement start thread should finish");
+        assert_eq!(
+            start_finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("replacement start should finish after auth discard"),
+            first.wrapping_add(1)
+        );
     }
 
     #[tokio::test]

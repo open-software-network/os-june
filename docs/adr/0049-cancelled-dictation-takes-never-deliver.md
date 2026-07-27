@@ -43,6 +43,11 @@ request must not cancel or deliver into the new take.
   the point of no return: a later discard can still make the helper reject
   text, but it does not retroactively cancel local side effects already
   authorized by a delivery claim that won first.
+- Start-time authentication cancellation and replacement starts share one
+  generation lock. June validates the authentication result and writes its
+  discard while holding that lock; every start or toggle advances the
+  generation and writes its helper command under the same lock. A stale
+  signed-out result therefore cannot enqueue a discard behind a newer start.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
   later text for it. Tagged text and discard commands cannot affect a
