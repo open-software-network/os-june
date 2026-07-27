@@ -133,8 +133,9 @@ export class RuntimeService {
         }
       },
     });
-    throwIfAborted(active.controller.signal);
-    this.emit("run.started", {
+    try {
+      throwIfAborted(active.controller.signal);
+      this.emit("run.started", {
       model: parsed.model,
       compacted: compaction.compacted,
       history: compaction.history as unknown as JsonValue,
@@ -142,20 +143,23 @@ export class RuntimeService {
       ...(compaction.summary === undefined
         ? {}
         : { contextSummary: compaction.summary as unknown as JsonValue }),
-    }, sessionId, runId);
-    const runParams: RunStartParams = { ...parsed, history: compaction.history };
-    const result = await this.engine.start({
+      }, sessionId, runId);
+      const runParams: RunStartParams = { ...parsed, history: compaction.history };
+      const result = await this.engine.start({
       sessionId,
       runId,
       params: runParams,
       signal: active.controller.signal,
       emit: (event) => this.forwardEngineEvent(event, sessionId, runId),
       takeSteering: () => active.steering.splice(0),
-    });
-    return {
-      ...result,
-      usage: mergeUsage(compactionUsage, result.usage),
-    };
+      });
+      return {
+        ...result,
+        usage: mergeUsage(compactionUsage, result.usage),
+      };
+    } catch (error) {
+      throw attachUsageToError(error, compactionUsage);
+    }
   }
 
   private resume(sessionId: string, runId: string, params: JsonObject): JsonValue {
@@ -287,6 +291,7 @@ export class RuntimeService {
     try {
       const result = await resultPromise;
       if (this.activeRuns.get(runKey(sessionId, runId))?.controller.signal.aborted) {
+        this.emitUsage(result.usage, sessionId, runId);
         this.emit("run.cancelled", { history: result.history as unknown as JsonValue }, sessionId, runId);
         return;
       }
@@ -309,6 +314,8 @@ export class RuntimeService {
       this.emitUsage(result.usage, sessionId, runId);
       this.emit("run.completed", { history: result.history as unknown as JsonValue }, sessionId, runId);
     } catch (error) {
+      const usage = summaryErrorUsage(error);
+      if (Object.keys(usage).length > 0) this.emitUsage(usage, sessionId, runId);
       const active = this.activeRuns.get(runKey(sessionId, runId));
       if (active?.controller.signal.aborted || isAbortError(error)) {
         this.emit("run.cancelled", {}, sessionId, runId);
@@ -385,6 +392,16 @@ function summaryErrorUsage(error: unknown): RuntimeUsage {
   if (typeof error !== "object" || error === null || !("usage" in error)) return {};
   const usage = error.usage;
   return typeof usage === "object" && usage !== null ? (usage as RuntimeUsage) : {};
+}
+
+function attachUsageToError(error: unknown, usage: RuntimeUsage): unknown {
+  if (Object.keys(usage).length === 0) return error;
+  const target = error instanceof Error ? error : new Error(errorMessage(error));
+  (target as Error & { usage?: RuntimeUsage }).usage = mergeUsage(
+    summaryErrorUsage(error),
+    usage,
+  );
+  return target;
 }
 
 function addDefined(left?: number, right?: number): number | undefined {
