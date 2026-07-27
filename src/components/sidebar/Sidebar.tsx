@@ -2551,8 +2551,12 @@ function SidebarContextMenu({
     <div
       ref={menuRef}
       className="context-menu sidebar-context-menu scroll-fade"
+      role="menu"
       {...fade.props}
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+      }}
       style={
         position
           ? { right: position.right, top: position.top }
@@ -2563,7 +2567,7 @@ function SidebarContextMenu({
             }
       }
     >
-      <div ref={scrollerRef} className="sidebar-context-menu-scroll" role="menu">
+      <div ref={scrollerRef} className="sidebar-context-menu-scroll">
         {children}
       </div>
     </div>,
