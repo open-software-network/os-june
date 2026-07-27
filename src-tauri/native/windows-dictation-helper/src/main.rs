@@ -38,6 +38,13 @@ fn next_take_id() -> String {
     format!("{}-{timestamp}-{sequence}", std::process::id())
 }
 
+fn take_id_or_next(requested: Option<String>) -> String {
+    requested
+        .map(|take_id| take_id.trim().to_string())
+        .filter(|take_id| !take_id.is_empty() && take_id.len() <= 128)
+        .unwrap_or_else(next_take_id)
+}
+
 #[derive(Clone)]
 struct EventWriter {
     inner: Arc<Mutex<io::Stdout>>,
@@ -263,6 +270,7 @@ impl HelperApp {
                 command.composer_request_id,
                 command.june_process_id,
                 command.june_window_handle,
+                command.take_id,
             ),
             "stop_and_paste" => self.stop_and_paste(),
             "toggle_listening" => {
@@ -273,6 +281,7 @@ impl HelperApp {
                         command.composer_request_id,
                         command.june_process_id,
                         command.june_window_handle,
+                        command.take_id,
                     );
                 }
             }
@@ -346,6 +355,7 @@ impl HelperApp {
         composer_request_id: Option<String>,
         june_pid: Option<u32>,
         june_window_handle: Option<isize>,
+        requested_take_id: Option<String>,
     ) {
         if !self.can_start_listening(composer_request_id.as_deref()) {
             if self.pending_composer_ack.is_some() {
@@ -363,7 +373,7 @@ impl HelperApp {
         let start_target = focus::pin_foreground_window();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
-                let take_id = next_take_id();
+                let take_id = take_id_or_next(requested_take_id);
                 self.recorder = Some(recorder);
                 self.active_take_id = Some(take_id.clone());
                 self.pinned_target = None;
@@ -423,7 +433,10 @@ impl HelperApp {
             if self.awaiting_transcript {
                 return;
             }
-            self.writer.emit(simple_event("recording_discarded"));
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({ "reason": "not_listening" }),
+            ));
             return;
         };
         self.awaiting_transcript = true;
@@ -850,15 +863,22 @@ impl HelperApp {
                     "delivery": "agent_composer",
                     "composerRequestId": request.id,
                     "takeId": cancelled_take_id,
+                    "reason": "command",
                 }),
             ));
         } else if let Some(cancelled_take_id) = cancelled_take_id {
             self.writer.emit(event(
                 "recording_discarded",
-                serde_json::json!({ "takeId": cancelled_take_id }),
+                serde_json::json!({
+                    "takeId": cancelled_take_id,
+                    "reason": "command",
+                }),
             ));
         } else {
-            self.writer.emit(simple_event("recording_discarded"));
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({ "reason": "command" }),
+            ));
         }
     }
 
@@ -984,6 +1004,16 @@ impl Drop for HelperApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coordinator_take_id_is_used_when_bounded() {
+        assert_eq!(
+            take_id_or_next(Some(" take-1 ".to_string())),
+            "take-1".to_string()
+        );
+        assert_ne!(take_id_or_next(Some(String::new())), "");
+        assert_ne!(take_id_or_next(Some("x".repeat(129))), "x".repeat(129));
+    }
 
     #[test]
     fn paste_completed_reports_input_submission_without_claiming_delivery() {

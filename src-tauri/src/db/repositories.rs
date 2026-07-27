@@ -2845,7 +2845,7 @@ impl Repositories {
 
     pub async fn stage_dictation_history_item(
         &self,
-        profile: &str,
+        data_partition: &str,
         text: &str,
         language: Option<String>,
         provider: &str,
@@ -2870,7 +2870,7 @@ impl Repositories {
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
-        .bind(profile)
+        .bind(data_partition)
         .bind(&item.created_at)
         .execute(&mut *transaction)
         .await?;

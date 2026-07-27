@@ -1734,7 +1734,7 @@ final class DictationEscapeCancelMonitor {
         }
 
         runOnMain {
-            dictation.discard()
+            dictation.discard(reason: "escape")
         }
     }
 }
@@ -1821,7 +1821,7 @@ final class DictationController {
     /// sees the mismatch and does nothing.
     private var dictationStartGeneration = 0
 
-    func start() {
+    func start(takeID: String? = nil) {
         if startPending {
             return
         }
@@ -1831,6 +1831,10 @@ final class DictationController {
         }
 
         startPending = true
+        let requestedTakeID = takeID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        activeTakeID = requestedTakeID
+            .flatMap { !$0.isEmpty && $0.utf8.count <= 128 ? $0 : nil }
+            ?? UUID().uuidString.lowercased()
         dictationStartGeneration += 1
         let generation = dictationStartGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
@@ -1843,6 +1847,7 @@ final class DictationController {
                 }
                 guard microphoneAllowed else {
                     self.startPending = false
+                    self.activeTakeID = nil
                     emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
                     emit("permission_status", permissionPayload())
                     return
@@ -1872,8 +1877,13 @@ final class DictationController {
         // never calling back); erroring not_listening here would wedge the
         // pending flag until a helper restart.
         if startPending && !isListening {
+            let cancelledTakeID = activeTakeID
             cancelAndResetRecording()
-            emit("recording_discarded", ["reason": "start_cancelled"])
+            var payload = ["reason": "start_cancelled"]
+            if let cancelledTakeID {
+                payload["takeId"] = cancelledTakeID
+            }
+            emit("recording_discarded", payload)
             return
         }
         guard isListening, recordingPurpose == .dictation else {
@@ -1884,13 +1894,13 @@ final class DictationController {
         stopActiveRecording()
     }
 
-    func toggle(shortcut: String) {
+    func toggle(shortcut: String, takeID: String? = nil) {
         if isListening || startPending {
             emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
             stop()
         } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-            start()
+            start(takeID: takeID)
         }
     }
 
@@ -1949,7 +1959,7 @@ final class DictationController {
         resetRecordingState(keepRecordingFile: keepRecordingFile && !copied)
     }
 
-    func discard(takeID: String? = nil) {
+    func discard(takeID: String? = nil, reason: String? = nil) {
         if let takeID, activeTakeID != takeID {
             return
         }
@@ -1967,11 +1977,14 @@ final class DictationController {
             cancelledTakeIDs.insert(cancelledTakeID)
         }
         if hadActiveDictation {
+            var payload: [String: String] = [:]
             if let cancelledTakeID {
-                emit("recording_discarded", ["takeId": cancelledTakeID])
-            } else {
-                emit("recording_discarded")
+                payload["takeId"] = cancelledTakeID
             }
+            if let reason {
+                payload["reason"] = reason
+            }
+            emit("recording_discarded", payload)
         }
     }
 
@@ -1998,7 +2011,9 @@ final class DictationController {
     }
 
     private func startRecording(purpose: RecordingPurpose, durationSeconds: Double?) {
+        let pendingDictationTakeID = purpose == .dictation ? activeTakeID : nil
         resetRecordingState()
+        activeTakeID = pendingDictationTakeID
         cleanupMicTestSample()
         recordingPurpose = purpose
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
@@ -2181,7 +2196,7 @@ final class DictationController {
                 "microphone": microphone,
             ])
         } else {
-            let takeID = UUID().uuidString.lowercased()
+            let takeID = activeTakeID ?? UUID().uuidString.lowercased()
             activeTakeID = takeID
             let escapeCancelAvailable = DictationEscapeCancelMonitor.shared.start()
             emitJSON("listening_started", [
@@ -2625,8 +2640,9 @@ func handleCommandLine(_ line: String) {
             dictation.emitMicrophones()
         }
     case "start_listening":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.start()
+            dictation.start(takeID: takeID)
         }
     case "stop_and_paste":
         runOnMain {
@@ -2673,8 +2689,9 @@ func handleCommandLine(_ line: String) {
         }
     case "toggle_listening":
         let shortcut = command?["shortcut"] as? String ?? "hotkey"
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.toggle(shortcut: shortcut)
+            dictation.toggle(shortcut: shortcut, takeID: takeID)
         }
     case "paste_text":
         let text = command?["text"] as? String ?? ""
@@ -2696,7 +2713,7 @@ func handleCommandLine(_ line: String) {
     case "discard_recording":
         let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.discard(takeID: takeID)
+            dictation.discard(takeID: takeID, reason: "command")
         }
     case "shutdown":
         runOnMain {

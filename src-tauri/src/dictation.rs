@@ -355,6 +355,21 @@ impl DictationTakeState {
         (*generation, operation())
     }
 
+    fn run_new_start_attempt_if<P, T>(
+        &self,
+        prepare: impl FnOnce() -> Option<P>,
+        operation: impl FnOnce(u64, P) -> T,
+    ) -> Option<(u64, T)> {
+        let mut generation = self
+            .start_attempt_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prepared = prepare()?;
+        *generation = generation.wrapping_add(1);
+        let current = *generation;
+        Some((current, operation(current, prepared)))
+    }
+
     fn run_if_current_start_attempt<T>(
         &self,
         expected_generation: u64,
@@ -777,6 +792,10 @@ struct ShortcutActivationController {
     /// Updated only from helper lifecycle events. Unlike `active_mode`, this
     /// also reflects recordings started by the composer button.
     helper_is_listening: bool,
+    /// Cleared as soon as a replacement start is ordered, before the helper
+    /// acknowledges it. This prevents a delayed terminal event from the
+    /// previous take from resetting the replacement shortcut activation.
+    helper_take_id: Option<String>,
     push_to_talk_is_down: bool,
     push_started_at: Option<Instant>,
     toggle_command_in_flight: bool,
@@ -891,8 +910,34 @@ impl ShortcutActivationController {
         self.helper_finalizing_since = None;
     }
 
-    fn set_helper_listening(&mut self, listening: bool) {
+    fn set_helper_listening(&mut self, listening: bool, take_id: Option<&str>) {
         self.helper_is_listening = listening;
+        if listening {
+            self.helper_take_id = take_id.map(str::to_string);
+        }
+    }
+
+    fn prepare_helper_start(&mut self, take_id: &str) {
+        self.helper_take_id = Some(take_id.to_string());
+    }
+
+    fn reset_for_helper_discard(&mut self, take_id: Option<&str>, reason: Option<&str>) -> bool {
+        let matches_active_take = match take_id {
+            Some(take_id) => self.helper_take_id.as_deref() == Some(take_id),
+            // New helpers explain untagged terminal events such as a
+            // start-pending stop. A payload with neither field is an older
+            // helper, where resetting remains the compatible behavior.
+            None => reason.is_none(),
+        };
+        if !matches_active_take {
+            return false;
+        }
+        self.reset();
+        true
+    }
+
+    fn clear_helper_take(&mut self) {
+        self.helper_take_id = None;
     }
 
     fn command_starts_recording(&self, command: DictationCommand) -> bool {
@@ -920,6 +965,7 @@ impl ShortcutActivationController {
 
     fn reset(&mut self) {
         self.active_mode = None;
+        self.helper_take_id = None;
         self.push_to_talk_is_down = false;
         self.push_started_at = None;
         self.toggle_command_in_flight = false;
@@ -1348,6 +1394,18 @@ pub fn dictation_helper_command(
             ));
         }
     }
+    if let Some(take_id) = command.get("takeId") {
+        let valid = take_id
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|id| !id.is_empty() && id.len() <= 128);
+        if !valid {
+            return Err(AppError::new(
+                "dictation_take_invalid",
+                "The dictation take identifier was invalid.",
+            ));
+        }
+    }
     let command_type = command
         .get("type")
         .and_then(serde_json::Value::as_str)
@@ -1442,11 +1500,21 @@ pub fn dictation_helper_command(
         command_type.as_str(),
         "start_listening" | "toggle_listening"
     ) {
+        let mut command = command;
+        if command.get("takeId").is_none() {
+            if let Some(object) = command.as_object_mut() {
+                object.insert(
+                    "takeId".into(),
+                    serde_json::json!(uuid::Uuid::new_v4().to_string()),
+                );
+            }
+        }
         if let Some(take_state) = app.try_state::<DictationTakeState>() {
             let (_, result) =
                 take_state.run_new_start_attempt(|| send_helper_command(&state, command));
             return result;
         }
+        return send_helper_command(&state, command);
     }
 
     send_helper_command(&state, command)
@@ -2507,23 +2575,52 @@ fn handle_shortcut_key_event(
         return;
     };
 
-    let action = app
-        .try_state::<ShortcutActivationState>()
-        .and_then(|state| {
-            state.controller.lock().ok().and_then(|mut state| {
-                let command = state.handle_edge(edge, kind, Instant::now())?;
-                let starts_recording = state.command_starts_recording(command);
-                Some((command, starts_recording))
-            })
-        });
-
     let shortcut = match kind {
         DictationShortcutKind::PushToTalk => settings.push_to_talk_shortcut,
         DictationShortcutKind::Toggle => settings.toggle_shortcut,
     };
 
-    if let Some((command, starts_recording)) = action {
-        send_dictation_command(app, command, &shortcut.label, starts_recording);
+    let prepare_action = || {
+        app.try_state::<ShortcutActivationState>()
+            .and_then(|state| {
+                state.controller.lock().ok().and_then(|mut state| {
+                    let command = state.handle_edge(edge, kind, Instant::now())?;
+                    let starts_recording = state.command_starts_recording(command);
+                    let start_take_id = starts_recording.then(|| uuid::Uuid::new_v4().to_string());
+                    if let Some(take_id) = start_take_id.as_deref() {
+                        state.prepare_helper_start(take_id);
+                    }
+                    Some((command, starts_recording, start_take_id))
+                })
+            })
+    };
+
+    if matches!(edge, ShortcutKeyEdge::Down) {
+        if let Some(take_state) = app.try_state::<DictationTakeState>() {
+            take_state.run_new_start_attempt_if(prepare_action, |start_attempt, action| {
+                let (command, starts_recording, start_take_id) = action;
+                send_dictation_command(
+                    app,
+                    command,
+                    &shortcut.label,
+                    starts_recording,
+                    Some(start_attempt),
+                    start_take_id,
+                );
+            });
+            return;
+        }
+    }
+
+    if let Some((command, starts_recording, start_take_id)) = prepare_action() {
+        send_dictation_command(
+            app,
+            command,
+            &shortcut.label,
+            starts_recording,
+            None,
+            start_take_id,
+        );
     }
 }
 
@@ -2601,10 +2698,31 @@ fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
     }
 }
 
-fn update_shortcut_helper_listening(app: &AppHandle, listening: bool) {
+fn update_shortcut_helper_listening(app: &AppHandle, listening: bool, take_id: Option<&str>) {
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
-            controller.set_helper_listening(listening);
+            controller.set_helper_listening(listening, take_id);
+        }
+    }
+}
+
+fn clear_shortcut_helper_take(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.clear_helper_take();
+        }
+    }
+}
+
+fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value) {
+    let take_id = dictation_take_id_from_event(event);
+    let reason = event
+        .get("payload")
+        .and_then(|payload| payload.get("reason"))
+        .and_then(serde_json::Value::as_str);
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.reset_for_helper_discard(take_id, reason);
         }
     }
 }
@@ -2614,6 +2732,8 @@ fn send_dictation_command(
     command: DictationCommand,
     shortcut_label: &str,
     starts_recording: bool,
+    start_attempt: Option<u64>,
+    start_take_id: Option<String>,
 ) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
@@ -2627,28 +2747,13 @@ fn send_dictation_command(
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
-    let starts_or_toggles = matches!(
+    let forwarded = forward_dictation_command(
+        app,
         command,
-        DictationCommand::StartListening | DictationCommand::ToggleListening
+        shortcut_label,
+        starts_recording,
+        start_take_id.as_deref(),
     );
-    let (start_attempt, forwarded) = if starts_or_toggles {
-        if let Some(take_state) = app.try_state::<DictationTakeState>() {
-            let (generation, forwarded) = take_state.run_new_start_attempt(|| {
-                forward_dictation_command(app, command, shortcut_label, starts_recording)
-            });
-            (Some(generation), forwarded)
-        } else {
-            (
-                None,
-                forward_dictation_command(app, command, shortcut_label, starts_recording),
-            )
-        }
-    } else {
-        (
-            None,
-            forward_dictation_command(app, command, shortcut_label, starts_recording),
-        )
-    };
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
     }
@@ -2670,21 +2775,18 @@ fn send_dictation_command(
                     let Some(take_state) = app.try_state::<DictationTakeState>() else {
                         return;
                     };
-                    if take_state
-                        .run_if_current_start_attempt(start_attempt, || {
-                            forward_dictation_command(
-                                &app,
-                                DictationCommand::DiscardListening,
-                                &label,
-                                false,
-                            )
-                        })
-                        .is_none()
-                    {
-                        return;
-                    }
-                    notify_dictation_not_signed_in(&app);
-                    reset_shortcut_activation(&app);
+                    let _ = take_state.run_if_current_start_attempt(start_attempt, || {
+                        let forwarded = forward_dictation_command(
+                            &app,
+                            DictationCommand::DiscardListening,
+                            &label,
+                            false,
+                            None,
+                        );
+                        reset_shortcut_activation(&app);
+                        notify_dictation_not_signed_in(&app);
+                        forwarded
+                    });
                 }
             }
         });
@@ -2696,6 +2798,7 @@ fn forward_dictation_command(
     command: DictationCommand,
     shortcut_label: &str,
     starts_recording: bool,
+    start_take_id: Option<&str>,
 ) -> bool {
     if matches!(command, DictationCommand::DiscardListening) {
         cancel_current_dictation_take(app);
@@ -2712,6 +2815,11 @@ fn forward_dictation_command(
     };
 
     let mut helper_command = command.helper_command(shortcut_label);
+    if starts_recording {
+        if let (Some(take_id), Some(object)) = (start_take_id, helper_command.as_object_mut()) {
+            object.insert("takeId".into(), serde_json::json!(take_id));
+        }
+    }
     let mut composer_request_id = None;
     if starts_recording {
         if let Ok(registration) = state.composer_registration.lock() {
@@ -4130,7 +4238,8 @@ fn reapply_helper_settings(app: &AppHandle) {
 }
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
-    update_shortcut_helper_listening(app, false);
+    update_shortcut_helper_listening(app, false, None);
+    clear_shortcut_helper_take(app);
     let event = helper_unavailable_event(reason, message);
     if let Some(status) = app.try_state::<HotkeyStatus>() {
         set_hotkey_status(&status, event.clone());
@@ -4183,25 +4292,35 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     }
     match event_type {
         Some("listening_started") => {
-            update_shortcut_helper_listening(app, true);
+            update_shortcut_helper_listening(
+                app,
+                true,
+                event.as_ref().and_then(dictation_take_id_from_event),
+            );
             update_shortcut_helper_finalizing(app, false);
         }
         Some("finalizing_transcript") => {
-            update_shortcut_helper_listening(app, false);
+            update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, true);
         }
         Some("recording_discarded" | "final_transcript" | "error") => {
-            update_shortcut_helper_listening(app, false);
+            update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, false);
         }
         _ => {}
     }
 
-    // An Escape/X cancel mid-hold must also forget the push-to-talk edge, so
-    // the eventual key release can't be misread as a stop for a recording
-    // that no longer exists.
-    if matches!(event_type, Some("recording_discarded")) {
-        reset_shortcut_activation(app);
+    // A matching Escape/X cancel mid-hold must also forget the push-to-talk
+    // edge, so the eventual key release cannot stop a replacement recording.
+    // A start clears the previous helper take ID before writing its command,
+    // which makes a delayed terminal event from that previous take harmless.
+    match (event_type, event.as_ref()) {
+        (Some("recording_discarded"), Some(event)) => {
+            reset_shortcut_for_helper_discard(app, event);
+        }
+        (Some("recording_discarded"), None) => reset_shortcut_activation(app),
+        (Some("final_transcript" | "error"), _) => clear_shortcut_helper_take(app),
+        _ => {}
     }
 
     if matches!(event_type, Some("recording_ready")) {
@@ -6135,7 +6254,7 @@ async fn persist_dictation_history_item(
 async fn stage_dictation_history_item(
     app: &AppHandle,
     transcript: &TranscriptionProviderResult,
-    profile: &str,
+    data_partition: &str,
 ) -> Result<Option<crate::db::repositories::PendingDictationHistoryItem>, AppError> {
     let repos = crate::commands::repositories(app).await.map_err(|error| {
         tracing::error!(code = %error.code, "dictation history repository unavailable");
@@ -6146,7 +6265,7 @@ async fn stage_dictation_history_item(
     })?;
     repos
         .stage_dictation_history_item(
-            profile,
+            data_partition,
             &transcript.text,
             transcript.language.clone(),
             &transcript.provider,
@@ -8048,6 +8167,98 @@ mod tests {
     }
 
     #[test]
+    fn stale_helper_discard_does_not_reset_a_replacement_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        controller.set_helper_listening(true, Some("take-a"));
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        assert!(!controller.reset_for_helper_discard(Some("take-a"), Some("command")));
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn matching_helper_discard_resets_the_active_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert!(controller.reset_for_helper_discard(Some("take-b"), Some("escape")));
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
+    fn reasoned_untagged_discard_does_not_reset_a_replacement_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        assert!(!controller.reset_for_helper_discard(None, Some("start_cancelled")));
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn legacy_untagged_discard_still_resets_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        assert!(controller.reset_for_helper_discard(None, None));
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
     fn toggle_mode_toggles_on_down_and_ignores_up() {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
@@ -8178,11 +8389,11 @@ mod tests {
         let mut controller = ShortcutActivationController::default();
 
         assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
-        controller.set_helper_listening(true);
+        controller.set_helper_listening(true, Some("take-1"));
         assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
         controller.reset();
         assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
-        controller.set_helper_listening(false);
+        controller.set_helper_listening(false, None);
         assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
         assert!(controller.command_starts_recording(DictationCommand::StartListening));
         assert!(!controller.command_starts_recording(DictationCommand::StopAndPaste));
@@ -9029,10 +9240,12 @@ mod tests {
         use std::sync::mpsc;
 
         let state = Arc::new(DictationTakeState::default());
+        let controller = Arc::new(Mutex::new(ShortcutActivationController::default()));
         let (first, ()) = state.run_new_start_attempt(|| ());
         let (auth_entered_tx, auth_entered_rx) = mpsc::channel();
         let (release_auth_tx, release_auth_rx) = mpsc::channel();
         let auth_state = Arc::clone(&state);
+        let auth_controller = Arc::clone(&controller);
         let auth = thread::spawn(move || {
             let result = auth_state.run_if_current_start_attempt(first, || {
                 auth_entered_tx
@@ -9041,6 +9254,10 @@ mod tests {
                 release_auth_rx
                     .recv()
                     .expect("test should release the auth discard");
+                auth_controller
+                    .lock()
+                    .expect("shortcut controller should lock")
+                    .reset();
             });
             assert!(result.is_some());
         });
@@ -9051,11 +9268,30 @@ mod tests {
         let (start_attempted_tx, start_attempted_rx) = mpsc::channel();
         let (start_finished_tx, start_finished_rx) = mpsc::channel();
         let start_state = Arc::clone(&state);
+        let start_controller = Arc::clone(&controller);
         let start = thread::spawn(move || {
             start_attempted_tx
                 .send(())
                 .expect("test should observe the replacement start attempt");
-            let (generation, ()) = start_state.run_new_start_attempt(|| ());
+            let (generation, ()) = start_state
+                .run_new_start_attempt_if(
+                    || {
+                        let mut controller = start_controller
+                            .lock()
+                            .expect("shortcut controller should lock");
+                        let command = controller.handle_edge(
+                            ShortcutKeyEdge::Down,
+                            DictationShortcutKind::PushToTalk,
+                            Instant::now(),
+                        )?;
+                        controller.prepare_helper_start("take-b");
+                        Some(command)
+                    },
+                    |_, command| {
+                        assert_eq!(command, DictationCommand::StartListening);
+                    },
+                )
+                .expect("replacement shortcut should start");
             start_finished_tx
                 .send(generation)
                 .expect("test should observe the replacement start");
@@ -9080,6 +9316,17 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("replacement start should finish after auth discard"),
             first.wrapping_add(1)
+        );
+        assert_eq!(
+            controller
+                .lock()
+                .expect("shortcut controller should lock")
+                .handle_edge(
+                    ShortcutKeyEdge::Up,
+                    DictationShortcutKind::PushToTalk,
+                    Instant::now() + PUSH_TO_TALK_MIN_HOLD,
+                ),
+            Some(DictationCommand::StopAndPaste)
         );
     }
 
