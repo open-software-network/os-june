@@ -957,9 +957,18 @@ impl ShortcutActivationController {
         (starts_recording, take_id)
     }
 
-    fn reset_for_helper_discard(&mut self, take_id: Option<&str>, reason: Option<&str>) -> bool {
+    fn reset_for_helper_discard(
+        &mut self,
+        take_id: Option<&str>,
+        reason: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> bool {
         let matches_active_take = match take_id {
-            Some(take_id) => self.helper_take_id.as_deref() == Some(take_id),
+            Some(take_id) => self
+                .helper_take_id
+                .as_deref()
+                .or(current_take_id)
+                .is_some_and(|active_take_id| active_take_id == take_id),
             // New helpers explain untagged terminal events such as a
             // start-pending stop. A payload with neither field is an older
             // helper, where resetting remains the compatible behavior.
@@ -2790,14 +2799,22 @@ fn clear_shortcut_helper_take(app: &AppHandle) {
     }
 }
 
-fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value) {
+fn reset_shortcut_for_helper_discard(app: &AppHandle, event: &serde_json::Value) -> bool {
     let take_id = dictation_take_id_from_event(event);
     let reason = dictation_discard_reason_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
-            controller.reset_for_helper_discard(take_id, reason);
+            return controller.reset_for_helper_discard(
+                take_id,
+                reason,
+                current_take_id.as_deref(),
+            );
         }
     }
+    false
 }
 
 fn send_dictation_command(
@@ -4325,6 +4342,16 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
 
+    if let (Some("recording_discarded"), Some(event)) = (event_type, event.as_ref()) {
+        if !reset_shortcut_for_helper_discard(app, event) {
+            tracing::info!(
+                take_id = dictation_take_id_from_event(event),
+                "ignoring discard event that does not belong to the active dictation take"
+            );
+            return;
+        }
+    }
+
     match (event_type, event.as_ref()) {
         (Some("listening_started"), Some(event)) => begin_dictation_take(app, event),
         (Some("recording_discarded"), Some(event)) => {
@@ -4383,14 +4410,9 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         _ => {}
     }
 
-    // A matching Escape/X cancel mid-hold must also forget the push-to-talk
-    // edge, so the eventual key release cannot stop a replacement recording.
-    // A start clears the previous helper take ID before writing its command,
-    // which makes a delayed terminal event from that previous take harmless.
+    // A matching Escape/X cancel was reset before generic lifecycle handling,
+    // so a stale terminal event cannot clear the replacement take's flags.
     match (event_type, event.as_ref()) {
-        (Some("recording_discarded"), Some(event)) => {
-            reset_shortcut_for_helper_discard(app, event);
-        }
         (Some("recording_discarded"), None) => reset_shortcut_activation(app),
         (Some("final_transcript" | "error"), _) => clear_shortcut_helper_take(app),
         _ => {}
@@ -8256,7 +8278,11 @@ mod tests {
         );
         controller.prepare_helper_start("take-b");
 
-        assert!(!controller.reset_for_helper_discard(Some("take-a"), Some("command")));
+        assert!(!controller.reset_for_helper_discard(
+            Some("take-a"),
+            Some("command"),
+            Some("take-a"),
+        ));
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             Some(DictationCommand::StopAndPaste)
@@ -8280,7 +8306,11 @@ mod tests {
         controller.prepare_helper_start("take-b");
         controller.set_helper_listening(true, Some("take-b"));
 
-        assert!(controller.reset_for_helper_discard(Some("take-b"), Some("escape")));
+        assert!(controller.reset_for_helper_discard(
+            Some("take-b"),
+            Some("escape"),
+            Some("take-b"),
+        ));
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             None
@@ -8303,7 +8333,11 @@ mod tests {
         );
         controller.prepare_helper_start("take-b");
 
-        assert!(!controller.reset_for_helper_discard(None, Some("start_cancelled")));
+        assert!(!controller.reset_for_helper_discard(
+            None,
+            Some("start_cancelled"),
+            Some("take-b"),
+        ));
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             Some(DictationCommand::StopAndPaste)
@@ -8347,7 +8381,7 @@ mod tests {
             ),
             Some(DictationCommand::StartListening)
         );
-        assert!(controller.reset_for_helper_discard(None, None));
+        assert!(controller.reset_for_helper_discard(None, None, Some("take-b")));
         assert_eq!(
             controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
             None
@@ -8692,6 +8726,11 @@ mod tests {
         assert_eq!(take_id.as_deref(), Some("take-a"));
         assert!(controller.helper_take_id.is_none());
         assert!(controller.helper_is_listening);
+        assert!(controller.reset_for_helper_discard(
+            Some("take-a"),
+            Some("command"),
+            Some("take-a"),
+        ));
     }
 
     #[cfg(target_os = "windows")]

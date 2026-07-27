@@ -58,11 +58,12 @@ request must not cancel or deliver into the new take.
   different active or pending take. The Dictation HUD sends the take ID it is
   displaying and ignores a tagged discard from an older take. Rust also clears
   the previous helper take correlation before writing a replacement start, so
-  a delayed discard event cannot reset the replacement shortcut. New helpers
-  explain untagged terminal events with a reason; events with neither a take
-  ID nor a reason retain the older-helper reset behavior. A reasoned, untagged
-  idle event does not cancel crash-recovery work still owned by Rust. Missing
-  IDs remain accepted for compatibility with an older app or helper. A
+  a delayed discard event is rejected before generic lifecycle handling and
+  cannot clear the replacement shortcut's listening or finalizing state. New
+  helpers explain untagged terminal events with a reason; events with neither
+  a take ID nor a reason retain the older-helper reset behavior. A reasoned,
+  untagged idle event does not cancel crash-recovery work still owned by Rust.
+  Missing IDs remain accepted for compatibility with an older app or helper. A
   replacement helper with no active take keeps ADR-0014's clipboard recovery
   behavior for work that survived a helper crash.
 
