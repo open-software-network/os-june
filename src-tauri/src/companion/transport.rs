@@ -226,12 +226,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
         relay_websocket_url(),
         identity.device_id
     );
-    let mut request = url
-        .into_client_request()
-        .map_err(|_| transport_error("The companion relay URL is invalid."))?;
-    let authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-        .map_err(|_| transport_error("The OS Accounts session is invalid."))?;
-    request.headers_mut().insert(AUTHORIZATION, authorization);
+    let request = relay_upgrade_request(&url, &token)?;
     let (mut socket, _) = tokio::time::timeout(RELAY_IO_TIMEOUT, connect_async(request))
         .await
         .map_err(|_| transport_error("The companion relay connection timed out."))?
@@ -336,6 +331,22 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
             _ = runtime.account_session_changed.notified() => return Ok(()),
         }
     }
+}
+
+fn relay_upgrade_request(
+    url: &str,
+    token: &str,
+) -> Result<tokio_tungstenite::tungstenite::http::Request<()>, AppError> {
+    let mut request = url
+        .into_client_request()
+        .map_err(|_| transport_error("The companion relay URL is invalid."))?;
+    let authorization = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| transport_error("The OS Accounts session is invalid."))?;
+    request.headers_mut().insert(AUTHORIZATION, authorization);
+    request
+        .headers_mut()
+        .extend(crate::june_api::app_version_headers());
+    Ok(request)
 }
 
 async fn publish_event(
@@ -780,6 +791,44 @@ mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
     use june_companion_protocol::Capability;
+
+    #[tokio::test]
+    async fn companion_websocket_upgrades_carry_the_app_version() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (captured, received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    let version = request
+                        .headers()
+                        .get("x-june-app-version")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    captured.send(version).unwrap();
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            drop(socket);
+        });
+        let request =
+            relay_upgrade_request(&format!("ws://{address}/v1/companion/relay"), "token").unwrap();
+
+        let (socket, _) = connect_async(request).await.unwrap();
+        assert_eq!(
+            received.await.unwrap().as_deref(),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        drop(socket);
+        server.await.unwrap();
+    }
 
     #[test]
     fn final_pairing_handshake_read_is_not_an_application_frame() {

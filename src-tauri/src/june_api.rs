@@ -3601,7 +3601,7 @@ fn agent_http_client() -> &'static reqwest::Client {
     })
 }
 
-fn app_version_headers() -> reqwest::header::HeaderMap {
+pub(crate) fn app_version_headers() -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Ok(value) = reqwest::header::HeaderValue::from_str(APP_VERSION) {
         headers.insert(JUNE_APP_VERSION_HEADER, value);

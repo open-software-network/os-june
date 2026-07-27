@@ -1043,15 +1043,7 @@ where
     F: Fn(&reqwest::Client, String, String) -> reqwest::RequestBuilder,
 {
     let url = format!("{}{}", crate::june_api::june_api_url(), path);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|_| {
-            AppError::new(
-                "companion_relay_unavailable",
-                "The companion relay client could not start.",
-            )
-        })?;
+    let client = companion_http_client()?;
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
         let response = build(&client, url.clone(), token.clone())
@@ -1093,6 +1085,19 @@ where
         "unauthorized",
         "Sign in to link a companion.",
     ))
+}
+
+fn companion_http_client() -> Result<reqwest::Client, AppError> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .default_headers(crate::june_api::app_version_headers())
+        .build()
+        .map_err(|_| {
+            AppError::new(
+                "companion_relay_unavailable",
+                "The companion relay client could not start.",
+            )
+        })
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1194,6 +1199,7 @@ fn current_time_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn begin_pairing_refuses_when_the_experiment_is_off() {
@@ -1225,6 +1231,38 @@ mod tests {
             ensure_companion_pairing_enabled(&runtime).unwrap_err().code,
             "companion_experimental_disabled"
         );
+    }
+
+    #[tokio::test]
+    async fn companion_http_requests_carry_the_app_version() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_string();
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+
+        companion_http_client()
+            .unwrap()
+            .get(format!("http://{address}/v1/companion/pairings"))
+            .send()
+            .await
+            .unwrap();
+
+        let request = server.await.unwrap().to_ascii_lowercase();
+        assert!(request.contains(&format!(
+            "x-june-app-version: {}",
+            env!("CARGO_PKG_VERSION")
+        )));
     }
 
     #[test]
