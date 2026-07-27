@@ -19,9 +19,9 @@ FROM chef AS builder
 ENV CARGO_INCREMENTAL=0 \
     RUSTFLAGS="--remap-path-prefix=/app=. --remap-path-prefix=/usr/local/cargo=/cargo"
 COPY --from=planner /app/recipe.json recipe.json
+COPY crates/june-companion-protocol /crates/june-companion-protocol
 RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY june-api/ .
-COPY crates/june-companion-protocol /crates/june-companion-protocol
 RUN cargo build --release --locked --bin june
 
 FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb AS runtime
