@@ -441,6 +441,11 @@ export function LinkedDevicesSection() {
                     </li>
                   ))}
                 </ul>
+                {device.capabilities.includes("filesUpload") ? (
+                  <p className="settings-row-description">
+                    This device can add bounded phone attachments. Unlink it to revoke this access.
+                  </p>
+                ) : null}
               </article>
             ))
         ) : (

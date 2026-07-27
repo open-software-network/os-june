@@ -43,8 +43,10 @@ Mac browse roots, file names and metadata, and APNs signing material.
   through June's existing attachment copier.
 - Mac browsing begins with a root the user selected in June Desktop Settings.
   There is no implicit home-directory grant. Roots are account-scoped,
-  persisted by canonical path, individually revocable, and represented to the
-  phone by opaque ids and local display labels rather than absolute paths.
+  persisted by canonical path plus filesystem device and directory identity,
+  individually revocable, and represented to the phone by opaque ids and
+  local display labels rather than absolute paths. A different volume or
+  directory appearing at the same path fails closed as a changed root.
 - Browse requests accept relative paths only. Empty, absolute, parent,
   platform-prefix, hidden, non-UTF-8, unreadable, special-file, and symlink
   entries fail closed or are omitted. Every directory listing, file stat, and

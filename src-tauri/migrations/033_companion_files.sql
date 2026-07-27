@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS companion_browse_roots (
   id TEXT NOT NULL,
   canonical_path TEXT NOT NULL,
   display_name TEXT NOT NULL,
+  volume_device_id TEXT NOT NULL,
+  directory_file_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY (account_user_id, id),
   UNIQUE (account_user_id, canonical_path)

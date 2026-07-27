@@ -964,4 +964,37 @@ mod tests {
         };
         assert!(should_cache_response(&response));
     }
+
+    #[test]
+    fn companion_file_failures_keep_the_committed_wire_codes() {
+        let cases = [
+            (
+                "companion_upload_limit_exceeded",
+                FailureCode::LimitExceeded,
+                "limit_exceeded",
+            ),
+            (
+                "companion_upload_integrity_mismatch",
+                FailureCode::IntegrityMismatch,
+                "integrity_mismatch",
+            ),
+            ("companion_upload_expired", FailureCode::Expired, "expired"),
+            (
+                "companion_upload_conflict",
+                FailureCode::Conflict,
+                "conflict",
+            ),
+        ];
+
+        for (app_code, expected_code, expected_wire_code) in cases {
+            let failure = protocol_failure(&AppError::new(app_code, "File request failed."));
+
+            assert_eq!(failure.code, expected_code);
+            assert!(!failure.retryable);
+            assert_eq!(
+                serde_json::to_value(&failure).unwrap()["code"],
+                expected_wire_code
+            );
+        }
+    }
 }

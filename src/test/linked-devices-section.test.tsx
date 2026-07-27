@@ -126,4 +126,24 @@ describe("LinkedDevicesSection", () => {
     expect(mocks.openBrowseRoot).toHaveBeenCalledWith({ directory: true, multiple: false });
     await waitFor(() => expect(mocks.grantBrowseRoot).toHaveBeenCalledWith("/Users/june/Project"));
   });
+
+  it("shows phone upload access per device and unlinks to revoke it", async () => {
+    mocks.listDevices.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000004",
+        displayName: "Travel phone",
+        linkedAt: "2026-07-28T00:00:00Z",
+        capabilities: ["filesUpload", "devicesRevokeSelf"],
+      },
+    ]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<LinkedDevicesSection />);
+
+    expect(await screen.findByText("Add phone attachments")).toBeInTheDocument();
+    expect(screen.getByText(/unlink it to revoke this access/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Unlink" }));
+
+    expect(mocks.revokeDevice).toHaveBeenCalledWith("00000000-0000-0000-0000-000000000004");
+  });
 });

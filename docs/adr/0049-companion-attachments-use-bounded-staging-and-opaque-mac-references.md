@@ -34,6 +34,14 @@ operation.
   reservations and 50 MiB of staged bytes, and a reservation expires after one
   hour. A duplicate reservation with identical metadata resumes; conflicting
   metadata is rejected.
+- `filesUpload` is part of the fixed capability set for every active linked
+  device, including devices linked before this capability shipped. New pairing
+  approval and each linked-device card disclose that device's upload
+  capability; unlinking that device is the revoke control. This implicit grant
+  is acceptable in v1 because uploads are owner-only, untrusted, non-executable,
+  limited to four reservations and 50 MiB per device, expire after one hour,
+  and cannot affect an agent until the device explicitly attaches a committed
+  reference to a message.
 - Uploaded bytes land under June's app-data directory, partitioned by an
   account digest, linked device id, and reservation id. Caller-supplied names
   never become path components. Chunks are written atomically with owner-only
@@ -50,18 +58,22 @@ operation.
   directory picker in June Desktop Settings. Grants are persisted per OS
   Accounts user and can be revoked individually. No home, Desktop, Documents,
   cloud-storage, or volume root is granted implicitly.
-- The encrypted protocol exposes `rootsList`, paginated `dirList`, and
-  `fileStat`. Roots have opaque ids and bounded display labels. Requests use
-  bounded relative path components. Responses contain bounded names, entry
-  kinds, sizes, and modification times. `fileStat` may mint a short-lived
-  opaque attachment reference. There is no `fileRead`, byte-range read,
-  download, write, move, delete, or directory mutation in v1.
+- The encrypted protocol exposes `browseRootsList`, paginated `browseDirList`,
+  and `browseFileStat`. Roots have opaque ids and bounded display labels.
+  Requests use bounded relative path components. Responses contain bounded
+  names, entry kinds, sizes, and modification times. `browseFileStat` may mint
+  a short-lived opaque attachment reference. There is no `fileRead`,
+  byte-range read, download, write, move, delete, or directory mutation in v1.
 - A granted root is canonicalized before persistence. Each request rejects
   absolute paths, parent traversal, platform prefixes, hidden components,
   symlinks, non-UTF-8 names, and non-regular targets. It canonicalizes the
   current root and target, proves the root has not been replaced and the target
   remains beneath it, and repeats those checks when an attachment reference is
-  consumed. Directory pages never follow symlinks.
+  consumed. The persisted Unix filesystem device id and root-directory inode
+  must also match on every use, so a different volume remounted at the same
+  path fails closed as a changed root. A legitimate filesystem identity change
+  also fails closed and requires the user to remove and re-add the grant.
+  Directory pages never follow symlinks.
 - Agent messages carry at most eight opaque attachment references. The
   controller resolves them only for the authenticated account and linked
   device, rejects expired or revoked references, and passes local paths only
@@ -90,3 +102,7 @@ ADR-0048; a later explicit action may resume an identical upload reservation
 without applying a chunk twice. The implementation carries cleanup and
 revalidation work that a generic path API would avoid, but it preserves the
 desktop authority and keeps relay/API changes unnecessary.
+
+Existing linked devices gain the bounded `filesUpload` capability on upgrade.
+Settings makes that grant visible per device and unlinking is the v1 revoke
+mechanism; a narrower per-device capability toggle is deferred.

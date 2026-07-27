@@ -31,6 +31,8 @@ pub(super) struct BrowseRootRecord {
     pub id: Uuid,
     pub canonical_path: PathBuf,
     pub display_name: String,
+    volume_device_id: String,
+    directory_file_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -81,7 +83,7 @@ pub(super) async fn list_root_records(
     account_user_id: &str,
 ) -> Result<Vec<BrowseRootRecord>, AppError> {
     let rows = query(
-        "SELECT id, canonical_path, display_name
+        "SELECT id, canonical_path, display_name, volume_device_id, directory_file_id
          FROM companion_browse_roots
          WHERE account_user_id = ?
          ORDER BY created_at ASC, id ASC",
@@ -95,6 +97,8 @@ pub(super) async fn list_root_records(
                 id: parse_uuid(row.get::<String, _>("id").as_str())?,
                 canonical_path: PathBuf::from(row.get::<String, _>("canonical_path")),
                 display_name: row.get("display_name"),
+                volume_device_id: row.get("volume_device_id"),
+                directory_file_id: row.get("directory_file_id"),
             })
         })
         .collect()
@@ -130,13 +134,16 @@ pub(super) async fn grant_root(
     }
     query(
         "INSERT INTO companion_browse_roots
-         (account_user_id, id, canonical_path, display_name, created_at)
-         VALUES (?, ?, ?, ?, ?)",
+         (account_user_id, id, canonical_path, display_name, volume_device_id,
+          directory_file_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(account_user_id)
     .bind(root.id.to_string())
     .bind(root.canonical_path.to_string_lossy().into_owned())
     .bind(&root.display_name)
+    .bind(&root.volume_device_id)
+    .bind(&root.directory_file_id)
     .bind(Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true))
     .execute(&repositories.pool)
     .await?;
@@ -848,10 +855,14 @@ fn validate_root(selected_path: &Path) -> Result<BrowseRootRecord, AppError> {
             )
         })?
         .to_string();
+    let identity =
+        root_filesystem_identity(&std::fs::metadata(&canonical_path).map_err(browse_io_error)?)?;
     Ok(BrowseRootRecord {
         id: Uuid::new_v4(),
         canonical_path,
         display_name,
+        volume_device_id: identity.volume_device_id,
+        directory_file_id: identity.directory_file_id,
     })
 }
 
@@ -885,6 +896,12 @@ fn resolve_granted_path(
 ) -> Result<PathBuf, AppError> {
     let root_metadata = std::fs::symlink_metadata(&root.canonical_path).map_err(browse_io_error)?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(root_changed());
+    }
+    let current_identity = root_filesystem_identity(&root_metadata)?;
+    if current_identity.volume_device_id != root.volume_device_id
+        || current_identity.directory_file_id != root.directory_file_id
+    {
         return Err(root_changed());
     }
     let current_root = root
@@ -925,6 +942,34 @@ fn resolve_granted_path(
         return Err(path_invalid());
     }
     Ok(canonical)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RootFilesystemIdentity {
+    volume_device_id: String,
+    directory_file_id: String,
+}
+
+#[cfg(unix)]
+fn root_filesystem_identity(
+    metadata: &std::fs::Metadata,
+) -> Result<RootFilesystemIdentity, AppError> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(RootFilesystemIdentity {
+        volume_device_id: metadata.dev().to_string(),
+        directory_file_id: metadata.ino().to_string(),
+    })
+}
+
+#[cfg(not(unix))]
+fn root_filesystem_identity(
+    _metadata: &std::fs::Metadata,
+) -> Result<RootFilesystemIdentity, AppError> {
+    Err(AppError::new(
+        "companion_root_identity_unavailable",
+        "June cannot verify this folder's volume identity on this platform.",
+    ))
 }
 
 fn invalid_visible_name(value: &str) -> bool {
@@ -1327,6 +1372,19 @@ mod tests {
         Repositories::new(pool)
     }
 
+    fn test_browse_root(path: &Path) -> BrowseRootRecord {
+        let canonical_path = path.canonicalize().unwrap();
+        let identity = root_filesystem_identity(&std::fs::metadata(&canonical_path).unwrap())
+            .expect("filesystem identity");
+        BrowseRootRecord {
+            id: Uuid::new_v4(),
+            canonical_path,
+            display_name: "Shared".to_string(),
+            volume_device_id: identity.volume_device_id,
+            directory_file_id: identity.directory_file_id,
+        }
+    }
+
     #[test]
     fn granted_path_rejects_symlinks_hidden_entries_and_parent_traversal() {
         let directory = tempfile::tempdir().unwrap();
@@ -1334,11 +1392,7 @@ mod tests {
         std::fs::create_dir_all(root_path.join("folder")).unwrap();
         std::fs::write(root_path.join("folder").join("brief.md"), "hello").unwrap();
         std::fs::write(root_path.join(".env"), "secret").unwrap();
-        let root = BrowseRootRecord {
-            id: Uuid::new_v4(),
-            canonical_path: root_path.canonicalize().unwrap(),
-            display_name: "Shared".to_string(),
-        };
+        let root = test_browse_root(&root_path);
 
         assert!(resolve_granted_path(&root, "folder", ExpectedKind::Directory).is_ok());
         assert!(resolve_granted_path(&root, "folder/brief.md", ExpectedKind::File).is_ok());
@@ -1357,6 +1411,42 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn granted_path_rejects_a_changed_volume_or_directory_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("Shared");
+        std::fs::create_dir(&root_path).unwrap();
+        let mut root = test_browse_root(&root_path);
+
+        root.volume_device_id.push_str("-different");
+        let error = resolve_granted_path(&root, "", ExpectedKind::Directory).unwrap_err();
+        assert_eq!(error.code, "companion_root_not_found");
+
+        root = test_browse_root(&root_path);
+        root.directory_file_id.push_str("-different");
+        let error = resolve_granted_path(&root, "", ExpectedKind::Directory).unwrap_err();
+        assert_eq!(error.code, "companion_root_not_found");
+    }
+
+    #[tokio::test]
+    async fn granted_root_persists_its_volume_and_directory_identity() {
+        let repositories = test_repositories().await;
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("Shared");
+        std::fs::create_dir(&root_path).unwrap();
+
+        let granted = grant_root(&repositories, "usr_browse_identity", &root_path)
+            .await
+            .unwrap();
+        let loaded = list_root_records(&repositories, "usr_browse_identity")
+            .await
+            .unwrap();
+
+        assert_eq!(loaded, vec![granted]);
+        assert!(!loaded[0].volume_device_id.is_empty());
+        assert!(!loaded[0].directory_file_id.is_empty());
     }
 
     #[test]
