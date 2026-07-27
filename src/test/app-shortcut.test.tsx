@@ -91,6 +91,12 @@ const mocks = vi.hoisted(() => ({
   companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
   companionPairingEnabled: true,
   listAgentItems: vi.fn().mockResolvedValue([]),
+  getAgentSession: vi.fn(),
+  createAgentSession: vi.fn(),
+  startAgentRun: vi.fn(),
+  getLatestAgentRun: vi.fn(),
+  cancelAgentRun: vi.fn(),
+  listAgentSkills: vi.fn().mockResolvedValue([]),
   openPrivacySettings: vi.fn(),
   startRecording: vi.fn(),
   startMeetingRecording: vi.fn(),
@@ -172,17 +178,18 @@ vi.mock("../app/update-decision", async () => {
 vi.mock("../lib/tauri", () => ({
   agentRuntimeBindings: {
     listSessions: mocks.listAgentSessions,
-    getSession: vi.fn(),
-    createSession: vi.fn(),
+    getSession: mocks.getAgentSession,
+    getLatestRun: mocks.getLatestAgentRun,
+    createSession: mocks.createAgentSession,
     renameSession: vi.fn(),
     deleteSession: vi.fn(),
     listItems: mocks.listAgentItems,
     listArtifacts: vi.fn(async () => []),
-    startRun: vi.fn(),
-    cancelRun: vi.fn(),
+    startRun: mocks.startAgentRun,
+    cancelRun: mocks.cancelAgentRun,
     retryRun: vi.fn(),
     resolveInterruption: vi.fn(),
-    listSkills: vi.fn(async () => []),
+    listSkills: mocks.listAgentSkills,
     updateSkill: vi.fn(),
   },
   listAgentSessions: mocks.listAgentSessions,
@@ -421,6 +428,22 @@ describe("App shortcuts", () => {
       ],
     });
     mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
+    mocks.getAgentSession.mockImplementation(async (sessionId: string) => {
+      const sessions = await mocks.listAgentSessions();
+      const found = sessions.find((candidate: AgentSessionDto) => candidate.id === sessionId);
+      if (!found) throw new Error("missing session");
+      return found;
+    });
+    mocks.createAgentSession.mockResolvedValue(agentSession("session-new", "New session"));
+    mocks.startAgentRun.mockImplementation(async (request) => ({
+      id: "run-companion",
+      sessionId: request.sessionId,
+      status: "running",
+      model: request.model,
+    }));
+    mocks.getLatestAgentRun.mockResolvedValue(null);
+    mocks.cancelAgentRun.mockResolvedValue(undefined);
+    mocks.listAgentSkills.mockResolvedValue([]);
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.listDictationHistory.mockResolvedValue({
       items: [],
@@ -701,6 +724,103 @@ describe("App shortcuts", () => {
 
     expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
+  });
+
+  it("uses the target session model and safety mode for companion sends", async () => {
+    const unrestricted = {
+      ...agentSession("session-unrestricted", "Unrestricted session"),
+      model: "unrestricted-model",
+      safetyMode: "unrestricted" as const,
+    };
+    const sandboxed = {
+      ...agentSession("session-sandboxed", "Sandboxed session"),
+      model: "sandboxed-model",
+      safetyMode: "sandboxed" as const,
+    };
+    mocks.listAgentSessions.mockResolvedValue([unrestricted, sandboxed]);
+    mocks.getAgentSession.mockImplementation(async (sessionId: string) =>
+      sessionId === sandboxed.id ? sandboxed : unrestricted,
+    );
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-sandboxed-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: sandboxed.id,
+              message: "Keep this run sandboxed",
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: sandboxed.id,
+          model: sandboxed.model,
+          safetyMode: sandboxed.safetyMode,
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: sandboxed.id,
+        safetyMode: unrestricted.safetyMode,
+      }),
+    );
+    expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+      "operation-sandboxed-send",
+      {
+        type: "agentAccepted",
+        data: { storedSessionId: sandboxed.id },
+      },
+    );
+  });
+
+  it("creates companion-started sessions with the sandboxed session defaults", async () => {
+    const created = {
+      ...agentSession("session-created-by-companion", "Companion request"),
+      model: "open-software/auto",
+      safetyMode: "sandboxed" as const,
+    };
+    mocks.createAgentSession.mockResolvedValue(created);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-new-session-send",
+          intent: {
+            type: "agentSend",
+            data: { message: "Start a safe session" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.createAgentSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: "open-software/auto",
+          safetyMode: "sandboxed",
+          profile: "default",
+        }),
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: created.id,
+        model: created.model,
+        safetyMode: created.safetyMode,
+      }),
+    );
   });
 
   it("clears the OS Accounts browser session from sidebar sign-out", async () => {

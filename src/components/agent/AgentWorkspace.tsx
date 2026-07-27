@@ -827,8 +827,8 @@ export function AgentWorkspace({
             } else {
               session = await agentRuntimeBindings.createSession({
                 title: titleFromPrompt(message),
-                model: agentRunModelId(modelRef.current, costQualityRef.current),
-                safetyMode: safetyModeRef.current,
+                model: DEFAULT_MODEL,
+                safetyMode: "sandboxed",
                 profile: getCurrentDataPartitionName(),
               });
               void refreshSessions().catch(() => undefined);
@@ -839,12 +839,12 @@ export function AgentWorkspace({
             await agentRuntimeBindings.startRun({
               sessionId: session.id,
               prompt: message,
-              model: agentRunModelId(modelRef.current, costQualityRef.current),
+              model: session.model,
               reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
                 | "minimal"
                 | "medium"
                 | "high",
-              safetyMode: safetyModeRef.current,
+              safetyMode: session.safetyMode,
               workspacePath: session.workspacePath,
               enabledSkillIds,
               attachments: [],
