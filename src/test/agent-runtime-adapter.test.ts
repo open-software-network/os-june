@@ -265,6 +265,60 @@ describe("agent runtime adapter", () => {
     expect(hydrated.lastSequenceByRun[run.id]).toBe(5);
   });
 
+  it("does not replace a newer active run with a stale terminal snapshot", () => {
+    const session = {
+      id: "session-1",
+      title: "Active session",
+      status: "running" as const,
+      model: "auto",
+      safetyMode: "sandboxed" as const,
+      workspacePath: "/tmp/session-1",
+      source: "user" as const,
+      createdAt: "2026-07-22T12:00:00Z",
+      updatedAt: "2026-07-22T12:01:00Z",
+    };
+    const current = createAgentRuntimeProjection({
+      session,
+      run: {
+        id: "run-new",
+        sessionId: session.id,
+        status: "running",
+        model: "auto",
+        startedAt: "2026-07-22T12:01:00Z",
+      },
+      items: [
+        {
+          id: "new-question",
+          sessionId: session.id,
+          runId: "run-new",
+          sequence: 6,
+          createdAt: "2026-07-22T12:01:00Z",
+          kind: "message",
+          role: "user",
+          text: "New question",
+          status: "complete",
+        },
+      ],
+    });
+
+    const hydrated = mergeAgentRuntimeSnapshot(current, {
+      session: { ...session, status: "idle" },
+      run: {
+        id: "run-old",
+        sessionId: session.id,
+        status: "completed",
+        model: "auto",
+        startedAt: "2026-07-22T12:00:00Z",
+        lastSequence: 5,
+      },
+      items: [],
+    });
+
+    expect(hydrated).toBe(current);
+    expect(hydrated.run?.id).toBe("run-new");
+    expect(hydrated.items[0]).toMatchObject({ id: "new-question", text: "New question" });
+  });
+
   it("uses the persisted run watermark to ignore delayed duplicate deltas", () => {
     const session = {
       id: "session-1",

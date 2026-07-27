@@ -49,6 +49,9 @@ export function mergeAgentRuntimeSnapshot(
   const snapshot = createAgentRuntimeProjection(input);
   const run = input.run;
   if (!run || run.lastSequence === undefined) return snapshot;
+  if (current.run && current.run.id !== run.id && currentRunIsNewer(current.run, run)) {
+    return current;
+  }
   const snapshotSequence = run.lastSequence;
   let merged: AgentRuntimeProjection = {
     ...snapshot,
@@ -61,6 +64,19 @@ export function mergeAgentRuntimeSnapshot(
     .sort((left, right) => left.sequence - right.sequence);
   for (const event of pendingEvents) merged = applyAgentRuntimeEvent(merged, event);
   return merged;
+}
+
+function currentRunIsNewer(current: AgentRunDto, snapshot: AgentRunDto) {
+  const currentStartedAt = current.startedAt ? Date.parse(current.startedAt) : Number.NaN;
+  const snapshotStartedAt = snapshot.startedAt ? Date.parse(snapshot.startedAt) : Number.NaN;
+  if (Number.isFinite(currentStartedAt) && Number.isFinite(snapshotStartedAt)) {
+    return currentStartedAt >= snapshotStartedAt;
+  }
+  return (
+    current.status === "queued" ||
+    current.status === "running" ||
+    current.status === "waiting_for_user"
+  );
 }
 
 export function applyAgentRuntimeEvent(
