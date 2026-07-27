@@ -23,6 +23,7 @@ import {
   compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
   homeConversationGreetingReply,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
   markHomeTaskHandoffActive,
@@ -252,6 +253,27 @@ describe("June Home", () => {
     expect(homeConversationGreetingReply("Hey June, research apples in Mexico")).toBeUndefined();
     expect(homeConversationGreetingReply("Hey there, research apples in Mexico")).toBeUndefined();
     expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
+  });
+
+  it("rejects a prior handoff replay that is not grounded in the latest message", () => {
+    const prior = {
+      id: "home-task-wine",
+      title: "Wine research",
+      prompt: "Research good wines near southern France.",
+      status: "running" as const,
+    };
+    const replay = {
+      title: "Research French wines",
+      prompt: "Research good wines near southern France.",
+    };
+
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
+      false,
+    );
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior])).toBe(
+      false,
+    );
   });
 
   it("reuses a successful handoff when the same Home turn is replayed", () => {

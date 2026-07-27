@@ -269,6 +269,59 @@ export function homeConversationGreetingReply(message: string): string | undefin
   return HOME_CONVERSATION_GREETING.test(normalized) ? "Hey! What can I help with?" : undefined;
 }
 
+const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
+  "about",
+  "agent",
+  "create",
+  "focused",
+  "for",
+  "from",
+  "june",
+  "please",
+  "research",
+  "session",
+  "start",
+  "task",
+  "that",
+  "the",
+  "this",
+  "with",
+]);
+
+function homeTaskGroundingTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)
+      ?.filter((token) => token.length >= 3 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
+  );
+}
+
+function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
+  const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
+  const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  return shared / new Set([...leftTokens, ...rightTokens]).size;
+}
+
+export function isHomeTaskReplayWithoutNewIntent(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  handoffs: HomeTaskHandoff[],
+): boolean {
+  if (/\b(?:again|another|continue|redo|repeat|resume|same thing)\b/i.test(latestMessage)) {
+    return false;
+  }
+  const latestTokens = homeTaskGroundingTokens(latestMessage);
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  if ([...latestTokens].some((token) => taskTokens.has(token))) return false;
+  return handoffs.some(
+    (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
+  );
+}
+
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {
   // Array.sort is stable. Equal timestamps therefore retain persisted causal
   // order instead of letting role-prefixed ids put an assistant before its user.

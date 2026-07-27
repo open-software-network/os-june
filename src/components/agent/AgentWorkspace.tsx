@@ -159,6 +159,7 @@ import {
   existingHomeTaskHandoffForSourceTurn,
   homeConversationGreetingReply,
   homeConversationContextFromTurns,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
@@ -1659,9 +1660,18 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
-        const toolCallId = response.task ? `direct:${suffix}` : undefined;
+        const rejectedStaleTask = Boolean(
+          response.task &&
+            isHomeTaskReplayWithoutNewIntent(
+              response.task,
+              message,
+              readHomeTaskHandoffs(storedSessionId as string),
+            ),
+        );
+        const responseTask = rejectedStaleTask ? undefined : response.task;
+        const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
-          response.task && toolCallId
+          responseTask && toolCallId
             ? {
                 id: streamingTurnId,
                 role: "assistant",
@@ -1685,7 +1695,9 @@ export function AgentWorkspace({
                 parts: [
                   {
                     type: "text",
-                    text: response.content?.trim() || streamedContent.trim() || "I'm here.",
+                    text: rejectedStaleTask
+                      ? "I'm here. What can I help with?"
+                      : response.content?.trim() || streamedContent.trim() || "I'm here.",
                     status: "complete",
                   },
                 ],
@@ -1698,9 +1710,9 @@ export function AgentWorkspace({
         homeDirectTurnsRef.current = nextTurns;
         setHomeDirectTurns(nextTurns);
         setHomeStreamingReply(null);
-        if (response.task && toolCallId) {
+        if (responseTask && toolCallId) {
           void startHomeTask(
-            response.task,
+            responseTask,
             toolCallId,
             conversation,
             storedSessionId as string,
