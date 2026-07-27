@@ -273,9 +273,22 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "afternoon",
   "about",
   "agent",
-  "analyze", "analyse", "build", "check", "compare",
+  "analyze",
+  "analyse",
+  "build",
+  "check",
+  "compare",
   "create",
-  "draft", "edit", "email", "explore", "find", "fix", "generate", "help", "investigate", "look",
+  "draft",
+  "edit",
+  "email",
+  "explore",
+  "find",
+  "fix",
+  "generate",
+  "help",
+  "investigate",
+  "look",
   "day",
   "evening",
   "focused",
@@ -289,10 +302,18 @@ const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
   "howdy",
   "june",
   "morning",
-  "make", "plan", "prepare",
+  "make",
+  "plan",
+  "prepare",
   "please",
   "research",
-  "review", "schedule", "search", "summarize", "summarise", "update", "write",
+  "review",
+  "schedule",
+  "search",
+  "summarize",
+  "summarise",
+  "update",
+  "write",
   "see",
   "session",
   "start",
@@ -368,7 +389,8 @@ export function isHomeTaskReplayWithoutNewIntent(
   const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
   const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
   const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
-  const actionCount = intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
+  const actionCount =
+    intentText.match(new RegExp(HOME_TASK_ACTION_REQUEST.source, "gi"))?.length ?? 0;
   const matchesPriorHandoff = handoffs.some(
     (handoff) => handoff.status !== "failed" && homeTaskSimilarity(task, handoff) >= 0.6,
   );

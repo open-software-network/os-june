@@ -284,7 +284,9 @@ describe("June Home", () => {
       ]),
     ).toBe(true);
     expect(
-      isHomeTaskReplayWithoutNewIntent(replay, "Don't, please, research those wines again", [prior]),
+      isHomeTaskReplayWithoutNewIntent(replay, "Don't, please, research those wines again", [
+        prior,
+      ]),
     ).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, June", [prior])).toBe(true);
     expect(
@@ -300,9 +302,9 @@ describe("June Home", () => {
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
       false,
     );
-    expect(isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior])).toBe(
-      false,
-    );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
+    ).toBe(false);
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Apple research Mexico", prompt: "Research apples in Mexico." },
