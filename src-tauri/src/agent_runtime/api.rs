@@ -1,6 +1,6 @@
 use super::{
-    AgentItemDto, AgentItemPayload, AgentRepository, AgentRuntimeHost, AgentSafetyMode,
-    MessageAttachmentPayload,
+    repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
+    AgentRuntimeHost, AgentSafetyMode, MessageAttachmentPayload,
 };
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -126,7 +126,10 @@ pub async fn compact_agent_session(
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
     let session = repository.get_session(&session_id).await?;
-    if matches!(session.status.as_str(), "running" | "waiting_for_user") {
+    if matches!(
+        session.status.as_str(),
+        "queued" | "running" | "waiting_for_user"
+    ) {
         return Err(AppError::new(
             "agent_run_active",
             "Wait for the current turn to finish before compacting context.",
@@ -146,9 +149,9 @@ pub async fn compact_agent_session(
         )
     })?;
     let run_id: String = row.get("id");
-    let history = repository
-        .items(&session_id)
-        .await?
+    let items = repository.items(&session_id).await?;
+    let expected_last_item_sequence = items.last().map_or(-1, |item| item.sequence);
+    let history = items
         .into_iter()
         .filter_map(history_item)
         .collect::<Vec<_>>();
@@ -190,15 +193,22 @@ pub async fn compact_agent_session(
         .get("summary")
         .and_then(|summary| summary.get("metadata"));
     if let Some(summary_text) = summary_text {
-        repository
-            .replace_items_with_context_summary(
+        let replacement = repository
+            .replace_items_with_context_summary_if_unchanged(
                 &session_id,
                 &run_id,
                 summary_text,
                 summary_metadata,
                 &removed_item_ids,
+                expected_last_item_sequence,
             )
             .await?;
+        if !matches!(replacement, ContextSummaryReplacement::Applied(_)) {
+            return Err(AppError::new(
+                "agent_compact_conflict",
+                "The conversation changed while June was compacting it. Wait for the current turn to finish, then try again.",
+            ));
+        }
     }
     Ok(json!({
         "compacted": summary_text.is_some(),

@@ -71,3 +71,28 @@ No visual QA was needed because this changes runtime orchestration and request r
 - `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `git diff --check` - passed.
 
 No visual QA was needed because this fix round changes runtime lifecycle, persistence, and transport behavior without changing UI. No June API deploy is required.
+
+## Greptile round 1
+
+### Manual compaction snapshot guard
+
+- Captured the last item sequence from the exact history snapshot sent to the summary model.
+- Added a guarded repository replacement for manual compaction. Its conditional no-op session update atomically checks that the session is not queued, running, or waiting for the user; that no queued, running, or waiting run exists; and that the latest item sequence still matches the model input snapshot.
+- The conditional update acquires SQLite's write lock before source items are read or deleted, so a run start or history append cannot commit between validation and replacement.
+- A mismatch rolls back without deleting or inserting any items and returns `agent_compact_conflict` with retry guidance. The one-shot summary stream scope is already disposed before this persistence check.
+- Automatic run-lifecycle compaction keeps its existing replacement path because it intentionally persists while that accepted run is active.
+
+### Greptile round 1 regressions
+
+- Added a run-start race regression: snapshot idle history, start a run during the simulated summary interval, attempt the guarded replacement, and prove it reports a conflict with history byte-for-byte unchanged.
+- Added an advanced-history regression proving an item appended after the snapshot also blocks summary persistence.
+- Updated the successful metadata-persistence regression to exercise the guarded idle-snapshot path.
+
+### Greptile round 1 verification
+
+- Focused repository tests - passed; 4 tests.
+- `pnpm test:rust` - passed; 1,233 library tests passed, 5 ignored, and all native integration suites passed.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and `git diff --check` - passed.
+- Sidecar validation was not rerun because no sidecar protocol, type, or implementation file changed.
+
+No visual QA was needed because this round changes only the atomic Rust persistence boundary. No June API deploy is required.
