@@ -4,6 +4,7 @@ import { IconFolderShield } from "central-icons/IconFolderShield";
 import { IconLock } from "central-icons/IconLock";
 import { osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
+import { JuneOnboardingArt } from "../JuneOnboardingArt";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 
 const PRIVACY_POINTS = [
@@ -79,7 +80,7 @@ export function SignInStep({
     <StepCard
       title="Hi, I'm June. Your private AI."
       subtitle="I make it easy to use AI without worrying about exposing your personal life."
-      mark
+      illustration={<JuneOnboardingArt scene="welcome" size="large" animated />}
       wide
       className="welcome-card-intro"
     >
@@ -98,11 +99,7 @@ export function SignInStep({
       </ul>
       <p className="onboarding-source-note">
         My code is open source, so you can{" "}
-        <a
-          href="https://github.com/open-software-network/os-june"
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a href="https://github.com/open-software-network/os-june" target="_blank" rel="noreferrer">
           verify everything yourself
         </a>
         .

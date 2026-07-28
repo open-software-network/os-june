@@ -5,7 +5,7 @@ import { IconHomeRoundDoor } from "central-icons/IconHomeRoundDoor";
 import { IconSuitcaseWork } from "central-icons/IconSuitcaseWork";
 import { useState } from "react";
 import { onboardingArea, saveOnboardingArea, type OnboardingArea } from "../../../lib/onboarding";
-import { p3aRecord } from "../../../lib/tauri";
+import { JuneOnboardingArt } from "../JuneOnboardingArt";
 import { StepActions, StepCard } from "../StepChrome";
 
 const AREA_OPTIONS: ReadonlyArray<{
@@ -46,7 +46,6 @@ export function AreaStep({ onContinue }: { onContinue: (area: OnboardingArea) =>
   function continueWithSelection() {
     if (!selected) return;
     saveOnboardingArea(selected);
-    void p3aRecord(`onboarding.area.${selected}`);
     onContinue(selected);
   }
 
@@ -54,6 +53,7 @@ export function AreaStep({ onContinue }: { onContinue: (area: OnboardingArea) =>
     <StepCard
       title="Where could I help most?"
       subtitle="Pick the part of life you'd most like me to make easier."
+      illustration={<JuneOnboardingArt scene="areas" size="medium" />}
       wide
       className="onboarding-card-areas"
     >

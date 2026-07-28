@@ -18,7 +18,7 @@ import { AreaStep } from "./steps/AreaStep";
 import { PersonalityStep } from "./steps/PersonalityStep";
 import { usePermissionStatuses, useSystemAudioStatus } from "./use-permission-status";
 
-type StepId = "sign-in" | "telemetry" | "area" | "personality" | "permissions";
+type StepId = "sign-in" | "area" | "permissions" | "telemetry" | "personality";
 
 // The product default: bare fn, mirroring DictationShortcutSetting::bare_fn()
 // on the Rust side.
@@ -48,7 +48,7 @@ function isFactoryDefaultShortcut(shortcut: DictationShortcutSetting) {
   );
 }
 
-const ONBOARDING_STEPS: StepId[] = ["sign-in", "telemetry", "area", "personality", "permissions"];
+const ONBOARDING_STEPS: StepId[] = ["sign-in", "area", "permissions", "telemetry", "personality"];
 
 type Props = {
   account: AccountStatus;
@@ -182,8 +182,6 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
       <div className="onboarding-body">
         {stepId === "sign-in" ? (
           <SignInStep account={account} onAccountChanged={onAccountChanged} onContinue={goNext} />
-        ) : stepId === "telemetry" ? (
-          <TelemetryConsentStep onContinue={goNext} />
         ) : stepId === "area" ? (
           <AreaStep
             onContinue={(nextArea) => {
@@ -194,8 +192,6 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
               goNext();
             }}
           />
-        ) : stepId === "personality" ? (
-          <PersonalityStep area={area} onContinue={goNext} />
         ) : stepId === "permissions" ? (
           <PermissionsStep
             area={area}
@@ -204,6 +200,10 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
             onAllowSystemAudio={systemAudio.probe}
             onContinue={goNext}
           />
+        ) : stepId === "telemetry" ? (
+          <TelemetryConsentStep area={area} onContinue={goNext} />
+        ) : stepId === "personality" ? (
+          <PersonalityStep area={area} onContinue={goNext} />
         ) : null}
       </div>
     </div>

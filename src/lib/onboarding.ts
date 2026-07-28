@@ -8,7 +8,8 @@
 
 const ONBOARDING_VERSION = 9;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
-const RESUME_KEY = "june.onboarding.resumeStep";
+const RESUME_KEY = "june.onboarding.resumeStep.v2";
+const LEGACY_RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
 const AREA_KEY = "june.onboarding.area";
 const PERSONALITY_KEY = "june.onboarding.personality";
@@ -181,6 +182,7 @@ export function markOnboardingComplete() {
   try {
     window.localStorage.setItem(COMPLETED_KEY, String(ONBOARDING_VERSION));
     window.localStorage.removeItem(RESUME_KEY);
+    window.localStorage.removeItem(LEGACY_RESUME_KEY);
   } catch {
     // Ignore; worst case the wizard shows again next launch.
   }
@@ -191,6 +193,7 @@ export function resetOnboardingForReplay() {
   try {
     window.localStorage.removeItem(COMPLETED_KEY);
     window.localStorage.removeItem(RESUME_KEY);
+    window.localStorage.removeItem(LEGACY_RESUME_KEY);
   } catch {
     // Ignore; storage unavailable already behaves like a completed wizard.
   }
@@ -247,9 +250,10 @@ function notifyOnboardingComplete() {
 
 /**
  * Resume point for a wizard quit partway through. A relaunch picks up at the
- * saved step instead of replaying the whole flow — steps re-verify their own
- * state, so resuming "too far" is
- * harmless. Returns the saved step id, or null for a fresh run.
+ * saved step instead of replaying the whole flow. The storage key is versioned
+ * with the step sequence so a reordered flow starts from its first reachable
+ * step instead of skipping newly earlier setup. Returns the saved step id, or
+ * null for a fresh run.
  */
 export function onboardingResumeStep(): string | null {
   try {

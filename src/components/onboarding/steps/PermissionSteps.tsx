@@ -7,6 +7,7 @@ import { IconVolumeFull } from "central-icons/IconVolumeFull";
 import { dictationHelperCommand, openPrivacySettings } from "../../../lib/tauri";
 import { fallbackDictationCapabilities } from "../../../lib/platform";
 import type { OnboardingArea } from "../../../lib/onboarding";
+import { JuneOnboardingArt } from "../JuneOnboardingArt";
 import { StepActions, StepCard } from "../StepChrome";
 import {
   isAccessibilityGranted,
@@ -176,6 +177,7 @@ export function PermissionsStep({
           ? "This lets me hear dictation and the meetings you choose to record."
           : copy.subtitle
       }
+      illustration={<JuneOnboardingArt scene="permissions" size="medium" />}
       wide
       className="onboarding-card-permissions"
     >

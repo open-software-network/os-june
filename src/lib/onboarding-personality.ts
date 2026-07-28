@@ -97,10 +97,10 @@ const STYLE_COPY: Record<
 };
 
 export const PERSONALITY_STEP_SUBTITLES: Record<OnboardingArea, string> = {
-  work: "Pick how I should show up when work gets busy, or drag any point.",
-  personal: "Pick how I should show up when life gets messy, or drag any point.",
-  thinking: "Pick how I should think alongside you, or drag any point.",
-  play: "Pick how I should join the fun, or drag any point.",
+  work: "Pick the version of me you want beside you when work gets busy.",
+  personal: "Pick the version of me you want around when life gets messy.",
+  thinking: "Pick the version of me you want thinking alongside you.",
+  play: "Pick the version of me you want joining the fun.",
 };
 
 const PREVIEW_SCENARIOS: Record<OnboardingArea, readonly PreviewScenario[]> = {

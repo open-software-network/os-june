@@ -1,26 +1,25 @@
 import type { ReactNode } from "react";
-import { JuneGlassMark } from "../brand/JuneGlassMark";
 import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 /**
  * One onboarding screen = one welcome-card: a serif title, at most one muted
  * line, then whatever the step needs. Reuses the sign-in gate chrome so
  * first-run is literally the same surface the rest of the app greets users
- * with — not a separate tour. The June mark introduces the brand on the first
- * screen only; after that the type carries it.
+ * with — not a separate tour. A small, replaceable character vignette can
+ * introduce each step without becoming part of the step's behavior.
  */
 export function StepCard({
   title,
   subtitle,
-  mark,
+  illustration,
   wide,
   className,
   children,
 }: {
   title: string;
   subtitle?: ReactNode;
-  /** Show the June mark above the title (the welcome screen). */
-  mark?: boolean;
+  /** Decorative June vignette shown above the title. */
+  illustration?: ReactNode;
   /** Steps with a demo card or timeline get a little more room. */
   wide?: boolean;
   /** Extra class on the card for step-specific layout (e.g. the welcome grid). */
@@ -33,11 +32,7 @@ export function StepCard({
         className ? ` ${className}` : ""
       }`}
     >
-      {mark ? (
-        <span className="welcome-mark-glass" aria-hidden>
-          <JuneGlassMark />
-        </span>
-      ) : null}
+      {illustration}
       <h1 className="welcome-title">{title}</h1>
       {subtitle ? <p className="welcome-subtitle">{subtitle}</p> : null}
       {children}

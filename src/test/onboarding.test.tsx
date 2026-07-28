@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
@@ -233,15 +233,20 @@ describe("OnboardingFlow", () => {
 
   async function advanceToArea() {
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Where could I help most?" });
   }
 
   async function chooseArea(area: OnboardingArea) {
     await userEvent.click(screen.getByRole("button", { name: new RegExp(AREA_TITLES[area], "i") }));
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Choose my personality" });
+    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
+  }
+
+  async function renderPersonality(area: OnboardingArea) {
+    localStorage.setItem("june.onboarding.area", area);
+    setOnboardingResumeStep("personality");
+    render(<OnboardingFlow {...flowProps()} />);
+    await screen.findByRole("heading", { name: "How should I show up?" });
   }
 
   it("introduces June as a private AI without using the Open Software name", async () => {
@@ -272,10 +277,12 @@ describe("OnboardingFlow", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Continue with June" }));
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
     rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
   it("keeps anonymous usage statistics off by default", async () => {
+    localStorage.setItem("june.onboarding.area", "work");
+    setOnboardingResumeStep("telemetry");
     render(<OnboardingFlow {...flowProps()} />);
 
     await screen.findByRole("heading", { name: "Help improve June" });
@@ -289,7 +296,8 @@ describe("OnboardingFlow", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(false);
-    await screen.findByRole("heading", { name: "Where could I help most?" });
+    expect(mocks.p3aRecord).not.toHaveBeenCalledWith("onboarding.area.work");
+    await screen.findByRole("heading", { name: "How should I show up?" });
   });
 
   it("saves one broad help area instead of collecting a multi-select survey", async () => {
@@ -302,85 +310,55 @@ describe("OnboardingFlow", () => {
     await userEvent.click(continueButton);
 
     expect(onboardingArea()).toBe("personal");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.personal");
-    await screen.findByRole("heading", { name: "Choose my personality" });
+    expect(mocks.p3aRecord).not.toHaveBeenCalledWith("onboarding.area.personal");
+    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
   });
 
   it.each(
     Object.keys(AREA_TITLES) as OnboardingArea[],
   )("sets the intended %s personality preset", async (area) => {
-    await advanceToArea();
-    await chooseArea(area);
+    await renderPersonality(area);
 
     expect(
-      screen.getByRole("button", { name: new RegExp(AREA_PERSONALITY_STYLES[area], "i") }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getAllByRole("slider")).toHaveLength(4);
+      screen.getByRole("radio", { name: new RegExp(AREA_PERSONALITY_STYLES[area], "i") }),
+    ).toBeChecked();
+    expect(screen.getAllByRole("radio")).toHaveLength(4);
+    expect(screen.queryAllByRole("slider")).toHaveLength(0);
+    expect(
+      document.querySelectorAll(".onboarding-personality-choice .onboarding-june-art"),
+    ).toHaveLength(4);
   });
 
-  it("reshapes the character sheet and shows a new Home-style message", async () => {
-    await advanceToArea();
-    await chooseArea("work");
+  it("switches the character portrait and shows a new Home-style message", async () => {
+    await renderPersonality("work");
 
     const bubble = screen.getByLabelText("Example message from June");
     const messageCopy = () =>
       document.querySelector(".onboarding-personality-message-copy")?.textContent;
     const firstMessage = messageCopy();
     expect(firstMessage).toBeTruthy();
-    await userEvent.click(screen.getByRole("button", { name: /Calm collaborator/i }));
+    await userEvent.click(screen.getByRole("radio", { name: /Calm collaborator/i }));
     expect(screen.getByLabelText("Example message from June")).toBe(bubble);
     expect(bubble).toHaveAttribute("data-streaming", "true");
     expect(await screen.findByRole("status")).toHaveTextContent("June is typing");
     await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
     expect(messageCopy()).not.toBe(firstMessage);
-    expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(screen.getByRole("radio", { name: /Calm collaborator/i })).toBeChecked();
+    expect(
+      document.querySelector('.onboarding-personality-choice[data-selected="true"] [data-scene]'),
+    ).toHaveAttribute("data-scene", "personal");
 
     const calmMessage = messageCopy();
-    fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "End" });
-    expect(bubble).toHaveAttribute("data-streaming", "true");
+    await userEvent.click(screen.getByRole("radio", { name: /Quick-witted operator/i }));
     await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
     expect(messageCopy()).not.toBe(calmMessage);
-    expect(screen.getByRole("button", { name: /Calm collaborator/i })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-
-    const deepMessage = messageCopy();
-    fireEvent.keyDown(screen.getByRole("slider", { name: "Initiative" }), { key: "Home" });
-    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
-    expect(messageCopy()).not.toBe(deepMessage);
-
-    const quietMessage = messageCopy();
-    fireEvent.keyDown(screen.getByRole("slider", { name: "Playfulness" }), { key: "End" });
-    await waitFor(() => expect(bubble).not.toHaveAttribute("data-streaming"));
-    expect(messageCopy()).not.toBe(quietMessage);
+    expect(screen.getByRole("radio", { name: /Quick-witted operator/i })).toBeChecked();
   });
 
-  it("persists personality choices and carries the selected area into permissions", async () => {
+  it("carries the selected area into permissions", async () => {
     await advanceToArea();
     await chooseArea("personal");
-    await userEvent.click(screen.getByRole("button", { name: /Playful sidekick/i }));
-    fireEvent.keyDown(screen.getByRole("slider", { name: "Depth" }), { key: "Home" });
-    expect(screen.queryByText(/85%|0%|80%|95%/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-    await screen.findByRole("heading", { name: "A few things I need from your Mac" });
-    expect(onboardingPersonality("personal")).toMatchObject({
-      voice: 85,
-      detail: 0,
-      initiative: 80,
-      humor: 95,
-    });
-    expect(mocks.setJunePersona).toHaveBeenCalledWith({
-      area: "personal",
-      voice: 85,
-      detail: 0,
-      initiative: 80,
-      humor: 95,
-    });
     expect(
       screen.getByText(
         "I need this for voice notes, reflections, and anything you'd rather say than type.",
@@ -391,6 +369,33 @@ describe("OnboardingFlow", () => {
         "You don't need this for journaling. I only use it when you ask me to capture a call.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("persists a visual personality choice and completes from the final step", async () => {
+    const onComplete = vi.fn();
+    localStorage.setItem("june.onboarding.area", "personal");
+    setOnboardingResumeStep("personality");
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "How should I show up?" });
+    await userEvent.click(screen.getByRole("radio", { name: /Playful sidekick/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Meet June" }));
+
+    expect(onboardingPersonality("personal")).toMatchObject({
+      voice: 85,
+      detail: 70,
+      initiative: 80,
+      humor: 95,
+    });
+    expect(mocks.setJunePersona).toHaveBeenCalledWith({
+      area: "personal",
+      voice: 85,
+      detail: 70,
+      initiative: 80,
+      humor: 95,
+    });
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
   });
 
   it.each([
@@ -416,17 +421,13 @@ describe("OnboardingFlow", () => {
     expect(screen.getByText(expectedCopy)).toBeInTheDocument();
   });
 
-  it("completes after permissions instead of inserting a separate practice screen", async () => {
+  it("keeps permissions contextual, asks for telemetry late, and ends on personality", async () => {
     const onComplete = vi.fn();
     const restoreNavigator = stubMacNavigatorPlatform();
     try {
       render(<OnboardingFlow {...flowProps({ onComplete })} />);
-      await screen.findByRole("heading", { name: "Help improve June" });
-      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
       await screen.findByRole("heading", { name: "Where could I help most?" });
       await userEvent.click(screen.getByRole("button", { name: /Staying on top of work/i }));
-      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-      await screen.findByRole("heading", { name: "Choose my personality" });
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
       await screen.findByRole("heading", { name: "A few things I need from your Mac" });
 
@@ -435,7 +436,17 @@ describe("OnboardingFlow", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
+      await screen.findByRole("heading", { name: "Help improve June" });
+      await userEvent.click(
+        screen.getByRole("switch", { name: "Share anonymous usage statistics" }),
+      );
+      await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      await screen.findByRole("heading", { name: "How should I show up?" });
+      await userEvent.click(screen.getByRole("button", { name: "Meet June" }));
+
       await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+      expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.work");
       expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
       expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
     } finally {
@@ -500,7 +511,7 @@ describe("OnboardingFlow", () => {
     });
 
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
     await waitFor(() => expect(mocks.dictationSettings).toHaveBeenCalledOnce());
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
   });
@@ -633,14 +644,18 @@ describe("OnboardingFlow", () => {
     setOnboardingResumeStep("personality");
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", { name: "Choose my personality" });
-    expect(screen.getByRole("button", { name: /Thoughtful partner/i })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    await screen.findByRole("heading", { name: "How should I show up?" });
+    expect(screen.getByRole("radio", { name: /Thoughtful partner/i })).toBeChecked();
     expect(document.querySelector(".onboarding-personality-message-copy")).toHaveTextContent(
       "I found the thought underneath your brain-dump",
     );
+  });
+
+  it("ignores a resume point saved before the onboarding steps were reordered", async () => {
+    localStorage.setItem("june.onboarding.resumeStep", "telemetry");
+    render(<OnboardingFlow {...flowProps()} />);
+
+    await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
   it("resets only onboarding progress when replaying the wizard", () => {

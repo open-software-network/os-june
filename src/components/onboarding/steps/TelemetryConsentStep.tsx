@@ -1,10 +1,18 @@
 import { useState } from "react";
+import type { OnboardingArea } from "../../../lib/onboarding";
 import { dispatchP3aSettingsChanged, TELEMETRY_INFO_URL } from "../../../lib/p3a";
-import { setP3aEnabled } from "../../../lib/tauri";
+import { p3aRecord, setP3aEnabled } from "../../../lib/tauri";
 import { Switch } from "../../ui/Switch";
+import { JuneOnboardingArt } from "../JuneOnboardingArt";
 import { StepActions, StepCard } from "../StepChrome";
 
-export function TelemetryConsentStep({ onContinue }: { onContinue: () => void }) {
+export function TelemetryConsentStep({
+  area,
+  onContinue,
+}: {
+  area: OnboardingArea;
+  onContinue: () => void;
+}) {
   const [enabled, setEnabled] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
@@ -15,6 +23,7 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
     try {
       const response = await setP3aEnabled(enabled);
       dispatchP3aSettingsChanged(response.settings);
+      if (enabled) void p3aRecord(`onboarding.area.${area}`);
       onContinue();
     } catch {
       setError("Could not save this choice. Try again.");
@@ -27,6 +36,7 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
     <StepCard
       title="Help improve June"
       subtitle="This is optional and off by default. You can change it anytime."
+      illustration={<JuneOnboardingArt scene="telemetry" size="medium" />}
       wide
       className="onboarding-card-privacy"
     >

@@ -7,14 +7,14 @@
   file.
 
   Usage:
-    npm run dev
+    pnpm dev
     open http://localhost:1421/onboarding-preview.html
 
   Console helpers once it's open:
     june.replayOnboarding()            restart the wizard from step 1
     june.replayOnboarding("permissions")
-                                       jump to a step (sign-in, telemetry,
-                                       area, personality, permissions)
+                                       jump to a step (sign-in, area,
+                                       permissions, telemetry, personality)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
     localStorage.setItem("os-june:theme", "dark"); location.reload()
 
@@ -346,19 +346,6 @@
                 }
                 return null;
               }
-              case "p3a_settings":
-                return { settings: p3aSettings };
-              case "set_p3a_enabled": {
-                const enabled = Boolean(args.request && args.request.enabled);
-                p3aSettings = {
-                  enabled,
-                  consentVersion: 1,
-                  consentedAtWeek: enabled ? "2026-W28" : null,
-                };
-                return { settings: p3aSettings };
-              }
-              case "p3a_record":
-                return null;
               default:
                 return null;
             }
