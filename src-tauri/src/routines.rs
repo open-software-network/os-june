@@ -312,20 +312,23 @@ pub async fn update(
     let mut metadata = request.metadata.unwrap_or(current.metadata);
     let tool_catalog_updated = request.enabled_toolsets.is_some();
     set_enabled_toolsets(&mut metadata, request.enabled_toolsets);
-    query("UPDATE routines SET name = ?, prompt = ?, schedule = ?, timezone = ?, repeat = ?, deliver = ?, model = ?, safety_mode = ?, state = ?, enabled = ?, updated_at = ?, next_run_at = ?, metadata_json = ?, tool_catalog_version = CASE WHEN ? THEN 1 ELSE tool_catalog_version END, claim_token = CASE WHEN ? THEN NULL ELSE claim_token END, claimed_at = CASE WHEN ? THEN NULL ELSE claimed_at END WHERE id = ?")
+    query("UPDATE routines SET name = ?, prompt = ?, schedule = ?, timezone = ?, repeat = ?, deliver = ?, model = ?, safety_mode = ?, state = ?, enabled = ?, updated_at = ?, next_run_at = ?, metadata_json = ?, tool_catalog_version = CASE WHEN ? THEN 1 ELSE tool_catalog_version END WHERE id = ?")
         .bind(request.name.unwrap_or(current.name).trim()).bind(request.prompt.unwrap_or(current.prompt).trim())
         .bind(&schedule).bind(timezone).bind(request.repeat.unwrap_or(current.repeat))
         .bind(request.deliver.unwrap_or(current.deliver)).bind(request.model.unwrap_or(current.model))
         .bind(request.safety_mode.unwrap_or(current.safety_mode).as_db()).bind(&state).bind(enabled).bind(now())
         .bind(next_run_at).bind(metadata_json(metadata)).bind(tool_catalog_updated)
-        .bind(state != "scheduled" || !enabled).bind(state != "scheduled" || !enabled).bind(&routine_id)
+        .bind(&routine_id)
         .execute(&mut *transaction).await.map_err(app_error)?;
     transaction.commit().await.map_err(app_error)?;
     get(pool, &routine_id).await
 }
 
 pub async fn pause(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppError> {
-    let changed = query("UPDATE routines SET state = 'paused', enabled = 0, next_run_at = NULL, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ?")
+    // Pausing stops future scheduling but does not cancel a claimed run. Keep
+    // its claim association until terminal projection records status and
+    // repeat progress, then releases the claim transactionally.
+    let changed = query("UPDATE routines SET state = 'paused', enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ?")
         .bind(now()).bind(id).execute(pool).await.map_err(app_error)?;
     if changed.rows_affected() == 0 {
         return Err(AppError::new("routine_not_found", "Routine was not found."));
@@ -1608,6 +1611,48 @@ mod tests {
         }
     }
 
+    async fn claimed_terminal_run(
+        pool: &SqlitePool,
+        routine_id: &str,
+        session_id: &str,
+        agent_run_id: &str,
+    ) -> Claim {
+        let mut request = create_request("every 1h");
+        request.id = Some(routine_id.to_string());
+        request.legacy_job_id = Some(format!("legacy-{routine_id}"));
+        request.repeat = Some("3".into());
+        create(pool, request).await.unwrap();
+        let claimed = claim(pool, routine_id, "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES (?)")
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs
+             (id, status, completed_at)
+             VALUES (?, 'completed', '2026-07-28T08:00:00.000Z')",
+        )
+        .bind(agent_run_id)
+        .execute(pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            session_id,
+            agent_run_id,
+            &now(),
+        )
+        .await
+        .unwrap();
+        claimed
+    }
+
     #[test]
     fn cron_schedule_uses_the_routine_iana_timezone() {
         let summer = Utc.with_ymd_and_hms(2026, 7, 24, 12, 30, 0).unwrap();
@@ -2071,6 +2116,103 @@ mod tests {
             let run = list_runs(&pool, Some(&routine_id)).await.unwrap().remove(0);
             assert_eq!(run.status, "completed");
         }
+    }
+
+    #[tokio::test]
+    async fn pausing_before_terminal_projection_preserves_the_current_run() {
+        let pool = pool().await;
+        let claimed =
+            claimed_terminal_run(&pool, "routine-paused", "session-paused", "run-paused").await;
+
+        pause(&pool, "routine-paused").await.unwrap();
+        let retained_claim: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-paused'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(retained_claim.as_deref(), Some(claimed.token.as_str()));
+        mark_agent_run_terminal(&pool, "run-paused").await.unwrap();
+
+        let routine = get(&pool, "routine-paused").await.unwrap();
+        assert_eq!(routine.state, "paused");
+        assert!(!routine.enabled);
+        assert_eq!(routine.last_status.as_deref(), Some("ok"));
+        assert_eq!(
+            routine.metadata["repeatState"]["completed"].as_u64(),
+            Some(1)
+        );
+        let run = list_runs(&pool, Some("routine-paused"))
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(run.status, "completed");
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-paused'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(claim_token, None);
+    }
+
+    #[tokio::test]
+    async fn disabling_by_update_before_terminal_projection_preserves_the_current_run() {
+        let pool = pool().await;
+        let claimed = claimed_terminal_run(
+            &pool,
+            "routine-updated-paused",
+            "session-updated-paused",
+            "run-updated-paused",
+        )
+        .await;
+        update(
+            &pool,
+            UpdateAgentRoutineRequest {
+                routine_id: "routine-updated-paused".into(),
+                name: None,
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                repeat: None,
+                deliver: None,
+                model: None,
+                safety_mode: None,
+                state: Some("paused".into()),
+                enabled: Some(false),
+                metadata: None,
+                enabled_toolsets: None,
+            },
+        )
+        .await
+        .unwrap();
+        let retained_claim: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-updated-paused'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(retained_claim.as_deref(), Some(claimed.token.as_str()));
+
+        mark_agent_run_terminal(&pool, "run-updated-paused")
+            .await
+            .unwrap();
+
+        let routine = get(&pool, "routine-updated-paused").await.unwrap();
+        assert_eq!(routine.state, "paused");
+        assert!(!routine.enabled);
+        assert_eq!(routine.last_status.as_deref(), Some("ok"));
+        assert_eq!(
+            routine.metadata["repeatState"]["completed"].as_u64(),
+            Some(1)
+        );
+        assert_eq!(
+            list_runs(&pool, Some("routine-updated-paused"))
+                .await
+                .unwrap()[0]
+                .status,
+            "completed"
+        );
     }
 
     #[tokio::test]
