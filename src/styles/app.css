@@ -11227,8 +11227,8 @@ button.agent-user-attachment:hover {
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  margin: -2px 0 0 auto;
-  padding: 2px;
+  margin: calc(-1 * var(--sp-px)) 0 0 auto;
+  padding: var(--sp-px);
   border-radius: var(--r-sm);
   color: var(--muted-foreground);
   transition: background-color var(--t-fast) var(--ease-out);

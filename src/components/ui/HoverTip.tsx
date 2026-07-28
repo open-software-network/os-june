@@ -449,7 +449,10 @@ export function HoverTip({
           !interactive ||
           event.key !== "Tab" ||
           event.shiftKey ||
-          !mounted
+          !mounted ||
+          // Only jump from the anchor: keydowns bubbling from inside the
+          // portaled tip must Tab natively, or a single-focusable tip traps.
+          !elementInsideAnchor(event.target)
         ) {
           return;
         }
