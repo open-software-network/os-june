@@ -896,7 +896,7 @@ async fn resolve_agent_interruption_inner(
             Some(stored_session_id.to_string())
         }
     };
-    let repository = repository(&app).await?;
+    let repository = repository(app).await?;
     let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.status') = 'pending' LIMIT 1")
         .bind(&request.run_id)
         .bind(&request.interruption_id)
@@ -1004,11 +1004,11 @@ async fn resolve_agent_interruption_inner(
         ));
     }
     let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;
-    host.ensure_started(&app, repository.clone()).await?;
+    host.ensure_started(app, repository.clone()).await?;
     let mut params = match repository.run_config(&run.id).await? {
         Some(config) => config,
         None => match crate::routines::reconstruct_unattended_resume_params(
-            &app,
+            app,
             &repository,
             &run.id,
             &session.id,
@@ -1021,7 +1021,7 @@ async fn resolve_agent_interruption_inner(
             Some(config) => config,
             None => resumable_run_config(
                 &run_params(
-                    &app,
+                    app,
                     &repository,
                     RunParamsInput {
                         session_id: &session.id,
