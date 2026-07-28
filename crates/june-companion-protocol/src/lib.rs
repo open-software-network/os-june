@@ -34,6 +34,7 @@ pub const MAX_MEDIA_DIMENSION_PX: u32 = 32_768;
 pub const MAX_MEDIA_DURATION_MS: u64 = 6 * 60 * 60 * 1_000;
 pub const DEFAULT_CONTROL_TTL_MS: u64 = 30_000;
 pub const COMPUTER_USE_APPROVAL_TTL_MS: u64 = 60_000;
+pub const MAX_COMPUTER_USE_APPROVAL_ID_BYTES: usize = 128;
 pub const MAX_COMPUTER_USE_ACTION_BYTES: usize = 64;
 pub const MAX_COMPUTER_USE_DESCRIPTION_BYTES: usize = 2 * 1024;
 pub const MAX_COMPUTER_USE_TARGET_APP_BYTES: usize = 256;
@@ -364,8 +365,8 @@ pub struct ComputerUseApprovalDecisionRequest {
 
 impl ComputerUseApprovalDecisionRequest {
     fn validate(&self) -> Result<(), ProtocolError> {
-        validate_id(&self.request_id)?;
-        validate_id(&self.stored_session_id)
+        validate_computer_use_approval_id(&self.request_id)?;
+        validate_computer_use_approval_id(&self.stored_session_id)
     }
 }
 
@@ -393,8 +394,8 @@ pub struct ComputerUseApprovalRequest {
 
 impl ComputerUseApprovalRequest {
     fn validate(&self) -> Result<(), ProtocolError> {
-        validate_id(&self.request_id)?;
-        validate_id(&self.stored_session_id)?;
+        validate_computer_use_approval_id(&self.request_id)?;
+        validate_computer_use_approval_id(&self.stored_session_id)?;
         validate_text(&self.action, MAX_COMPUTER_USE_ACTION_BYTES)?;
         validate_text(&self.description, MAX_COMPUTER_USE_DESCRIPTION_BYTES)?;
         validate_optional_nonempty_text(
@@ -425,8 +426,8 @@ pub struct ComputerUseApprovalStatusEvent {
 
 impl ComputerUseApprovalStatusEvent {
     fn validate(&self) -> Result<(), ProtocolError> {
-        validate_id(&self.request_id)?;
-        validate_id(&self.stored_session_id)
+        validate_computer_use_approval_id(&self.request_id)?;
+        validate_computer_use_approval_id(&self.stored_session_id)
     }
 }
 
@@ -1328,6 +1329,14 @@ fn validate_id(value: &str) -> Result<(), ProtocolError> {
     }
 }
 
+fn validate_computer_use_approval_id(value: &str) -> Result<(), ProtocolError> {
+    if value.is_empty() || value.len() > MAX_COMPUTER_USE_APPROVAL_ID_BYTES {
+        Err(ProtocolError::InvalidIdentifier)
+    } else {
+        Ok(())
+    }
+}
+
 fn validate_text(value: &str, max: usize) -> Result<(), ProtocolError> {
     if value.trim().is_empty() || value.len() > max {
         Err(ProtocolError::TextTooLarge)
@@ -1808,6 +1817,24 @@ mod tests {
             "session-1"
         );
         assert!(encoded["body"]["data"]["data"].get("targetUrl").is_none());
+        assert_eq!(
+            encoded["body"],
+            serde_json::json!({
+                "type": "event",
+                "data": {
+                    "type": "computerUseApprovalRequested",
+                    "data": {
+                        "requestId": "call-1",
+                        "storedSessionId": "session-1",
+                        "action": "click",
+                        "description": "Click a control in TextEdit.",
+                        "targetApp": "TextEdit",
+                        "requestedAtMs": 1_000,
+                        "expiresAtMs": 1_000 + COMPUTER_USE_APPROVAL_TTL_MS
+                    }
+                }
+            })
+        );
 
         let mut too_long = request;
         too_long.description = "x".repeat(MAX_COMPUTER_USE_DESCRIPTION_BYTES + 1);
@@ -1836,6 +1863,28 @@ mod tests {
             })
         );
 
+        let status = Body::Event(Event::ComputerUseApprovalStatusChanged(
+            ComputerUseApprovalStatusEvent {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+                status: ComputerUseApprovalStatus::Approved,
+            },
+        ));
+        assert_eq!(
+            serde_json::to_value(&status).unwrap(),
+            serde_json::json!({
+                "type": "event",
+                "data": {
+                    "type": "computerUseApprovalStatusChanged",
+                    "data": {
+                        "requestId": "call-1",
+                        "storedSessionId": "session-1",
+                        "status": "approved"
+                    }
+                }
+            })
+        );
+
         for (status, expected) in [
             (ComputerUseApprovalStatus::Approved, "approved"),
             (ComputerUseApprovalStatus::Denied, "denied"),
@@ -1851,7 +1900,7 @@ mod tests {
 
     #[test]
     fn computer_use_approval_requests_reject_capability_confusion_and_bad_expiry() {
-        let request = ComputerUseApprovalRequest {
+        let mut request = ComputerUseApprovalRequest {
             request_id: "call-1".to_string(),
             stored_session_id: "session-1".to_string(),
             action: "click".to_string(),
@@ -1859,23 +1908,83 @@ mod tests {
             target_app: None,
             target_url: None,
             requested_at_ms: 1_000,
-            expires_at_ms: 1_000 + COMPUTER_USE_APPROVAL_TTL_MS + 1,
+            expires_at_ms: 1_000 + COMPUTER_USE_APPROVAL_TTL_MS,
         };
+        request.validate().unwrap();
+
+        request.expires_at_ms = request.requested_at_ms + 1;
+        request.validate().unwrap();
+
+        request.expires_at_ms = request.requested_at_ms;
+        assert!(matches!(
+            request.validate(),
+            Err(ProtocolError::InvalidExpiry)
+        ));
+        request.expires_at_ms = request.requested_at_ms + COMPUTER_USE_APPROVAL_TTL_MS + 1;
+        assert!(matches!(
+            request.validate(),
+            Err(ProtocolError::InvalidExpiry)
+        ));
+
         let mut frame = Frame::new(
             Uuid::nil(),
             1,
             1_000,
             Capability::AgentChat,
-            Body::Event(Event::ComputerUseApprovalRequested(request)),
+            Body::Event(Event::ComputerUseApprovalRequested(
+                ComputerUseApprovalRequest {
+                    expires_at_ms: 1_000 + COMPUTER_USE_APPROVAL_TTL_MS,
+                    ..request
+                },
+            )),
         );
         assert!(matches!(
             frame.validate(1_000),
             Err(ProtocolError::CapabilityMismatch)
         ));
         frame.capability = Capability::ComputerUseApprove;
+        frame.validate(1_000).unwrap();
+    }
+
+    #[test]
+    fn computer_use_approval_ids_use_the_128_byte_contract_bound() {
+        let request = ComputerUseApprovalRequest {
+            request_id: "r".repeat(MAX_COMPUTER_USE_APPROVAL_ID_BYTES),
+            stored_session_id: "s".repeat(MAX_COMPUTER_USE_APPROVAL_ID_BYTES),
+            action: "click".to_string(),
+            description: "Click a control.".to_string(),
+            target_app: None,
+            target_url: None,
+            requested_at_ms: 1_000,
+            expires_at_ms: 1_000 + COMPUTER_USE_APPROVAL_TTL_MS,
+        };
+        request.validate().unwrap();
+
+        let mut oversized_request = request.clone();
+        oversized_request.request_id.push('r');
         assert!(matches!(
-            frame.validate(1_000),
-            Err(ProtocolError::InvalidExpiry)
+            oversized_request.validate(),
+            Err(ProtocolError::InvalidIdentifier)
+        ));
+
+        let oversized_session = "s".repeat(MAX_COMPUTER_USE_APPROVAL_ID_BYTES + 1);
+        assert!(matches!(
+            ComputerUseApprovalDecisionRequest {
+                request_id: request.request_id.clone(),
+                stored_session_id: oversized_session.clone(),
+                decision: ComputerUseApprovalDecision::Approve,
+            }
+            .validate(),
+            Err(ProtocolError::InvalidIdentifier)
+        ));
+        assert!(matches!(
+            ComputerUseApprovalStatusEvent {
+                request_id: request.request_id,
+                stored_session_id: oversized_session,
+                status: ComputerUseApprovalStatus::Approved,
+            }
+            .validate(),
+            Err(ProtocolError::InvalidIdentifier)
         ));
     }
 
