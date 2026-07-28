@@ -2134,6 +2134,14 @@ async fn session_request(
             }
             if slot.transport.is_none() {
                 slot.transport = Some(start_transport(server, secrets, sandbox_workspace).await?);
+                // Initialization performs network I/O while this session slot
+                // is held. Disconnect can advance the lifecycle epoch while
+                // waiting to retire the slot, so recheck before the first
+                // request is allowed to leave the initialized transport.
+                if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
+                    slot.close().await;
+                    return Err(AgentMcpError::ToolUnavailable);
+                }
             }
             let id = slot.next_request_id;
             slot.next_request_id = slot.next_request_id.saturating_add(1);
@@ -4799,7 +4807,8 @@ done
         let stale = lifecycle.snapshot();
         lifecycle.bump_epoch();
         drop(lifecycle);
-        let server = managed_linear_definition();
+        let mut server = managed_linear_definition();
+        server.id = format!("builtin:linear-stale-{}", Uuid::new_v4());
 
         let result = session_request(
             &server,
@@ -4822,7 +4831,8 @@ done
         let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
         let snapshot = lifecycle.snapshot();
         drop(lifecycle);
-        let server = managed_linear_definition();
+        let mut server = managed_linear_definition();
+        server.id = format!("builtin:linear-slot-{}", Uuid::new_v4());
         let secrets = McpSecretBundle::default();
         let shared = persistent_session(&server, &secrets, None).await;
         let slot = shared.lock().await;
@@ -4854,6 +4864,151 @@ done
             Err(AgentMcpError::ToolUnavailable)
         ));
         retire_server_sessions(&server.id).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_change_during_transport_initialization_blocks_first_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::{net::TcpListener, sync::Notify};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let initialize_started = Arc::new(Notify::new());
+        let release_initialize = Arc::new(Notify::new());
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let server_task = tokio::spawn({
+            let initialize_started = initialize_started.clone();
+            let release_initialize = release_initialize.clone();
+            let tool_calls = tool_calls.clone();
+            async move {
+                loop {
+                    let (mut stream, _) = listener.accept().await.unwrap();
+                    let initialize_started = initialize_started.clone();
+                    let release_initialize = release_initialize.clone();
+                    let tool_calls = tool_calls.clone();
+                    tokio::spawn(async move {
+                        let mut request = Vec::new();
+                        let mut buffer = [0_u8; 4096];
+                        loop {
+                            let read = stream.read(&mut buffer).await.unwrap();
+                            if read == 0 {
+                                break;
+                            }
+                            request.extend_from_slice(&buffer[..read]);
+                            let Some(headers_end) =
+                                request.windows(4).position(|window| window == b"\r\n\r\n")
+                            else {
+                                continue;
+                            };
+                            let headers = String::from_utf8_lossy(&request[..headers_end]);
+                            let content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            if request.len() >= headers_end + 4 + content_length {
+                                break;
+                            }
+                        }
+                        let body_start = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .unwrap()
+                            + 4;
+                        let frame: Value = serde_json::from_slice(&request[body_start..]).unwrap();
+                        match frame.get("method").and_then(Value::as_str) {
+                            Some("initialize") => {
+                                initialize_started.notify_one();
+                                release_initialize.notified().await;
+                                let body = json!({
+                                    "jsonrpc": "2.0",
+                                    "id": frame["id"],
+                                    "result": {
+                                        "protocolVersion": MCP_PROTOCOL_VERSION,
+                                        "capabilities": {},
+                                        "serverInfo": {
+                                            "name": "delayed-initialize",
+                                            "version": "1"
+                                        }
+                                    }
+                                })
+                                .to_string();
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nmcp-session-id: delayed-session\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                    body.len()
+                                );
+                                stream.write_all(headers.as_bytes()).await.unwrap();
+                                stream.write_all(body.as_bytes()).await.unwrap();
+                            }
+                            Some("notifications/initialized") => {
+                                stream
+                                    .write_all(
+                                        b"HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                                    )
+                                    .await
+                                    .unwrap();
+                            }
+                            Some("tools/call") => {
+                                tool_calls.fetch_add(1, Ordering::SeqCst);
+                                let body = json!({
+                                    "jsonrpc": "2.0",
+                                    "id": frame["id"],
+                                    "result": {"content": []}
+                                })
+                                .to_string();
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                    body.len()
+                                );
+                                stream.write_all(headers.as_bytes()).await.unwrap();
+                                stream.write_all(body.as_bytes()).await.unwrap();
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+            }
+        });
+
+        let account_id = format!("linear-init-{}", Uuid::new_v4());
+        let lifecycle_guard = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+        let snapshot = lifecycle_guard.snapshot();
+        drop(lifecycle_guard);
+        let mut server = managed_linear_definition();
+        server.id = format!("builtin:linear-init-{}", Uuid::new_v4());
+        server.url = Some(format!("http://{address}/mcp"));
+        let request_server = server.clone();
+        let request_snapshot = snapshot.clone();
+        let request = tokio::spawn(async move {
+            session_request(
+                &request_server,
+                &McpSecretBundle::default(),
+                "tools/call",
+                json!({"name": "create_issue", "arguments": {}}),
+                None,
+                None,
+                Some(&request_snapshot),
+            )
+            .await
+        });
+
+        initialize_started.notified().await;
+        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+        lifecycle.bump_epoch();
+        drop(lifecycle);
+        release_initialize.notify_one();
+
+        assert!(matches!(
+            request.await.unwrap(),
+            Err(AgentMcpError::ToolUnavailable)
+        ));
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+        retire_server_sessions(&server.id).await;
+        server_task.abort();
     }
 
     #[tokio::test]
