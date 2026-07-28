@@ -11428,8 +11428,6 @@ button.agent-user-attachment:hover {
 
 .editor-content {
   min-height: 0;
-  container-name: note-editor;
-  container-type: inline-size;
 }
 
 .note-body,
@@ -13096,18 +13094,15 @@ button.agent-user-attachment:hover {
   margin: 0 0 var(--sp-5);
 }
 
-/* At wider editor sizes the normal recovery prompt fits on one line, so center
- * the whole composition. Below this font-relative threshold it keeps the
- * shared notice's first-line alignment and top-aligned icon as the copy wraps.
- * Funding-blocked prompts always keep that shared wrapped layout. */
-@container note-editor (min-width: 43em) {
-  .inline-notice.note-recovery-prompt:not(.note-recovery-prompt-blocked) {
-    align-items: center;
-  }
+/* NoteRecoveryPrompt adds this class only after measuring one rendered body
+ * line. Wrapped and funding-blocked prompts retain the shared first-line and
+ * top alignment above. */
+.inline-notice.note-recovery-prompt-single-line {
+  align-items: center;
+}
 
-  .note-recovery-prompt:not(.note-recovery-prompt-blocked) .inline-notice-icon {
-    align-self: center;
-  }
+.note-recovery-prompt-single-line .inline-notice-icon {
+  align-self: center;
 }
 
 .note-transcription-warning {

@@ -18,27 +18,20 @@ function cssRuleFor(selector: string) {
 }
 
 describe("note recovery prompt alignment", () => {
-  it("centers an unblocked prompt only when the editor is wide enough for one line", () => {
-    const editor = cssRuleFor(".editor-content");
-    expect(editor).toContain("container-name: note-editor;");
-    expect(editor).toContain("container-type: inline-size;");
-
-    const centeredPrompt = ".inline-notice.note-recovery-prompt:not(.note-recovery-prompt-blocked)";
-    const centeredIcon =
-      ".note-recovery-prompt:not(.note-recovery-prompt-blocked) .inline-notice-icon";
-    const wideEditor = cssRuleFor("@container note-editor (min-width: 43em)");
-
-    expect(wideEditor).toContain(`${centeredPrompt} {`);
-    expect(wideEditor).toContain("align-items: center;");
-    expect(wideEditor).toContain(`${centeredIcon} {`);
-    expect(wideEditor).toContain("align-self: center;");
-    expect(appCss.split(centeredPrompt)).toHaveLength(2);
-    expect(appCss.split(centeredIcon)).toHaveLength(2);
+  it("centers only the explicit measured single-line variant", () => {
+    expect(cssRuleFor(".inline-notice.note-recovery-prompt-single-line")).toContain(
+      "align-items: center;",
+    );
+    expect(cssRuleFor(".note-recovery-prompt-single-line .inline-notice-icon")).toContain(
+      "align-self: center;",
+    );
   });
 
-  it("keeps narrow and funding-blocked prompts on the shared first-line alignment", () => {
+  it("keeps wrapped and funding-blocked prompts on the shared first-line alignment", () => {
     expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
     expect(cssRuleFor(".inline-notice-icon")).toContain("align-self: flex-start;");
     expect(appCss).not.toContain(".inline-notice.note-recovery-prompt-blocked {");
+    expect(appCss).not.toContain("container-name: note-editor;");
+    expect(appCss).not.toContain("@container note-editor");
   });
 });
