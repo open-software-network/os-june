@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Fragment } from "react";
 import { ConnectorProviderIcon } from "../connectors/ConnectorProviderIcon";
 import { ComputerUseControl } from "../plugins/ComputerUseControl";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   accountStatusMeta,
   bundleMeta,
@@ -398,6 +399,7 @@ export function ConnectorsSection({
   onOpenModels?: () => void;
   onOpenBilling?: () => void;
 }) {
+  const { google_multi_account: googleMultiAccountEnabled } = useExperimentalFlags();
   const { policy, error: policyError } = useConnectorPolicy();
   const oauthProviders =
     policy?.providers.flatMap((definition) =>
@@ -1125,19 +1127,21 @@ export function ConnectorsSection({
                           <span className="connector-name">Google</span>
                           <p className="connector-subtitle">{PROVIDER_BLURBS.google}</p>
                         </div>
-                        <div className="connector-actions">
-                          <button
-                            type="button"
-                            className="btn btn-secondary"
-                            aria-label={
-                              googleAccounts.length > 0 ? "Add Google account" : "Connect Google"
-                            }
-                            disabled={accounts === null}
-                            onClick={() => openConnectNew("google")}
-                          >
-                            Add account
-                          </button>
-                        </div>
+                        {googleAccounts.length === 0 || googleMultiAccountEnabled ? (
+                          <div className="connector-actions">
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              aria-label={
+                                googleAccounts.length > 0 ? "Add Google account" : "Connect Google"
+                              }
+                              disabled={accounts === null}
+                              onClick={() => openConnectNew("google")}
+                            >
+                              Add account
+                            </button>
+                          </div>
+                        ) : null}
                       </li>
                       {googleAccounts.map((account) => {
                         const status = accountStatusMeta(account.status, "google");

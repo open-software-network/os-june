@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   clipboardWrite: vi.fn(),
+  googleMultiAccountEnabled: true,
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -43,6 +44,18 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
 vi.mock("../lib/feature-flags", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/feature-flags")>()),
   BROWSER_USE_ENABLED: true,
+}));
+
+vi.mock("../lib/experimental-flags", () => ({
+  useExperimentalFlags: () => ({
+    unlocked: true,
+    browser_use: false,
+    companion_pairing: false,
+    google_multi_account: mocks.googleMultiAccountEnabled,
+    loaded: true,
+    browserUseEnabled: true,
+    companionPairingEnabled: false,
+  }),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -135,6 +148,7 @@ function linearAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAcco
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.googleMultiAccountEnabled = true;
   connectorsChangedListener = null;
   eventHandlers.clear();
   mocks.connectorsList.mockResolvedValue([]);
@@ -584,7 +598,7 @@ describe("ConnectorsSection", () => {
     expect(mocks.listen).toHaveBeenCalledWith("june://connectors-changed", expect.any(Function));
   });
 
-  it("renders independent Google account rows and keeps add account unhinted", async () => {
+  it("renders independent Google account rows when the multi-account experiment is on", async () => {
     mocks.connectorsList.mockResolvedValue([
       account({
         accountId: "work@example.com",
@@ -619,6 +633,57 @@ describe("ConnectorsSection", () => {
         flowId: expect.any(String),
       }),
     );
+  });
+
+  it("keeps the first Google connect available when the multi-account experiment is off", async () => {
+    mocks.googleMultiAccountEnabled = false;
+
+    render(<ConnectorsSection />);
+
+    expect(await findEnabledConnect("Connect Google")).toBeVisible();
+  });
+
+  it("hides Add account when the multi-account experiment is off", async () => {
+    mocks.googleMultiAccountEnabled = false;
+    mocks.connectorsList.mockResolvedValue([account()]);
+
+    render(<ConnectorsSection />);
+
+    const email = await screen.findByText("alex@example.com");
+    expect(email).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Add Google account" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add access for alex@example.com" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Disconnect alex@example.com" })).toBeVisible();
+  });
+
+  it("keeps existing Google accounts listed when the multi-account experiment is off", async () => {
+    mocks.googleMultiAccountEnabled = false;
+    mocks.connectorsList.mockResolvedValue([
+      account({
+        accountId: "work@example.com",
+        email: "work@example.com",
+        scopes: [GMAIL_READONLY],
+      }),
+      account({
+        accountId: "personal@example.com",
+        email: "personal@example.com",
+        scopes: [CALENDAR_EVENTS],
+      }),
+    ]);
+
+    render(<ConnectorsSection />);
+
+    const workEmail = await screen.findByText("work@example.com");
+    const personalEmail = screen.getByText("personal@example.com");
+    expect(within(workEmail.closest("li") as HTMLElement).getByText("Read mail")).toBeVisible();
+    expect(
+      within(personalEmail.closest("li") as HTMLElement).getByText("Manage calendar"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add access for work@example.com" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Add access for personal@example.com" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Add Google account" })).toBeNull();
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {

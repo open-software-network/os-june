@@ -37,17 +37,24 @@ describe("experimental flags", () => {
               unlocked: boolean;
               browser_use: boolean;
               companion_pairing: boolean;
+              google_multi_account: boolean;
             };
           }
         ).request;
       }
-      return { unlocked: false, browser_use: false, companion_pairing: false };
+      return {
+        unlocked: false,
+        browser_use: false,
+        companion_pairing: false,
+        google_multi_account: false,
+      };
     });
     mocks.listen.mockResolvedValue(() => {});
     await setExperimentalFlags({
       unlocked: false,
       browser_use: false,
       companion_pairing: false,
+      google_multi_account: false,
     });
   });
 
@@ -85,6 +92,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: true,
       companion_pairing: false,
+      google_multi_account: false,
     });
 
     expect(hasBrowserAccessRequest(BROWSER_ACCESS_REQUEST_TOKEN)).toBe(true);
@@ -108,6 +116,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: true,
       companion_pairing: true,
+      google_multi_account: true,
     });
     mocks.listen.mockResolvedValue(() => {});
     const flags = await import("../lib/experimental-flags");
@@ -117,6 +126,7 @@ describe("experimental flags", () => {
       unlocked: false,
       browser_use: false,
       companion_pairing: false,
+      google_multi_account: false,
     });
 
     const { result, unmount } = renderHook(() => flags.useExperimentalFlags());
@@ -125,6 +135,7 @@ describe("experimental flags", () => {
     expect(mocks.invoke).toHaveBeenCalledTimes(2);
     expect(result.current.unlocked).toBe(true);
     expect(result.current.companionPairingEnabled).toBe(true);
+    expect(result.current.google_multi_account).toBe(true);
     unmount();
   });
 
@@ -133,6 +144,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: false,
       companion_pairing: false,
+      google_multi_account: false,
       companion_pairing_effective: true,
     });
 
@@ -140,6 +152,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: false,
       companion_pairing: false,
+      google_multi_account: false,
     });
     const { result, unmount } = renderHook(() => useExperimentalFlags());
 
@@ -153,6 +166,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: false,
       companion_pairing: true,
+      google_multi_account: false,
       companion_pairing_effective: false,
     });
 
@@ -160,6 +174,7 @@ describe("experimental flags", () => {
       unlocked: true,
       browser_use: false,
       companion_pairing: true,
+      google_multi_account: false,
     });
     const { result, unmount } = renderHook(() => useExperimentalFlags());
 

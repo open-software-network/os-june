@@ -21,6 +21,8 @@ pub struct ExperimentalSettings {
     pub browser_use: bool,
     #[serde(default)]
     pub companion_pairing: bool,
+    #[serde(default)]
+    pub google_multi_account: bool,
 }
 
 pub struct ExperimentalSettingsState {
@@ -113,6 +115,16 @@ pub fn companion_pairing_enabled(app: &AppHandle) -> bool {
         .companion_pairing
 }
 
+/// Multi-account Google connection availability for native callers. Existing
+/// accounts remain usable when this is off; only adding a distinct identity is
+/// gated.
+pub fn google_multi_account_enabled(app: &AppHandle) -> bool {
+    app.try_state::<ExperimentalSettingsState>()
+        .and_then(|state| get(state.inner()).ok())
+        .unwrap_or_default()
+        .google_multi_account
+}
+
 fn browser_use_enabled_with(kill_switch: bool, settings: &ExperimentalSettings) -> bool {
     kill_switch || settings.browser_use
 }
@@ -182,12 +194,26 @@ mod tests {
     }
 
     #[test]
+    fn google_multi_account_stays_disabled_by_default() {
+        assert!(!ExperimentalSettings::default().google_multi_account);
+    }
+
+    #[test]
+    fn legacy_settings_keep_google_multi_account_disabled() {
+        let settings: ExperimentalSettings =
+            serde_json::from_str(r#"{"unlocked":true,"browser_use":true}"#)
+                .expect("deserialize legacy settings");
+        assert!(!settings.google_multi_account);
+    }
+
+    #[test]
     fn settings_load_save_round_trip() {
         let path = test_path();
         let settings = ExperimentalSettings {
             unlocked: true,
             browser_use: true,
             companion_pairing: true,
+            google_multi_account: true,
         };
 
         save_settings(&path, &settings).expect("save experimental settings");

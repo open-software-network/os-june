@@ -1634,6 +1634,7 @@ export function AppSettings({
       unlocked: true,
       browser_use: experimentalFlags.browser_use,
       companion_pairing: experimentalFlags.companion_pairing,
+      google_multi_account: experimentalFlags.google_multi_account,
     })
       .then(() => toast("Experiments are unlocked"))
       .catch((error) => setExperimentalError(messageFromError(error)))
@@ -1646,6 +1647,7 @@ export function AppSettings({
     unlocked?: boolean;
     browser_use?: boolean;
     companion_pairing?: boolean;
+    google_multi_account?: boolean;
   }) {
     setExperimentalOperation("flags");
     setExperimentalError(undefined);
@@ -1654,6 +1656,7 @@ export function AppSettings({
         unlocked: update.unlocked ?? experimentalFlags.unlocked,
         browser_use: update.browser_use ?? experimentalFlags.browser_use,
         companion_pairing: update.companion_pairing ?? experimentalFlags.companion_pairing,
+        google_multi_account: update.google_multi_account ?? experimentalFlags.google_multi_account,
       });
     } catch (error) {
       setExperimentalError(messageFromError(error));
@@ -2878,6 +2881,25 @@ export function AppSettings({
                         aria-label="Enable experimental Companion pairing"
                         onCheckedChange={(companion_pairing) =>
                           void updateExperimentalFlags({ companion_pairing })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Multiple Google accounts</h3>
+                      <p className="settings-row-description">
+                        Allow this install to connect more than one Google account.
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={experimentalFlags.google_multi_account}
+                        disabled={experimentalOperation !== undefined}
+                        aria-label="Enable experimental multiple Google accounts"
+                        onCheckedChange={(google_multi_account) =>
+                          void updateExperimentalFlags({ google_multi_account })
                         }
                       />
                     </div>

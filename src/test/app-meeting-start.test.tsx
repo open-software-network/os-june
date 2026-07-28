@@ -102,6 +102,7 @@ vi.mock("../lib/experimental-flags", () => ({
     unlocked: false,
     browser_use: false,
     companion_pairing: false,
+    google_multi_account: false,
     loaded: true,
     browserUseEnabled: false,
     companionPairingEnabled: false,

@@ -945,6 +945,41 @@ fn conflicting_existing_account<'a>(
         .map(|(_, identity)| identity.to_string())
 }
 
+/// Refuse only a new Google identity while the multi-account experiment is
+/// off. An identity already present in the index is a reconnect or scope
+/// escalation and remains allowed, including in an already-multi-account
+/// install whose experiment was later disabled.
+fn ensure_google_account_connect_allowed<'a>(
+    existing: impl IntoIterator<Item = (&'a str, &'a str)>,
+    connecting_identity: &str,
+    multi_account_enabled: bool,
+) -> Result<(), AppError> {
+    if multi_account_enabled {
+        return Ok(());
+    }
+
+    let mut first_google_identity = None;
+    for (provider, identity) in existing {
+        if provider != ConnectorProvider::Google.as_str() {
+            continue;
+        }
+        if identity.eq_ignore_ascii_case(connecting_identity) {
+            return Ok(());
+        }
+        first_google_identity.get_or_insert(identity);
+    }
+
+    let Some(existing_identity) = first_google_identity else {
+        return Ok(());
+    };
+    Err(AppError::new(
+        "connector_single_account_only",
+        format!(
+            "June currently uses one Google account at a time. Disconnect {existing_identity} before connecting another."
+        ),
+    ))
+}
+
 /// Run the full connect flow (browser consent, loopback callback, code
 /// exchange, custody write, DB index upsert) for the requested scope
 /// bundles. With a `login_hint` for an already-connected account whose
@@ -999,6 +1034,13 @@ pub async fn begin_connect(
     }
 
     let existing_accounts = repos.list_connector_accounts().await?;
+    ensure_google_account_connect_allowed(
+        existing_accounts
+            .iter()
+            .map(|record| (record.provider.as_str(), record.email.as_str())),
+        &email,
+        crate::experimental_settings::google_multi_account_enabled(app),
+    )?;
 
     // Persist the account's scopes. When Google omits the response scope field
     // on an incremental grant, this unions the requested scopes with the ones
@@ -2096,6 +2138,30 @@ mod tests {
             ),
             Some("workspace-1".to_string())
         );
+    }
+
+    #[test]
+    fn google_multi_account_gate_blocks_only_a_new_distinct_identity_when_off() {
+        let existing = [
+            ("google", "work@example.com"),
+            ("google", "personal@example.com"),
+            ("linear", "work@example.com"),
+        ];
+
+        let error =
+            ensure_google_account_connect_allowed(existing, "new@example.com", false).unwrap_err();
+        assert_eq!(error.code, "connector_single_account_only");
+        assert!(ensure_google_account_connect_allowed(existing, "WORK@example.com", false).is_ok());
+        assert!(
+            ensure_google_account_connect_allowed(existing, "personal@example.com", false).is_ok()
+        );
+        assert!(ensure_google_account_connect_allowed(existing, "new@example.com", true).is_ok());
+        assert!(ensure_google_account_connect_allowed(
+            [("linear", "work@example.com")],
+            "new@example.com",
+            false,
+        )
+        .is_ok());
     }
 
     fn selected_team(id: &str) -> crate::db::repositories::SelectedTeamRecord {
