@@ -603,6 +603,31 @@ impl Repositories {
         Ok(())
     }
 
+    pub async fn record_companion_computer_use_approval_decision(
+        &self,
+        device_id: &str,
+        request_id: &str,
+        stored_session_id: &str,
+        decision: &str,
+        recorded_at: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        Ok(query(
+            "INSERT OR IGNORE INTO companion_computer_use_approval_audit (
+               id, device_id, request_id, stored_session_id, decision, recorded_at
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(device_id)
+        .bind(request_id)
+        .bind(stored_session_id)
+        .bind(decision)
+        .bind(recorded_at)
+        .execute(&self.pool)
+        .await?
+        .rows_affected()
+            == 1)
+    }
+
     pub async fn companion_operation(
         &self,
         account_user_id: &str,
@@ -8538,6 +8563,54 @@ mod tests {
         assert_eq!(unchanged.title, note.title);
         assert_eq!(unchanged.edited_content, note.edited_content);
         assert_eq!(unchanged.revision, note.revision);
+    }
+
+    #[tokio::test]
+    async fn companion_computer_use_decision_audit_is_durable_and_device_attributed() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        assert!(repos
+            .record_companion_computer_use_approval_decision(
+                &device_id,
+                "approval-1",
+                "session-1",
+                "approve",
+                "2026-07-28T10:00:00Z",
+            )
+            .await
+            .expect("record decision"));
+        assert!(!repos
+            .record_companion_computer_use_approval_decision(
+                &device_id,
+                "approval-1",
+                "session-1",
+                "deny",
+                "2026-07-28T10:01:00Z",
+            )
+            .await
+            .expect("duplicate decision is idempotent"));
+        repos
+            .delete_companion_device("usr_test", &device_id)
+            .await
+            .expect("delete linked device");
+
+        let row = query(
+            "SELECT device_id, request_id, stored_session_id, decision, recorded_at
+             FROM companion_computer_use_approval_audit",
+        )
+        .fetch_one(&repos.pool)
+        .await
+        .expect("durable audit row");
+        assert_eq!(row.get::<String, _>("device_id"), device_id);
+        assert_eq!(row.get::<String, _>("request_id"), "approval-1");
+        assert_eq!(row.get::<String, _>("stored_session_id"), "session-1");
+        assert_eq!(row.get::<String, _>("decision"), "approve");
+        assert_eq!(row.get::<String, _>("recorded_at"), "2026-07-28T10:00:00Z");
     }
 
     #[tokio::test]

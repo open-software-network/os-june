@@ -3,6 +3,7 @@
 //! routing metadata and ciphertext.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -36,6 +37,7 @@ pub const MAX_COMPUTER_USE_ACTION_BYTES: usize = 64;
 pub const MAX_COMPUTER_USE_DESCRIPTION_BYTES: usize = 2 * 1024;
 pub const MAX_COMPUTER_USE_TARGET_APP_BYTES: usize = 256;
 pub const MAX_COMPUTER_USE_TARGET_URL_BYTES: usize = 2 * 1024;
+pub const MAX_PEER_CAPABILITIES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +59,44 @@ pub enum Capability {
     DevicesReadSelf,
     DevicesRevokeSelf,
     ComputerUseApprove,
+}
+
+/// Optional authenticated Noise-handshake payload sent by a linked device.
+///
+/// An empty handshake payload remains valid for older companions and means
+/// that no optional receive-side capabilities were advertised.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerHello {
+    #[serde(default)]
+    pub capabilities: Vec<Capability>,
+}
+
+impl PeerHello {
+    pub fn validate(&self) -> Result<(), ProtocolError> {
+        if self.capabilities.len() > MAX_PEER_CAPABILITIES {
+            return Err(ProtocolError::InvalidCapabilities);
+        }
+        let unique = self.capabilities.iter().copied().collect::<HashSet<_>>();
+        if unique.len() != self.capabilities.len() {
+            return Err(ProtocolError::InvalidCapabilities);
+        }
+        Ok(())
+    }
+}
+
+pub fn encode_peer_hello(hello: &PeerHello) -> Result<Vec<u8>, ProtocolError> {
+    hello.validate()?;
+    serde_json::to_vec(hello).map_err(ProtocolError::Json)
+}
+
+pub fn decode_peer_hello(encoded: &[u8]) -> Result<PeerHello, ProtocolError> {
+    if encoded.is_empty() {
+        return Ok(PeerHello::default());
+    }
+    let hello = serde_json::from_slice::<PeerHello>(encoded).map_err(ProtocolError::Json)?;
+    hello.validate()?;
+    Ok(hello)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1280,6 +1320,8 @@ pub enum ProtocolError {
     InvalidModelSelection,
     #[error("relay route is invalid")]
     InvalidRoute,
+    #[error("peer capability advertisement is invalid")]
+    InvalidCapabilities,
     #[error("invalid JSON: {0}")]
     Json(serde_json::Error),
 }
@@ -1439,6 +1481,28 @@ mod tests {
         );
         let encoded = encode_frame(&frame).unwrap();
         assert_eq!(decode_frame(&encoded, now + 1).unwrap(), frame);
+    }
+
+    #[test]
+    fn peer_hello_advertises_optional_capabilities_inside_the_handshake() {
+        let hello = PeerHello {
+            capabilities: vec![Capability::AgentRead, Capability::ComputerUseApprove],
+        };
+        let encoded = encode_peer_hello(&hello).unwrap();
+
+        assert_eq!(decode_peer_hello(&encoded).unwrap(), hello);
+        assert_eq!(decode_peer_hello(&[]).unwrap(), PeerHello::default());
+
+        let duplicate = PeerHello {
+            capabilities: vec![
+                Capability::ComputerUseApprove,
+                Capability::ComputerUseApprove,
+            ],
+        };
+        assert!(matches!(
+            encode_peer_hello(&duplicate),
+            Err(ProtocolError::InvalidCapabilities)
+        ));
     }
 
     #[test]

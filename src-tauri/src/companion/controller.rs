@@ -484,12 +484,29 @@ impl Controller {
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::ComputerUseApprovalRespond(request) => {
+                let device_uuid = device_id.parse().map_err(|_| {
+                    AppError::new(
+                        "companion_device_invalid",
+                        "The linked device identity is invalid.",
+                    )
+                })?;
+                if !app
+                    .state::<super::CompanionRuntime>()
+                    .peer_has_capability(device_uuid, Capability::ComputerUseApprove)
+                {
+                    return Err(AppError::new(
+                        "companion_computer_use_approval_disabled",
+                        "This linked device did not advertise Computer use approval support.",
+                    ));
+                }
                 let result = crate::agent_runtime::api::resolve_companion_computer_use_approval(
                     app,
                     &request.request_id,
                     &request.stored_session_id,
                     request.decision,
-                    super::ComputerUseApprovalOrigin::Companion,
+                    super::ComputerUseApprovalOrigin::Companion {
+                        device_id: device_id.to_string(),
+                    },
                 )
                 .await;
                 tracing::info!(

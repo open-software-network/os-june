@@ -575,6 +575,7 @@ export function runtimeInterruptionFromSdk(interruption: unknown): RuntimeInterr
   }
   return {
     id: interruptionId(interruption),
+    callId: interruptionCallId(interruption),
     kind: "approval",
     toolName,
     arguments: argumentsValue,
@@ -611,6 +612,15 @@ function interruptionId(interruption: unknown): string {
     return interruption.rawItem.callId;
   }
   return "unknown-interruption";
+}
+
+function interruptionCallId(interruption: unknown): string {
+  if (!isRecord(interruption)) return "unknown-interruption";
+  if (typeof interruption.callId === "string") return interruption.callId;
+  if (isRecord(interruption.rawItem) && typeof interruption.rawItem.callId === "string") {
+    return interruption.rawItem.callId;
+  }
+  return interruptionId(interruption);
 }
 
 function toolCallId(details: unknown): string {

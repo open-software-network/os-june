@@ -3,6 +3,23 @@ import test from "node:test";
 import { runtimeInterruptionFromSdk } from "../src/sdk-engine.ts";
 import { REQUEST_CLARIFICATION_TOOL } from "../src/types.ts";
 
+test("keeps the SDK interruption id and tool call id as an explicit binding", () => {
+  const interruption = runtimeInterruptionFromSdk({
+    id: "approval-1",
+    callId: "tool-call-1",
+    name: "computer_use",
+    arguments: JSON.stringify({ action: "capture", app: "Notes" }),
+  });
+
+  assert.deepEqual(interruption, {
+    id: "approval-1",
+    callId: "tool-call-1",
+    kind: "approval",
+    toolName: "computer_use",
+    arguments: { action: "capture", app: "Notes" },
+  });
+});
+
 test("maps request_clarification approval pauses to structured clarification interruptions", () => {
   const interruption = runtimeInterruptionFromSdk({
     id: "clarify-1",

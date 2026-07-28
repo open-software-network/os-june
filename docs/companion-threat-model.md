@@ -78,10 +78,14 @@ and APNs signing material.
   change during an active run cannot cancel or reroute that run; it applies at
   the next run boundary.
 - A remote Computer use approval is additionally bound to one SDK tool-call
-  id, stored session id, 60-second desktop registry entry, unique operation id,
-  and monotonic Noise sequence. The first local or remote decision wins. A
-  phone approval supplies one invocation permit only; it cannot create the
-  broker's task-scoped app grant or bypass a Rust policy denial.
+  id, its explicit SDK interruption-id mapping, exact verified window/app
+  identity, stored session id, monotonic 60-second desktop deadline, unique
+  operation id, and monotonic Noise sequence. The peer must advertise
+  `computerUseApprove` in its authenticated handshake. The first local or
+  remote decision wins. A phone approval supplies one invocation permit only;
+  it cannot create the broker's task-scoped app grant or bypass a Rust policy
+  denial. A durable content-free receipt attributes the decision to the
+  authenticated linked-device id.
 - The mobile bundle has no OS Accounts client, callback, account token, OS
   Accounts App API key, provider key, APNs signing key, relay secret, or
   prebuilt bearer token. Pairing never copies the Desktop account session.

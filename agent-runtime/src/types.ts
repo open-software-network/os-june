@@ -96,6 +96,7 @@ export type RuntimeUsage = {
 export type RuntimeInterruption =
   | {
       id: string;
+      callId: string;
       kind: "approval";
       toolName: string;
       arguments: JsonValue;

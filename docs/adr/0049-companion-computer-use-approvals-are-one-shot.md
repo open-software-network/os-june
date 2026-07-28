@@ -197,3 +197,50 @@ previously unauthorized app reaches `ensure_app_authorized`. That explicit
 permit object disables itself before the registry lookup, so any second
 authorization decision within the same Computer use action follows the normal
 desktop-local approval path.
+
+## 2026-07-28 addendum: verified target, peer readiness, and durable receipts
+
+This addendum clarifies the implementation proof required by the original
+decision; it does not change the authority split.
+
+Desktop normalizes the action name with the same allowlist used by execution.
+For every targetful action, it resolves the exact window and application
+identity before publishing a phone request. Capture and focus resolve directly
+from the current window inventory; mutations use the current verified Computer
+use target. A contradictory app and `window_id`, a changed target, or an action
+such as `open_app` whose resulting identity cannot be known before the side
+effect stays desktop-local.
+
+The pending registry stores that resolved window and application identity with
+the published request. The broker supplies the independently resolved target
+when it tries to consume the permit. An identity or window mismatch retires the
+remote permit as denied and forces the exact target through the Mac-local
+authorization surface, even when that app was already authorized earlier in
+the attended task.
+
+The SDK interruption id remains the phone-visible request id. The same
+interruption also carries its SDK tool-call id, and the registry stores the
+mapping explicitly. Tool dispatch and lifecycle events resolve through that
+mapping rather than assuming the two ids are equal.
+
+A linked device advertises optional receive-side capabilities in its
+authenticated Noise handshake payload. An empty payload remains compatible
+with older clients and advertises none. Desktop registers, delivers, and
+accepts a remote Computer use decision only while an authenticated live peer
+advertises `computerUseApprove`; relay connectivity alone is insufficient.
+
+The authoritative 60-second deadline is a monotonic `Instant`. Wall-clock
+timestamps remain display metadata only and cannot extend approval authority
+after a backward clock correction. Auto-deny retries bounded transient
+resolution failures; if those attempts are exhausted, Desktop retires the
+remote card and leaves the interruption on the Mac instead of leaving remote
+authority pending.
+
+`tracing` events are diagnostic, not the audit boundary. Every authenticated
+linked-device decision that reaches the verified interruption path is written
+to the dedicated durable `companion_computer_use_approval_audit` table with
+device id, request id, stored session id, decision, and timestamp. The visible
+interruption also records `resolvedByDeviceId`. These receipts survive sidecar
+resume failure and later device deletion. Independent interruptions use
+independent resolution locks, while decisions for the same interruption remain
+serialized.

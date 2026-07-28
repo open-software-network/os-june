@@ -7,8 +7,8 @@ use crate::{commands::repositories, db::repositories::Repositories, domain::type
 use futures_util::{SinkExt, StreamExt};
 use june_companion_crypto::Session;
 use june_companion_protocol::{
-    decode_frame, encode_frame, Body, Capability, Event, FailureCode, Frame, ProtocolFailure,
-    RelayEnvelope, Response, ResultPayload,
+    decode_frame, decode_peer_hello, encode_frame, Body, Capability, Event, FailureCode, Frame,
+    ProtocolFailure, RelayEnvelope, Response, ResultPayload,
 };
 use rand::Rng;
 use serde::Serialize;
@@ -43,6 +43,7 @@ struct PeerSession {
     expected_public_key: [u8; 32],
     pairing_id: Option<Uuid>,
     observed_capabilities: HashSet<Capability>,
+    advertised_capabilities: HashSet<Capability>,
 }
 
 struct RelayConnectionGuard<'a> {
@@ -94,6 +95,7 @@ impl Drop for InflightOperationGuard {
 impl Drop for RelayConnectionGuard<'_> {
     fn drop(&mut self) {
         self.runtime.relay_connected.store(false, Ordering::Release);
+        self.runtime.clear_peer_capabilities();
         if let Ok(mut sender) = self.runtime.event_sender.lock() {
             *sender = None;
         }
@@ -326,6 +328,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                             let ready = std::mem::take(pending);
                             if !ready.is_empty() {
                                 publish_event(
+                                    &runtime,
                                     &repos,
                                     &identity,
                                     &mut socket,
@@ -338,6 +341,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                         pending.push_str(&text);
                     }
                     event => publish_event(
+                        &runtime,
                         &repos,
                         &identity,
                         &mut socket,
@@ -354,6 +358,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                 for (stored_session_id, text) in pending_deltas.drain() {
                     if text.is_empty() { continue; }
                     publish_event(
+                        &runtime,
                         &repos,
                         &identity,
                         &mut socket,
@@ -385,6 +390,7 @@ fn relay_upgrade_request(
 }
 
 async fn publish_event(
+    runtime: &CompanionRuntime,
     repos: &Repositories,
     identity: &StoredIdentity,
     socket: &mut RelaySocket,
@@ -401,6 +407,7 @@ async fn publish_event(
             .is_some_and(|device| device.revoked_at.is_none());
         if !active {
             peers.remove(&peer_id);
+            runtime.remove_peer_capabilities(peer_id);
             continue;
         }
         let peer = peers
@@ -479,11 +486,11 @@ async fn receive_envelope(
         let handshake_payload = crypto
             .read(&envelope.ciphertext)
             .map_err(|_| transport_error("The linked device handshake was rejected."))?;
-        if !handshake_payload.is_empty() {
-            return Err(transport_error(
-                "The linked device handshake carried unexpected data.",
-            ));
-        }
+        let advertised_capabilities = decode_peer_hello(&handshake_payload)
+            .map_err(|_| transport_error("The linked device capability hello was invalid."))?
+            .capabilities
+            .into_iter()
+            .collect();
         let response = crypto
             .write(&[])
             .map_err(|_| transport_error("The linked device handshake was rejected."))?;
@@ -493,6 +500,7 @@ async fn receive_envelope(
             expected_public_key,
             pairing_id: pairing.map(|(pairing_id, _)| pairing_id),
             observed_capabilities: HashSet::new(),
+            advertised_capabilities,
         };
         if peer.crypto.is_transport_ready() {
             authenticate_peer(app, repos, &identity.account_user_id, peer_id, &mut peer).await?;
@@ -523,11 +531,11 @@ async fn receive_envelope(
             let handshake_payload = replacement
                 .read(&envelope.ciphertext)
                 .map_err(|_| transport_error("The encrypted companion frame was rejected."))?;
-            if !handshake_payload.is_empty() {
-                return Err(transport_error(
-                    "The linked device handshake carried unexpected data.",
-                ));
-            }
+            let advertised_capabilities = decode_peer_hello(&handshake_payload)
+                .map_err(|_| transport_error("The linked device capability hello was invalid."))?
+                .capabilities
+                .into_iter()
+                .collect();
             let response = replacement
                 .write(&[])
                 .map_err(|_| transport_error("The linked device handshake was rejected."))?;
@@ -535,6 +543,9 @@ async fn receive_envelope(
             peer.crypto = replacement;
             peer.pairing_id = pairing.map(|(pairing_id, _)| pairing_id);
             peer.observed_capabilities.clear();
+            peer.advertised_capabilities = advertised_capabilities;
+            app.state::<CompanionRuntime>()
+                .remove_peer_capabilities(peer_id);
             if peer.crypto.is_transport_ready() {
                 authenticate_peer(app, repos, &identity.account_user_id, peer_id, peer).await?;
             }
@@ -622,8 +633,13 @@ async fn receive_envelope(
 }
 
 fn peer_supports_event(peer: &PeerSession, event: &Event) -> bool {
-    event.capability() != Capability::ModelRead
-        || peer.observed_capabilities.contains(&Capability::ModelRead)
+    match event.capability() {
+        Capability::ModelRead => peer.observed_capabilities.contains(&Capability::ModelRead),
+        Capability::ComputerUseApprove => peer
+            .advertised_capabilities
+            .contains(&Capability::ComputerUseApprove),
+        _ => true,
+    }
 }
 
 async fn reserve_operation(
@@ -669,9 +685,9 @@ async fn authenticate_peer(
     if peer.crypto.remote_static() != Some(&peer.expected_public_key) {
         return Err(transport_error("The linked device identity did not match."));
     }
-    app.state::<CompanionRuntime>()
-        .controller
-        .reset_sequence(&peer_id.to_string());
+    let runtime = app.state::<CompanionRuntime>();
+    runtime.controller.reset_sequence(&peer_id.to_string());
+    runtime.set_peer_capabilities(peer_id, peer.advertised_capabilities.clone());
     repos
         .touch_companion_device(account_user_id, &peer_id.to_string())
         .await?;
@@ -869,6 +885,7 @@ fn transport_error(message: &str) -> AppError {
 mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
+    use june_companion_protocol::{encode_peer_hello, Capability, PeerHello};
 
     #[tokio::test]
     #[allow(clippy::result_large_err)]
@@ -933,8 +950,17 @@ mod tests {
         let mut initiator = Session::pairing(true, &mobile.private, &secret).unwrap();
         let mut responder = Session::pairing(false, &desktop.private, &secret).unwrap();
 
-        let first = initiator.write(&[]).unwrap();
-        assert_eq!(responder.read(&first).unwrap(), b"");
+        let hello = encode_peer_hello(&PeerHello {
+            capabilities: vec![Capability::ComputerUseApprove],
+        })
+        .unwrap();
+        let first = initiator.write(&hello).unwrap();
+        assert_eq!(
+            decode_peer_hello(&responder.read(&first).unwrap())
+                .unwrap()
+                .capabilities,
+            vec![Capability::ComputerUseApprove]
+        );
         let second = responder.write(&[]).unwrap();
         assert_eq!(initiator.read(&second).unwrap(), b"");
         let third = initiator.write(&[]).unwrap();
@@ -944,6 +970,22 @@ mod tests {
         assert!(!was_transport_ready);
         assert!(responder.is_transport_ready());
         assert!(plaintext.is_empty());
+    }
+
+    #[test]
+    fn connected_peer_must_advertise_computer_use_approval_support() {
+        let runtime = CompanionRuntime::default();
+        let device_id = Uuid::new_v4();
+
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
+        runtime.set_peer_capabilities(device_id, HashSet::from([Capability::AgentRead]));
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
+        assert!(!runtime.peer_has_capability(device_id, Capability::ComputerUseApprove));
+        runtime.set_peer_capabilities(device_id, HashSet::from([Capability::ComputerUseApprove]));
+        assert!(runtime.has_peer_capability(Capability::ComputerUseApprove));
+        assert!(runtime.peer_has_capability(device_id, Capability::ComputerUseApprove));
+        runtime.remove_peer_capabilities(device_id);
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
     }
 
     #[test]
@@ -1045,6 +1087,7 @@ mod tests {
             expected_public_key: mobile.public.try_into().unwrap(),
             pairing_id: None,
             observed_capabilities: HashSet::new(),
+            advertised_capabilities: HashSet::new(),
         };
 
         assert!(!peer_supports_event(&peer, &event));
@@ -1061,6 +1104,7 @@ mod tests {
             expected_public_key: mobile.public.try_into().unwrap(),
             pairing_id: None,
             observed_capabilities: HashSet::new(),
+            advertised_capabilities: HashSet::new(),
         };
         let event = Event::AgentStatus {
             stored_session_id: "session-1".to_string(),

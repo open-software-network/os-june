@@ -810,7 +810,7 @@ pub async fn resolve_agent_interruption(
         .await
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum InterruptionResolutionOrigin {
     Desktop,
     Companion(crate::companion::ComputerUseApprovalOrigin),
@@ -873,8 +873,10 @@ async fn resolve_agent_interruption_inner(
     request: ResolveInterruptionRequest,
     origin: InterruptionResolutionOrigin,
 ) -> Result<Value, AppError> {
-    let _resolution = host.interruption_resolution.lock().await;
-    let companion_session_id = match origin {
+    let _resolution = host
+        .lock_interruption_resolution(&request.interruption_id)
+        .await;
+    let companion_session_id = match &origin {
         InterruptionResolutionOrigin::Desktop => None,
         InterruptionResolutionOrigin::Companion(companion_origin) => {
             let stored_session_id = request
@@ -891,7 +893,7 @@ async fn resolve_agent_interruption_inner(
                 app,
                 &request.interruption_id,
                 stored_session_id,
-                companion_origin,
+                companion_origin.clone(),
             )?;
             Some(stored_session_id.to_string())
         }
@@ -988,6 +990,22 @@ async fn resolve_agent_interruption_inner(
             ));
         }
     };
+    let resolved_at = chrono::Utc::now().to_rfc3339();
+    if let InterruptionResolutionOrigin::Companion(
+        crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+    ) = &origin
+    {
+        crate::commands::repositories(app)
+            .await?
+            .record_companion_computer_use_approval_decision(
+                device_id,
+                &request.interruption_id,
+                companion_session_id.as_deref().unwrap_or(&session_id),
+                if approved { "approve" } else { "deny" },
+                &resolved_at,
+            )
+            .await?;
+    }
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
@@ -1076,22 +1094,28 @@ async fn resolve_agent_interruption_inner(
     interruption["status"] = json!("resolved");
     interruption["approved"] = json!(approved);
     interruption["resolutionNonce"] = json!(resolution_nonce);
-    interruption["resolvedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    interruption["resolvedAt"] = json!(resolved_at);
     if interruption_kind == "approval" {
         interruption["resolution"] = request
             .resolution
             .get("choice")
             .cloned()
             .unwrap_or_else(|| json!("deny"));
-        interruption["resolvedBy"] = json!(match origin {
+        interruption["resolvedBy"] = json!(match &origin {
             InterruptionResolutionOrigin::Desktop => "desktop",
             InterruptionResolutionOrigin::Companion(
-                crate::companion::ComputerUseApprovalOrigin::Companion,
+                crate::companion::ComputerUseApprovalOrigin::Companion { .. },
             ) => "linkedDevice",
             InterruptionResolutionOrigin::Companion(
                 crate::companion::ComputerUseApprovalOrigin::Timeout,
             ) => "timeout",
         });
+        if let InterruptionResolutionOrigin::Companion(
+            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+        ) = &origin
+        {
+            interruption["resolvedByDeviceId"] = json!(device_id);
+        }
     }
     if let Some(answer) = clarification_answer.as_deref() {
         interruption["answer"] = json!(answer);
@@ -1139,14 +1163,18 @@ async fn resolve_agent_interruption_inner(
         }
         return Err(error);
     }
-    if let InterruptionResolutionOrigin::Companion(companion_origin) = origin {
+    if let InterruptionResolutionOrigin::Companion(companion_origin) = &origin {
         crate::companion::complete_computer_use_resolution(
             app,
             &request.interruption_id,
             companion_session_id.as_deref().unwrap_or(&session_id),
             approved,
-            approved && companion_origin == crate::companion::ComputerUseApprovalOrigin::Companion,
-            Some(companion_origin),
+            approved
+                && matches!(
+                    companion_origin,
+                    crate::companion::ComputerUseApprovalOrigin::Companion { .. }
+                ),
+            Some(companion_origin.clone()),
         );
     }
     if let Err(error) = host

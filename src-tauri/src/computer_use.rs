@@ -145,6 +145,47 @@ enum AppAuthorizationKey {
     RequestedName(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompanionApprovalTarget {
+    app_name: String,
+    window_id: u64,
+    identity: AppIdentity,
+}
+
+impl CompanionApprovalTarget {
+    fn from_window(target: &WindowTarget) -> Self {
+        Self {
+            app_name: target.app_name.clone(),
+            window_id: target.window_id,
+            identity: target.identity.clone(),
+        }
+    }
+
+    fn from_context(target: &TargetContext) -> Self {
+        Self {
+            app_name: target.app_name.clone(),
+            window_id: target.window_id,
+            identity: target.identity.clone(),
+        }
+    }
+
+    pub(crate) fn app_name(&self) -> &str {
+        &self.app_name
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(app_name: &str, window_id: u64) -> Self {
+        Self {
+            app_name: app_name.to_string(),
+            window_id,
+            identity: AppIdentity {
+                bundle_id: format!("test.{app_name}"),
+                executable_path: PathBuf::from(format!("/Applications/{app_name}.app")),
+            },
+        }
+    }
+}
+
 struct PendingEntry {
     approval: PendingComputerUseApproval,
     responder: oneshot::Sender<bool>,
@@ -2499,30 +2540,44 @@ fn emit_approvals_changed(app: &AppHandle, state: &ComputerUseState) {
 #[derive(Debug)]
 struct CompanionAuthorizationPermit {
     stored_session_id: String,
-    request_id: String,
+    tool_call_id: String,
     available: AtomicBool,
 }
 
 impl CompanionAuthorizationPermit {
-    fn new(stored_session_id: &str, request_id: &str) -> Self {
+    fn new(stored_session_id: &str, tool_call_id: &str) -> Self {
         Self {
             stored_session_id: stored_session_id.to_string(),
-            request_id: request_id.to_string(),
+            tool_call_id: tool_call_id.to_string(),
             available: AtomicBool::new(true),
         }
     }
 
+    #[cfg(test)]
     fn consume_with(&self, consume: impl FnOnce(&str, &str) -> bool) -> bool {
         if !self.available.swap(false, Ordering::AcqRel) {
             return false;
         }
-        consume(&self.stored_session_id, &self.request_id)
+        consume(&self.stored_session_id, &self.tool_call_id)
     }
 
-    fn consume_for_authorization(&self, app: &AppHandle) -> bool {
-        self.consume_with(|stored_session_id, request_id| {
-            crate::companion::take_computer_use_remote_permit(app, stored_session_id, request_id)
-        })
+    fn consume_for_authorization(
+        &self,
+        app: &AppHandle,
+        target: Option<&CompanionApprovalTarget>,
+    ) -> crate::companion::ComputerUsePermitOutcome {
+        if !self.available.swap(false, Ordering::AcqRel) {
+            return crate::companion::ComputerUsePermitOutcome::Unavailable;
+        }
+        let Some(target) = target else {
+            return crate::companion::ComputerUsePermitOutcome::Unavailable;
+        };
+        crate::companion::take_computer_use_remote_permit(
+            app,
+            &self.stored_session_id,
+            &self.tool_call_id,
+            target,
+        )
     }
 }
 
@@ -2549,41 +2604,14 @@ async fn handle_proxy_action_inner(
     }
 }
 
-pub(crate) fn companion_approval_target_app(app: &AppHandle, arguments: &Value) -> Option<String> {
-    arguments
-        .get("app")
-        .or_else(|| arguments.get("name"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            app.state::<ComputerUseState>()
-                .target
-                .lock()
-                .ok()
-                .and_then(|target| target.as_ref().map(|target| target.app_name.clone()))
-        })
-}
-
-async fn handle_action(
-    app: &AppHandle,
-    state: &ComputerUseState,
-    arguments: Value,
-    companion_permit: Option<&CompanionAuthorizationPermit>,
-) -> Result<Value, AppError> {
-    let _operation = state.operation.lock().await;
-    let epoch = state.epoch.load(Ordering::SeqCst);
-    ensure_attended_run(state)?;
-    let task_generation = state.attended_generation.load(Ordering::SeqCst);
-    ensure_action_eligible(app).await?;
+pub(crate) fn normalized_action(arguments: &Value) -> Result<String, AppError> {
     let action = arguments
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    if !matches!(
+    if matches!(
         action.as_str(),
         "capture"
             | "list_apps"
@@ -2599,11 +2627,92 @@ async fn handle_action(
             | "key"
             | "set_value"
     ) {
-        return Err(AppError::new(
+        Ok(action)
+    } else {
+        Err(AppError::new(
             "computer_use_action_invalid",
             "Computer use received an unknown action.",
-        ));
+        ))
     }
+}
+
+pub(crate) async fn companion_approval_target(
+    app: &AppHandle,
+    arguments: &Value,
+    action: &str,
+) -> Result<Option<CompanionApprovalTarget>, AppError> {
+    let state = app.state::<ComputerUseState>();
+    let _operation = state.operation.lock().await;
+    let current = || {
+        state
+            .target
+            .lock()
+            .map_err(|_| AppError::new("computer_use_unavailable", "Target lock failed."))?
+            .clone()
+            .ok_or_else(|| {
+                AppError::new(
+                    "companion_computer_use_target_unverified",
+                    "Approve this Computer use action on this Mac because its exact target is not currently verified.",
+                )
+            })
+    };
+    match action {
+        "capture" | "focus_app" => {
+            let epoch = state.epoch.load(Ordering::SeqCst);
+            let available = windows(app, &state, Some(epoch)).await?;
+            let resolved = select_window(
+                &available,
+                arguments.get("app").and_then(Value::as_str),
+                optional_window_id(arguments)?,
+            )?;
+            Ok(Some(CompanionApprovalTarget::from_window(&resolved)))
+        }
+        "click" | "double_click" | "right_click" | "drag" | "scroll" | "type" | "key"
+        | "set_value" => {
+            let current = current()?;
+            if optional_window_id(arguments)?
+                .is_some_and(|window_id| window_id != current.window_id)
+                || arguments
+                    .get("app")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .is_some_and(|app_name| !app_name.eq_ignore_ascii_case(&current.app_name))
+            {
+                return Err(AppError::new(
+                    "companion_computer_use_target_mismatch",
+                    "Approve this Computer use action on this Mac because its supplied target does not match the verified target.",
+                ));
+            }
+            Ok(Some(CompanionApprovalTarget::from_context(&current)))
+        }
+        "list_apps" | "wait" => Ok(None),
+        // LaunchServices resolves the actual application identity only after
+        // launch. Remote approval cannot truthfully authorize that pre-launch
+        // name, so open_app remains desktop-local.
+        "open_app" => Err(AppError::new(
+            "companion_computer_use_target_unverified",
+            "Opening an app requires approval on this Mac so June can verify the launched app.",
+        )),
+        _ => Err(AppError::new(
+            "computer_use_action_invalid",
+            "Computer use received an unknown action.",
+        )),
+    }
+}
+
+async fn handle_action(
+    app: &AppHandle,
+    state: &ComputerUseState,
+    arguments: Value,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
+) -> Result<Value, AppError> {
+    let _operation = state.operation.lock().await;
+    let epoch = state.epoch.load(Ordering::SeqCst);
+    ensure_attended_run(state)?;
+    let task_generation = state.attended_generation.load(Ordering::SeqCst);
+    ensure_action_eligible(app).await?;
+    let action = normalized_action(&arguments)?;
     crate::computer_use_cursor::show(app, epoch);
     match action.as_str() {
         "capture" => {
@@ -2926,7 +3035,7 @@ fn select_window(
 ) -> Result<WindowTarget, AppError> {
     let filter = app_filter.map(str::trim).filter(|value| !value.is_empty());
     let selected = if let Some(window_id) = window_id {
-        windows
+        let selected = windows
             .iter()
             .find(|window| window.window_id == window_id)
             .cloned()
@@ -2935,7 +3044,14 @@ fn select_window(
                     "computer_use_target_missing",
                     "That app window is no longer available. Call list_apps and choose an open window.",
                 )
-            })?
+            })?;
+        if filter.is_some_and(|filter| !selected.app_name.eq_ignore_ascii_case(filter)) {
+            return Err(AppError::new(
+                "computer_use_target_mismatch",
+                "The supplied app does not own the selected window. Call list_apps and choose one exact target.",
+            ));
+        }
+        selected
     } else {
         let filter = filter.ok_or_else(|| {
             AppError::new(
@@ -3267,6 +3383,7 @@ async fn capture(
         state,
         identity_app_authorization(&target.identity),
         &target.app_name,
+        Some(&CompanionApprovalTarget::from_window(&target)),
         epoch,
         task_generation,
         companion_permit,
@@ -3512,22 +3629,32 @@ async fn ensure_app_authorized(
     state: &ComputerUseState,
     key: AppAuthorizationKey,
     target_app: &str,
+    approval_target: Option<&CompanionApprovalTarget>,
     epoch: u64,
     task_generation: u64,
     companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<bool, AppError> {
     ensure_task_generation_current(state, task_generation)?;
-    if app_is_authorized(state, &key)? {
-        return Ok(false);
+    let permit_outcome = companion_permit
+        .map(|permit| permit.consume_for_authorization(app, approval_target))
+        .unwrap_or(crate::companion::ComputerUsePermitOutcome::Unavailable);
+    match permit_outcome {
+        crate::companion::ComputerUsePermitOutcome::Approved => {
+            recheck_after_approval(app, state, epoch, task_generation).await?;
+            return Ok(false);
+        }
+        crate::companion::ComputerUsePermitOutcome::TargetMismatch => {
+            park_app_authorization(app, state, target_app).await?;
+            recheck_after_approval(app, state, epoch, task_generation).await?;
+        }
+        crate::companion::ComputerUsePermitOutcome::Unavailable => {
+            if app_is_authorized(state, &key)? {
+                return Ok(false);
+            }
+            park_app_authorization(app, state, target_app).await?;
+            recheck_after_approval(app, state, epoch, task_generation).await?;
+        }
     }
-
-    if companion_permit.is_some_and(|permit| permit.consume_for_authorization(app)) {
-        recheck_after_approval(app, state, epoch, task_generation).await?;
-        return Ok(false);
-    }
-
-    park_app_authorization(app, state, target_app).await?;
-    recheck_after_approval(app, state, epoch, task_generation).await?;
     remember_app_authorization(state, key.clone())?;
     if let Err(error) = ensure_task_generation_current(state, task_generation) {
         if let Ok(mut authorized_apps) = state.authorized_apps.lock() {
@@ -3594,6 +3721,7 @@ async fn open_app(
             state,
             requested_key,
             &requested_name,
+            None,
             epoch,
             task_generation,
             companion_permit,
@@ -3653,6 +3781,7 @@ async fn open_app(
                 state,
                 identity_key.clone(),
                 reported_name,
+                None,
                 epoch,
                 task_generation,
                 companion_permit,
@@ -3754,6 +3883,7 @@ async fn focus_app(
         state,
         identity_app_authorization(&target.identity),
         &target.app_name,
+        Some(&CompanionApprovalTarget::from_window(&target)),
         epoch,
         task_generation,
         companion_permit,
@@ -3809,11 +3939,13 @@ async fn mutate(
     // different fallback action.
     let (tool, driver_args) = driver_action(action, arguments, &target)?;
     let action_id = random_id();
+    let approval_target = CompanionApprovalTarget::from_context(&target);
     ensure_app_authorized(
         app,
         state,
         identity_app_authorization(&target.identity),
         &target.app_name,
+        Some(&approval_target),
         epoch,
         task_generation,
         companion_permit,
@@ -5670,6 +5802,40 @@ mod tests {
                 .code,
             "computer_use_target_required"
         );
+        assert_eq!(
+            select_window(&windows, Some("Preview"), Some(100))
+                .expect_err("model app text must not relabel another app's exact window")
+                .code,
+            "computer_use_target_mismatch"
+        );
+    }
+
+    #[test]
+    fn approval_and_execution_share_normalized_action_names() {
+        assert_eq!(
+            normalized_action(&json!({ "action": "  Type  " })).unwrap(),
+            "type"
+        );
+        assert_eq!(
+            normalized_action(&json!({ "action": "mystery" }))
+                .unwrap_err()
+                .code,
+            "computer_use_action_invalid"
+        );
+    }
+
+    #[test]
+    fn window_id_for_app_b_with_app_a_is_denied() {
+        let mut windows = fixture_windows();
+        windows[0].app_name = "Notes".to_string();
+        windows[0].window_id = 10;
+        windows[1].app_name = "Mail".to_string();
+        windows[1].window_id = 20;
+
+        let denied = select_window(&windows, Some("Notes"), Some(20)).unwrap_err();
+
+        assert_eq!(denied.code, "computer_use_target_mismatch");
+        assert!(denied.message.contains("does not own"));
     }
 
     #[test]

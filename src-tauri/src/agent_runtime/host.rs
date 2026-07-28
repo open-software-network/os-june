@@ -11,7 +11,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicI64, Ordering},
-        Arc,
+        Arc, Weak,
     },
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -32,7 +32,7 @@ pub struct AgentRuntimeHost {
     inner: Mutex<Option<RunningRuntime>>,
     startup: Mutex<()>,
     request_sequence: AtomicI64,
-    pub(crate) interruption_resolution: Mutex<()>,
+    interruption_resolutions: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
     model_scopes: Arc<Mutex<HashSet<String>>>,
     cancellations: ToolCancellationRegistry,
@@ -53,6 +53,24 @@ struct RunningRuntime {
 }
 
 impl AgentRuntimeHost {
+    pub(crate) async fn lock_interruption_resolution(
+        &self,
+        interruption_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let resolution = {
+            let mut resolutions = self.interruption_resolutions.lock().await;
+            resolutions.retain(|_, resolution| resolution.strong_count() > 0);
+            if let Some(resolution) = resolutions.get(interruption_id).and_then(Weak::upgrade) {
+                resolution
+            } else {
+                let resolution = Arc::new(Mutex::new(()));
+                resolutions.insert(interruption_id.to_string(), Arc::downgrade(&resolution));
+                resolution
+            }
+        };
+        resolution.lock_owned().await
+    }
+
     pub async fn ensure_started(
         &self,
         app: &AppHandle,
@@ -801,10 +819,10 @@ async fn persist_and_emit_event(
                         .and_then(Value::as_str)
                         .unwrap_or("unknown_tool");
                     if let Some(presentation) = params.get("approvalPresentation") {
-                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": presentation.get("title").cloned().unwrap_or_else(|| json!("Approval required")), "description": presentation.get("description").cloned().unwrap_or_else(|| json!("Review this Notion action.")), "command": presentation.get("command").cloned().unwrap_or_else(|| json!(tool_name)), "preview": presentation.get("preview").cloned().unwrap_or(Value::Null), "approvalBinding": params.get("approvalBinding").cloned().unwrap_or(Value::Null), "allowAlways": false })
+                        json!({ "id": interruption_id, "toolCallId": params.get("callId").cloned().unwrap_or(Value::Null), "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": presentation.get("title").cloned().unwrap_or_else(|| json!("Approval required")), "description": presentation.get("description").cloned().unwrap_or_else(|| json!("Review this Notion action.")), "command": presentation.get("command").cloned().unwrap_or_else(|| json!(tool_name)), "preview": presentation.get("preview").cloned().unwrap_or(Value::Null), "approvalBinding": params.get("approvalBinding").cloned().unwrap_or(Value::Null), "allowAlways": false })
                     } else {
                         let command = approval_command(tool_name, params.get("arguments"));
-                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
+                        json!({ "id": interruption_id, "toolCallId": params.get("callId").cloned().unwrap_or(Value::Null), "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
                     }
                 }
             };
@@ -944,24 +962,36 @@ async fn persist_and_emit_event(
         "interruption.requested" if is_computer_use_approval(&params) => {
             let interruption_id = interruption_stable_id(&params, &event_id);
             let arguments = params.get("arguments").unwrap_or(&Value::Null);
-            if let Err(error) = crate::companion::register_computer_use_approval(
-                app,
-                &interruption_id,
-                &frame.session_id,
-                arguments,
-            ) {
+            if let Some(tool_call_id) = params.get("callId").and_then(Value::as_str) {
+                if let Err(error) = crate::companion::register_computer_use_approval(
+                    app,
+                    &interruption_id,
+                    tool_call_id,
+                    &frame.session_id,
+                    arguments,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        code = %error.code,
+                        request_id = %interruption_id,
+                        tool_call_id,
+                        stored_session_id = %frame.session_id,
+                        "did not route Computer use approval to a linked companion"
+                    );
+                }
+            } else {
                 tracing::warn!(
-                    code = %error.code,
                     request_id = %interruption_id,
                     stored_session_id = %frame.session_id,
-                    "did not route Computer use approval to a linked companion"
+                    "kept Computer use approval desktop-local because its tool call identity was missing"
                 );
             }
         }
         "tool.started" | "tool.completed" | "tool.failed"
             if params.get("name").and_then(Value::as_str) == Some("computer_use") =>
         {
-            if let Some(call_id) = params.get("callId").and_then(Value::as_str) {
+            if let Some(tool_call_id) = params.get("callId").and_then(Value::as_str) {
                 let status = match method {
                     "tool.started" => crate::companion::ComputerUseExecutionStatus::Started,
                     "tool.completed" => crate::companion::ComputerUseExecutionStatus::Succeeded,
@@ -969,7 +999,7 @@ async fn persist_and_emit_event(
                 };
                 crate::companion::publish_computer_use_execution_status(
                     app,
-                    call_id,
+                    tool_call_id,
                     &frame.session_id,
                     status,
                 );
@@ -1312,10 +1342,17 @@ mod tests {
 
     #[test]
     fn interruption_persistence_uses_the_stable_sdk_id_across_transport_replays() {
-        let params = json!({ "id": "sdk-interruption-1" });
+        let params = json!({
+            "id": "sdk-interruption-1",
+            "callId": "sdk-tool-call-1"
+        });
         assert_eq!(
             interruption_stable_id(&params, "transport-event-a"),
             interruption_stable_id(&params, "transport-event-b")
+        );
+        assert_ne!(
+            interruption_stable_id(&params, "transport-event-a"),
+            params["callId"]
         );
         assert_eq!(
             interruption_stable_id(&json!({}), "transport-event-c"),
@@ -1337,6 +1374,33 @@ mod tests {
         assert!(!is_computer_use_approval(
             &json!({ "kind": "approval", "toolName": "run_shell" })
         ));
+    }
+
+    #[tokio::test]
+    async fn interruption_resolution_lock_is_scoped_to_one_interruption() {
+        let host = AgentRuntimeHost::default();
+        let first = host.lock_interruption_resolution("approval-1").await;
+
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                host.lock_interruption_resolution("approval-1"),
+            )
+            .await
+            .is_err(),
+            "the same interruption must serialize"
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                host.lock_interruption_resolution("approval-2"),
+            )
+            .await
+            .is_ok(),
+            "an unrelated interruption must not wait for a slow sidecar RPC"
+        );
+
+        drop(first);
     }
 
     #[cfg(unix)]

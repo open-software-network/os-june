@@ -32,6 +32,13 @@ the relay hashes that representation and compares it without retaining the
 plaintext. Noise separately authenticates the device's private key and protects
 all content.
 
+The linked device may put a bounded `PeerHello` JSON payload in its first Noise
+handshake message. Its `capabilities` array advertises optional event and
+response features that this app build can actually handle. An empty payload
+remains valid for older clients and advertises no optional capabilities.
+Desktop records the declaration only after the Noise static identity
+authenticates and clears it when that peer session or relay connection ends.
+
 The signed-in Desktop creates the pending pairing under its OS Accounts user.
 The matching pairing proof authorizes one phone proposal to that exact pairing,
 so the phone neither supplies an account id nor carries an account bearer. The

@@ -1278,6 +1278,19 @@ const MIGRATIONS: &[Migration] = &[
             "../../migrations/033_companion_files.sql"
         ))],
     },
+    // The active Computer use fix branch also used catalog position 44.
+    // Preserve every earlier position and append its audit schema.
+    Migration {
+        version: 47,
+        name: "companion_computer_use_approval_audit",
+        requirements: &[
+            SchemaRequirement::Table("companion_computer_use_approval_audit"),
+            SchemaRequirement::Index("idx_companion_computer_use_approval_audit_request"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_computer_use_approval_audit.sql"
+        ))],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -2129,6 +2142,7 @@ mod tests {
 
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
+        assert!(table_exists(&pool, "companion_computer_use_approval_audit").await);
         assert_latest_stamp(&pool).await;
     }
 

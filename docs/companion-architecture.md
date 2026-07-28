@@ -83,11 +83,14 @@ from the desktop's live catalog. A model change made during a run is staged for
 the next run and cannot alter the in-flight provider request. When the desktop's
 default-off remote-approval setting is enabled, a linked companion may approve
 one exact, expiring Computer use interruption under ADR-0052; it receives no
-standing grant and cannot widen the Rust desktop policy. All other tool
-approvals stay on the Mac. When the Mac is offline, control fails immediately
-and the UI says offline. No control ciphertext is queued. The encrypted mobile
-cache only renders the last successful snapshot while locked/offline and is
-not synchronization.
+standing grant and cannot widen the Rust desktop policy. Desktop offers that
+path only to an authenticated live peer whose Noise handshake advertises
+`computerUseApprove`, binds the interruption id to its tool-call id and exact
+resolved target, and stores a durable device-attributed decision receipt. All
+other tool approvals stay on the Mac. When the Mac is offline, control fails
+immediately and the UI says offline. No control ciphertext is queued. The
+encrypted mobile cache only renders the last successful snapshot while
+locked/offline and is not synchronization.
 
 The first transport is relay-only. The interface leaves room for a future
 Network.framework/Bonjour or ICE/TURN implementation without changing the
