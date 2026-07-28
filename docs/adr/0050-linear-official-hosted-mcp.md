@@ -75,3 +75,10 @@ original Linear implementation plan.
   ambiguous metadata fails closed to approval.
 - The dormant native GraphQL operation code may be removed separately after
   the hosted integration has stable release evidence.
+
+## 2026-07-28 clarification
+
+For approval classification, an absent `destructiveHint` does not override an
+explicit `readOnlyHint: true`. The tool may run without approval in that case.
+An absent or false `readOnlyHint`, or the conflicting combination
+`readOnlyHint: true` and `destructiveHint: true`, still requires approval.

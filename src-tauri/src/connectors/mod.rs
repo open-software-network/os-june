@@ -1558,6 +1558,17 @@ pub struct DisconnectOutcome {
     pub provider_revocation_confirmed: Option<bool>,
 }
 
+fn merge_revocation_confirmation(
+    current: Option<bool>,
+    confirmation: Option<bool>,
+) -> Option<bool> {
+    match (current, confirmation) {
+        (None, confirmation) => confirmation,
+        (current, None) => current,
+        (Some(current), Some(confirmation)) => Some(current && confirmation),
+    }
+}
+
 pub async fn disconnect(
     app: &tauri::AppHandle,
     account_id: &str,
@@ -1617,7 +1628,7 @@ pub async fn disconnect(
         store::delete_tokens(provider, account_id).await?;
     }
 
-    let mut provider_revocation_confirmed = revoke_grant.then_some(!revoke_tokens.is_empty());
+    let mut provider_revocation_confirmed = None;
     if revoke_grant {
         for (provider, stored) in revoke_tokens {
             let confirmed = match provider {
@@ -1631,9 +1642,9 @@ pub async fn disconnect(
                         stored.refresh_token.clone()
                     };
                     if !token.is_empty() {
-                        oauth::revoke(&token).await
+                        Some(oauth::revoke(&token).await)
                     } else {
-                        false
+                        None
                     }
                 }
                 ConnectorProvider::Linear => {
@@ -1651,7 +1662,7 @@ pub async fn disconnect(
                         attempted = true;
                         confirmed &= linear::revoke(&stored.access_token, "access_token").await;
                     }
-                    attempted && confirmed
+                    attempted.then_some(confirmed)
                 }
                 ConnectorProvider::Github => {
                     // GitHub: revoke the user access token via the
@@ -1663,26 +1674,27 @@ pub async fn disconnect(
                         let client = github_oauth_client();
                         if !client.client_id.is_empty() {
                             if let Some(secret) = client.client_secret_opt() {
-                                github::revoke(&client.client_id, secret, &stored.access_token)
-                                    .await
+                                Some(
+                                    github::revoke(&client.client_id, secret, &stored.access_token)
+                                        .await,
+                                )
                             } else {
                                 tracing::warn!(
                                         "github revoke skipped: no client secret configured; revoke manually at GitHub"
                                     );
-                                false
+                                Some(false)
                             }
                         } else {
-                            false
+                            Some(false)
                         }
                     } else {
-                        false
+                        None
                     }
                 }
-                ConnectorProvider::Notion => false,
+                ConnectorProvider::Notion => None,
             };
-            if !confirmed {
-                provider_revocation_confirmed = Some(false);
-            }
+            provider_revocation_confirmed =
+                merge_revocation_confirmation(provider_revocation_confirmed, confirmed);
         }
     }
     Ok(DisconnectOutcome {
@@ -1907,6 +1919,21 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ConnectorAccountStatus>("\"connected\"").unwrap(),
             ConnectorAccountStatus::Connected
+        );
+    }
+
+    #[test]
+    fn revocation_confirmation_ignores_missing_attempts_and_combines_results() {
+        assert_eq!(merge_revocation_confirmation(None, None), None);
+        assert_eq!(merge_revocation_confirmation(None, Some(true)), Some(true));
+        assert_eq!(merge_revocation_confirmation(Some(true), None), Some(true));
+        assert_eq!(
+            merge_revocation_confirmation(Some(true), Some(false)),
+            Some(false)
+        );
+        assert_eq!(
+            merge_revocation_confirmation(Some(false), Some(true)),
+            Some(false)
         );
     }
 

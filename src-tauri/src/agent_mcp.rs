@@ -1246,8 +1246,8 @@ impl McpToolRegistry {
                     continue;
                 }
             };
-            let requires_approval = !(tool.annotations.read_only_hint == Some(true)
-                && tool.annotations.destructive_hint == Some(false));
+            let requires_approval = tool.annotations.read_only_hint != Some(true)
+                || tool.annotations.destructive_hint == Some(true);
             let descriptor = RuntimeToolDescriptorJson {
                 id: format!("mcp:{}/{}", server.id, tool.name),
                 name: name.clone(),
@@ -4460,15 +4460,17 @@ done
             )
             .unwrap();
 
-        assert_eq!(
-            registry
-                .resolve("mcp_linear_safe")
-                .unwrap()
-                .descriptor
-                .requires_approval,
-            None
-        );
-        for name in ["ambiguous", "missing_destructive", "conflicting", "write"] {
+        for name in ["safe", "missing_destructive"] {
+            assert_eq!(
+                registry
+                    .resolve(&format!("mcp_linear_{name}"))
+                    .unwrap()
+                    .descriptor
+                    .requires_approval,
+                None
+            );
+        }
+        for name in ["ambiguous", "conflicting", "write"] {
             assert_eq!(
                 registry
                     .resolve(&format!("mcp_linear_{name}"))
