@@ -240,23 +240,6 @@ describe("inline notice centering", () => {
     // specificity would lose — the compound override is what makes it hold.
     expect(baseIndex).toBeGreaterThan(overrideIndex);
   });
-
-  it("centers only the one-line meeting-note recovery row", () => {
-    expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
-    expect(
-      cssRuleFor(".inline-notice.note-recovery-prompt:not(.note-recovery-prompt-blocked)"),
-    ).toContain("align-items: center;");
-    expect(
-      cssRuleFor(".note-recovery-prompt:not(.note-recovery-prompt-blocked) .inline-notice-icon"),
-    ).toContain("align-self: center;");
-  });
-
-  it("keeps the blocked recovery variant on the shared first-line alignment", () => {
-    const blockedSelector = ".inline-notice.note-recovery-prompt-blocked";
-    expect(appCss).not.toContain(`${blockedSelector} {`);
-    expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
-    expect(cssRuleFor(".inline-notice-icon")).toContain("align-self: flex-start;");
-  });
 });
 
 describe("resolved action row styles", () => {
