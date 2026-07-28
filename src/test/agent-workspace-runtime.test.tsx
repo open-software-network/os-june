@@ -59,6 +59,33 @@ const newSession: AgentSessionDto = {
   workspacePath: "/tmp/session-2",
 };
 
+function linearApprovalEvent(): AgentRuntimeEvent {
+  return {
+    protocolVersion: 1,
+    eventId: "event-approval",
+    sessionId: session.id,
+    runId: "run-linear",
+    sequence: 2,
+    method: "interruption.requested",
+    data: {
+      itemId: "approval-item",
+      interruption: {
+        id: "functions.mcp_linear_save_issue:0",
+        kind: "approval",
+        sessionId: session.id,
+        runId: "run-linear",
+        status: "pending",
+        createdAt: "2026-07-22T12:00:02Z",
+        toolName: "mcp_linear_save_issue",
+        title: "Approval required",
+        description: "June wants to create a Linear issue.",
+        command: "mcp_linear_save_issue",
+        allowAlways: false,
+      },
+    },
+  };
+}
+
 function mockAgentLayoutBounds() {
   return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement,
@@ -1850,6 +1877,49 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
   });
 
+  it("resolves approval interruptions against their originating run", async () => {
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+
+    act(() => {
+      mocks.runtimeListener?.({ payload: linearApprovalEvent() });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("resolve_agent_interruption", {
+        request: {
+          runId: "run-linear",
+          interruptionId: "functions.mcp_linear_save_issue:0",
+          resolution: { kind: "approval", choice: "once" },
+        },
+      }),
+    );
+    expect(await screen.findByText("Approved once")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an approval retryable when interruption resolution fails", async () => {
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "resolve_agent_interruption") {
+        return Promise.reject(new Error("Resume failed"));
+      }
+      return defaultInvoke?.(command, args);
+    });
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+
+    act(() => {
+      mocks.runtimeListener?.({ payload: linearApprovalEvent() });
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Resume failed");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled());
+    expect(screen.queryByText("Approved once")).not.toBeInTheDocument();
+  });
+
   it("resolves clarification interruptions through the typed host command", async () => {
     render(<AgentWorkspace initialSession={session} />);
     await screen.findByText("Earlier answer");
@@ -1884,6 +1954,7 @@ describe("AgentWorkspace runtime wiring", () => {
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("resolve_agent_interruption", {
         request: {
+          runId: "run-2",
           interruptionId: "clarify-1",
           resolution: { kind: "clarification", answer: "June" },
         },

@@ -52,6 +52,7 @@ pub struct StartRunRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolveInterruptionRequest {
+    pub run_id: String,
     pub interruption_id: String,
     pub resolution: Value,
 }
@@ -798,6 +799,42 @@ fn retry_message(items: Vec<AgentItemDto>, run_id: &str) -> Option<super::Messag
     })
 }
 
+struct InterruptionRecord {
+    item_id: String,
+    run_id: String,
+    session_id: String,
+    payload_json: String,
+}
+
+async fn interruption_record(
+    repository: &AgentRepository,
+    run_id: &str,
+    interruption_id: &str,
+) -> Result<Option<InterruptionRecord>, sqlx::Error> {
+    use sqlx::row::Row;
+
+    let row = sqlx::query::query(
+        "SELECT id, run_id, session_id, payload_json
+         FROM agent_items
+         WHERE kind = 'interruption'
+           AND run_id = ?
+           AND json_extract(payload_json, '$.id') = ?
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(run_id)
+    .bind(interruption_id)
+    .fetch_optional(&repository.pool)
+    .await?;
+
+    Ok(row.map(|row| InterruptionRecord {
+        item_id: row.get("id"),
+        run_id: row.get("run_id"),
+        session_id: row.get("session_id"),
+        payload_json: row.get("payload_json"),
+    }))
+}
+
 #[tauri::command]
 pub async fn resolve_agent_interruption(
     app: AppHandle,
@@ -805,23 +842,25 @@ pub async fn resolve_agent_interruption(
     request: ResolveInterruptionRequest,
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
-    let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE kind = 'interruption' AND json_extract(payload_json, '$.id') = ? ORDER BY created_at DESC LIMIT 1")
-        .bind(&request.interruption_id).fetch_one(&repository.pool).await?;
-    use sqlx::row::Row;
-    let run_id: String = row.get("run_id");
-    let session_id: String = row.get("session_id");
-    let item_id: String = row.get("id");
-    let original_interruption_json: String = row.get("payload_json");
+    let record = interruption_record(&repository, &request.run_id, &request.interruption_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(
+                "agent_interruption_expired",
+                "This interruption can no longer be resumed.",
+            )
+        })?;
+    let original_interruption_json = record.payload_json;
     let mut interruption: Value = serde_json::from_str(&original_interruption_json)
         .map_err(|error| AppError::new("agent_interruption_invalid", error.to_string()))?;
-    let run = repository.get_run(&run_id).await?;
+    let run = repository.get_run(&record.run_id).await?;
     if run.status != "waiting_for_user" {
         return Err(AppError::new(
             "agent_interruption_expired",
             "This interruption can no longer be resumed.",
         ));
     }
-    let session = repository.get_session(&session_id).await?;
+    let session = repository.get_session(&record.session_id).await?;
     let serialized_state = run
         .interrupted_state
         .as_ref()
@@ -943,7 +982,7 @@ pub async fn resolve_agent_interruption(
         let mut transaction = repository.pool.begin().await?;
         sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
             .bind(interruption.to_string())
-            .bind(&item_id)
+            .bind(&record.item_id)
             .execute(&mut *transaction)
             .await?;
         sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ?")
@@ -968,7 +1007,7 @@ pub async fn resolve_agent_interruption(
             let mut transaction = repository.pool.begin().await?;
             sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
                 .bind(&original_interruption_json)
-                .bind(&item_id)
+                .bind(&record.item_id)
                 .execute(&mut *transaction)
                 .await?;
             sqlx::query::query(
@@ -1930,6 +1969,91 @@ mod tests {
             retry_message(items, "run-failed").unwrap().content,
             "Retry this"
         );
+    }
+
+    #[tokio::test]
+    async fn interruption_lookup_uses_the_originating_run_when_sdk_ids_repeat() {
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool);
+        let session = repository
+            .create_session("Approvals", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let old_run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("old run");
+        let old_item = repository
+            .append_item(
+                &session.id,
+                Some(&old_run.id),
+                1,
+                &AgentItemPayload::Interruption(json!({
+                    "id": "functions.mcp_linear_save_issue:0",
+                    "kind": "approval",
+                    "runId": old_run.id,
+                    "sessionId": session.id,
+                    "status": "resolved"
+                })),
+                Some(&format!(
+                    "interruption:{}:functions.mcp_linear_save_issue:0",
+                    old_run.id
+                )),
+            )
+            .await
+            .expect("old interruption")
+            .expect("old interruption inserted");
+        repository
+            .update_run_status(&old_run.id, "completed", None, None, None)
+            .await
+            .expect("old run completed");
+
+        let waiting_run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("waiting run");
+        let waiting_item = repository
+            .append_item(
+                &session.id,
+                Some(&waiting_run.id),
+                1,
+                &AgentItemPayload::Interruption(json!({
+                    "id": "functions.mcp_linear_save_issue:0",
+                    "kind": "approval",
+                    "runId": waiting_run.id,
+                    "sessionId": session.id,
+                    "status": "pending"
+                })),
+                Some(&format!(
+                    "interruption:{}:functions.mcp_linear_save_issue:0",
+                    waiting_run.id
+                )),
+            )
+            .await
+            .expect("waiting interruption")
+            .expect("waiting interruption inserted");
+
+        let selected = interruption_record(
+            &repository,
+            &waiting_run.id,
+            "functions.mcp_linear_save_issue:0",
+        )
+        .await
+        .expect("lookup")
+        .expect("waiting interruption");
+
+        assert_eq!(selected.item_id, waiting_item.id);
+        assert_eq!(selected.run_id, waiting_run.id);
+        assert_ne!(selected.item_id, old_item.id);
     }
 
     #[tokio::test]

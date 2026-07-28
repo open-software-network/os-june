@@ -9,6 +9,7 @@ import {
   type AgentRunDto,
   type AgentRuntimeEvent,
   type AgentSessionDto,
+  type ResolveAgentInterruptionRequest,
 } from "./agent-runtime-contract";
 import { stripProjectContext } from "./agent-project-context";
 
@@ -30,6 +31,54 @@ export function createAgentRuntimeProjection(
     lastSequenceByRun: {},
     processedEventIds: new Set(),
   };
+}
+
+export function reconcileAgentInterruptionResolution(
+  items: AgentItemDto[],
+  request: ResolveAgentInterruptionRequest,
+): AgentItemDto[] {
+  return items.map((item) => {
+    if (
+      item.kind !== "interruption" ||
+      item.runId !== request.runId ||
+      item.interruption.id !== request.interruptionId
+    ) {
+      return item;
+    }
+
+    const interruption = item.interruption;
+    const resolution = request.resolution;
+    if (interruption.kind === "approval" && resolution.kind === "approval") {
+      return {
+        ...item,
+        interruption: {
+          ...interruption,
+          status: "resolved",
+          resolution: resolution.choice,
+        },
+      };
+    }
+    if (interruption.kind === "clarification" && resolution.kind === "clarification") {
+      return {
+        ...item,
+        interruption: {
+          ...interruption,
+          status: "resolved",
+          answer: resolution.answer,
+        },
+      };
+    }
+    if (interruption.kind === "secret" && resolution.kind === "secret") {
+      return {
+        ...item,
+        interruption: {
+          ...interruption,
+          status: "resolved",
+        },
+      };
+    }
+    return item;
+  });
 }
 
 /**
@@ -204,7 +253,9 @@ export function applyAgentRuntimeEvent(
       next.items = upsertItem(
         next.items.filter(
           (item) =>
-            item.kind !== "interruption" || item.interruption.id !== event.data.interruption.id,
+            item.kind !== "interruption" ||
+            item.runId !== event.runId ||
+            item.interruption.id !== event.data.interruption.id,
         ),
         {
           id: event.data.itemId,
@@ -385,7 +436,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
           return {
             ...base,
             role: "assistant",
-            parts: [interruptionToPart(item.interruption)],
+            parts: [interruptionToPart(item.interruption, item.runId)],
           };
         case "error":
           return {
@@ -443,11 +494,14 @@ function toolCallKey(runId: string | undefined, callId: string) {
 
 function interruptionToPart(
   interruption: Extract<AgentItemDto, { kind: "interruption" }>["interruption"],
+  persistedRunId?: string,
 ): AgentChatPart {
+  const runId = persistedRunId ?? interruption.runId;
   if (interruption.kind === "clarification") {
     return {
       type: "clarify",
       id: interruption.id,
+      runId,
       sessionId: interruption.sessionId,
       question: interruption.question,
       choices: interruption.choices,
@@ -459,6 +513,7 @@ function interruptionToPart(
     return {
       type: "secret",
       id: interruption.id,
+      runId,
       reason: interruption.reason,
       status: interruption.status === "pending" ? "pending" : "resolved",
     };
@@ -466,6 +521,7 @@ function interruptionToPart(
   return {
     type: "approval",
     id: interruption.id,
+    runId,
     sessionId: interruption.sessionId,
     command: interruption.command ?? interruption.toolName,
     description: interruption.description || interruption.title,

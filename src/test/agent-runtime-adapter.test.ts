@@ -4,6 +4,7 @@ import {
   applyAgentRuntimeEvent,
   createAgentRuntimeProjection,
   mergeAgentRuntimeSnapshot,
+  reconcileAgentInterruptionResolution,
 } from "../lib/agent-runtime-adapter";
 import {
   AGENT_RUNTIME_PROTOCOL_VERSION,
@@ -350,6 +351,7 @@ describe("agent runtime adapter", () => {
           {
             type: "approval",
             id: "approval-1",
+            runId: "run-1",
             command: "write_file README.md",
             allowPermanent: true,
             status: "pending",
@@ -361,6 +363,7 @@ describe("agent runtime adapter", () => {
           {
             type: "clarify",
             id: "clarification-1",
+            runId: "run-1",
             question: "Which project should I update?",
             choices: ["June", "Platform"],
             status: "pending",
@@ -372,10 +375,48 @@ describe("agent runtime adapter", () => {
           {
             type: "secret",
             id: "secret-1",
+            runId: "run-1",
             reason: "Authenticate a local command.",
             status: "pending",
           },
         ],
+      },
+    ]);
+
+    projection = {
+      ...projection,
+      items: reconcileAgentInterruptionResolution(projection.items, {
+        runId: "run-1",
+        interruptionId: "approval-1",
+        resolution: { kind: "approval", choice: "once" },
+      }),
+    };
+    projection = {
+      ...projection,
+      items: reconcileAgentInterruptionResolution(projection.items, {
+        runId: "run-1",
+        interruptionId: "clarification-1",
+        resolution: { kind: "clarification", answer: "June" },
+      }),
+    };
+    projection = {
+      ...projection,
+      items: reconcileAgentInterruptionResolution(projection.items, {
+        runId: "run-1",
+        interruptionId: "secret-1",
+        resolution: { kind: "secret", choice: "deny" },
+      }),
+    };
+
+    expect(agentItemsToChatTurns(projection.items)).toMatchObject([
+      {
+        parts: [{ type: "approval", status: "resolved", choice: "once" }],
+      },
+      {
+        parts: [{ type: "clarify", status: "resolved", answer: "June" }],
+      },
+      {
+        parts: [{ type: "secret", status: "resolved" }],
       },
     ]);
   });
@@ -420,6 +461,37 @@ describe("agent runtime adapter", () => {
       kind: "interruption",
       interruption: { id: "approval-stable" },
     });
+
+    projection = applyAgentRuntimeEvent(projection, {
+      ...interruption,
+      eventId: "event-interruption-next-run",
+      runId: "run-2",
+      data: {
+        ...interruption.data,
+        itemId: "item-interruption-next-run",
+        interruption: {
+          ...interruption.data.interruption,
+          runId: "run-2",
+        },
+      },
+    });
+
+    expect(projection.items).toHaveLength(2);
+    expect(projection.items.map((item) => item.runId)).toEqual(
+      expect.arrayContaining(["run-1", "run-2"]),
+    );
+
+    const reconciled = reconcileAgentInterruptionResolution(projection.items, {
+      runId: "run-2",
+      interruptionId: "approval-stable",
+      resolution: { kind: "approval", choice: "once" },
+    });
+    expect(
+      reconciled.find((item) => item.kind === "interruption" && item.runId === "run-1"),
+    ).toMatchObject({ interruption: { status: "pending" } });
+    expect(
+      reconciled.find((item) => item.kind === "interruption" && item.runId === "run-2"),
+    ).toMatchObject({ interruption: { status: "resolved", resolution: "once" } });
   });
 
   it("replaces a running tool card with its persisted result", () => {

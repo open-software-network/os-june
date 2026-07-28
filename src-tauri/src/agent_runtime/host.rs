@@ -746,7 +746,7 @@ async fn persist_and_emit_event(
                 .and_then(Value::as_str)
                 .unwrap_or("approval");
             let interruption_id = interruption_stable_id(&params, &event_id);
-            persistence_external_id = format!("interruption:{interruption_id}");
+            persistence_external_id = interruption_external_id(&frame.run_id, &interruption_id);
             let interruption = match kind {
                 "clarification" => {
                     json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "clarification", "question": params.get("question").cloned().unwrap_or_else(|| json!("What would you like June to do?")), "choices": params.get("choices").cloned().unwrap_or_else(|| json!([])) })
@@ -991,6 +991,10 @@ fn interruption_stable_id(params: &Value, event_id: &str) -> String {
         .to_string()
 }
 
+fn interruption_external_id(run_id: &str, interruption_id: &str) -> String {
+    format!("interruption:{run_id}:{interruption_id}")
+}
+
 fn steering_stable_id(params: &Value, event_id: &str) -> String {
     format!(
         "steering:{}",
@@ -1207,9 +1211,17 @@ mod tests {
     #[test]
     fn interruption_persistence_uses_the_stable_sdk_id_across_transport_replays() {
         let params = json!({ "id": "sdk-interruption-1" });
+        let first = interruption_stable_id(&params, "transport-event-a");
+        let replay = interruption_stable_id(&params, "transport-event-b");
+
+        assert_eq!(first, replay);
         assert_eq!(
-            interruption_stable_id(&params, "transport-event-a"),
-            interruption_stable_id(&params, "transport-event-b")
+            interruption_external_id("run-1", &first),
+            interruption_external_id("run-1", &replay)
+        );
+        assert_ne!(
+            interruption_external_id("run-1", &first),
+            interruption_external_id("run-2", &replay)
         );
         assert_eq!(
             interruption_stable_id(&json!({}), "transport-event-c"),
