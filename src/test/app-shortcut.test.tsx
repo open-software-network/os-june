@@ -1114,6 +1114,47 @@ describe("App shortcuts", () => {
     );
   });
 
+  it("preserves a missing media artifact as a non-retryable not-found result", async () => {
+    const session = agentSession("session-media-missing", "Missing media");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.companionReadAgentMediaChunk.mockRejectedValue({
+      code: "companion_media_not_found",
+      message: "That generated media is no longer available.",
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-missing",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: "artifact-missing",
+              offsetBytes: 0,
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-media-missing",
+        {
+          type: "error",
+          data: {
+            code: "not_found",
+            message: "That generated media is no longer available.",
+            retryable: false,
+          },
+        },
+      ),
+    );
+  });
+
   it("opens the stored agent session requested by the companion", async () => {
     const focusedSession = {
       id: "session-companion",

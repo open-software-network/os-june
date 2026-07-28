@@ -63,7 +63,7 @@ import {
 } from "../lib/agent-events";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
-import { messageFromError } from "../lib/errors";
+import { errorCode, messageFromError } from "../lib/errors";
 import { boundedCompanionText, companionAgentMessagesFromItems } from "../lib/agent-chat-runtime";
 import {
   companionFrontendConsumerAvailable,
@@ -1336,11 +1336,25 @@ export function App() {
               });
               return;
             }
-            const chunk = await companionReadAgentMediaChunk(
-              storedSessionId,
-              artifactId,
-              offsetBytes,
-            );
+            let chunk: Awaited<ReturnType<typeof companionReadAgentMediaChunk>>;
+            try {
+              chunk = await companionReadAgentMediaChunk(storedSessionId, artifactId, offsetBytes);
+            } catch (error) {
+              const code = errorCode(error);
+              const notFound =
+                code === "companion_media_not_found" ||
+                code === "companion_agent_session_not_found";
+              const unsupported = code === "companion_media_chunk_invalid";
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: notFound ? "not_found" : unsupported ? "unsupported" : "internal",
+                  message: messageFromError(error),
+                  retryable: !notFound && !unsupported,
+                },
+              });
+              return;
+            }
             const stillKnownSession = (await companionScopedSessions()).some(
               (session) => session.id === storedSessionId,
             );
