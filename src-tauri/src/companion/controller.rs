@@ -483,6 +483,26 @@ impl Controller {
                     })?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
+            Body::ComputerUseApprovalRespond(request) => {
+                let result = crate::agent_runtime::api::resolve_companion_computer_use_approval(
+                    app,
+                    &request.request_id,
+                    &request.stored_session_id,
+                    request.decision,
+                    super::ComputerUseApprovalOrigin::Companion,
+                )
+                .await;
+                tracing::info!(
+                    request_id = %request.request_id,
+                    stored_session_id = %request.stored_session_id,
+                    decision = ?request.decision,
+                    accepted = result.is_ok(),
+                    error_code = result.as_ref().err().map(|error| error.code.as_str()),
+                    "handled linked Computer use approval decision"
+                );
+                result?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
+            }
             Body::Response(_) | Body::Event(_) => ControllerOutcome::Immediate(response(
                 capability,
                 ResultPayload::Error(ProtocolFailure {
@@ -764,7 +784,10 @@ fn device_self(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use june_companion_protocol::{AgentSendRequest, PageRequest};
+    use june_companion_protocol::{
+        AgentSendRequest, ComputerUseApprovalDecision, ComputerUseApprovalDecisionRequest,
+        PageRequest,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -780,20 +803,20 @@ mod tests {
                 recording_session_id: "active".to_string(),
             },
             Body::DeviceRevokeSelf,
+            Body::ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+                decision: ComputerUseApprovalDecision::Deny,
+            }),
         ];
-        assert_eq!(allowed.len(), 4);
+        assert_eq!(allowed.len(), 5);
         // Compile-time exhaustiveness in `dispatch` is the real gate. This
         // regression assertion makes the most important exclusions visible.
         let encoded = serde_json::to_string(&allowed).unwrap();
-        for forbidden in [
-            "recordingStart",
-            "shell",
-            "filesystem",
-            "approval",
-            "deleteNote",
-        ] {
+        for forbidden in ["recordingStart", "shell", "filesystem", "deleteNote"] {
             assert!(!encoded.contains(forbidden));
         }
+        assert!(encoded.contains("computerUseApprovalRespond"));
         assert_ne!(Uuid::nil(), Uuid::new_v4());
     }
 

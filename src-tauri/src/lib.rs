@@ -224,6 +224,8 @@ pub fn run() {
             companion::companion_grant_browse_root,
             companion::companion_revoke_browse_root,
             companion::companion_consume_attachments,
+            companion::companion_computer_use_approval_settings,
+            companion::companion_set_computer_use_approval_enabled,
             companion::companion_rename_device,
             companion::companion_revoke_device,
             companion::companion_complete_frontend_request,

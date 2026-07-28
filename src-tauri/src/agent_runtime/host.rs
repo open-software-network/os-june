@@ -32,6 +32,7 @@ pub struct AgentRuntimeHost {
     inner: Mutex<Option<RunningRuntime>>,
     startup: Mutex<()>,
     request_sequence: AtomicI64,
+    pub(crate) interruption_resolution: Mutex<()>,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
     model_scopes: Arc<Mutex<HashSet<String>>>,
     cancellations: ToolCancellationRegistry,
@@ -939,6 +940,43 @@ async fn persist_and_emit_event(
             )
             .await?;
     }
+    match method {
+        "interruption.requested" if is_computer_use_approval(&params) => {
+            let interruption_id = interruption_stable_id(&params, &event_id);
+            let arguments = params.get("arguments").unwrap_or(&Value::Null);
+            if let Err(error) = crate::companion::register_computer_use_approval(
+                app,
+                &interruption_id,
+                &frame.session_id,
+                arguments,
+            ) {
+                tracing::warn!(
+                    code = %error.code,
+                    request_id = %interruption_id,
+                    stored_session_id = %frame.session_id,
+                    "did not route Computer use approval to a linked companion"
+                );
+            }
+        }
+        "tool.started" | "tool.completed" | "tool.failed"
+            if params.get("name").and_then(Value::as_str) == Some("computer_use") =>
+        {
+            if let Some(call_id) = params.get("callId").and_then(Value::as_str) {
+                let status = match method {
+                    "tool.started" => crate::companion::ComputerUseExecutionStatus::Started,
+                    "tool.completed" => crate::companion::ComputerUseExecutionStatus::Succeeded,
+                    _ => crate::companion::ComputerUseExecutionStatus::Failed,
+                };
+                crate::companion::publish_computer_use_execution_status(
+                    app,
+                    call_id,
+                    &frame.session_id,
+                    status,
+                );
+            }
+        }
+        _ => {}
+    }
     app.emit(AGENT_RUNTIME_EVENT, json!({ "protocolVersion": PROTOCOL_VERSION, "sessionId": frame.session_id, "runId": frame.run_id, "sequence": frame.sequence, "eventId": event_id, "method": method, "data": data })).map_err(|error| AppError::new("agent_event_emit_failed", error.to_string()))?;
     Ok(())
 }
@@ -960,6 +998,15 @@ fn tool_payload(params: &Value, status: &str) -> ToolPayload {
             .or_else(|| params.get("error").cloned()),
         status: Some(status.into()),
     }
+}
+
+fn is_computer_use_approval(params: &Value) -> bool {
+    params
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("approval")
+        == "approval"
+        && params.get("toolName").and_then(Value::as_str) == Some("computer_use")
 }
 
 fn resolve_runtime_command(app: &AppHandle) -> Result<(PathBuf, Vec<PathBuf>), AppError> {
@@ -1274,6 +1321,22 @@ mod tests {
             interruption_stable_id(&json!({}), "transport-event-c"),
             "transport-event-c"
         );
+    }
+
+    #[test]
+    fn only_computer_use_approval_interruptions_are_remotely_routable() {
+        assert!(is_computer_use_approval(
+            &json!({ "toolName": "computer_use" })
+        ));
+        assert!(is_computer_use_approval(
+            &json!({ "kind": "approval", "toolName": "computer_use" })
+        ));
+        assert!(!is_computer_use_approval(
+            &json!({ "kind": "secret", "toolName": "computer_use" })
+        ));
+        assert!(!is_computer_use_approval(
+            &json!({ "kind": "approval", "toolName": "run_shell" })
+        ));
     }
 
     #[cfg(unix)]

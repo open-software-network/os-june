@@ -2496,12 +2496,53 @@ fn emit_approvals_changed(app: &AppHandle, state: &ComputerUseState) {
     );
 }
 
-pub(crate) async fn handle_proxy_action(app: &AppHandle, arguments: Value) -> Value {
+tokio::task_local! {
+    static COMPANION_REMOTE_APPROVAL: bool;
+}
+
+fn companion_remote_approval_active() -> bool {
+    COMPANION_REMOTE_APPROVAL
+        .try_with(|approved| *approved)
+        .unwrap_or(false)
+}
+
+pub(crate) async fn handle_proxy_action_for_call(
+    app: &AppHandle,
+    arguments: Value,
+    stored_session_id: &str,
+    call_id: Option<&str>,
+) -> Value {
+    let remote_approval = call_id.is_some_and(|request_id| {
+        crate::companion::take_computer_use_remote_permit(app, stored_session_id, request_id)
+    });
+    COMPANION_REMOTE_APPROVAL
+        .scope(remote_approval, handle_proxy_action_inner(app, arguments))
+        .await
+}
+
+async fn handle_proxy_action_inner(app: &AppHandle, arguments: Value) -> Value {
     let state = app.state::<ComputerUseState>();
     match handle_action(app, &state, arguments).await {
         Ok(result) => result,
         Err(error) => mcp_error(&error.message),
     }
+}
+
+pub(crate) fn companion_approval_target_app(app: &AppHandle, arguments: &Value) -> Option<String> {
+    arguments
+        .get("app")
+        .or_else(|| arguments.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            app.state::<ComputerUseState>()
+                .target
+                .lock()
+                .ok()
+                .and_then(|target| target.as_ref().map(|target| target.app_name.clone()))
+        })
 }
 
 async fn handle_action(
@@ -3411,6 +3452,11 @@ async fn ensure_app_authorized(
 ) -> Result<bool, AppError> {
     ensure_task_generation_current(state, task_generation)?;
     if app_is_authorized(state, &key)? {
+        return Ok(false);
+    }
+
+    if companion_remote_approval_active() {
+        recheck_after_approval(app, state, epoch, task_generation).await?;
         return Ok(false);
     }
 
@@ -4924,6 +4970,17 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn companion_approval_scope_is_one_invocation_and_defaults_off() {
+        assert!(!companion_remote_approval_active());
+        COMPANION_REMOTE_APPROVAL
+            .scope(true, async {
+                assert!(companion_remote_approval_active());
+            })
+            .await;
+        assert!(!companion_remote_approval_active());
+    }
 
     #[test]
     fn driver_prewarm_loses_to_stop_and_readiness_loss() {

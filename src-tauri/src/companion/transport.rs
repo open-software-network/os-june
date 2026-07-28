@@ -802,9 +802,14 @@ async fn send_envelope(
 fn protocol_failure(error: &AppError) -> ProtocolFailure {
     let code = match error.code.as_str() {
         "unauthorized" => FailureCode::Unauthorized,
-        "companion_replay_rejected" => FailureCode::Replay,
-        "companion_frame_invalid" | "companion_device_name_invalid" => FailureCode::InvalidRequest,
-        "companion_root_invalid"
+        "companion_replay_rejected" | "companion_computer_use_approval_replay" => {
+            FailureCode::Replay
+        }
+        "companion_frame_invalid"
+        | "companion_device_name_invalid"
+        | "companion_computer_use_approval_invalid"
+        | "companion_computer_use_approval_disabled"
+        | "companion_root_invalid"
         | "companion_browse_invalid"
         | "companion_browse_cursor_invalid"
         | "companion_upload_offset_invalid"
@@ -817,9 +822,14 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
         | "companion_upload_not_found"
         | "companion_attachment_not_found"
         | "companion_agent_session_not_found"
-        | "companion_media_not_found" => FailureCode::NotFound,
+        | "companion_media_not_found"
+        | "companion_computer_use_approval_not_found"
+        | "agent_interruption_not_found" => FailureCode::NotFound,
         "note_revision_conflict" | "companion_upload_conflict" => FailureCode::Conflict,
-        "companion_upload_expired" | "companion_attachment_expired" => FailureCode::Expired,
+        "companion_upload_expired"
+        | "companion_attachment_expired"
+        | "companion_computer_use_approval_expired"
+        | "agent_interruption_expired" => FailureCode::Expired,
         "companion_root_limit_exceeded"
         | "companion_file_limit_exceeded"
         | "companion_upload_limit_exceeded"
@@ -1055,8 +1065,35 @@ mod tests {
         let event = Event::AgentStatus {
             stored_session_id: "session-1".to_string(),
             status: june_companion_protocol::AgentStatus::Idle,
+            media: Vec::new(),
         };
 
         assert!(peer_supports_event(&peer, &event));
+    }
+
+    #[test]
+    fn computer_use_approval_failures_have_stable_wire_codes() {
+        for (error_code, expected) in [
+            (
+                "companion_computer_use_approval_not_found",
+                FailureCode::NotFound,
+            ),
+            (
+                "companion_computer_use_approval_invalid",
+                FailureCode::InvalidRequest,
+            ),
+            (
+                "companion_computer_use_approval_expired",
+                FailureCode::Expired,
+            ),
+            (
+                "companion_computer_use_approval_replay",
+                FailureCode::Replay,
+            ),
+        ] {
+            let failure = protocol_failure(&AppError::new(error_code, "denied"));
+            assert_eq!(failure.code, expected);
+            assert!(!failure.retryable);
+        }
     }
 }

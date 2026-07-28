@@ -136,7 +136,7 @@ retire the prompt on the others.
 The phone receives only E2EE application data. The relay still sees routing
 metadata and ciphertext size, never the request or decision.
 
-V1 bounds the request id and stored session id at 256 bytes, action at 64
+V1 bounds the request id and stored session id at 128 bytes, action at 64
 bytes, description at 2 KiB, app name at 256 bytes, and URL at 2 KiB. Desktop
 derives the description and target from the existing typed tool invocation and
 current verified Computer use target. It does not accept display copy supplied

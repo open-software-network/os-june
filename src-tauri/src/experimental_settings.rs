@@ -21,6 +21,8 @@ pub struct ExperimentalSettings {
     pub browser_use: bool,
     #[serde(default)]
     pub companion_pairing: bool,
+    #[serde(default)]
+    pub companion_computer_use_approvals: bool,
 }
 
 pub struct ExperimentalSettingsState {
@@ -113,6 +115,35 @@ pub fn companion_pairing_enabled(app: &AppHandle) -> bool {
         .companion_pairing
 }
 
+pub fn companion_computer_use_approvals_enabled(app: &AppHandle) -> bool {
+    app.try_state::<ExperimentalSettingsState>()
+        .and_then(|state| get(state.inner()).ok())
+        .unwrap_or_default()
+        .companion_computer_use_approvals
+}
+
+pub fn set_companion_computer_use_approvals_enabled(
+    app: &AppHandle,
+    state: &ExperimentalSettingsState,
+    enabled: bool,
+) -> Result<(), AppError> {
+    let next = {
+        let mut current = state.settings.lock().map_err(|_| {
+            AppError::new(
+                "experimental_settings_unavailable",
+                "Experimental settings lock failed.",
+            )
+        })?;
+        let mut next = current.clone();
+        next.companion_computer_use_approvals = enabled;
+        save_settings(&state.path, &next)?;
+        *current = next.clone();
+        next
+    };
+    let _ = app.emit(EXPERIMENTAL_FLAGS_CHANGED_EVENT, snapshot(app, next));
+    Ok(())
+}
+
 fn browser_use_enabled_with(kill_switch: bool, settings: &ExperimentalSettings) -> bool {
     kill_switch || settings.browser_use
 }
@@ -188,6 +219,7 @@ mod tests {
             unlocked: true,
             browser_use: true,
             companion_pairing: true,
+            companion_computer_use_approvals: true,
         };
 
         save_settings(&path, &settings).expect("save experimental settings");
@@ -205,5 +237,15 @@ mod tests {
         assert_eq!(load_settings(&path), ExperimentalSettings::default());
 
         let _ = fs::remove_dir_all(path.parent().expect("settings parent"));
+    }
+
+    #[test]
+    fn linked_computer_use_approvals_default_off_for_existing_settings() {
+        let settings: ExperimentalSettings = serde_json::from_str(
+            r#"{"unlocked":true,"browser_use":true,"companion_pairing":true}"#,
+        )
+        .expect("decode previous settings");
+
+        assert!(!settings.companion_computer_use_approvals);
     }
 }

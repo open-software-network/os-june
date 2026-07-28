@@ -203,9 +203,13 @@ pub async fn dispatch_tool(
         }
         "request_clarification" => consume_clarification_answer(context).await,
         "request_secret" => consume_secret_reference(context).await,
-        "computer_use" => {
-            Ok(crate::computer_use::handle_proxy_action(&context.app, arguments).await)
-        }
+        "computer_use" => Ok(crate::computer_use::handle_proxy_action_for_call(
+            &context.app,
+            arguments,
+            &context.session_id,
+            context.call_id.as_deref(),
+        )
+        .await),
         name if crate::connectors::notion::runtime_name_to_provider(name).is_some() => {
             notion_tool(context, name, &arguments).await
         }
