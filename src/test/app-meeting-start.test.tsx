@@ -438,9 +438,7 @@ describe("meeting start transcription event", () => {
     });
 
     expect(await screen.findByLabelText("Note title")).toHaveValue("Roadmap sync");
-    expect(
-      screen.getByLabelText("Matched to Roadmap sync in Google Calendar"),
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Matched to Roadmap sync in Google Calendar")).toBeInTheDocument();
   });
 
   it("reopens the recording HUD to the note editor for the active recording", async () => {
