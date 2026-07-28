@@ -1,6 +1,9 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// This suite verifies native meeting event orchestration, not workspace chunk loading.
+// Preload the lazy editor module so transform latency cannot consume assertion timeouts.
+import "../components/note-editor/NoteEditor";
 import { App } from "../app/App";
 import {
   AGENT_RECORDER_REQUEST_EVENT,
@@ -341,7 +344,7 @@ describe("meeting start transcription event", () => {
     }));
   });
 
-  async function fireMeetingStart(expired = false, waitForAcknowledgement = false) {
+  async function fireMeetingStart(expired = false) {
     mocks.pendingMeetingStartRequest = {
       requestId: "meeting-request-1",
       noteId: "note-2",
@@ -352,11 +355,6 @@ describe("meeting start transcription event", () => {
       await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
         payload: undefined,
       });
-      if (waitForAcknowledgement) {
-        await vi.waitFor(() =>
-          expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1"),
-        );
-      }
     });
   }
 
@@ -378,11 +376,14 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await fireMeetingStart(false, true);
-    expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
-      "meeting-request-1",
-      "microphonePlusSystem",
-    );
+    await fireMeetingStart();
+    await waitFor(() => {
+      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+        "meeting-request-1",
+        "microphonePlusSystem",
+      );
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
+    });
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
