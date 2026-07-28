@@ -59,3 +59,21 @@ pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
 pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {
     fs::rename(temp_path, path)
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn normalizes_windows_verbatim_paths_for_external_use() {
+        assert_eq!(
+            normalize_path_for_external_use(Path::new(r"\\?\C:\Users\example\Vault")),
+            PathBuf::from(r"C:\Users\example\Vault")
+        );
+        assert_eq!(
+            normalize_path_for_external_use(Path::new(r"\\?\UNC\server\share\Vault")),
+            PathBuf::from(r"\\server\share\Vault")
+        );
+    }
+}
