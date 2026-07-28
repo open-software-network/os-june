@@ -387,6 +387,14 @@ impl Controller {
                     .await?,
                 ),
             )),
+            Body::MediaFetch(_) => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::Error(ProtocolFailure {
+                    code: FailureCode::Unsupported,
+                    message: "Media fetching is not available in this build.".to_string(),
+                    retryable: false,
+                }),
+            )),
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
             }

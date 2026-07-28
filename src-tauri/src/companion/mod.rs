@@ -884,6 +884,7 @@ pub async fn companion_publish_agent_event(
         } => Event::AgentStatus {
             stored_session_id,
             status,
+            media: Vec::new(),
         },
         CompanionAgentEventRequest::ModelChanged { selection } => {
             Event::SessionModelChanged { selection }

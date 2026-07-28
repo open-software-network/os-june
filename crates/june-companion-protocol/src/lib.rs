@@ -25,6 +25,11 @@ pub const MAX_MODEL_NAME_BYTES: usize = 256;
 pub const MAX_MODEL_PROVIDER_BYTES: usize = 64;
 pub const MAX_MODEL_DESCRIPTION_BYTES: usize = 512;
 pub const MAX_MODEL_LABEL_BYTES: usize = 128;
+pub const MAX_MEDIA_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_MEDIA_CHUNK_BYTES: usize = 31 * 1024;
+pub const MAX_MEDIA_REFERENCES: usize = 8;
+pub const MAX_MEDIA_DIMENSION_PX: u32 = 32_768;
+pub const MAX_MEDIA_DURATION_MS: u64 = 6 * 60 * 60 * 1_000;
 pub const DEFAULT_CONTROL_TTL_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -37,6 +42,7 @@ pub enum Capability {
     AgentCancel,
     ModelRead,
     ModelEdit,
+    MediaRead,
     SettingsRead,
     SettingsEditSafe,
     RecordingControlExisting,
@@ -126,6 +132,7 @@ pub enum Body {
         root_id: Uuid,
         relative_path: String,
     },
+    MediaFetch(MediaFetchRequest),
     AgentCancel {
         stored_session_id: String,
     },
@@ -188,6 +195,7 @@ impl Body {
             Self::BrowseRootsList | Self::BrowseDirList { .. } | Self::BrowseFileStat { .. } => {
                 Capability::FilesBrowse
             }
+            Self::MediaFetch(_) => Capability::MediaRead,
             Self::AgentCancel { .. } => Capability::AgentCancel,
             Self::ModelsList | Self::SessionModelGet { .. } => Capability::ModelRead,
             Self::SessionModelSet(_) => Capability::ModelEdit,
@@ -260,6 +268,7 @@ impl Body {
                 validate_relative_path(relative_path, false)
             }
             Self::SessionModelSet(request) => request.validate(),
+            Self::MediaFetch(request) => request.validate(),
             Self::SettingsEditSafe(patch) if patch.is_empty() => Err(ProtocolError::EmptyPatch),
             Self::Event(Event::AgentDelta {
                 stored_session_id,
@@ -269,8 +278,13 @@ impl Body {
                 validate_text(text, MAX_TEXT_BYTES)
             }
             Self::Event(Event::AgentStatus {
-                stored_session_id, ..
-            }) => validate_id(stored_session_id),
+                stored_session_id,
+                media,
+                ..
+            }) => {
+                validate_id(stored_session_id)?;
+                validate_media_references(media)
+            }
             Self::Event(Event::SessionModelChanged { selection }) => selection.validate(),
             Self::Response(response) => {
                 response.validate()?;
@@ -430,6 +444,25 @@ impl SessionModelSetRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaFetchRequest {
+    pub stored_session_id: String,
+    pub artifact_id: String,
+    pub offset_bytes: u64,
+}
+
+impl MediaFetchRequest {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.stored_session_id)?;
+        validate_id(&self.artifact_id)?;
+        if self.offset_bytes >= MAX_MEDIA_BYTES {
+            return Err(ProtocolError::InvalidMediaChunk);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SafeSettingsPatch {
@@ -493,10 +526,30 @@ impl Response {
                 }
                 Ok(())
             }
+            ResultPayload::AgentMessages(page) => {
+                if page.items.len() > MAX_PAGE_SIZE as usize
+                    || page
+                        .next_cursor
+                        .as_deref()
+                        .is_some_and(|value| value.len() > 512)
+                {
+                    return Err(ProtocolError::InvalidPageSize);
+                }
+                for message in &page.items {
+                    message.validate()?;
+                }
+                Ok(())
+            }
+            ResultPayload::MediaChunk(chunk) => {
+                if self.capability != Capability::MediaRead {
+                    return Err(ProtocolError::CapabilityMismatch);
+                }
+                chunk.validate()
+            }
             ResultPayload::BrowseFile(file) => file.validate(),
-            ResultPayload::Error(failure) => validate_text(&failure.message, 2 * 1024),
             ResultPayload::Models(catalog) => catalog.validate(),
             ResultPayload::SessionModel(selection) => selection.validate(),
+            ResultPayload::Error(failure) => validate_text(&failure.message, 2 * 1024),
             _ => Ok(()),
         }
     }
@@ -517,6 +570,7 @@ pub enum ResultPayload {
     BrowseFile(BrowseFile),
     Models(ModelCatalog),
     SessionModel(SessionModelSelection),
+    MediaChunk(MediaChunk),
     Settings(SafeSettings),
     Recording(ActiveRecordingSnapshot),
     Device(DeviceSelf),
@@ -710,6 +764,111 @@ pub struct AgentMessage {
     pub text: String,
     pub created_at: String,
     pub streaming: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<MediaResultReference>,
+}
+
+impl AgentMessage {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.id)?;
+        if self.text.len() > MAX_TEXT_BYTES
+            || (self.text.trim().is_empty() && self.media.is_empty())
+        {
+            return Err(ProtocolError::TextTooLarge);
+        }
+        validate_optional_text(Some(&self.created_at), 64)?;
+        validate_media_references(&self.media)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaKind {
+    Image,
+    Video,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaResultReference {
+    pub artifact_id: String,
+    pub kind: MediaKind,
+    pub media_type: String,
+    pub width_px: Option<u32>,
+    pub height_px: Option<u32>,
+    pub duration_ms: Option<u64>,
+    pub size_bytes: u64,
+}
+
+impl MediaResultReference {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.artifact_id)?;
+        if self.media_type.is_empty()
+            || self.media_type.len() > MAX_MEDIA_TYPE_BYTES
+            || !self
+                .media_type
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$&^_.+-/".contains(&byte))
+            || match self.kind {
+                MediaKind::Image => !self.media_type.starts_with("image/"),
+                MediaKind::Video => !self.media_type.starts_with("video/"),
+            }
+        {
+            return Err(ProtocolError::InvalidMediaReference);
+        }
+        if self.size_bytes == 0 || self.size_bytes > MAX_MEDIA_BYTES {
+            return Err(ProtocolError::MediaTooLarge);
+        }
+        match (self.width_px, self.height_px) {
+            (Some(width), Some(height))
+                if width > 0
+                    && width <= MAX_MEDIA_DIMENSION_PX
+                    && height > 0
+                    && height <= MAX_MEDIA_DIMENSION_PX => {}
+            (None, None) => {}
+            _ => return Err(ProtocolError::InvalidMediaReference),
+        }
+        match (self.kind, self.duration_ms) {
+            (MediaKind::Image, None) | (MediaKind::Video, None) => Ok(()),
+            (MediaKind::Video, Some(duration))
+                if duration > 0 && duration <= MAX_MEDIA_DURATION_MS =>
+            {
+                Ok(())
+            }
+            _ => Err(ProtocolError::InvalidMediaReference),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaChunk {
+    pub artifact_id: String,
+    pub offset_bytes: u64,
+    pub total_size_bytes: u64,
+    pub sha256: String,
+    #[serde(with = "base64_bytes")]
+    pub bytes: Vec<u8>,
+    pub complete: bool,
+}
+
+impl MediaChunk {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.artifact_id)?;
+        if self.total_size_bytes == 0
+            || self.total_size_bytes > MAX_MEDIA_BYTES
+            || self.bytes.is_empty()
+            || self.bytes.len() > MAX_MEDIA_CHUNK_BYTES
+            || self.offset_bytes.saturating_add(self.bytes.len() as u64) > self.total_size_bytes
+            || self.complete
+                != (self.offset_bytes.saturating_add(self.bytes.len() as u64)
+                    == self.total_size_bytes)
+            || !valid_sha256(&self.sha256)
+        {
+            return Err(ProtocolError::InvalidMediaChunk);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -877,6 +1036,8 @@ pub enum Event {
     AgentStatus {
         stored_session_id: String,
         status: AgentStatus,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        media: Vec<MediaResultReference>,
     },
     SessionModelChanged {
         selection: SessionModelSelection,
@@ -997,6 +1158,12 @@ pub enum ProtocolError {
     InvalidContentHash,
     #[error("relative path is invalid")]
     InvalidRelativePath,
+    #[error("media artifact is too large")]
+    MediaTooLarge,
+    #[error("media reference is invalid")]
+    InvalidMediaReference,
+    #[error("media chunk is invalid")]
+    InvalidMediaChunk,
     #[error("patch has no editable fields")]
     EmptyPatch,
     #[error("model catalog is empty or exceeds its item limit")]
@@ -1102,6 +1269,29 @@ fn validate_relative_path(value: &str, allow_empty: bool) -> Result<(), Protocol
     } else {
         Ok(())
     }
+}
+
+fn validate_media_references(references: &[MediaResultReference]) -> Result<(), ProtocolError> {
+    if references.len() > MAX_MEDIA_REFERENCES {
+        return Err(ProtocolError::InvalidMediaReference);
+    }
+    for (index, reference) in references.iter().enumerate() {
+        reference.validate()?;
+        if references[..index]
+            .iter()
+            .any(|prior| prior.artifact_id == reference.artifact_id)
+        {
+            return Err(ProtocolError::InvalidMediaReference);
+        }
+    }
+    Ok(())
+}
+
+fn valid_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -1490,6 +1680,110 @@ mod tests {
     }
 
     #[test]
+    fn media_contract_round_trips_with_explicit_capability_equality() {
+        let artifact_id = "artifact-1".to_string();
+        let request = Frame::new(
+            Uuid::new_v4(),
+            1,
+            100,
+            Capability::MediaRead,
+            Body::MediaFetch(MediaFetchRequest {
+                stored_session_id: "stored-1".to_string(),
+                artifact_id: artifact_id.clone(),
+                offset_bytes: 0,
+            }),
+        );
+        let encoded = encode_frame(&request).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["capability"], "mediaRead");
+        assert_eq!(json["body"]["type"], "mediaFetch");
+        assert_eq!(decode_frame(&encoded, 100).unwrap(), request);
+
+        let response = Frame::new(
+            Uuid::new_v4(),
+            2,
+            100,
+            Capability::MediaRead,
+            Body::Response(Response {
+                capability: Capability::MediaRead,
+                result: ResultPayload::MediaChunk(MediaChunk {
+                    artifact_id,
+                    offset_bytes: 0,
+                    total_size_bytes: 3,
+                    sha256: "a".repeat(64),
+                    bytes: vec![1, 2, 3],
+                    complete: true,
+                }),
+            }),
+        );
+        let encoded = encode_frame(&response).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["body"]["data"]["result"]["type"], "mediaChunk");
+        assert_eq!(decode_frame(&encoded, 100).unwrap(), response);
+
+        let mismatched = Frame::new(
+            Uuid::new_v4(),
+            3,
+            100,
+            Capability::AgentRead,
+            Body::MediaFetch(MediaFetchRequest {
+                stored_session_id: "stored-1".to_string(),
+                artifact_id: "artifact-1".to_string(),
+                offset_bytes: 0,
+            }),
+        );
+        assert!(matches!(
+            mismatched.validate(100),
+            Err(ProtocolError::CapabilityMismatch)
+        ));
+    }
+
+    #[test]
+    fn legacy_messages_and_status_events_omit_empty_media() {
+        let legacy = r#"{"id":"message-1","role":"assistant","text":"Done","createdAt":"2026-07-28T00:00:00Z","streaming":false}"#;
+        let message: AgentMessage = serde_json::from_str(legacy).unwrap();
+        assert!(message.media.is_empty());
+        assert_eq!(serde_json::to_string(&message).unwrap(), legacy);
+
+        let event = Event::AgentStatus {
+            stored_session_id: "stored-1".to_string(),
+            status: AgentStatus::Completed,
+            media: Vec::new(),
+        };
+        let encoded = serde_json::to_value(event).unwrap();
+        assert!(encoded["data"].get("media").is_none());
+    }
+
+    #[test]
+    fn maximum_media_chunk_stays_below_the_44_kib_plaintext_ceiling() {
+        let frame = Frame::new(
+            Uuid::from_u128(u128::MAX),
+            u64::MAX,
+            1_000_000,
+            Capability::MediaRead,
+            Body::Response(Response {
+                capability: Capability::MediaRead,
+                result: ResultPayload::MediaChunk(MediaChunk {
+                    artifact_id: "a".repeat(256),
+                    offset_bytes: MAX_MEDIA_BYTES - MAX_MEDIA_CHUNK_BYTES as u64,
+                    total_size_bytes: MAX_MEDIA_BYTES,
+                    sha256: "f".repeat(64),
+                    bytes: vec![u8::MAX; MAX_MEDIA_CHUNK_BYTES],
+                    complete: true,
+                }),
+            }),
+        );
+        let encoded = encode_frame(&frame).unwrap();
+        assert!(
+            encoded.len() <= MAX_ENCODED_FRAME_BYTES,
+            "encoded maximum chunk was {} bytes",
+            encoded.len()
+        );
+        assert!(MAX_ENCODED_FRAME_BYTES - encoded.len() >= 750);
+        assert_eq!(decode_frame(&encoded, 1_000_000).unwrap(), frame);
+    }
+
+    #[test]
     fn rejects_oversized_uploads_chunks_references_and_traversal() {
         let oversized = Frame::new(
             Uuid::new_v4(),
@@ -1579,6 +1873,47 @@ mod tests {
         let encoded_text = String::from_utf8(encoded.clone()).unwrap();
         assert!(!encoded_text.contains("/Users/"));
         assert_eq!(decode_frame(&encoded, 100).unwrap(), frame);
+    }
+
+    #[test]
+    fn media_references_and_chunks_are_bounded_and_self_consistent() {
+        let image = MediaResultReference {
+            artifact_id: "image-1".to_string(),
+            kind: MediaKind::Image,
+            media_type: "image/png".to_string(),
+            width_px: Some(1024),
+            height_px: Some(1024),
+            duration_ms: None,
+            size_bytes: 4 * 1024,
+        };
+        image.validate().unwrap();
+
+        let mut oversized = image.clone();
+        oversized.size_bytes = MAX_MEDIA_BYTES + 1;
+        assert!(matches!(
+            oversized.validate(),
+            Err(ProtocolError::MediaTooLarge)
+        ));
+
+        let mut incomplete_dimensions = image;
+        incomplete_dimensions.height_px = None;
+        assert!(matches!(
+            incomplete_dimensions.validate(),
+            Err(ProtocolError::InvalidMediaReference)
+        ));
+
+        let invalid_chunk = MediaChunk {
+            artifact_id: "video-1".to_string(),
+            offset_bytes: 0,
+            total_size_bytes: 2,
+            sha256: "A".repeat(64),
+            bytes: vec![1],
+            complete: true,
+        };
+        assert!(matches!(
+            invalid_chunk.validate(),
+            Err(ProtocolError::InvalidMediaChunk)
+        ));
     }
 
     #[test]
