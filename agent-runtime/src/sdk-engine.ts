@@ -197,13 +197,12 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     emit: (event: EngineEvent) => void,
   ): FunctionTool {
-    return tool({
+    const options = {
       name: descriptor.name,
       description: descriptor.description,
       parameters: descriptor.parameters as never,
-      strict: true,
       needsApproval: descriptor.requiresApproval ?? false,
-      execute: async (argumentsValue, _context, details) => {
+      execute: async (argumentsValue: unknown, _context?: unknown, details?: unknown) => {
         const callId = toolCallId(details);
         const argumentsJson = asJsonValue(argumentsValue);
         emit({
@@ -228,7 +227,10 @@ export class OpenAIAgentsEngine implements AgentEngine {
           throw new Error(message);
         }
       },
-    });
+    };
+    return descriptor.strict === false
+      ? tool({ ...options, strict: false })
+      : tool({ ...options, strict: true });
   }
 
   private async consumeStream(

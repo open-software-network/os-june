@@ -1170,6 +1170,8 @@ pub struct RuntimeToolDescriptorJson {
     pub description: String,
     pub parameters: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub requires_approval: Option<bool>,
 }
 
@@ -1242,6 +1244,7 @@ impl McpToolRegistry {
                 name: name.clone(),
                 description: tool.description,
                 parameters: object_schema(tool.input_schema),
+                strict: Some(false),
                 requires_approval: requires_approval.then_some(true),
             };
             // The managed source owns the mcp_linear_* namespace. A
@@ -1284,6 +1287,7 @@ impl McpToolRegistry {
                 name: name.clone(),
                 description: tool.description,
                 parameters: object_schema(tool.input_schema),
+                strict: None,
                 requires_approval: requires_approval.then_some(true),
             };
             self.tools.insert(
@@ -3553,6 +3557,7 @@ mod tests {
             name: "mcp_docs_search".into(),
             description: "Search docs".into(),
             parameters: json!({"type":"object","properties":{}}),
+            strict: None,
             requires_approval: None,
         };
         snapshot_run_policies(&repo.pool, "run-1", std::slice::from_ref(&descriptor))
@@ -3609,6 +3614,7 @@ mod tests {
             name: "mcp_linear_search".into(),
             description: "Search Linear".into(),
             parameters: json!({"type":"object","properties":{}}),
+            strict: Some(false),
             requires_approval: None,
         };
 
@@ -3672,6 +3678,7 @@ mod tests {
             name: "mcp_later_search".into(),
             description: "Search later".into(),
             parameters: json!({"type":"object","properties":{}}),
+            strict: None,
             requires_approval: None,
         };
         snapshot_run_policies(&repo.pool, "run-empty", &[descriptor])
@@ -4340,7 +4347,14 @@ done
             )
             .unwrap();
         assert_eq!(registry.descriptors().len(), 1);
-        assert!(registry.resolve("mcp_my_server_read_file").is_some());
+        assert_eq!(
+            registry
+                .resolve("mcp_my_server_read_file")
+                .unwrap()
+                .descriptor
+                .strict,
+            None
+        );
     }
 
     #[test]
@@ -4430,6 +4444,10 @@ done
                 Some(true)
             );
         }
+        assert!(registry
+            .descriptors()
+            .iter()
+            .all(|descriptor| descriptor.strict == Some(false)));
     }
 
     #[test]

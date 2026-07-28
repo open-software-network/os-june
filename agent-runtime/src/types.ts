@@ -27,6 +27,7 @@ export type RuntimeToolDescriptor = {
   name: string;
   description: string;
   parameters: JsonObject;
+  strict?: boolean;
   requiresApproval?: boolean;
 };
 

@@ -107,6 +107,7 @@ test("continues model inference after a host tool result", async () => {
   assert.ok(toolCalls[0]?.callId);
   assert.equal(modelRequests.length, 2);
   assert.equal(modelRequests[0]?.reasoning_effort, "high");
+  assert.equal(modelFunctionTool(modelRequests[0], "list_skills").strict, true);
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   assert.ok(
@@ -459,6 +460,187 @@ test("serializes an approval interruption after assistant history", async () => 
   );
 });
 
+test("keeps managed MCP schemas non-strict and approval arguments minimal", async () => {
+  let modelRequest: JsonObject | undefined;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Approval tool should not execute before resume: ${input.name}`);
+    }
+    assert.ok("request" in input.arguments);
+    modelRequest = input.arguments.request;
+    return streamPage("linear-create-approval", {
+      id: "completion-linear-create",
+      object: "chat.completion.chunk",
+      created: 4,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-linear-create",
+                type: "function",
+                function: {
+                  name: "mcp_linear_save_issue",
+                  arguments:
+                    '{"team":"Personal Workspace","title":"another sample issue from budi"}',
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const parameters = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      team: { type: "string" },
+      title: { type: "string" },
+      slaBreachesAt: {
+        anyOf: [{ type: "string", format: "date-time" }, { type: "null" }],
+      },
+    },
+    additionalProperties: false,
+  };
+
+  const result = await engine.start({
+    sessionId: "session-linear-create",
+    runId: "run-linear-create",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "private-auto",
+      instructions: "Create the requested Linear issue.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Create another sample issue from budi.",
+      history: [],
+      tools: [
+        {
+          name: "mcp_linear_save_issue",
+          description: "Create or update a Linear issue.",
+          parameters,
+          strict: false,
+          requiresApproval: true,
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(result.interruptions.length, 1);
+  assert.deepEqual(result.interruptions[0]?.arguments, {
+    team: "Personal Workspace",
+    title: "another sample issue from budi",
+  });
+  const functionTool = modelFunctionTool(modelRequest, "mcp_linear_save_issue");
+  assert.equal(functionTool.strict, false);
+  assert.deepEqual(functionTool.parameters, parameters);
+});
+
+test("forwards an explicit null from a non-strict MCP update", async () => {
+  let modelRequestCount = 0;
+  let invocationArguments: JsonValue | undefined;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      assert.equal(input.name, "mcp_linear_save_issue");
+      invocationArguments = input.arguments;
+      return { updated: true };
+    }
+    assert.ok("request" in input.arguments);
+    modelRequestCount += 1;
+    if (modelRequestCount === 1) {
+      return streamPage("linear-update-call", {
+        id: "completion-linear-update",
+        object: "chat.completion.chunk",
+        created: 5,
+        model: "private-auto",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-linear-update",
+                  type: "function",
+                  function: {
+                    name: "mcp_linear_save_issue",
+                    arguments: '{"id":"PER-10","assignee":null}',
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    }
+    return streamPage("linear-update-answer", {
+      id: "completion-linear-update-answer",
+      object: "chat.completion.chunk",
+      created: 6,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "The assignee was removed." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const result = await engine.start({
+    sessionId: "session-linear-update",
+    runId: "run-linear-update",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "private-auto",
+      instructions: "Update the requested Linear issue.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Remove the assignee from PER-10.",
+      history: [],
+      tools: [
+        {
+          name: "mcp_linear_save_issue",
+          description: "Create or update a Linear issue.",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              assignee: {
+                anyOf: [{ type: "string" }, { type: "null" }],
+              },
+            },
+            additionalProperties: false,
+          },
+          strict: false,
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.deepEqual(invocationArguments, { id: "PER-10", assignee: null });
+  assert.equal(result.finalOutput, "The assignee was removed.");
+});
+
 test("resumes a serialized approval and continues after the host tool result", async () => {
   let modelRequestCount = 0;
   let toolInvocationCount = 0;
@@ -584,4 +766,14 @@ function streamPage(streamId: string, chunk: JsonObject) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function modelFunctionTool(request: JsonObject | undefined, name: string): Record<string, unknown> {
+  const tools = request?.tools;
+  assert.ok(Array.isArray(tools));
+  for (const toolValue of tools) {
+    if (!isRecord(toolValue) || !isRecord(toolValue.function)) continue;
+    if (toolValue.function.name === name) return toolValue.function;
+  }
+  assert.fail(`Model request did not include function tool ${name}`);
 }
