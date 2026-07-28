@@ -842,6 +842,11 @@ async fn persist_and_emit_event(
             repository
                 .update_run_status(&frame.run_id, "completed", None, None, None)
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             None
         }
         "run.cancelled" => {
@@ -849,6 +854,11 @@ async fn persist_and_emit_event(
             repository
                 .update_run_status(&frame.run_id, "cancelled", None, None, None)
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             None
         }
         "run.failed" => {
@@ -865,6 +875,11 @@ async fn persist_and_emit_event(
                     )),
                 )
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             Some(AgentItemPayload::Error(data.clone()))
         }
         _ => None,

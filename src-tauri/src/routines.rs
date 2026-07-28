@@ -67,7 +67,7 @@ pub struct AgentRoutineRunDto {
     pub scheduled_for: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
-    /// Concrete model resolved at claim time, never a moving `auto` alias.
+    /// Model snapshotted from the routine or current generation selection at claim time.
     pub model: String,
     pub safety_mode: AgentSafetyMode,
     pub error_code: Option<String>,
@@ -168,12 +168,20 @@ fn validate_state(state: &str) -> Result<(), AppError> {
     }
 }
 
-fn normalized_model(model: &str) -> String {
-    let model = model.trim();
-    if model.is_empty() || model == "auto" || model == "open-software/auto" {
-        crate::providers::AUTO_GENERATION_MODEL.to_string()
+fn resolve_routine_model(stored_model: &str, selected_model: &str) -> String {
+    let stored_model = stored_model.trim();
+    if stored_model.is_empty()
+        || stored_model == "auto"
+        || stored_model == crate::providers::AUTO_GENERATION_MODEL
+    {
+        let selected_model = selected_model.trim();
+        if selected_model.is_empty() || selected_model == "auto" {
+            crate::providers::AUTO_GENERATION_MODEL.to_string()
+        } else {
+            selected_model.to_string()
+        }
     } else {
-        model.to_string()
+        stored_model.to_string()
     }
 }
 
@@ -379,8 +387,8 @@ async fn claim_with_connector_guard(
     let token = Uuid::new_v4().to_string();
     let run_id = Uuid::new_v4().to_string();
     let timestamp = now();
-    let model: String = routine.get("model");
-    let model = normalized_model(&model);
+    let stored_model: String = routine.get("model");
+    let model = resolve_routine_model(&stored_model, &crate::providers::generation_model());
     let safety_mode = AgentSafetyMode::from(routine.get::<String, _>("safety_mode").as_str());
     let metadata = serde_json::from_str::<Value>(&routine.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
@@ -438,11 +446,28 @@ pub async fn reconcile(pool: &SqlitePool) -> Result<(), AppError> {
     let stale_before = format_time(Utc::now() - Duration::minutes(CLAIM_STALE_AFTER_MINUTES));
     query("UPDATE routine_runs SET status = 'interrupted', completed_at = ?, error_code = 'routine_claim_expired', error_message = 'Routine dispatch did not start before its claim expired.', updated_at = ? WHERE status = 'queued' AND agent_run_id IS NULL AND updated_at < ?")
         .bind(&timestamp).bind(&timestamp).bind(stale_before).execute(pool).await.map_err(app_error)?;
+    release_terminal_claims(pool, &timestamp, None).await
+}
+
+async fn release_terminal_claims(
+    pool: &SqlitePool,
+    timestamp: &str,
+    agent_run_id: Option<&str>,
+) -> Result<(), AppError> {
+    // Routine edits and terminal release both update schedule metadata. Hold a
+    // write reservation across the read/derive/write sequence so a concurrent
+    // edit either lands wholly before this snapshot or wholly after it.
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(app_error)?;
     // A terminal run releases exactly its matching routine claim. Advance the
     // schedule here rather than leaving a past `next_run_at`, which would
     // otherwise immediately re-run a completed routine on the next tick.
-    let terminal = query("SELECT routines.id, routines.schedule, routines.timezone, routines.repeat, routines.metadata_json, routines.state, routines.enabled, routine_runs.claim_token, routine_runs.status, routine_runs.completed_at, routine_runs.error_message FROM routines JOIN routine_runs ON routine_runs.routine_id = routines.id AND routine_runs.claim_token = routines.claim_token WHERE routines.claim_token IS NOT NULL AND routine_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed')")
-        .fetch_all(pool).await.map_err(app_error)?;
+    let terminal = query("SELECT routines.id, routines.schedule, routines.timezone, routines.repeat, routines.metadata_json, routines.state, routines.enabled, routine_runs.claim_token, routine_runs.status, routine_runs.completed_at, routine_runs.error_message FROM routines JOIN routine_runs ON routine_runs.routine_id = routines.id AND routine_runs.claim_token = routines.claim_token WHERE routines.claim_token IS NOT NULL AND routine_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed') AND (? IS NULL OR routine_runs.agent_run_id = ?)")
+        .bind(agent_run_id)
+        .bind(agent_run_id)
+        .fetch_all(&mut *transaction).await.map_err(app_error)?;
     for row in terminal {
         let state: String = row.get("state");
         let enabled = row.get::<i64, _>("enabled") != 0;
@@ -465,15 +490,15 @@ pub async fn reconcile(pool: &SqlitePool) -> Result<(), AppError> {
             .bind(repeat_completed)
             .bind(metadata_json(metadata))
             .bind(row.get::<Option<String>, _>("completed_at"))
-            .bind(&timestamp)
+            .bind(timestamp)
             .bind(if status == "completed" { "ok" } else { "error" })
             .bind(row.get::<Option<String>, _>("error_message"))
-            .bind(&timestamp)
+            .bind(timestamp)
             .bind(row.get::<String, _>("id"))
             .bind(row.get::<String, _>("claim_token"))
-            .execute(pool).await.map_err(app_error)?;
+            .execute(&mut *transaction).await.map_err(app_error)?;
     }
-    Ok(())
+    transaction.commit().await.map_err(app_error)
 }
 
 fn advance_repeat(repeat: &str, metadata: &mut Value) -> bool {
@@ -569,6 +594,23 @@ pub async fn mark_agent_run_resumed(pool: &SqlitePool, agent_run_id: &str) -> Re
     .await
     .map_err(app_error)?;
     Ok(())
+}
+
+pub async fn mark_agent_run_terminal(
+    pool: &SqlitePool,
+    agent_run_id: &str,
+) -> Result<(), AppError> {
+    let timestamp = now();
+    let changed = query("UPDATE routine_runs SET status = (SELECT status FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at = COALESCE((SELECT completed_at FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at), error_code = COALESCE((SELECT error_code FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_code), error_message = COALESCE((SELECT error_message FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_message), updated_at = ? WHERE agent_run_id = ? AND status IN ('running', 'waiting_for_user') AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id AND agent_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed'))")
+        .bind(&timestamp)
+        .bind(agent_run_id)
+        .execute(pool)
+        .await
+        .map_err(app_error)?;
+    if changed.rows_affected() == 0 {
+        return Ok(());
+    }
+    release_terminal_claims(pool, &timestamp, Some(agent_run_id)).await
 }
 
 /// Start the single local scheduler for June-owned routines. Claims are stored
@@ -1497,6 +1539,20 @@ mod tests {
     }
 
     #[test]
+    fn automatic_routine_model_resolves_to_the_selected_generation_model() {
+        for stored_model in ["", "auto", crate::providers::AUTO_GENERATION_MODEL] {
+            assert_eq!(
+                resolve_routine_model(stored_model, "kimi-k2-6"),
+                "kimi-k2-6"
+            );
+        }
+        assert_eq!(
+            resolve_routine_model("explicit-model", "kimi-k2-6"),
+            "explicit-model"
+        );
+    }
+
+    #[test]
     fn scheduled_dispatch_failure_advances_instead_of_reclaiming_the_due_time() {
         let now = Utc.with_ymd_and_hms(2026, 7, 25, 12, 0, 0).unwrap();
         let claim = Claim {
@@ -1741,14 +1797,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(claim.model, crate::providers::AUTO_GENERATION_MODEL);
+        assert_eq!(claim.model, crate::providers::generation_model());
         assert_eq!(claim.safety_mode, AgentSafetyMode::Unrestricted);
         let run = list_runs(&pool, Some("routine-1"))
             .await
             .unwrap()
             .pop()
             .unwrap();
-        assert_eq!(run.model, crate::providers::AUTO_GENERATION_MODEL);
+        assert_eq!(run.model, crate::providers::generation_model());
         assert_eq!(run.safety_mode, AgentSafetyMode::Unrestricted);
         let tools = base_unattended_tools().to_string();
         assert!(!tools.contains("computer_use"));
@@ -1789,6 +1845,82 @@ mod tests {
         assert_eq!(run.agent_session_id.as_deref(), Some("session-1"));
         assert_eq!(run.agent_run_id.as_deref(), Some("run-1"));
         assert_eq!(run.status, "running");
+    }
+
+    #[tokio::test]
+    async fn terminal_agent_event_immediately_reconciles_the_routine_run() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-terminal')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs
+             (id, status, completed_at, error_code, error_message)
+             VALUES ('run-terminal', 'failed', '2026-07-28T08:00:00.000Z',
+                     'model_not_priced', 'model_not_priced')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            "session-terminal",
+            "run-terminal",
+            &now(),
+        )
+        .await
+        .unwrap();
+
+        mark_agent_run_terminal(&pool, "run-terminal")
+            .await
+            .unwrap();
+
+        let run = list_runs(&pool, Some("routine-1")).await.unwrap().remove(0);
+        assert_eq!(run.status, "failed");
+        assert_eq!(run.error_code.as_deref(), Some("model_not_priced"));
+        let routine = get(&pool, "routine-1").await.unwrap();
+        assert_eq!(routine.last_status.as_deref(), Some("error"));
+        assert_eq!(routine.last_error.as_deref(), Some("model_not_priced"));
+        assert!(claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn non_routine_terminal_event_does_not_release_an_unrelated_routine_claim() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("UPDATE routine_runs SET status = 'failed' WHERE id = ?")
+            .bind(&claimed.routine_run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        query("UPDATE routines SET schedule = 'not a schedule' WHERE id = 'routine-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        mark_agent_run_terminal(&pool, "unrelated-agent-run")
+            .await
+            .unwrap();
+
+        assert!(claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

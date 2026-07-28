@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise";
 import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconCalendarRepeat } from "central-icons/IconCalendarRepeat";
@@ -15,6 +16,7 @@ import { IconZap } from "central-icons/IconZap";
 import { IconPause } from "central-icons/IconPause";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { messageFromError } from "../../lib/errors";
+import type { AgentRuntimeEvent } from "../../lib/agent-runtime-contract";
 import {
   TRUST_MODE_META,
   eventTriggerScheduleDraft,
@@ -63,6 +65,8 @@ import { ROUTINE_TEMPLATES, type RoutineTemplate } from "./routine-templates";
 const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: RoutineRunSession[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
+// Must match the native event name in src-tauri/src/agent_runtime/host.rs.
+const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
 
 /**
  * Advances the earned-autonomy counter by reporting each finished run to the
@@ -135,6 +139,8 @@ export function RoutinesView({
   const [describeUnrestricted, setDescribeUnrestricted] = useState(false);
   const [allRuns, setRuns] = useState<RoutineRunSession[]>([]);
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
+  const routineLoadSequenceRef = useRef(0);
+  const visibleRoutineLoadSequenceRef = useRef(0);
   const runLoadSequenceRef = useRef(0);
   // Run ids already reported for crediting this mount; the local store is the
   // durable idempotent ledger, this just avoids re-reporting on every refresh.
@@ -151,22 +157,33 @@ export function RoutinesView({
   // `loading` gates the whole list and only covers the first fetch;
   // `refreshing` covers every fetch so reloads keep the list visible while
   // still signalling progress on the refresh control.
-  const loadRoutines = useCallback(async () => {
-    setRefreshing(true);
+  const loadRoutines = useCallback(async (options: { silent?: boolean } = {}) => {
+    const sequence = routineLoadSequenceRef.current + 1;
+    routineLoadSequenceRef.current = sequence;
+    const silent = options.silent ?? false;
+    const visibleSequence = silent ? null : visibleRoutineLoadSequenceRef.current + 1;
+    if (visibleSequence !== null) {
+      visibleRoutineLoadSequenceRef.current = visibleSequence;
+      setRefreshing(true);
+    }
     try {
       const jobs = await listRoutines();
+      if (routineLoadSequenceRef.current !== sequence) return null;
       setRoutines(sortRoutines(jobs));
       setError(null);
       setErrorRetryable(false);
       return null;
     } catch (err) {
       const message = describeRoutineError(err);
+      if (routineLoadSequenceRef.current !== sequence || silent) return message;
       setError(message);
       setErrorRetryable(true);
       return message;
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (routineLoadSequenceRef.current === sequence) setLoading(false);
+      if (visibleSequence !== null && visibleRoutineLoadSequenceRef.current === visibleSequence) {
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -192,16 +209,46 @@ export function RoutinesView({
     () => Promise.all([loadRoutines(), loadRuns()]),
     [loadRoutines, loadRuns],
   );
+  const refreshSilently = useCallback(
+    () => Promise.all([loadRoutines({ silent: true }), loadRuns()]),
+    [loadRoutines, loadRuns],
+  );
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
+      if (
+        payload.method !== "run.completed" &&
+        payload.method !== "run.cancelled" &&
+        payload.method !== "run.failed"
+      ) {
+        return;
+      }
+      // The native runtime projects terminal agent state into both the
+      // routine and session stores before emitting this event. Refresh both
+      // projections now so an open detail page cannot keep showing the
+      // previous run's failure until the user navigates away.
+      void refreshSilently();
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [refreshSilently]);
+
+  useEffect(() => {
     if (forcedEmpty) return;
-    const timer = window.setInterval(() => void loadRuns(), RUN_HISTORY_REFRESH_MS);
+    const timer = window.setInterval(() => void refreshSilently(), RUN_HISTORY_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [forcedEmpty, loadRuns]);
+  }, [forcedEmpty, refreshSilently]);
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
