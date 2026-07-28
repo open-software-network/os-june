@@ -109,6 +109,13 @@ pub(crate) fn discovery_for_app(app: &AppHandle) -> Result<ObsidianDiscovery, Ap
 /// for component-wise containment checks in path resolution.
 pub(crate) fn current_vault_root(app: &AppHandle) -> Option<PathBuf> {
     let config = read_config_optional(app).ok().flatten()?;
+    canonical_vault_root_from_config(&config)
+}
+
+/// Extracts the raw canonical vault root from a config, without the external-use
+/// normalization that strips Windows `\\?\` prefixes. Returns `None` when the
+/// vault path is invalid, missing, or lacks an `.obsidian` directory.
+fn canonical_vault_root_from_config(config: &ObsidianConfig) -> Option<PathBuf> {
     let path = Path::new(&config.vault_path);
     if !path.is_absolute() {
         return None;
@@ -118,7 +125,7 @@ pub(crate) fn current_vault_root(app: &AppHandle) -> Option<PathBuf> {
         return None;
     }
     let obsidian_dir = canonical.join(".obsidian");
-    let metadata = std::fs::symlink_metadata(&obsidian_dir).ok()?;
+    let metadata = fs::symlink_metadata(&obsidian_dir).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return None;
     }
@@ -378,5 +385,36 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let err = validate_vault_path(temp.path()).expect_err("not a vault");
         assert_eq!(err.code, "obsidian_vault_invalid");
+    }
+
+    #[test]
+    fn canonical_root_returns_canonical_for_available_vault() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = temp.path().join("My Vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
+        let config = ObsidianConfig {
+            vault_path: vault.to_string_lossy().into_owned(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, Some(vault.canonicalize().expect("canonical")));
+    }
+
+    #[test]
+    fn canonical_root_returns_none_for_missing_vault() {
+        let config = ObsidianConfig {
+            vault_path: "/missing/Does Not Exist".to_string(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, None);
+    }
+
+    #[test]
+    fn canonical_root_returns_none_for_non_vault_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = ObsidianConfig {
+            vault_path: temp.path().to_string_lossy().into_owned(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, None);
     }
 }

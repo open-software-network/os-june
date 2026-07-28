@@ -2121,6 +2121,29 @@ mod tests {
     }
 
     #[test]
+    fn bundled_obsidian_skill_has_correct_tool_reference_and_frontmatter() {
+        let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("agent-skills")
+            .join("june-obsidian")
+            .join("SKILL.md");
+        let content = std::fs::read_to_string(&skill_path)
+            .unwrap_or_else(|_| panic!("skill file should exist at {}", skill_path.display()));
+        assert!(
+            content.contains("get_obsidian_vault"),
+            "skill must reference the unprefixed get_obsidian_vault host tool"
+        );
+        assert!(
+            !content.contains("june_obsidian.get_obsidian_vault"),
+            "skill must not reference the retired june_obsidian MCP server prefix"
+        );
+        assert_eq!(
+            skill_description(&content).as_deref(),
+            Some("Work with the Obsidian vault currently selected in June.")
+        );
+    }
+
+    #[test]
     fn legacy_auto_alias_uses_the_priced_june_model_id() {
         assert_eq!(
             normalize_agent_model("auto"),

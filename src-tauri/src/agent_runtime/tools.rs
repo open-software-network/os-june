@@ -1244,6 +1244,13 @@ enum PathScope {
     WorkspaceOrCurrentObsidianVaultRead,
 }
 
+/// Component-wise containment check: returns true if `path` is `root` or a
+/// descendant of `root`. Uses `Path::components()` so textual-prefix collisions
+/// (e.g. `/Vault` vs `/Vault-backup`) are rejected.
+fn is_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
 fn resolve_path_with_scope(
     context: &ToolContext,
     requested: &str,
@@ -1273,10 +1280,10 @@ fn resolve_path_with_scope(
     };
     if context.safety_mode == AgentSafetyMode::Sandboxed {
         let workspace = context.workspace.canonicalize().map_err(io_error)?;
-        if !resolved.starts_with(workspace) {
+        if !is_within(&resolved, &workspace) {
             if let PathScope::WorkspaceOrCurrentObsidianVaultRead = scope {
                 if let Some(vault_root) = crate::obsidian::current_vault_root(&context.app) {
-                    if resolved.starts_with(vault_root) {
+                    if is_within(&resolved, &vault_root) {
                         return Ok(resolved);
                     }
                 }
@@ -1317,9 +1324,11 @@ pub fn seed_bundled_skills(app: &AppHandle) {
         .resource_dir()
         .ok()
         .map(|dir| dir.join("native").join("agent-skills"));
-    let debug_root = std::env::var("CARGO_MANIFEST_DIR")
-        .ok()
-        .map(|manifest| PathBuf::from(manifest).join("resources").join("agent-skills"));
+    let debug_root = std::env::var("CARGO_MANIFEST_DIR").ok().map(|manifest| {
+        PathBuf::from(manifest)
+            .join("resources")
+            .join("agent-skills")
+    });
     let source_root = resource_root.or(debug_root);
     let Some(source_root) = source_root else {
         tracing::warn!("could not resolve bundled agent-skills resource directory");
@@ -1554,5 +1563,27 @@ mod tests {
         assert!(result.matches.contains("second.txt:2:needle two"));
         assert!(!result.matches.contains("binary.bin"));
         assert!(!result.matches.contains("hidden.txt"));
+    }
+
+    #[test]
+    fn is_within_accepts_root_and_descendants() {
+        let root = Path::new("/Users/example/Vault");
+        assert!(is_within(root, root));
+        assert!(is_within(&root.join("notes"), root));
+        assert!(is_within(&root.join("notes").join("daily.md"), root));
+    }
+
+    #[test]
+    fn is_within_rejects_textual_prefix_collisions() {
+        let vault = Path::new("/Users/example/Vault");
+        let sibling = Path::new("/Users/example/Vault-backup");
+        assert!(!is_within(sibling, vault));
+    }
+
+    #[test]
+    fn is_within_rejects_unrelated_paths() {
+        let vault = Path::new("/Users/example/Vault");
+        let other = Path::new("/Users/other/Documents");
+        assert!(!is_within(other, vault));
     }
 }
