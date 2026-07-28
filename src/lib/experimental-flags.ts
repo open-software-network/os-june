@@ -9,6 +9,7 @@ export type ExperimentalFlags = {
   unlocked: boolean;
   browser_use: boolean;
   companion_pairing: boolean;
+  companion_computer_use_approvals: boolean;
 };
 
 type ExperimentalFlagsResponse = ExperimentalFlags & {
@@ -29,6 +30,7 @@ const DEFAULT_FLAGS: ExperimentalFlagsCache = {
   unlocked: false,
   browser_use: false,
   companion_pairing: false,
+  companion_computer_use_approvals: false,
   companion_pairing_effective: false,
   loaded: false,
 };
@@ -44,6 +46,7 @@ function normalizeStoredFlags(flags: ExperimentalFlags): ExperimentalFlags {
     unlocked: flags?.unlocked === true,
     browser_use: flags?.browser_use === true,
     companion_pairing: flags?.companion_pairing === true,
+    companion_computer_use_approvals: flags?.companion_computer_use_approvals === true,
   };
 }
 
@@ -61,6 +64,7 @@ function publish(flags: ExperimentalFlagsResponse, loaded = true) {
     cache.unlocked === normalized.unlocked &&
     cache.browser_use === normalized.browser_use &&
     cache.companion_pairing === normalized.companion_pairing &&
+    cache.companion_computer_use_approvals === normalized.companion_computer_use_approvals &&
     cache.companion_pairing_effective === normalized.companion_pairing_effective &&
     cache.loaded === loaded
   ) {
@@ -135,6 +139,7 @@ export function getCachedExperimentalFlags(): ExperimentalFlags {
     unlocked: cache.unlocked,
     browser_use: cache.browser_use,
     companion_pairing: cache.companion_pairing,
+    companion_computer_use_approvals: cache.companion_computer_use_approvals,
   };
 }
 

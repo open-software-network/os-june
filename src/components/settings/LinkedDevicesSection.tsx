@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   companionApprovePairing,
   companionBeginPairing,
+  companionComputerUseApprovalSettings,
   companionGrantBrowseRoot,
   companionListBrowseRoots,
   companionListDevices,
@@ -11,12 +12,15 @@ import {
   companionRenameDevice,
   companionRevokeBrowseRoot,
   companionRevokeDevice,
+  companionSetComputerUseApprovalEnabled,
   type CompanionBrowseRoot,
   type CompanionCapability,
+  type CompanionComputerUseApprovalSettings,
   type CompanionPairingQr,
   type CompanionPairingStatus,
   type LinkedCompanionDevice,
 } from "../../lib/tauri";
+import { Switch } from "../ui/Switch";
 
 const capabilityLabels: Record<CompanionCapability, string> = {
   notesRead: "Read notes",
@@ -35,12 +39,15 @@ const capabilityLabels: Record<CompanionCapability, string> = {
   filesBrowse: "Browse shared Mac folders",
   devicesReadSelf: "Read this device",
   devicesRevokeSelf: "Unlink this device",
+  computerUseApprove: "Approve Computer use actions",
 };
 const companionCapabilities = Object.keys(capabilityLabels) as CompanionCapability[];
 
 export function LinkedDevicesSection() {
   const [devices, setDevices] = useState<LinkedCompanionDevice[]>([]);
   const [browseRoots, setBrowseRoots] = useState<CompanionBrowseRoot[]>([]);
+  const [computerUseApprovals, setComputerUseApprovals] =
+    useState<CompanionComputerUseApprovalSettings>();
   const [pairing, setPairing] = useState<CompanionPairingQr>();
   const [status, setStatus] = useState<CompanionPairingStatus>();
   const [editingId, setEditingId] = useState<string>();
@@ -78,6 +85,9 @@ export function LinkedDevicesSection() {
   useEffect(() => {
     void refreshDevices().catch((next) => setError(errorMessage(next)));
     void refreshBrowseRoots().catch((next) => setError(errorMessage(next)));
+    void companionComputerUseApprovalSettings()
+      .then(setComputerUseApprovals)
+      .catch((next) => setError(errorMessage(next)));
   }, [refreshBrowseRoots, refreshDevices]);
 
   useEffect(() => {
@@ -234,6 +244,18 @@ export function LinkedDevicesSection() {
     }
   };
 
+  const setComputerUseApprovalEnabled = async (enabled: boolean) => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      setComputerUseApprovals(await companionSetComputerUseApprovalEnabled(enabled));
+    } catch (next) {
+      setError(errorMessage(next));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <section className="settings-group companion-settings" aria-labelledby="linked-devices-heading">
       <header className="settings-page-header">
@@ -368,6 +390,29 @@ export function LinkedDevicesSection() {
         ) : (
           <p className="settings-row-description">No Mac folders are shared with linked devices.</p>
         )}
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">Approve Computer use from linked devices</h3>
+              <p className="settings-row-description">
+                {computerUseApprovals?.available === false
+                  ? "Enable experimental Computer use before allowing linked approvals."
+                  : "Let a linked device approve one specific Computer use action at a time. Requests expire after 60 seconds, remain visible on this Mac, and never bypass June's safety policy."}
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={computerUseApprovals?.enabled ?? false}
+                disabled={busy || !computerUseApprovals?.available}
+                aria-label="Approve Computer use from linked devices"
+                onCheckedChange={(enabled) => void setComputerUseApprovalEnabled(enabled)}
+              />
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="companion-device-list">

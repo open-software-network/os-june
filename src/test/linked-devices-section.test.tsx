@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   approvePairing: vi.fn(),
   renameDevice: vi.fn(),
   revokeDevice: vi.fn(),
+  computerUseApprovalSettings: vi.fn(),
+  setComputerUseApprovalEnabled: vi.fn(),
   writeClipboardText: vi.fn(),
   openBrowseRoot: vi.fn(),
 }));
@@ -28,6 +30,8 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   companionApprovePairing: mocks.approvePairing,
   companionRenameDevice: mocks.renameDevice,
   companionRevokeDevice: mocks.revokeDevice,
+  companionComputerUseApprovalSettings: mocks.computerUseApprovalSettings,
+  companionSetComputerUseApprovalEnabled: mocks.setComputerUseApprovalEnabled,
 }));
 
 vi.mock("@tauri-apps/plugin-clipboard-manager", () => ({
@@ -62,6 +66,14 @@ beforeEach(() => {
     desktopPublicKey: Array(32).fill(7),
   });
   mocks.writeClipboardText.mockResolvedValue(undefined);
+  mocks.computerUseApprovalSettings.mockResolvedValue({
+    enabled: false,
+    available: true,
+  });
+  mocks.setComputerUseApprovalEnabled.mockResolvedValue({
+    enabled: true,
+    available: true,
+  });
 });
 
 describe("LinkedDevicesSection", () => {
@@ -177,5 +189,36 @@ describe("LinkedDevicesSection", () => {
     render(<LinkedDevicesSection />);
 
     expect(await screen.findByText("Read generated media")).toBeInTheDocument();
+  });
+
+  it("keeps linked Computer use approvals off until the desktop user opts in", async () => {
+    const user = userEvent.setup();
+    render(<LinkedDevicesSection />);
+
+    const approvalSwitch = await screen.findByRole("switch", {
+      name: "Approve Computer use from linked devices",
+    });
+    expect(approvalSwitch).toHaveAttribute("aria-checked", "false");
+
+    await user.click(approvalSwitch);
+
+    expect(mocks.setComputerUseApprovalEnabled).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(approvalSwitch).toHaveAttribute("aria-checked", "true"));
+  });
+
+  it("shows the approval capability and existing revoke control for each linked device", async () => {
+    mocks.listDevices.mockResolvedValue([
+      {
+        id: "device-1",
+        displayName: "Jakub's iPhone",
+        linkedAt: "2026-07-28T12:00:00Z",
+        capabilities: ["computerUseApprove"],
+      },
+    ]);
+
+    render(<LinkedDevicesSection />);
+
+    expect(await screen.findByText("Approve Computer use actions")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unlink" })).toBeInTheDocument();
   });
 });

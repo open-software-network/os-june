@@ -2317,7 +2317,8 @@ export type CompanionCapability =
   | "filesUpload"
   | "filesBrowse"
   | "devicesReadSelf"
-  | "devicesRevokeSelf";
+  | "devicesRevokeSelf"
+  | "computerUseApprove";
 
 export type CompanionPairingQr = {
   pairingId: string;
@@ -2387,6 +2388,22 @@ export async function companionRevokeBrowseRoot(rootId: string) {
 
 export async function companionConsumeAttachments(referenceIds: string[]) {
   return invoke<void>("companion_consume_attachments", { referenceIds });
+}
+
+export type CompanionComputerUseApprovalSettings = {
+  enabled: boolean;
+  available: boolean;
+};
+
+export async function companionComputerUseApprovalSettings() {
+  return invoke<CompanionComputerUseApprovalSettings>("companion_computer_use_approval_settings");
+}
+
+export async function companionSetComputerUseApprovalEnabled(enabled: boolean) {
+  return invoke<CompanionComputerUseApprovalSettings>(
+    "companion_set_computer_use_approval_enabled",
+    { enabled },
+  );
 }
 
 export async function companionRenameDevice(deviceId: string, displayName: string) {
