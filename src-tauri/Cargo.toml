@@ -54,6 +54,7 @@ dotenvy = "0.15"
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["sink"] }
 hound = "3.5"
+imagesize = "0.13"
 # fd plumbing (pipe/dup2) for the managed browser's CDP pipe transport.
 libc = "0.2"
 # Strips the Windows `\\?\` verbatim path prefix canonicalize() adds so it

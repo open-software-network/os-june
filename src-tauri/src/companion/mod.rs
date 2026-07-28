@@ -1,5 +1,6 @@
 mod controller;
 mod files;
+mod media;
 mod transport;
 
 use crate::{commands::repositories, domain::types::AppError};
@@ -9,7 +10,7 @@ use base64::{
 };
 use june_companion_crypto::{generate_identity, KEY_BYTES};
 use june_companion_protocol::{
-    AgentStatus, Body, Capability, Event, Frame, ResultPayload, SessionModelSelection,
+    AgentStatus, Body, Capability, Event, Frame, MediaChunk, ResultPayload, SessionModelSelection,
     MAX_DEVICE_DISPLAY_NAME_BYTES, MAX_TEXT_BYTES,
 };
 use rand::{rngs::OsRng, RngCore};
@@ -41,6 +42,7 @@ pub struct CompanionRuntime {
     active_frontend_operations: Mutex<HashSet<Uuid>>,
     inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
+    media_transfers: Mutex<media::MediaTransferCache>,
     transport_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay_connected: AtomicBool,
     relay_connection_changed: Notify,
@@ -62,6 +64,7 @@ impl Default for CompanionRuntime {
             active_frontend_operations: Mutex::default(),
             inflight_operations: Mutex::default(),
             event_sender: Mutex::default(),
+            media_transfers: Mutex::default(),
             transport_task: Mutex::default(),
             relay_connected: AtomicBool::new(false),
             relay_connection_changed: Notify::new(),
@@ -576,6 +579,7 @@ fn companion_capabilities() -> Vec<Capability> {
         Capability::AgentCancel,
         Capability::ModelRead,
         Capability::ModelEdit,
+        Capability::MediaRead,
         Capability::SettingsRead,
         Capability::SettingsEditSafe,
         Capability::RecordingControlExisting,
@@ -858,6 +862,7 @@ pub enum CompanionAgentEventRequest {
     Status {
         stored_session_id: String,
         status: AgentStatus,
+        run_id: Option<String>,
     },
     ModelChanged {
         selection: SessionModelSelection,
@@ -866,10 +871,35 @@ pub enum CompanionAgentEventRequest {
 
 #[tauri::command]
 pub async fn companion_publish_agent_event(
+    app: AppHandle,
     runtime: State<'_, CompanionRuntime>,
     request: CompanionAgentEventRequest,
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
+    let (stored_session_id, text, run_id) = match &request {
+        CompanionAgentEventRequest::Delta {
+            stored_session_id,
+            text,
+        } => (stored_session_id, Some(text), None),
+        CompanionAgentEventRequest::Status {
+            stored_session_id,
+            run_id,
+            ..
+        } => (stored_session_id, None, run_id.as_ref()),
+        CompanionAgentEventRequest::ModelChanged { selection } => {
+            (&selection.stored_session_id, None, None)
+        }
+    };
+    if stored_session_id.is_empty()
+        || stored_session_id.len() > 256
+        || text.is_some_and(|text| text.is_empty() || text.len() > MAX_TEXT_BYTES)
+        || run_id.is_some_and(|run_id| run_id.is_empty() || run_id.len() > 256)
+    {
+        return Err(AppError::new(
+            "companion_event_invalid",
+            "The companion event exceeded its size limit.",
+        ));
+    }
     let event = match request {
         CompanionAgentEventRequest::Delta {
             stored_session_id,
@@ -881,10 +911,20 @@ pub async fn companion_publish_agent_event(
         CompanionAgentEventRequest::Status {
             stored_session_id,
             status,
+            run_id,
         } => Event::AgentStatus {
+            media: if let Some(run_id) = run_id {
+                let repositories = repositories(&app).await?;
+                ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+                let references =
+                    media::run_references(&repositories, &stored_session_id, &run_id).await?;
+                ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+                references
+            } else {
+                Vec::new()
+            },
             stored_session_id,
             status,
-            media: Vec::new(),
         },
         CompanionAgentEventRequest::ModelChanged { selection } => {
             Event::SessionModelChanged { selection }
@@ -927,6 +967,68 @@ pub async fn companion_publish_agent_event(
             "Companion event delivery is busy.",
         )
     })
+}
+
+#[tauri::command]
+pub async fn companion_list_agent_media(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    stored_session_id: String,
+) -> Result<Vec<media::CompanionMediaProjection>, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let repositories = repositories(&app).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let projections = media::session_projections(&repositories, &stored_session_id).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    Ok(projections)
+}
+
+#[tauri::command]
+pub async fn companion_read_agent_media_chunk(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    stored_session_id: String,
+    artifact_id: String,
+    offset_bytes: u64,
+) -> Result<MediaChunk, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let repositories = repositories(&app).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let artifact =
+        media::resolve_fetch_artifact(&repositories, &stored_session_id, &artifact_id).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let chunk = media::read_chunk(
+        &runtime.media_transfers,
+        "companion-frontend",
+        artifact,
+        offset_bytes,
+    )
+    .await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    Ok(chunk)
+}
+
+async fn ensure_companion_agent_session_exists(
+    repositories: &crate::db::repositories::Repositories,
+    stored_session_id: &str,
+) -> Result<(), AppError> {
+    let found = sqlx::query::query(
+        "SELECT 1
+         FROM agent_sessions
+         WHERE id = ?
+         LIMIT 1",
+    )
+    .bind(stored_session_id)
+    .fetch_optional(&repositories.pool)
+    .await?
+    .is_some();
+    if !found {
+        return Err(AppError::new(
+            "companion_agent_session_not_found",
+            "That agent session is no longer available.",
+        ));
+    }
+    Ok(())
 }
 
 pub fn setup(app: &AppHandle) {

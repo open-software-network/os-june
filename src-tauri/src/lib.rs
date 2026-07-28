@@ -229,6 +229,8 @@ pub fn run() {
             companion::companion_complete_frontend_request,
             companion::companion_cancel_frontend_request,
             companion::companion_publish_agent_event,
+            companion::companion_list_agent_media,
+            companion::companion_read_agent_media_chunk,
             commands::create_note,
             commands::list_notes,
             commands::get_note,

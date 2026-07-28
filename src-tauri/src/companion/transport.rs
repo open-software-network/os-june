@@ -815,7 +815,9 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
         | "companion_root_not_found"
         | "companion_file_not_found"
         | "companion_upload_not_found"
-        | "companion_attachment_not_found" => FailureCode::NotFound,
+        | "companion_attachment_not_found"
+        | "companion_agent_session_not_found"
+        | "companion_media_not_found" => FailureCode::NotFound,
         "note_revision_conflict" | "companion_upload_conflict" => FailureCode::Conflict,
         "companion_upload_expired" | "companion_attachment_expired" => FailureCode::Expired,
         "companion_root_limit_exceeded"
@@ -824,7 +826,7 @@ fn protocol_failure(error: &AppError) -> ProtocolFailure {
         | "companion_reference_limit_exceeded" => FailureCode::LimitExceeded,
         "companion_upload_integrity_mismatch" => FailureCode::IntegrityMismatch,
         "companion_upload_outcome_unknown" => FailureCode::OutcomeUnknown,
-        "companion_note_too_large" => FailureCode::Unsupported,
+        "companion_note_too_large" | "companion_media_chunk_invalid" => FailureCode::Unsupported,
         "companion_frontend_timeout" => FailureCode::Busy,
         "companion_frontend_unavailable" => FailureCode::MacOffline,
         _ => FailureCode::Internal,

@@ -42,6 +42,11 @@ pub enum FrontendIntent {
         attachments: Vec<String>,
         attachment_reference_ids: Vec<uuid::Uuid>,
     },
+    MediaFetch {
+        stored_session_id: String,
+        artifact_id: String,
+        offset_bytes: u64,
+    },
     AgentCancel {
         stored_session_id: String,
     },
@@ -387,14 +392,11 @@ impl Controller {
                     .await?,
                 ),
             )),
-            Body::MediaFetch(_) => ControllerOutcome::Immediate(response(
-                capability,
-                ResultPayload::Error(ProtocolFailure {
-                    code: FailureCode::Unsupported,
-                    message: "Media fetching is not available in this build.".to_string(),
-                    retryable: false,
-                }),
-            )),
+            Body::MediaFetch(request) => ControllerOutcome::Frontend(FrontendIntent::MediaFetch {
+                stored_session_id: request.stored_session_id,
+                artifact_id: request.artifact_id,
+                offset_bytes: request.offset_bytes,
+            }),
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
             }

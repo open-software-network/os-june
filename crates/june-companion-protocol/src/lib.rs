@@ -794,8 +794,11 @@ pub struct MediaResultReference {
     pub artifact_id: String,
     pub kind: MediaKind,
     pub media_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width_px: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height_px: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     pub size_bytes: u64,
 }

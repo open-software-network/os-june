@@ -18,7 +18,9 @@ import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import {
   checkRecordingSourceReadiness,
   companionCompleteFrontendRequest,
+  companionListAgentMedia,
   companionPublishAgentEvent,
+  companionReadAgentMediaChunk,
   listAgentItems,
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
@@ -1207,7 +1209,10 @@ export function App() {
               });
               return;
             }
-            const items = await listAgentItems(storedSessionId);
+            const [items, media] = await Promise.all([
+              listAgentItems(storedSessionId),
+              companionListAgentMedia(storedSessionId),
+            ]);
             const stillKnownSession = (await companionScopedSessions()).some(
               (session) => session.id === storedSessionId,
             );
@@ -1222,7 +1227,7 @@ export function App() {
               });
               return;
             }
-            const messages = companionAgentMessagesFromItems(items);
+            const messages = companionAgentMessagesFromItems(items, media);
             const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
             page?.items.reverse();
             await companionCompleteFrontendRequest(
@@ -1313,6 +1318,45 @@ export function App() {
                 settings.settings.costQuality,
               ),
             });
+            return;
+          }
+          case "mediaFetch": {
+            const { storedSessionId, artifactId, offsetBytes } = payload.intent.data;
+            const knownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            if (!knownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That generated media is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const chunk = await companionReadAgentMediaChunk(
+              storedSessionId,
+              artifactId,
+              offsetBytes,
+            );
+            const stillKnownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              stillKnownSession
+                ? { type: "mediaChunk", data: chunk }
+                : {
+                    type: "error",
+                    data: {
+                      code: "not_found",
+                      message: "That generated media is no longer available.",
+                      retryable: false,
+                    },
+                  },
+            );
             return;
           }
           case "agentSend":

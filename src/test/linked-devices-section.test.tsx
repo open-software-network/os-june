@@ -163,4 +163,19 @@ describe("LinkedDevicesSection", () => {
 
     expect(mocks.revokeDevice).toHaveBeenCalledWith("00000000-0000-0000-0000-000000000004");
   });
+
+  it("shows generated media access in each linked device's granted capabilities", async () => {
+    mocks.listDevices.mockResolvedValue([
+      {
+        id: "device-1",
+        displayName: "June Companion",
+        linkedAt: "2026-07-28T10:00:00Z",
+        capabilities: ["mediaRead"],
+      },
+    ]);
+
+    render(<LinkedDevicesSection />);
+
+    expect(await screen.findByText("Read generated media")).toBeInTheDocument();
+  });
 });

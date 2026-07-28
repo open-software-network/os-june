@@ -2309,6 +2309,7 @@ export type CompanionCapability =
   | "agentCancel"
   | "modelRead"
   | "modelEdit"
+  | "mediaRead"
   | "settingsRead"
   | "settingsEditSafe"
   | "recordingControlExisting"
@@ -2408,11 +2409,55 @@ export type CompanionAgentStatus =
 
 export type CompanionAgentEventRequest =
   | { type: "delta"; data: { storedSessionId: string; text: string } }
-  | { type: "status"; data: { storedSessionId: string; status: CompanionAgentStatus } }
+  | {
+      type: "status";
+      data: { storedSessionId: string; status: CompanionAgentStatus; runId?: string };
+    }
   | { type: "modelChanged"; data: { selection: CompanionSessionModelSelection } };
 
 export async function companionPublishAgentEvent(request: CompanionAgentEventRequest) {
   return invoke<void>("companion_publish_agent_event", { request });
+}
+
+export type CompanionMediaReference = {
+  artifactId: string;
+  kind: "image" | "video";
+  mediaType: string;
+  widthPx?: number;
+  heightPx?: number;
+  durationMs?: number;
+  sizeBytes: number;
+};
+
+export type CompanionMediaProjection = {
+  runId?: string;
+  createdAt: string;
+  reference: CompanionMediaReference;
+};
+
+export async function companionListAgentMedia(storedSessionId: string) {
+  return invoke<CompanionMediaProjection[]>("companion_list_agent_media", { storedSessionId });
+}
+
+export type CompanionMediaChunk = {
+  artifactId: string;
+  offsetBytes: number;
+  totalSizeBytes: number;
+  sha256: string;
+  bytes: string;
+  complete: boolean;
+};
+
+export async function companionReadAgentMediaChunk(
+  storedSessionId: string,
+  artifactId: string,
+  offsetBytes: number,
+) {
+  return invoke<CompanionMediaChunk>("companion_read_agent_media_chunk", {
+    storedSessionId,
+    artifactId,
+    offsetBytes,
+  });
 }
 
 export type CompanionFrontendIntent =
@@ -2433,7 +2478,11 @@ export type CompanionFrontendIntent =
   | { type: "agentCancel"; data: { storedSessionId: string } }
   | { type: "modelsList" }
   | { type: "sessionModelGet"; data: { storedSessionId: string } }
-  | { type: "sessionModelSet"; data: { storedSessionId: string; modelId: string } };
+  | { type: "sessionModelSet"; data: { storedSessionId: string; modelId: string } }
+  | {
+      type: "mediaFetch";
+      data: { storedSessionId: string; artifactId: string; offsetBytes: number };
+    };
 
 export type CompanionFrontendRequest = {
   operationId: string;
@@ -2463,6 +2512,7 @@ export type CompanionResultPayload =
           text: string;
           createdAt: string;
           streaming: boolean;
+          media?: CompanionMediaReference[];
         }>;
         nextCursor?: string;
       };
@@ -2470,6 +2520,7 @@ export type CompanionResultPayload =
   | { type: "agentAccepted"; data: { storedSessionId: string } }
   | { type: "models"; data: { models: CompanionModelOption[] } }
   | { type: "sessionModel"; data: CompanionSessionModelSelection }
+  | { type: "mediaChunk"; data: CompanionMediaChunk }
   | {
       type: "error";
       data: {

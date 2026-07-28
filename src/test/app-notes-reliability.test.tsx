@@ -165,6 +165,8 @@ vi.mock("../lib/tauri", () => ({
   patchNote: mocks.patchNote,
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionListAgentMedia: vi.fn(async () => []),
+  companionReadAgentMediaChunk: vi.fn(),
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,

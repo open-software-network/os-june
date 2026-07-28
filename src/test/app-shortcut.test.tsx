@@ -92,6 +92,8 @@ const mocks = vi.hoisted(() => ({
   companionCompleteFrontendRequest: vi.fn(),
   companionConsumeAttachments: vi.fn().mockResolvedValue(undefined),
   companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
+  companionListAgentMedia: vi.fn().mockResolvedValue([]),
+  companionReadAgentMediaChunk: vi.fn(),
   companionPairingEnabled: true,
   listAgentItems: vi.fn().mockResolvedValue([]),
   getAgentSession: vi.fn(),
@@ -254,6 +256,8 @@ vi.mock("../lib/tauri", () => ({
   companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
   companionConsumeAttachments: mocks.companionConsumeAttachments,
   companionPublishAgentEvent: mocks.companionPublishAgentEvent,
+  companionListAgentMedia: mocks.companionListAgentMedia,
+  companionReadAgentMediaChunk: mocks.companionReadAgentMediaChunk,
   listAgentItems: mocks.listAgentItems,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
@@ -461,6 +465,15 @@ describe("App shortcuts", () => {
       ],
     });
     mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
+    mocks.companionListAgentMedia.mockResolvedValue([]);
+    mocks.companionReadAgentMediaChunk.mockResolvedValue({
+      artifactId: "artifact-default",
+      offsetBytes: 0,
+      totalSizeBytes: 1,
+      sha256: "0".repeat(64),
+      bytes: "AA==",
+      complete: true,
+    });
     mocks.getAgentSession.mockImplementation(async (sessionId: string) => {
       const sessions = await mocks.listAgentSessions();
       const found = sessions.find((candidate: AgentSessionDto) => candidate.id === sessionId);
@@ -912,6 +925,192 @@ describe("App shortcuts", () => {
           items: [expect.objectContaining({ id: "message-1", text: "Oldest question" })],
         },
       }),
+    );
+  });
+
+  it("returns canonical media references with companion agent history", async () => {
+    const session = agentSession("session-media", "Generated media");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listAgentItems.mockResolvedValue([
+      {
+        id: "message-media",
+        sessionId: session.id,
+        runId: "run-media",
+        sequence: 1,
+        kind: "message",
+        role: "assistant",
+        text: "Here is the result.",
+        status: "complete",
+        createdAt: "2026-07-28T10:00:00.000Z",
+      },
+    ]);
+    mocks.companionListAgentMedia.mockResolvedValue([
+      {
+        runId: "run-media",
+        createdAt: "2026-07-28T09:59:59.000Z",
+        reference: {
+          artifactId: "artifact-media",
+          kind: "image",
+          mediaType: "image/png",
+          widthPx: 1024,
+          heightPx: 1024,
+          sizeBytes: 4096,
+        },
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") {
+          handler({
+            payload: {
+              operationId: "operation-media",
+              intent: {
+                type: "agentMessagesList",
+                data: { storedSessionId: session.id, limit: 50 },
+              },
+            },
+          });
+        }
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-media", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({
+              id: "message-media",
+              media: [
+                expect.objectContaining({
+                  artifactId: "artifact-media",
+                  kind: "image",
+                  mediaType: "image/png",
+                }),
+              ],
+            }),
+          ],
+        },
+      }),
+    );
+    expect(mocks.companionListAgentMedia).toHaveBeenCalledWith(session.id);
+  });
+
+  it("returns a verified media chunk through the partition-scoped frontend boundary", async () => {
+    const session = agentSession("session-media-fetch", "Generated media");
+    const chunk = {
+      artifactId: "artifact-media",
+      offsetBytes: 31 * 1024,
+      totalSizeBytes: 31 * 1024 + 4,
+      sha256: "a".repeat(64),
+      bytes: "dGFpbA==",
+      complete: true,
+    };
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.companionReadAgentMediaChunk.mockResolvedValue(chunk);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-fetch",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: chunk.artifactId,
+              offsetBytes: chunk.offsetBytes,
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-media-fetch", {
+        type: "mediaChunk",
+        data: chunk,
+      }),
+    );
+    expect(mocks.companionReadAgentMediaChunk).toHaveBeenCalledWith(
+      session.id,
+      chunk.artifactId,
+      chunk.offsetBytes,
+    );
+  });
+
+  it("discards a media chunk when the active partition changes during the read", async () => {
+    const session = agentSession("session-media-partition-a", "Partition A media");
+    const chunk = deferred<{
+      artifactId: string;
+      offsetBytes: number;
+      totalSizeBytes: number;
+      sha256: string;
+      bytes: string;
+      complete: boolean;
+    }>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: session.id, profile: "partition-a" },
+    ]);
+    mocks.companionReadAgentMediaChunk.mockReturnValue(chunk.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-partition",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: "artifact-private",
+              offsetBytes: 0,
+            },
+          },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionReadAgentMediaChunk).toHaveBeenCalledWith(
+        session.id,
+        "artifact-private",
+        0,
+      ),
+    );
+
+    setCurrentDataPartitionName("partition-b");
+    chunk.resolve({
+      artifactId: "artifact-private",
+      offsetBytes: 0,
+      totalSizeBytes: 1,
+      sha256: "b".repeat(64),
+      bytes: "AA==",
+      complete: true,
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-media-partition",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.companionCompleteFrontendRequest).not.toHaveBeenCalledWith(
+      "operation-media-partition",
+      expect.objectContaining({ type: "mediaChunk" }),
     );
   });
 

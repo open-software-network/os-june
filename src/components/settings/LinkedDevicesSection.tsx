@@ -26,6 +26,7 @@ const capabilityLabels: Record<CompanionCapability, string> = {
   agentCancel: "Cancel agent runs",
   modelRead: "View agent models",
   modelEdit: "Change agent models",
+  mediaRead: "Read generated media",
   settingsRead: "Read safe settings",
   settingsEditSafe: "Edit safe settings",
   recordingControlExisting: "Control an existing recording",

@@ -800,6 +800,16 @@ export function AgentWorkspace({
           data: { storedSessionId: payload.sessionId, text: payload.data.delta },
         }).catch(() => undefined);
       }
+      if (companionPairingEnabled && payload.method === "tool.completed") {
+        void companionPublishAgentEvent({
+          type: "status",
+          data: {
+            storedSessionId: payload.sessionId,
+            status: "running",
+            runId: payload.runId,
+          },
+        }).catch(() => undefined);
+      }
       const companionStatus: CompanionAgentStatus | undefined =
         payload.method === "interruption.requested"
           ? "waitingForUser"
@@ -815,7 +825,11 @@ export function AgentWorkspace({
       if (companionPairingEnabled && companionStatus) {
         void companionPublishAgentEvent({
           type: "status",
-          data: { storedSessionId: payload.sessionId, status: companionStatus },
+          data: {
+            storedSessionId: payload.sessionId,
+            status: companionStatus,
+            ...(terminal ? { runId: payload.runId } : {}),
+          },
         }).catch(() => undefined);
       }
       if (payload.sessionId !== selectedIdRef.current) {

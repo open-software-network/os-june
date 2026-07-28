@@ -3529,6 +3529,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hound",
+ "imagesize",
  "june-companion-crypto",
  "june-companion-protocol",
  "keyring",
