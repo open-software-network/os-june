@@ -1329,7 +1329,7 @@ pub fn seed_bundled_skills(app: &AppHandle) {
             .join("resources")
             .join("agent-skills")
     });
-    let source_root = resource_root.or(debug_root);
+    let source_root = resource_root.filter(|path| path.is_dir()).or(debug_root);
     let Some(source_root) = source_root else {
         tracing::warn!("could not resolve bundled agent-skills resource directory");
         return;
