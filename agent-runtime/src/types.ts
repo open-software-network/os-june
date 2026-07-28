@@ -31,6 +31,7 @@ export type RuntimeToolDescriptor = {
   requiresApproval?: boolean;
   approvalProvider?: string;
   approvalRemoteToolName?: string;
+  policyFingerprint?: string;
   notionAction?: boolean;
 };
 

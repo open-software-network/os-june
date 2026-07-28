@@ -1186,6 +1186,8 @@ pub struct RuntimeToolDescriptorJson {
     pub approval_provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_remote_tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1200,6 +1202,7 @@ pub struct RegisteredMcpTool {
 pub struct McpToolPolicy {
     pub server_id: String,
     pub requires_approval: bool,
+    pub policy_fingerprint: Option<String>,
 }
 
 #[derive(Default)]
@@ -1258,6 +1261,7 @@ impl McpToolRegistry {
             };
             let requires_approval = tool.annotations.read_only_hint != Some(true)
                 || tool.annotations.destructive_hint == Some(true);
+            let policy_fingerprint = managed_linear_policy_fingerprint(&tool)?;
             let descriptor = RuntimeToolDescriptorJson {
                 id: format!("mcp:{}/{}", server.id, tool.name),
                 name: name.clone(),
@@ -1267,6 +1271,7 @@ impl McpToolRegistry {
                 requires_approval: requires_approval.then_some(true),
                 approval_provider: Some("Linear".to_string()),
                 approval_remote_tool_name: Some(tool.name.clone()),
+                policy_fingerprint: Some(policy_fingerprint),
             };
             // The managed source owns the mcp_linear_* namespace. A
             // user-configured server with the same display name must not
@@ -1312,6 +1317,7 @@ impl McpToolRegistry {
                 requires_approval: requires_approval.then_some(true),
                 approval_provider: None,
                 approval_remote_tool_name: None,
+                policy_fingerprint: None,
             };
             self.tools.insert(
                 name,
@@ -1407,6 +1413,24 @@ fn normalize_managed_mcp_tool(mut tool: McpDiscoveredTool) -> Option<McpDiscover
         tool.description.push_str("...");
     }
     Some(tool)
+}
+
+fn managed_linear_policy_fingerprint(tool: &McpDiscoveredTool) -> Result<String, AgentMcpError> {
+    let identity = serde_json::to_vec(&json!({
+        "remoteName": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.input_schema,
+        "annotations": tool.annotations,
+    }))
+    .map_err(|_| AgentMcpError::Protocol)?;
+    let mut hash = Sha256::new();
+    hash.update(MANAGED_LINEAR_POLICY_REVISION.as_bytes());
+    hash.update([0]);
+    hash.update(identity);
+    Ok(format!(
+        "{MANAGED_LINEAR_POLICY_REVISION}:{:x}",
+        hash.finalize()
+    ))
 }
 
 pub struct AgentMcpSubsystem<S: McpSecretStore> {
@@ -1677,6 +1701,7 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
             .map(|registered| McpToolPolicy {
                 server_id: registered.server_id.clone(),
                 requires_approval: registered.descriptor.requires_approval == Some(true),
+                policy_fingerprint: registered.descriptor.policy_fingerprint.clone(),
             }))
     }
 }
@@ -1817,7 +1842,10 @@ pub async fn snapshot_run_policies(
             continue;
         };
         let updated_at = if server_id == MANAGED_LINEAR_SERVER_ID {
-            MANAGED_LINEAR_POLICY_REVISION.to_string()
+            descriptor
+                .policy_fingerprint
+                .clone()
+                .ok_or(AgentMcpError::Storage)?
         } else {
             query("SELECT updated_at FROM agent_mcp_servers WHERE id = ?")
                 .bind(server_id)
@@ -1875,7 +1903,12 @@ pub async fn run_policy_matches(
         .map_err(|_| AgentMcpError::Storage)?;
         return Ok(row.is_some_and(|row| {
             row.get::<String, _>("server_id") == current.server_id
-                && row.get::<String, _>("server_updated_at") == MANAGED_LINEAR_POLICY_REVISION
+                && current
+                    .policy_fingerprint
+                    .as_ref()
+                    .is_some_and(|fingerprint| {
+                        row.get::<String, _>("server_updated_at") == *fingerprint
+                    })
                 && row.get::<bool, _>("requires_approval") == current.requires_approval
         }));
     }
@@ -3831,6 +3864,7 @@ mod tests {
             requires_approval: None,
             approval_provider: None,
             approval_remote_tool_name: None,
+            policy_fingerprint: None,
         };
         snapshot_run_policies(&repo.pool, "run-1", std::slice::from_ref(&descriptor))
             .await
@@ -3838,6 +3872,7 @@ mod tests {
         let policy = McpToolPolicy {
             server_id: server.id.clone(),
             requires_approval: false,
+            policy_fingerprint: None,
         };
         assert!(
             run_policy_matches(&repo.pool, "run-1", &descriptor.name, &policy)
@@ -3860,7 +3895,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn managed_linear_policy_snapshot_needs_no_custom_server_row() {
+    async fn managed_linear_policy_snapshot_binds_the_exact_hosted_tool_contract() {
         let repo = repository().await;
         query(
             "CREATE TABLE agent_runs (
@@ -3881,15 +3916,31 @@ mod tests {
             .execute(&repo.pool)
             .await
             .unwrap();
+        let annotations = McpToolAnnotations {
+            read_only_hint: None,
+            destructive_hint: Some(false),
+        };
+        let input_schema = json!({
+            "type":"object",
+            "properties":{"title":{"type":"string"}}
+        });
+        let fingerprint = managed_linear_policy_fingerprint(&McpDiscoveredTool {
+            name: "save-issue".into(),
+            description: "Save an issue".into(),
+            input_schema: input_schema.clone(),
+            annotations: annotations.clone(),
+        })
+        .unwrap();
         let descriptor = RuntimeToolDescriptorJson {
-            id: format!("mcp:{MANAGED_LINEAR_SERVER_ID}/search"),
-            name: "mcp_linear_search".into(),
-            description: "Search Linear".into(),
-            parameters: json!({"type":"object","properties":{}}),
+            id: format!("mcp:{MANAGED_LINEAR_SERVER_ID}/save-issue"),
+            name: "mcp_linear_save_issue".into(),
+            description: "Save an issue".into(),
+            parameters: input_schema.clone(),
             strict: Some(false),
-            requires_approval: None,
+            requires_approval: Some(true),
             approval_provider: Some("Linear".into()),
-            approval_remote_tool_name: Some("search".into()),
+            approval_remote_tool_name: Some("save-issue".into()),
+            policy_fingerprint: Some(fingerprint.clone()),
         };
 
         snapshot_run_policies(&repo.pool, "run-linear", std::slice::from_ref(&descriptor))
@@ -3898,7 +3949,8 @@ mod tests {
 
         let policy = McpToolPolicy {
             server_id: MANAGED_LINEAR_SERVER_ID.into(),
-            requires_approval: false,
+            requires_approval: true,
+            policy_fingerprint: Some(fingerprint),
         };
         assert!(
             run_policy_matches(&repo.pool, "run-linear", &descriptor.name, &policy)
@@ -3910,12 +3962,70 @@ mod tests {
             "run-linear",
             &descriptor.name,
             &McpToolPolicy {
+                server_id: MANAGED_LINEAR_SERVER_ID.into(),
                 requires_approval: true,
-                ..policy
+                policy_fingerprint: None,
             },
         )
         .await
         .unwrap());
+        for changed_tool in [
+            McpDiscoveredTool {
+                name: "save.issue".into(),
+                description: "Save an issue".into(),
+                input_schema: input_schema.clone(),
+                annotations: annotations.clone(),
+            },
+            McpDiscoveredTool {
+                name: "save-issue".into(),
+                description: "Save an issue".into(),
+                input_schema: json!({
+                    "type":"object",
+                    "properties":{"issueId":{"type":"string"}}
+                }),
+                annotations: annotations.clone(),
+            },
+            McpDiscoveredTool {
+                name: "save-issue".into(),
+                description: "Save an issue".into(),
+                input_schema: input_schema.clone(),
+                annotations: McpToolAnnotations {
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                },
+            },
+        ] {
+            assert!(!run_policy_matches(
+                &repo.pool,
+                "run-linear",
+                &descriptor.name,
+                &McpToolPolicy {
+                    server_id: MANAGED_LINEAR_SERVER_ID.into(),
+                    requires_approval: true,
+                    policy_fingerprint: Some(
+                        managed_linear_policy_fingerprint(&changed_tool).unwrap()
+                    ),
+                },
+            )
+            .await
+            .unwrap());
+        }
+
+        query("INSERT INTO agent_runs (id) VALUES ('run-linear-missing-fingerprint')")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let mut missing_fingerprint = descriptor;
+        missing_fingerprint.policy_fingerprint = None;
+        assert!(matches!(
+            snapshot_run_policies(
+                &repo.pool,
+                "run-linear-missing-fingerprint",
+                &[missing_fingerprint],
+            )
+            .await,
+            Err(AgentMcpError::Storage)
+        ));
     }
 
     #[tokio::test]
@@ -3956,6 +4066,7 @@ mod tests {
             requires_approval: None,
             approval_provider: None,
             approval_remote_tool_name: None,
+            policy_fingerprint: None,
         };
         snapshot_run_policies(&repo.pool, "run-empty", &[descriptor])
             .await

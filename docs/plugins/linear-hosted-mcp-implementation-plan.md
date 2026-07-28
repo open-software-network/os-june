@@ -85,7 +85,10 @@ The runtime applies a generic MCP safety rule:
 
 The approval shows the provider, remote tool name, and bounded arguments before
 dispatch. Approval is per invocation, using the existing persisted
-interruption protocol.
+interruption protocol. The persisted run policy binds the normalized runtime
+name to a fingerprint of the exact remote name, bounded description, input
+schema, and raw approval annotations. Inventory drift fails closed and requires
+a fresh turn and approval against the new tool contract.
 
 ## Architecture
 
@@ -167,6 +170,13 @@ At agent-run preparation:
 An invalid tool is skipped with a content-free diagnostic. One invalid tool
 must not remove the other valid Linear tools or fail the whole agent run.
 Runtime-name collisions fail closed for the colliding tool.
+
+Existing routines that already store the historical `june_linear` or
+`june_linear_actions` toolset identity receive the corresponding directly
+runnable or approval-required hosted tools during run preparation. Enabling
+both identities exposes the complete hosted inventory. This is compatibility
+for saved routine configuration, not a new Linear polling trigger, routine
+template, or autonomous mutation policy.
 
 Before every dispatch, Rust rechecks that the Linear account is still
 connected and healthy. A descriptor captured before disconnect therefore

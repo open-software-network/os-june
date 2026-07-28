@@ -1258,7 +1258,11 @@ async fn unattended_tools(
         crate::agent_mcp::KeychainMcpSecretStore,
     );
     match subsystem
-        .refresh_registry_for_workspace(safety_mode == AgentSafetyMode::Sandboxed, Some(workspace))
+        .refresh_registry_for_workspace_with_managed_linear(
+            app,
+            safety_mode == AgentSafetyMode::Sandboxed,
+            Some(workspace),
+        )
         .await
     {
         Ok(descriptors) => {
@@ -1271,13 +1275,20 @@ async fn unattended_tools(
                 else {
                     continue;
                 };
-                let Ok(server) = mcp_repository.get(server_id).await else {
-                    continue;
+                let server_name = if server_id == crate::agent_mcp::MANAGED_LINEAR_SERVER_ID {
+                    crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME.to_string()
+                } else {
+                    let Ok(server) = mcp_repository.get(server_id).await else {
+                        continue;
+                    };
+                    server.name
                 };
-                if enabled_toolsets
-                    .iter()
-                    .any(|toolset| toolset == &server.name)
-                {
+                if routine_mcp_server_enabled(
+                    server_id,
+                    &server_name,
+                    descriptor.requires_approval == Some(true),
+                    enabled_toolsets,
+                ) {
                     if let Ok(value) = serde_json::to_value(descriptor) {
                         tools
                             .as_array_mut()
@@ -1362,6 +1373,26 @@ fn routine_base_tool_allowed(name: &str, enabled_toolsets: &[String]) -> bool {
     }
 }
 
+fn routine_mcp_server_enabled(
+    server_id: &str,
+    server_name: &str,
+    requires_approval: bool,
+    enabled_toolsets: &[String],
+) -> bool {
+    if server_id == crate::agent_mcp::MANAGED_LINEAR_SERVER_ID {
+        let has = |expected: &str| enabled_toolsets.iter().any(|toolset| toolset == expected);
+        return has(crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME)
+            || if requires_approval {
+                has("june_linear_actions")
+            } else {
+                has("june_linear")
+            };
+    }
+    enabled_toolsets
+        .iter()
+        .any(|toolset| toolset == server_name)
+}
+
 pub async fn routine_tool_allowed_for_session(
     pool: &SqlitePool,
     session_id: &str,
@@ -1401,7 +1432,9 @@ pub async fn routine_tool_allowed_for_session(
 pub async fn routine_mcp_server_allowed_for_session(
     pool: &SqlitePool,
     session_id: &str,
+    server_id: &str,
     server_name: &str,
+    requires_approval: bool,
 ) -> Result<Option<bool>, AppError> {
     let row = query(
         "SELECT routines.metadata_json, routines.tool_catalog_version
@@ -1418,11 +1451,14 @@ pub async fn routine_mcp_server_allowed_for_session(
     };
     let metadata = serde_json::from_str::<Value>(&row.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
-    Ok(Some(
-        enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0)
-            .iter()
-            .any(|toolset| toolset == server_name),
-    ))
+    let enabled_toolsets =
+        enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0);
+    Ok(Some(routine_mcp_server_enabled(
+        server_id,
+        server_name,
+        requires_approval,
+        &enabled_toolsets,
+    )))
 }
 
 fn base_unattended_tools() -> Value {
@@ -1703,6 +1739,129 @@ mod tests {
         assert_eq!(
             resolve_routine_model("auto", crate::providers::AUTO_GENERATION_MODEL),
             crate::providers::AUTO_GENERATION_MODEL
+        );
+    }
+
+    #[test]
+    fn historical_linear_toolsets_preserve_read_and_action_boundaries() {
+        let managed_id = crate::agent_mcp::MANAGED_LINEAR_SERVER_ID;
+        let managed_name = crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME;
+        assert!(routine_mcp_server_enabled(
+            managed_id,
+            managed_name,
+            false,
+            &["june_linear".into()],
+        ));
+        assert!(!routine_mcp_server_enabled(
+            managed_id,
+            managed_name,
+            true,
+            &["june_linear".into()],
+        ));
+        assert!(routine_mcp_server_enabled(
+            managed_id,
+            managed_name,
+            true,
+            &["june_linear_actions".into()],
+        ));
+        assert!(!routine_mcp_server_enabled(
+            managed_id,
+            managed_name,
+            false,
+            &["june_linear_actions".into()],
+        ));
+        for requires_approval in [false, true] {
+            assert!(routine_mcp_server_enabled(
+                managed_id,
+                managed_name,
+                requires_approval,
+                &["linear".into()],
+            ));
+        }
+        assert!(!routine_mcp_server_enabled(
+            managed_id,
+            managed_name,
+            false,
+            &["web".into()],
+        ));
+        assert!(!routine_mcp_server_enabled(
+            "custom-linear",
+            "linear",
+            false,
+            &["june_linear".into()],
+        ));
+        assert!(routine_mcp_server_enabled(
+            "custom-linear",
+            "linear",
+            false,
+            &["linear".into()],
+        ));
+    }
+
+    #[tokio::test]
+    async fn routine_session_gate_maps_saved_linear_toolsets_to_hosted_policy() {
+        let pool = pool().await;
+        let mut request = create_request("every 1h");
+        request.enabled_toolsets = Some(vec!["june_linear".into()]);
+        create(&pool, request).await.unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-linear')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query("INSERT INTO agent_runs (id) VALUES ('run-linear')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            "session-linear",
+            "run-linear",
+            &now(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            routine_mcp_server_allowed_for_session(
+                &pool,
+                "session-linear",
+                crate::agent_mcp::MANAGED_LINEAR_SERVER_ID,
+                crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME,
+                false,
+            )
+            .await
+            .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            routine_mcp_server_allowed_for_session(
+                &pool,
+                "session-linear",
+                crate::agent_mcp::MANAGED_LINEAR_SERVER_ID,
+                crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME,
+                true,
+            )
+            .await
+            .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            routine_mcp_server_allowed_for_session(
+                &pool,
+                "session-linear",
+                "custom-linear",
+                "linear",
+                false,
+            )
+            .await
+            .unwrap(),
+            Some(false)
         );
     }
 
