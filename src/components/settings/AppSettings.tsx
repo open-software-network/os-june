@@ -498,13 +498,7 @@ export function AppSettings({
     ...INITIAL_EXPERIMENTAL_UNLOCK_CLICK_STATE,
   });
   const experimentalUnlockingRef = useRef(false);
-  const runtimeFlagBaselineCandidateRef = useRef<boolean | null>(null);
-  const runtimeFlagStatusLoadedRef = useRef(false);
-  const [runtimeBrowserUseBaseline, setRuntimeBrowserUseBaseline] = useState<boolean | null>(null);
-  const [agentRuntimeRunning, setAgentRuntimeRunning] = useState(false);
-  const [experimentalOperation, setExperimentalOperation] = useState<
-    "flags" | "restart" | "unpack"
-  >();
+  const [experimentalOperation, setExperimentalOperation] = useState<"flags" | "unpack">();
   const [experimentalError, setExperimentalError] = useState<string>();
   // Set only when a leave-rc switch turns up an installable stable, so the
   // bespoke in-context confirm below the toggle can name the exact version.
@@ -571,27 +565,6 @@ export function AppSettings({
       ? "Shortcut must include Ctrl, Alt, Shift, or Win."
       : MODIFIER_REQUIRED_MESSAGE;
 
-  useEffect(() => {
-    if (!experimentalFlags.loaded || runtimeFlagStatusLoadedRef.current) return;
-    runtimeFlagBaselineCandidateRef.current ??= experimentalFlags.browserUseEnabled;
-    let cancelled = false;
-    const baseline = runtimeFlagBaselineCandidateRef.current;
-    Promise.resolve()
-      .then(() => {
-        if (cancelled) return;
-        runtimeFlagStatusLoadedRef.current = true;
-        setAgentRuntimeRunning(true);
-        setRuntimeBrowserUseBaseline(baseline);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        runtimeFlagStatusLoadedRef.current = true;
-        setRuntimeBrowserUseBaseline(baseline);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [experimentalFlags.loaded, experimentalFlags.browserUseEnabled]);
   const setActiveTab = (tab: SettingsTab) => {
     if (controlled) {
       onTabChange?.(tab);
@@ -1661,19 +1634,6 @@ export function AppSettings({
     }
   }
 
-  async function restartAgentForExperimentalFlags() {
-    setExperimentalOperation("restart");
-    setExperimentalError(undefined);
-    try {
-      setRuntimeBrowserUseBaseline(experimentalFlags.browserUseEnabled);
-      setAgentRuntimeRunning(true);
-    } catch (error) {
-      setExperimentalError(messageFromError(error));
-    } finally {
-      setExperimentalOperation(undefined);
-    }
-  }
-
   async function unpackExperimentalExtension() {
     setExperimentalOperation("unpack");
     setExperimentalError(undefined);
@@ -1685,11 +1645,6 @@ export function AppSettings({
       setExperimentalOperation(undefined);
     }
   }
-
-  const experimentalRestartNeeded =
-    agentRuntimeRunning &&
-    runtimeBrowserUseBaseline !== null &&
-    runtimeBrowserUseBaseline !== experimentalFlags.browserUseEnabled;
 
   return (
     <div className="settings-page" data-controlled={controlled || undefined}>
@@ -2880,27 +2835,6 @@ export function AppSettings({
                       />
                     </div>
                   </div>
-
-                  {experimentalRestartNeeded ? (
-                    <div className="settings-row">
-                      <div className="settings-row-info">
-                        <h3 className="settings-row-title">Agent runtime</h3>
-                        <p className="settings-row-description">
-                          Restart the agent to apply the Browser use change.
-                        </p>
-                      </div>
-                      <div className="settings-row-control">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          disabled={experimentalOperation === "restart"}
-                          onClick={() => void restartAgentForExperimentalFlags()}
-                        >
-                          {experimentalOperation === "restart" ? "Restarting..." : "Restart agent"}
-                        </button>
-                      </div>
-                    </div>
-                  ) : null}
 
                   <div className="settings-row">
                     <div className="settings-row-info">

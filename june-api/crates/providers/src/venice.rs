@@ -839,9 +839,9 @@ fn handle_agent_chat_non_success(
     provider_credentials: &ProviderCredentials,
 ) -> DomainError {
     // Provider error messages can echo request values even inside a structured
-    // JSON envelope. Extract only bounded machine tokens and a fixed local
-    // classification; never log the message, request body, or response body.
-    let error_metadata = upstream_error_metadata(error.body);
+    // JSON envelope. Emit only a fixed local classification; never log provider
+    // fields, the message, request body, or response body.
+    let error_class = upstream_error_class(error.body);
     tracing::error!(
         status = %error.status,
         model = %error.model,
@@ -849,9 +849,7 @@ fn handle_agent_chat_non_success(
         upstream_provider = error.route.provider.as_deref().unwrap_or("unknown"),
         privacy_level = error.route.privacy_level.as_deref().unwrap_or("unknown"),
         upstream_endpoint = error.route.endpoint.as_deref().unwrap_or("unknown"),
-        error_code = error_metadata.code.as_deref().unwrap_or("unknown"),
-        error_type = error_metadata.kind.as_deref().unwrap_or("unknown"),
-        error_class = error_metadata.class,
+        error_class,
         request_bytes = error.request_shape.request_bytes,
         message_count = error.request_shape.message_count,
         tools_count = error.request_shape.tools_count,
@@ -1113,54 +1111,17 @@ fn log_agent_chat_transport_error(
     );
 }
 
-#[derive(Debug, Eq, PartialEq)]
-struct UpstreamErrorMetadata {
-    code: Option<String>,
-    kind: Option<String>,
-    class: &'static str,
-}
-
-impl Default for UpstreamErrorMetadata {
-    fn default() -> Self {
-        Self {
-            code: None,
-            kind: None,
-            class: "unknown",
-        }
-    }
-}
-
-fn upstream_error_metadata(body: &[u8]) -> UpstreamErrorMetadata {
+fn upstream_error_class(body: &[u8]) -> &'static str {
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return UpstreamErrorMetadata::default();
+        return "unknown";
     };
     let nested = value.get("error").filter(|error| error.is_object());
-    let token = |key| {
-        nested
-            .and_then(|error| error.get(key))
-            .or_else(|| value.get(key))
-            .and_then(serde_json::Value::as_str)
-            .filter(|candidate| is_safe_error_token(candidate))
-            .map(str::to_string)
-    };
     let message = nested
         .and_then(|error| error.get("message"))
         .and_then(serde_json::Value::as_str)
         .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
         .or_else(|| value.get("error").and_then(serde_json::Value::as_str));
-    UpstreamErrorMetadata {
-        code: token("code"),
-        kind: token("type"),
-        class: classify_upstream_error(message),
-    }
-}
-
-fn is_safe_error_token(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    classify_upstream_error(message)
 }
 
 fn classify_upstream_error(message: Option<&str>) -> &'static str {
@@ -1775,11 +1736,11 @@ fn strip_scaffolding_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentChatRequestShape, SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, UpstreamErrorMetadata,
-        VeniceAgentChat, VeniceGenerator, VeniceModelsApiResponse, agent_chat_request_shape,
+        AgentChatRequestShape, SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat,
+        VeniceGenerator, VeniceModelsApiResponse, agent_chat_request_shape,
         cleanup_generated_note_text, cleanup_source_text, generation_source_text,
         inject_safety_context, prepare_agent_chat_body, sanitize_tool_schemas,
-        strip_scaffolding_tags, upstream_error_metadata, usage_from_chat_body,
+        strip_scaffolding_tags, upstream_error_class, usage_from_chat_body,
         venice_priced_model_items,
     };
 
@@ -1896,28 +1857,19 @@ mod tests {
     }
 
     #[test]
-    fn upstream_error_metadata_emits_only_safe_tokens_and_fixed_classes() {
-        let metadata = upstream_error_metadata(
-            br#"{"error":{"message":"Invalid tool_call_id PRIVATE-CALL with PRIVATE-RESULT","type":"invalid_request_error","code":"tool_pairing_failed"}}"#,
+    fn upstream_error_class_emits_only_fixed_values() {
+        assert_eq!(
+            upstream_error_class(
+                br#"{"error":{"message":"Invalid tool_call_id PRIVATE-CALL with PRIVATE-RESULT","type":"PRIVATE_TYPE","code":"PRIVATE_PROJECT_APOLLO"}}"#,
+            ),
+            "tool_pairing"
         );
         assert_eq!(
-            metadata,
-            UpstreamErrorMetadata {
-                code: Some("tool_pairing_failed".to_string()),
-                kind: Some("invalid_request_error".to_string()),
-                class: "tool_pairing",
-            }
+            upstream_error_class(
+                br#"{"error":{"message":"schema rejected PRIVATE-PROMPT","type":"PRIVATE_TYPE","code":"PRIVATE_PROJECT_APOLLO"}}"#,
+            ),
+            "schema_validation"
         );
-        let debug = format!("{metadata:?}");
-        assert!(!debug.contains("PRIVATE-CALL"));
-        assert!(!debug.contains("PRIVATE-RESULT"));
-
-        let unsafe_tokens = upstream_error_metadata(
-            br#"{"error":{"message":"schema rejected PRIVATE-PROMPT","type":"PRIVATE TYPE","code":"PRIVATE/RESULT"}}"#,
-        );
-        assert_eq!(unsafe_tokens.code, None);
-        assert_eq!(unsafe_tokens.kind, None);
-        assert_eq!(unsafe_tokens.class, "schema_validation");
     }
     use crate::http;
     use june_config::ModelType;

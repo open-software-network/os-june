@@ -277,12 +277,19 @@ pub async fn runtime_descriptors(app: &AppHandle) -> Result<Vec<serde_json::Valu
     if !has_connection(app).await? {
         return Ok(Vec::new());
     }
+    let hosted_tools = run_with_fresh_client(app, |client| async move {
+        client.initialize().await?;
+        client.hosted_tools_list().await
+    })
+    .await?;
+    let reads = filter_allowed_tools(hosted_tools.clone(), tool_allowed_for_agent);
+    let mut actions = filter_allowed_tools(hosted_tools, action_tool_allowed_for_agent);
+    for tool in &mut actions {
+        apply_action_tool_contract(tool);
+    }
     let mut descriptors = Vec::new();
-    for (list, action) in [
-        (mcp_tool_list(app).await?, false),
-        (mcp_action_tool_list(app).await?, true),
-    ] {
-        for tool in list.tools {
+    for (tools, action) in [(reads, false), (actions, true)] {
+        for tool in tools {
             let Some((runtime_name, _)) = runtime_name_to_provider(&tool.name) else {
                 continue;
             };

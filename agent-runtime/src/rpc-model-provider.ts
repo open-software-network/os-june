@@ -15,12 +15,14 @@ export type ModelRpcInvoker = (input: {
   signal?: AbortSignal;
 }) => Promise<JsonValue>;
 
+export type ReasoningWireFormat = "reasoning" | "reasoning_content";
+
 export class RpcChatCompletionsModelProvider implements ModelProvider {
   readonly invoke: ModelRpcInvoker;
   readonly takeSteering: (() => SteeringMessage[]) | undefined;
   readonly onSteeringConsumed: ((message: SteeringMessage) => void) | undefined;
   latestRoute: ModelRoute | undefined;
-  private usesReasoningContent = false;
+  reasoningWireFormat: ReasoningWireFormat | undefined;
 
   constructor(
     invoke: ModelRpcInvoker,
@@ -28,10 +30,12 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    reasoningWireFormat?: ReasoningWireFormat,
   ) {
     this.invoke = invoke;
     this.takeSteering = steering?.takeSteering;
     this.onSteeringConsumed = steering?.onSteeringConsumed;
+    this.reasoningWireFormat = reasoningWireFormat;
   }
 
   getModel(modelName?: string): Model {
@@ -47,7 +51,9 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
               stream: true,
               stream_options: { include_usage: true },
             });
-            if (this.usesReasoningContent) request = restoreReasoningContent(request);
+            if (this.reasoningWireFormat === "reasoning_content") {
+              request = restoreReasoningContent(request);
+            }
             const chunks = this.streamChunks(request, options?.signal);
             if (wantsStream) return chunks;
             return collectChatCompletion(chunks);
@@ -85,7 +91,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
         const normalizedReasoning = normalizeReasoningContent(chunk);
-        if (normalizedReasoning.usesReasoningContent) this.usesReasoningContent = true;
+        this.reasoningWireFormat ??= normalizedReasoning.wireFormat;
         yield normalizeEmptyToolArguments(normalizedReasoning.chunk, toolArgumentState);
       }
       if (page.done) return;
@@ -103,23 +109,26 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
 
 function normalizeReasoningContent(chunk: JsonObject): {
   chunk: JsonObject;
-  usesReasoningContent: boolean;
+  wireFormat?: ReasoningWireFormat;
 } {
-  if (!Array.isArray(chunk.choices)) return { chunk, usesReasoningContent: false };
+  if (!Array.isArray(chunk.choices)) return { chunk };
   let changed = false;
-  let usesReasoningContent = false;
+  let wireFormat: ReasoningWireFormat | undefined;
   const choices = chunk.choices.map((choiceValue) => {
     if (!isRecord(choiceValue) || !isRecord(choiceValue.delta)) return choiceValue;
     const reasoningContent = choiceValue.delta.reasoning_content;
-    if (typeof reasoningContent !== "string") return choiceValue;
-    usesReasoningContent = true;
+    if (typeof reasoningContent !== "string") {
+      if (typeof choiceValue.delta.reasoning === "string") wireFormat ??= "reasoning";
+      return choiceValue;
+    }
+    wireFormat = "reasoning_content";
     changed = true;
     const { reasoning_content: _, ...delta } = choiceValue.delta;
     return { ...choiceValue, delta: { ...delta, reasoning: reasoningContent } };
   });
   return {
     chunk: changed ? { ...chunk, choices } : chunk,
-    usesReasoningContent,
+    ...(wireFormat === undefined ? {} : { wireFormat }),
   };
 }
 
