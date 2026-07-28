@@ -763,10 +763,11 @@ fn web_request(arguments: &Value, call_id: Option<&str>) -> Value {
 }
 
 async fn list_files(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
-    let path = resolve_path(
+    let path = resolve_path_with_scope(
         context,
         arguments.get("path").and_then(Value::as_str).unwrap_or("."),
         true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
     )?;
     let mut entries = tokio::fs::read_dir(&path).await.map_err(io_error)?;
     let mut result = Vec::new();
@@ -781,7 +782,12 @@ async fn list_files(context: &ToolContext, arguments: &Value) -> Result<Value, A
 }
 
 async fn read_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
-    let path = resolve_path(context, required_string(arguments, "path")?, true)?;
+    let path = resolve_path_with_scope(
+        context,
+        required_string(arguments, "path")?,
+        true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
+    )?;
     let bytes = tokio::fs::read(&path).await.map_err(io_error)?;
     if bytes.len() > MAX_TOOL_OUTPUT_BYTES {
         return Err(AppError::new(
@@ -894,10 +900,11 @@ async fn record_artifact_with_mime(
 
 async fn search_files(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
     let needle = required_string(arguments, "query")?.to_string();
-    let root = resolve_path(
+    let root = resolve_path_with_scope(
         context,
         arguments.get("path").and_then(Value::as_str).unwrap_or("."),
         true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
     )?;
     let result = tokio::task::spawn_blocking(move || search_text_files(&root, &needle))
         .await
@@ -1228,6 +1235,21 @@ fn resolve_path(
     requested: &str,
     must_exist: bool,
 ) -> Result<PathBuf, AppError> {
+    resolve_path_with_scope(context, requested, must_exist, PathScope::WorkspaceOnly)
+}
+
+#[derive(Clone, Copy)]
+enum PathScope {
+    WorkspaceOnly,
+    WorkspaceOrCurrentObsidianVaultRead,
+}
+
+fn resolve_path_with_scope(
+    context: &ToolContext,
+    requested: &str,
+    must_exist: bool,
+    scope: PathScope,
+) -> Result<PathBuf, AppError> {
     let requested = Path::new(requested);
     let joined = if requested.is_absolute() {
         requested.to_path_buf()
@@ -1252,6 +1274,13 @@ fn resolve_path(
     if context.safety_mode == AgentSafetyMode::Sandboxed {
         let workspace = context.workspace.canonicalize().map_err(io_error)?;
         if !resolved.starts_with(workspace) {
+            if let PathScope::WorkspaceOrCurrentObsidianVaultRead = scope {
+                if let Some(vault_root) = crate::obsidian::current_vault_root(&context.app) {
+                    if resolved.starts_with(vault_root) {
+                        return Ok(resolved);
+                    }
+                }
+            }
             return Err(AppError::new(
                 "agent_path_denied",
                 "Path is outside this session's workspace.",
