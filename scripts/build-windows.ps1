@@ -59,6 +59,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($cargoTargetDirectory)) { throw "Cargo metadata did not report a target directory." }
   & pnpm agent-runtime:build
   if ($LASTEXITCODE -ne 0) { throw "Agent runtime TypeScript build failed." }
+  Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue
   & node scripts/build-agent-runtime.mjs
   if ($LASTEXITCODE -ne 0) { throw "Windows agent runtime SEA build failed." }
 
