@@ -50,7 +50,8 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// before forwarding, so June API never sees this implementation detail.
 const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal model id for the canonical model selected by Auto for the rest of
-/// one agent run. It preserves managed-remote provenance across continuations.
+/// one agent run. It preserves service-managed inference provenance across
+/// continuations.
 const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
 /// Internal agent model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.

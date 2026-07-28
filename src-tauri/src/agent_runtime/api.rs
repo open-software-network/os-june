@@ -867,7 +867,7 @@ pub async fn resolve_agent_interruption(
     if auto_run && resolved_model.is_none() {
         return Err(AppError::new(
             "agent_auto_resume_model_missing",
-            "This approval cannot safely resume because its Auto model was not recorded. Retry the agent turn.",
+            "This approval cannot safely resume because its Auto model was not recorded. Retry the agent run.",
         ));
     }
     let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;

@@ -165,7 +165,10 @@ test("rejects conflicting canonical models in one Auto response", async () => {
 test("rejects reserved internal tags as Auto's canonical model", async () => {
   const provider = new RpcChatCompletionsModelProvider(async () => ({
     streamId: "stream-auto-reserved",
-    chunks: [{ ...finalChunk, model: "__june_local_generation__:z-ai%2Fglm-5.2" }],
+    chunks: [
+      { ...finalChunk, model: "__june_local_generation__:z-ai%2Fglm-5.2" },
+      { ...finalChunk, model: "z-ai/glm-5.2" },
+    ],
     done: true,
   }));
   await assert.rejects(async () => {
@@ -174,7 +177,7 @@ test("rejects reserved internal tags as Auto's canonical model", async () => {
       .getStreamedResponse(modelRequest())) {
       // Drain the model response.
     }
-  }, /did not identify its selected model/);
+  }, /invalid selected model/);
 });
 
 test("injects queued steering at the next model boundary and acknowledges consumption", async () => {
