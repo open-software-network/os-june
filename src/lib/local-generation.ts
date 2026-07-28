@@ -1,4 +1,8 @@
-import type { LocalGenerationSettingsDto, VeniceModelDto } from "./tauri";
+import type {
+  LocalGenerationSettingsDto,
+  LocalTranscriptionSettingsDto,
+  VeniceModelDto,
+} from "./tauri";
 
 // Bring-your-own local text generation. The model catalog is derived
 // client-side from provider settings, so the user's configured local endpoint
@@ -7,49 +11,80 @@ import type { LocalGenerationSettingsDto, VeniceModelDto } from "./tauri";
 // AppSettings.
 
 export const LOCAL_GENERATION_OPTION_ID_PREFIX = "__june_local_generation__:";
+export const LOCAL_TRANSCRIPTION_OPTION_ID_PREFIX = "__june_local_transcription__:";
 
-/** Stable synthetic id for the local model catalog option. Prefixed so it can
- * never collide with a real remote model id (finding: a raw local id that
- * matched a remote id let the picker persist it as the remote model). */
-export function localGenerationOptionId(modelId: string) {
-  return `${LOCAL_GENERATION_OPTION_ID_PREFIX}${encodeURIComponent(modelId.trim())}`;
+function taggedLocalOptionId(prefix: string, modelId: string) {
+  return `${prefix}${encodeURIComponent(modelId.trim())}`;
 }
 
-/** Inverse of {@link localGenerationOptionId}: the raw local model id encoded
- * in a synthetic option id, or null when the id is not a synthetic local
- * option (or is malformed). The tagged id stays intact in session settings to
- * retain upstream provenance; June's on-device integration uses this inverse
- * only when it needs to display or forward the raw local id. */
-export function rawLocalGenerationModelId(optionId: string): string | null {
-  if (!optionId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) return null;
+function rawLocalModelId(prefix: string, optionId: string): string | null {
+  if (!optionId.startsWith(prefix)) return null;
   try {
-    const decoded = decodeURIComponent(
-      optionId.slice(LOCAL_GENERATION_OPTION_ID_PREFIX.length),
-    ).trim();
+    const decoded = decodeURIComponent(optionId.slice(prefix.length)).trim();
     return decoded || null;
   } catch {
     return null;
   }
 }
 
-/** Display-only row for a session whose tagged local choice no longer matches
- * the configured endpoint. Keep the original choice visible; sends fail closed
- * in June's on-device provider proxy until the user reconfigures or selects
- * another model. */
-export function unavailableLocalGenerationOption(optionId: string): VeniceModelDto | null {
-  const modelId = rawLocalGenerationModelId(optionId);
-  if (!modelId) return null;
+type LocalCatalogRowInput = {
+  optionId: string;
+  modelId: string;
+  modelType: string;
+  loopback: boolean;
+};
+
+function localCatalogRow({
+  optionId,
+  modelId,
+  modelType,
+  loopback,
+}: LocalCatalogRowInput): VeniceModelDto {
+  const kind = modelType === "asr" ? "transcription" : "text";
   return {
     provider: "local",
     id: optionId,
     name: `Local: ${modelId}`,
-    modelType: "text",
-    description: "This local model is no longer configured.",
+    modelType,
+    description: loopback
+      ? `OpenAI-compatible local ${kind} model.`
+      : `OpenAI-compatible ${kind} model on a remote endpoint.`,
+    privacy: loopback ? "local" : "external",
     pricing: { display: "Local" },
     traits: ["local"],
     capabilities: [],
     priceUnit: "local",
     priceDescription: "Local",
+  };
+}
+
+export function localGenerationOptionId(modelId: string) {
+  return taggedLocalOptionId(LOCAL_GENERATION_OPTION_ID_PREFIX, modelId);
+}
+
+export function rawLocalGenerationModelId(optionId: string): string | null {
+  return rawLocalModelId(LOCAL_GENERATION_OPTION_ID_PREFIX, optionId);
+}
+
+export function localTranscriptionOptionId(modelId: string) {
+  return taggedLocalOptionId(LOCAL_TRANSCRIPTION_OPTION_ID_PREFIX, modelId);
+}
+
+export function rawLocalTranscriptionModelId(optionId: string): string | null {
+  return rawLocalModelId(LOCAL_TRANSCRIPTION_OPTION_ID_PREFIX, optionId);
+}
+
+export function unavailableLocalGenerationOption(optionId: string): VeniceModelDto | null {
+  const modelId = rawLocalGenerationModelId(optionId);
+  if (!modelId) return null;
+  return {
+    ...localCatalogRow({
+      optionId,
+      modelId,
+      modelType: "text",
+      loopback: false,
+    }),
+    description: "This local model is no longer configured.",
   };
 }
 
@@ -91,20 +126,44 @@ export function withLocalGenerationOption(
   const modelId = localGeneration.modelId.trim();
   if (!modelId) return models;
   const loopback = isLoopbackUrl(localGeneration.baseUrl);
-  const localModel: VeniceModelDto = {
-    provider: "local",
-    id: localGenerationOptionId(modelId),
-    name: `Local: ${modelId}`,
+  const localModel = localCatalogRow({
+    optionId: localGenerationOptionId(modelId),
+    modelId,
     modelType: "text",
-    description: loopback
-      ? "OpenAI-compatible local text model."
-      : "OpenAI-compatible text model on a remote endpoint.",
-    privacy: loopback ? "local" : "external",
-    pricing: { display: "Local" },
-    traits: ["local"],
-    capabilities: [],
-    priceUnit: "local",
-    priceDescription: "Local",
-  };
+    loopback,
+  });
   return [localModel, ...models];
+}
+
+export function withLocalTranscriptionOption(
+  models: VeniceModelDto[],
+  localTranscription: LocalTranscriptionSettingsDto,
+): VeniceModelDto[] {
+  const modelId = localTranscription.modelId.trim();
+  if (!modelId) return models;
+  const loopback = isLoopbackUrl(localTranscription.baseUrl);
+  const localModel = localCatalogRow({
+    optionId: localTranscriptionOptionId(modelId),
+    modelId,
+    modelType: "asr",
+    loopback,
+  });
+  return [localModel, ...models];
+}
+
+export function transcriptionPickerValueForMode({
+  localTranscriptionEnabled,
+  localModelId,
+  showingPartitionModels,
+  effectiveTranscriptionModel,
+}: {
+  localTranscriptionEnabled: boolean;
+  localModelId: string;
+  showingPartitionModels: boolean;
+  effectiveTranscriptionModel: string;
+}): string {
+  if (!showingPartitionModels && localTranscriptionEnabled && localModelId.trim()) {
+    return localTranscriptionOptionId(localModelId);
+  }
+  return effectiveTranscriptionModel;
 }

@@ -5,7 +5,9 @@
 
 use crate::{
     domain::types::AppError,
-    providers::{LocalGenerationSettings, PROVIDER_LOCAL, PROVIDER_OPENAI},
+    providers::{
+        LocalGenerationSettings, LocalTranscriptionSettings, PROVIDER_LOCAL, PROVIDER_OPENAI,
+    },
 };
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
@@ -161,6 +163,7 @@ pub struct GenerationProviderResult {
 
 #[derive(Debug, Clone)]
 pub struct DictateTranscribeRequest {
+    pub provider: String,
     pub audio_path: PathBuf,
     pub context: Option<String>,
     pub language: Option<String>,
@@ -178,6 +181,7 @@ pub struct DictateCleanupRequestParams {
     pub style: String,
     pub session_id: String,
     pub utterance_id: String,
+    pub force_local_cleanup: bool,
 }
 
 /// Response from the agent chat-completions proxy. Holds the upstream
@@ -352,9 +356,29 @@ struct P3aReportResponse {
 pub async fn transcribe_saved_audio(
     request: TranscriptionRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
+    if crate::providers::is_local_transcription_provider(&request.provider) {
+        let settings = local_transcription_settings_or_error()?;
+        if !crate::providers::local_transcription_provider_identity_matches_with(
+            &request.provider,
+            &settings,
+        ) {
+            return Err(AppError::new(
+                "local_transcription_endpoint_changed",
+                "The local transcription endpoint changed after this job was queued. \
+                 Re-run transcription against the current endpoint.",
+            ));
+        }
+        return post_local_transcription(
+            &settings,
+            &request.audio_path,
+            request.language.as_deref(),
+            request.context.as_deref(),
+        )
+        .await;
+    }
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "recording.wav");
-    let model = crate::providers::transcription_model();
+    let model = crate::providers::remote_transcription_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let mut form = Form::new()
         .text("noteId", june_api_operation_id(&request.operation_id()))
@@ -434,9 +458,29 @@ pub async fn generate_note_from_transcript(
 pub async fn dictate_transcribe(
     request: DictateTranscribeRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
+    if crate::providers::is_local_transcription_provider(&request.provider) {
+        let settings = local_transcription_settings_or_error()?;
+        if !crate::providers::local_transcription_provider_identity_matches_with(
+            &request.provider,
+            &settings,
+        ) {
+            return Err(AppError::new(
+                "local_transcription_endpoint_changed",
+                "The local transcription endpoint changed after this utterance was queued. \
+                 Dictate again against the current endpoint.",
+            ));
+        }
+        return post_local_transcription(
+            &settings,
+            &request.audio_path,
+            request.language.as_deref(),
+            request.context.as_deref(),
+        )
+        .await;
+    }
     let audio = read_audio(&request.audio_path).await?;
     let filename = filename_for_audio(&request.audio_path, "dictation.wav");
-    let model = crate::providers::transcription_model();
+    let model = crate::providers::remote_transcription_model();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let form = Form::new()
         .text("sessionId", request.session_id)
@@ -474,6 +518,9 @@ fn normalized_language(language: Option<&str>) -> Option<&str> {
 }
 
 pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String, AppError> {
+    if params.force_local_cleanup || crate::providers::generation_provider() == PROVIDER_LOCAL {
+        return cleanup_text_local(params).await;
+    }
     let model = DEFAULT_DICTATION_CLEANUP_MODEL.to_string();
     let send_venice_api_key = model_accepts_venice_api_key(&model);
     let body = DictateCleanupBody {
@@ -488,6 +535,100 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
     let response: CleanupResponse =
         post_json("/v1/dictate/cleanup", &body, send_venice_api_key).await?;
     Ok(response.text)
+}
+
+async fn cleanup_text_local(params: DictateCleanupRequestParams) -> Result<String, AppError> {
+    let original = params.text.clone();
+    let Ok(settings) = local_generation_settings_or_error() else {
+        return Ok(original);
+    };
+    let instruction = local_cleanup_instruction(&params.style);
+    let user_message = local_cleanup_user_message(&params);
+    let body = serde_json::json!({
+        "model": settings.model_id,
+        "messages": [
+            { "role": "system", "content": LOCAL_SAFETY_CONTEXT },
+            { "role": "system", "content": instruction },
+            { "role": "user", "content": user_message },
+        ],
+        "stream": false,
+    });
+    let Ok(url) = local_chat_completions_url(&settings) else {
+        return Ok(original);
+    };
+    let request = with_local_auth(local_http_client().post(url), &settings);
+    let response = match request.json(&body).send().await {
+        Ok(response) => response,
+        Err(_) => return Ok(original),
+    };
+    let status = response.status();
+    let bytes = match response.bytes().await {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(original),
+    };
+    if !status.is_success() {
+        return Ok(original);
+    }
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => return Ok(original),
+    };
+    let truncated = value
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("finish_reason"))
+        .and_then(serde_json::Value::as_str)
+        == Some("length");
+    if truncated {
+        return Ok(original);
+    }
+    match extract_chat_completion_text(&value) {
+        Some(text) if !text.trim().is_empty() => Ok(text),
+        _ => Ok(original),
+    }
+}
+
+fn local_cleanup_instruction(style: &str) -> &str {
+    if style == "note_transcript_cleanup" {
+        crate::domain::processing::NOTE_TRANSCRIPT_CLEANUP_INSTRUCTIONS
+    } else {
+        style
+    }
+}
+
+fn local_cleanup_user_message(params: &DictateCleanupRequestParams) -> String {
+    let mut prefix = String::new();
+    if let Some(context) = params
+        .dictionary_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        prefix.push_str(context);
+        prefix.push_str("\n\n");
+    }
+    if let Some(app_context) = params
+        .app_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        prefix.push_str("App context: ");
+        prefix.push_str(app_context);
+        prefix.push_str("\n\n");
+    }
+    let closing = if params.style == "note_transcript_cleanup" {
+        "Return only the corrected transcript text."
+    } else {
+        "Return only the cleaned transcript text."
+    };
+    format!(
+        "{prefix}<asr_transcript>\n{}\n</asr_transcript>\n\n{closing}",
+        params
+            .text
+            .replace("</asr_transcript>", "<\\/asr_transcript>")
+    )
 }
 
 pub async fn submit_p3a_report(request: P3aReportRequest) -> Result<(), AppError> {
@@ -1186,6 +1327,97 @@ fn local_chat_completions_url(settings: &LocalGenerationSettings) -> Result<Stri
         ));
     }
     Ok(format!("{base_url}/chat/completions"))
+}
+
+fn local_transcription_settings_or_error() -> Result<LocalTranscriptionSettings, AppError> {
+    let settings = crate::providers::local_transcription_settings();
+    if settings.base_url.trim().is_empty() || settings.model_id.trim().is_empty() {
+        return Err(AppError::new(
+            "local_transcription_not_configured",
+            "Configure a local transcription endpoint and model ID first.",
+        ));
+    }
+    Ok(settings)
+}
+
+pub(super) fn local_transcriptions_url(
+    settings: &LocalTranscriptionSettings,
+) -> Result<String, AppError> {
+    let base_url = settings.base_url.trim().trim_end_matches('/');
+    if base_url.is_empty() {
+        return Err(AppError::new(
+            "local_transcription_not_configured",
+            "Configure a local transcription endpoint first.",
+        ));
+    }
+    Ok(format!("{base_url}/audio/transcriptions"))
+}
+
+fn with_local_transcription_auth(
+    request: reqwest::RequestBuilder,
+    settings: &LocalTranscriptionSettings,
+) -> reqwest::RequestBuilder {
+    let api_key = settings.api_key.trim();
+    if api_key.is_empty() {
+        request
+    } else {
+        request.bearer_auth(api_key)
+    }
+}
+
+async fn post_local_transcription(
+    settings: &LocalTranscriptionSettings,
+    audio_path: &Path,
+    language: Option<&str>,
+    context: Option<&str>,
+) -> Result<TranscriptionProviderResult, AppError> {
+    let audio = read_audio(audio_path).await?;
+    let filename = filename_for_audio(audio_path, "recording.wav");
+    let mut form = Form::new()
+        .text("model", settings.model_id.clone())
+        .text("response_format", "json")
+        .text("temperature", "0")
+        .part("file", audio_part(audio, &filename, audio_path)?);
+    if let Some(language) = normalized_language(language) {
+        form = form.text("language", language.to_string());
+    }
+    if let Some(context) = context.map(str::trim).filter(|value| !value.is_empty()) {
+        form = form.text("prompt", context.to_string());
+    }
+    let request = with_local_transcription_auth(
+        local_http_client().post(local_transcriptions_url(settings)?),
+        settings,
+    );
+    let response = request
+        .multipart(form)
+        .send()
+        .await
+        .map_err(network_error)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(AppError::new(
+            "local_transcription_failed",
+            format!(
+                "Local transcription endpoint returned status {}.",
+                status.as_u16()
+            ),
+        ));
+    }
+    #[derive(Deserialize)]
+    struct LocalTranscriptionResponse {
+        text: String,
+    }
+    let parsed: LocalTranscriptionResponse = response.json().await.map_err(|_| {
+        AppError::new(
+            "local_transcription_invalid",
+            "Local transcription endpoint returned a non-JSON response.",
+        )
+    })?;
+    Ok(TranscriptionProviderResult {
+        text: parsed.text,
+        language: language.map(str::to_string),
+        provider: PROVIDER_LOCAL.to_string(),
+    })
 }
 
 fn inject_local_safety_context(object: &mut serde_json::Map<String, serde_json::Value>) {
@@ -3753,8 +3985,24 @@ fn network_error(error: reqwest::Error) -> AppError {
 }
 
 #[cfg(test)]
+pub(crate) static JUNE_API_URL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+pub(crate) struct JuneApiUrlTestLock(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+pub(crate) fn acquire_june_api_url_lock() -> JuneApiUrlTestLock {
+    JuneApiUrlTestLock(
+        JUNE_API_URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const NOTE_GENERATE_PATH: &str = "/v1/notes/generate";
     const ISSUE_REPORT_PATH: &str = "/v1/issue-reports";
@@ -5550,42 +5798,1236 @@ data: [DONE]
             ]
         );
     }
+    struct LocalTranscriptionSettingsGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for LocalTranscriptionSettingsGuard {
+        fn drop(&mut self) {
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+    }
+
+    fn install_local_transcription_pointing_at(
+        base_url: &str,
+        api_key: &str,
+        venice_api_key: Option<&str>,
+    ) -> LocalTranscriptionSettingsGuard {
+        let guard = crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.transcription_provider = crate::providers::PROVIDER_LOCAL.to_string();
+        settings.transcription_model = "openai/whisper-large-v3".to_string();
+        settings.remote_transcription_model =
+            crate::providers::DEFAULT_TRANSCRIPTION_MODEL.to_string();
+        settings.local_transcription = crate::providers::LocalTranscriptionSettings {
+            base_url: base_url.to_string(),
+            model_id: "openai/whisper-large-v3".to_string(),
+            api_key: api_key.to_string(),
+        };
+        settings.venice_api_key = venice_api_key.map(|value| value.to_string());
+        crate::providers::replace_current_settings_for_tests(settings);
+        LocalTranscriptionSettingsGuard(guard)
+    }
+
+    struct LocalGenerationSettingsGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for LocalGenerationSettingsGuard {
+        fn drop(&mut self) {
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+    }
+
+    fn install_local_generation(
+        base_url: &str,
+        api_key: &str,
+        activate: bool,
+    ) -> LocalGenerationSettingsGuard {
+        let guard = crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.local_generation = LocalGenerationSettings {
+            base_url: base_url.to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: api_key.to_string(),
+        };
+        if activate {
+            settings.generation_provider = PROVIDER_LOCAL.to_string();
+            settings.generation_model = "llama3.1:8b".to_string();
+        }
+        crate::providers::replace_current_settings_for_tests(settings);
+        LocalGenerationSettingsGuard(guard)
+    }
+
+    fn write_test_wav(path: &Path) {
+        let data: &[u8] = &[
+            0x52, 0x49, 0x46, 0x46, 0x2c, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d,
+            0x74, 0x20, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x80, 0xbb, 0x00, 0x00,
+            0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61, 0x08, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        fs::write(path, data).expect("write test wav");
+    }
+
+    fn parse_multipart(body: &[u8]) -> Vec<(String, String, Vec<u8>)> {
+        let body = match body.windows(4).position(|w| w == b"\r\n\r\n") {
+            Some(idx) => &body[idx + 4..],
+            None => body,
+        };
+        let first_line_end = body
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .unwrap_or(body.len());
+        let first_line = std::str::from_utf8(&body[..first_line_end]).expect("first line utf8");
+        let boundary = first_line
+            .strip_prefix("--")
+            .map(str::trim)
+            .expect("boundary");
+        let sep = format!("--{boundary}\r\n");
+        let close = format!("\r\n--{boundary}--");
+        let sep_bytes = sep.as_bytes();
+        let close_bytes = close.as_bytes();
+        let mut result = Vec::new();
+        let mut start = 0;
+        while let Some(pos) = body[start..]
+            .windows(sep_bytes.len())
+            .position(|w| w == sep_bytes)
+        {
+            let part_start = start + pos + sep_bytes.len();
+            let next_sep = body[part_start..]
+                .windows(sep_bytes.len())
+                .position(|w| w == sep_bytes);
+            let next_close = body[part_start..]
+                .windows(close_bytes.len())
+                .position(|w| w == close_bytes);
+            let part_end = match (next_sep, next_close) {
+                (Some(s), Some(c)) => part_start + s.min(c),
+                (Some(s), None) => part_start + s,
+                (None, Some(c)) => part_start + c,
+                (None, None) => body.len(),
+            };
+            let part = &body[part_start..part_end];
+            let header_end = part
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map(|i| i + 4);
+            let (headers, mut body_bytes) = match header_end {
+                Some(he) => (&part[..he - 4], part[he..].to_vec()),
+                None => (part, Vec::new()),
+            };
+            if body_bytes.ends_with(b"\r\n") {
+                body_bytes.truncate(body_bytes.len() - 2);
+            }
+            let header_str = std::str::from_utf8(headers).unwrap_or("");
+            let cd = header_str
+                .lines()
+                .find(|l| l.to_lowercase().starts_with("content-disposition:"))
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            let ct = header_str
+                .lines()
+                .find(|l| l.to_lowercase().starts_with("content-type:"))
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
+            result.push((cd, ct, body_bytes));
+            start = part_end;
+            if next_sep.is_none() && next_close.is_none() {
+                break;
+            }
+        }
+        result
+    }
+
+    fn request_target(buf: &[u8]) -> Option<String> {
+        let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n")?;
+        let header = std::str::from_utf8(&buf[..header_end]).ok()?;
+        let request_line = header.lines().next()?;
+        let mut parts = request_line.split_whitespace();
+        parts.next()?;
+        parts.next().map(str::to_string)
+    }
+
+    fn field_value(parts: &[(String, String, Vec<u8>)], name: &str) -> Option<String> {
+        parts.iter().find_map(|(disposition, _, bytes)| {
+            disposition
+                .contains(&format!("name=\"{name}\""))
+                .then(|| String::from_utf8(bytes.clone()).ok())
+                .flatten()
+        })
+    }
+
+    fn has_field_field(parts: &[(String, String, Vec<u8>)], name: &str) -> bool {
+        parts
+            .iter()
+            .any(|(disposition, _, _)| disposition.contains(&format!("name=\"{name}\"")))
+    }
+
+    async fn read_request_into_buf(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut header_end = None;
+        while header_end.is_none() {
+            let mut chunk = [0_u8; 8192];
+            let n = stream.read(&mut chunk).await.expect("read");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                header_end = Some(idx + 4);
+            }
+        }
+        let header_end = header_end.expect("no header terminator");
+        let header_str = std::str::from_utf8(&buf[..header_end]).unwrap_or("");
+        let content_length: usize = header_str
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().ok())
+                    .flatten()
+            })
+            .unwrap_or(0);
+        while buf.len() - header_end < content_length {
+            let mut chunk = [0_u8; 8192];
+            let n = stream.read(&mut chunk).await.expect("read body");
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        buf
+    }
+
+    async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
+        let resp = format!(
+            "{status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(resp.as_bytes()).await.ok();
+        stream.shutdown().await.ok();
+    }
+
+    #[tokio::test]
+    async fn local_transcription_url_appends_audio_transcriptions() {
+        let settings = LocalTranscriptionSettings {
+            base_url: "http://127.0.0.1:8000".to_string(),
+            model_id: "model".to_string(),
+            api_key: String::new(),
+        };
+        assert_eq!(
+            local_transcriptions_url(&settings).unwrap(),
+            "http://127.0.0.1:8000/audio/transcriptions"
+        );
+        let s2 = LocalTranscriptionSettings {
+            base_url: "http://127.0.0.1:8000/".to_string(),
+            model_id: "model".to_string(),
+            api_key: String::new(),
+        };
+        assert_eq!(
+            local_transcriptions_url(&s2).unwrap(),
+            "http://127.0.0.1:8000/audio/transcriptions"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_transcription_posts_openai_multipart_shape() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            let target = request_target(&buf);
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"text":"Hello, world!"}"#,
+            )
+            .await;
+            (target, parts)
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "Test note".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("op".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("transcription should succeed");
+        assert_eq!(result.provider, "local");
+        assert_eq!(result.text, "Hello, world!");
+        let (target, parts) = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/audio/transcriptions"));
+        assert_eq!(
+            field_value(&parts, "model"),
+            Some("openai/whisper-large-v3".to_string())
+        );
+        assert_eq!(
+            field_value(&parts, "response_format"),
+            Some("json".to_string())
+        );
+        assert_eq!(field_value(&parts, "temperature"), Some("0".to_string()));
+        assert!(has_field_field(&parts, "file"));
+        let file_part = parts
+            .iter()
+            .find(|(cd, _, _)| cd.contains("name=\"file\""))
+            .expect("file part");
+        assert!(
+            file_part.0.contains("filename=\"t.wav\""),
+            "file part has filename"
+        );
+        for f in ["noteId", "title", "preview", "previewOptedIn"] {
+            assert!(!has_field_field(&parts, f), "no {}", f);
+        }
+    }
+
+    #[tokio::test]
+    async fn local_transcription_sends_language_and_prompt_only_when_present() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            parts
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: Some("hint".to_string()),
+            language: Some("en".to_string()),
+            operation_id: Some("1".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("ok");
+        let parts = handle.await.expect("server");
+        assert_eq!(field_value(&parts, "language"), Some("en".to_string()));
+        assert_eq!(field_value(&parts, "prompt"), Some("hint".to_string()));
+        drop(_guard);
+        let s2 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let a2 = s2.local_addr().expect("addr");
+        let h2 = tokio::spawn(async move {
+            let (mut stream, _) = s2.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            parts
+        });
+        let _g2 = install_local_transcription_pointing_at(&format!("http://{a2}/v1"), "", None);
+        let wav2 = dir.path().join("t2.wav");
+        write_test_wav(&wav2);
+        transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav2,
+            title: "T2".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("2".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("ok");
+        let parts = h2.await.expect("server");
+        assert!(field_value(&parts, "language").is_none());
+        assert!(field_value(&parts, "prompt").is_none());
+        drop(_g2);
+        let s3 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let a3 = s3.local_addr().expect("addr");
+        let h3 = tokio::spawn(async move {
+            let (mut stream, _) = s3.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            parts
+        });
+        let _g3 = install_local_transcription_pointing_at(&format!("http://{a3}/v1"), "", None);
+        let wav3 = dir.path().join("t3.wav");
+        write_test_wav(&wav3);
+        let _ = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav3,
+            title: "T3".to_string(),
+            context: None,
+            language: Some("english".to_string()),
+            operation_id: Some("3".to_string()),
+            preview: false,
+        })
+        .await;
+        let parts = h3.await.expect("server");
+        assert!(field_value(&parts, "language").is_none());
+    }
+
+    #[tokio::test]
+    async fn local_transcription_attaches_bearer_only_when_key_is_set() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            Some(String::from_utf8_lossy(&buf).to_string())
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("1".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("ok");
+        let headers = handle.await.expect("server");
+        assert!(
+            !headers
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("authorization:"),
+            "no auth when key empty"
+        );
+        drop(_guard);
+        let s2 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let a2 = s2.local_addr().expect("addr");
+        let h2 = tokio::spawn(async move {
+            let (mut stream, _) = s2.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            Some(String::from_utf8_lossy(&buf).to_string())
+        });
+        let _g2 =
+            install_local_transcription_pointing_at(&format!("http://{a2}/v1"), "mykey", None);
+        let wav2 = dir.path().join("t2.wav");
+        write_test_wav(&wav2);
+        transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav2,
+            title: "T2".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("2".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("ok");
+        let headers2 = h2.await.expect("server");
+        assert!(
+            headers2
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("authorization: bearer mykey"),
+            "bearer present with key, got: {:?}",
+            headers2
+        );
+    }
+
+    #[tokio::test]
+    async fn local_transcription_never_sends_the_venice_key() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            String::from_utf8_lossy(&buf).to_string()
+        });
+        let _guard = install_local_transcription_pointing_at(
+            &format!("http://{addr}/v1"),
+            "",
+            Some("vsk_test_byok_key"),
+        );
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("vg".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("ok via local");
+        let raw = handle.await.expect("server");
+        let lower = raw.to_lowercase();
+        assert!(
+            !lower.contains("x-venice-api-key:"),
+            "no venice key, got: {:?}",
+            raw
+        );
+    }
+
+    #[tokio::test]
+    async fn local_transcription_empty_text_is_ok_not_error() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let _handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let _buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":""}"#).await;
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("et".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("empty text ok, not error");
+        assert_eq!(result.text, "");
+        assert_eq!(result.provider, "local");
+    }
+
+    #[tokio::test]
+    async fn local_transcription_maps_error_status_and_bad_body() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let _h = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let _buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 500 Internal Server Error", "{}").await;
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let error = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("500".to_string()),
+            preview: false,
+        })
+        .await
+        .expect_err("500 should fail");
+        assert_eq!(error.code, "local_transcription_failed");
+        drop(_guard);
+        let s2 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let a2 = s2.local_addr().expect("addr");
+        let _h2 = tokio::spawn(async move {
+            let (mut stream, _) = s2.accept().await.expect("conn");
+            let _buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", "bad").await;
+        });
+        let _g2 = install_local_transcription_pointing_at(&format!("http://{a2}/v1"), "", None);
+        let wav2 = dir.path().join("t2.wav");
+        write_test_wav(&wav2);
+        let error = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav2,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("bb".to_string()),
+            preview: false,
+        })
+        .await
+        .expect_err("bad body should fail");
+        assert_eq!(error.code, "local_transcription_invalid");
+    }
+
+    #[tokio::test]
+    async fn local_transcription_routes_from_request_provider_not_global_settings() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            request_target(&buf)
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let mut remote = crate::providers::default_settings_for_tests();
+        remote.transcription_provider = crate::providers::PROVIDER_VENICE.to_string();
+        remote.local_transcription = crate::providers::LocalTranscriptionSettings {
+            base_url: format!("http://{addr}/v1"),
+            model_id: "openai/whisper-large-v3".to_string(),
+            api_key: String::new(),
+        };
+        crate::providers::replace_current_settings_for_tests(remote);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("rr".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("local request stays on local route");
+        assert_eq!(result.provider, "local");
+        let target = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/audio/transcriptions"));
+    }
+
+    #[tokio::test]
+    async fn local_transcription_routes_from_durable_plan_provider_hash() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            request_target(&buf)
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let plan_provider = crate::providers::transcription_plan_provider();
+        assert!(
+            plan_provider.starts_with("local:"),
+            "plan provider should be hashed local, got {plan_provider}"
+        );
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: plan_provider.clone(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("pl".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("durable local plan stays on local route");
+        assert_eq!(result.provider, "local");
+        let target = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/audio/transcriptions"));
+    }
+
+    #[tokio::test]
+    async fn durable_local_plan_rejects_stale_endpoint_after_settings_change() {
+        let plan_provider_a = {
+            let _guard_a =
+                install_local_transcription_pointing_at("http://endpoint-a.example/v1", "", None);
+            crate::providers::transcription_plan_provider()
+        };
+        assert!(plan_provider_a.starts_with("local:"));
+
+        let _guard_b =
+            install_local_transcription_pointing_at("http://endpoint-b.example/v1", "", None);
+        let plan_provider_b = crate::providers::transcription_plan_provider();
+        assert_ne!(plan_provider_a, plan_provider_b);
+
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let error = transcribe_saved_audio(TranscriptionRequest {
+            provider: plan_provider_a,
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("stale".to_string()),
+            preview: false,
+        })
+        .await
+        .expect_err("stale durable plan must not be served by the new endpoint");
+        assert_eq!(error.code, "local_transcription_endpoint_changed");
+    }
+
+    #[tokio::test]
+    async fn stale_local_plan_never_posts_to_the_new_endpoint() {
+        let plan_provider_a = {
+            let _guard_a =
+                install_local_transcription_pointing_at("http://endpoint-a.example/v1", "", None);
+            crate::providers::transcription_plan_provider()
+        };
+
+        let new_server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let new_addr = new_server.local_addr().expect("addr");
+        let new_connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let new_counter = new_connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = new_server.accept().await {
+                new_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = read_request_into_buf(&mut stream).await;
+                write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"b"}"#).await;
+            }
+        });
+        let _guard_b =
+            install_local_transcription_pointing_at(&format!("http://{new_addr}/v1"), "", None);
+
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let error = transcribe_saved_audio(TranscriptionRequest {
+            provider: plan_provider_a,
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("pin".to_string()),
+            preview: false,
+        })
+        .await
+        .expect_err("stale plan must reject instead of posting to the current endpoint");
+        assert_eq!(error.code, "local_transcription_endpoint_changed");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            new_connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a stale local plan must not post audio to the endpoint that superseded it"
+        );
+    }
+
+    #[tokio::test]
+    async fn dictate_transcribe_routes_local_provider_to_local_endpoint() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"ok"}"#).await;
+            (request_target(&buf), parts)
+        });
+        let _guard =
+            install_local_transcription_pointing_at(&format!("http://{addr}/v1"), "", None);
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = dictate_transcribe(DictateTranscribeRequest {
+            provider: "local".to_string(),
+            audio_path: wav,
+            context: Some("hands-free dictation guidance".to_string()),
+            language: None,
+            session_id: "s".to_string(),
+            utterance_id: "u".to_string(),
+        })
+        .await
+        .expect("local dictation should route to the local endpoint");
+        assert_eq!(result.provider, "local");
+        assert_eq!(result.text, "ok");
+        let (target, parts) = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/audio/transcriptions"));
+        assert!(
+            !has_field_field(&parts, "sessionId"),
+            "local dictation must not send June API dictation fields"
+        );
+        assert!(!has_field_field(&parts, "utteranceId"));
+        assert_eq!(
+            field_value(&parts, "model"),
+            Some("openai/whisper-large-v3".to_string())
+        );
+        assert_eq!(
+            field_value(&parts, "prompt"),
+            Some("hands-free dictation guidance".to_string()),
+            "dictation context must be delivered as the prompt field"
+        );
+    }
+
+    fn cleanup_request(text: &str, style: &str) -> DictateCleanupRequestParams {
+        DictateCleanupRequestParams {
+            text: text.to_string(),
+            dictionary_context: None,
+            app_context: None,
+            style: style.to_string(),
+            session_id: "note_transcript".to_string(),
+            utterance_id: "u1".to_string(),
+            force_local_cleanup: false,
+        }
+    }
+
+    struct ScopedEnv {
+        vars: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl ScopedEnv {
+        fn set(vars: &[(&'static str, &str)]) -> Self {
+            let mut saved = Vec::with_capacity(vars.len());
+            for (name, value) in vars {
+                saved.push((*name, std::env::var_os(name)));
+                std::env::set_var(name, value);
+            }
+            Self { vars: saved }
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            for (name, previous) in self.vars.drain(..).rev() {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_remote_transcription_job_uses_remote_model_after_local_stt_enabled() {
+        let _url_lock = acquire_june_api_url_lock();
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            let target = request_target(&buf);
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"success":true,"data":{"text":"ok","language":"en","provider":"venice"}}"#,
+            )
+            .await;
+            (target, parts)
+        });
+        let june_api_url = format!("http://{addr}");
+        let _env = ScopedEnv::set(&[
+            ("JUNE_API_URL", june_api_url.as_str()),
+            ("OS_JUNE_LOCAL_DEV", "1"),
+            ("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "queued-remote-test"),
+        ]);
+        let _guard = install_local_transcription_pointing_at("http://127.0.0.1:1/v1", "", None);
+        let active_model = crate::providers::transcription_model();
+        assert_eq!(active_model, "openai/whisper-large-v3");
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: crate::providers::PROVIDER_VENICE.to_string(),
+            audio_path: wav,
+            title: "T".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("queued-remote".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("queued Venice job posts to June API");
+        assert_eq!(result.provider, "venice");
+        let (target, parts) = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/notes/transcribe"));
+        assert_eq!(
+            field_value(&parts, "model").as_deref(),
+            Some(crate::providers::DEFAULT_TRANSCRIPTION_MODEL),
+            "queued remote job must post the saved remote transcription model, \
+             not the active local Whisper id"
+        );
+        assert_ne!(
+            field_value(&parts, "model").as_deref(),
+            Some(active_model.as_str()),
+            "the local Whisper id must never be sent to June API for a remote job"
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_remote_dictation_job_uses_remote_model_after_local_stt_enabled() {
+        let _url_lock = acquire_june_api_url_lock();
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            let parts = parse_multipart(&buf);
+            let target = request_target(&buf);
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"success":true,"data":{"text":"ok","language":"en","provider":"venice"}}"#,
+            )
+            .await;
+            (target, parts)
+        });
+        let june_api_url = format!("http://{addr}");
+        let _env = ScopedEnv::set(&[
+            ("JUNE_API_URL", june_api_url.as_str()),
+            ("OS_JUNE_LOCAL_DEV", "1"),
+            ("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "queued-remote-test"),
+        ]);
+        let _guard = install_local_transcription_pointing_at("http://127.0.0.1:1/v1", "", None);
+        let active_model = crate::providers::transcription_model();
+        assert_eq!(active_model, "openai/whisper-large-v3");
+        let dir = tempfile::tempdir().expect("dir");
+        let wav = dir.path().join("t.wav");
+        write_test_wav(&wav);
+        let result = dictate_transcribe(DictateTranscribeRequest {
+            provider: crate::providers::PROVIDER_VENICE.to_string(),
+            audio_path: wav,
+            context: None,
+            language: None,
+            session_id: "s".to_string(),
+            utterance_id: "u".to_string(),
+        })
+        .await
+        .expect("queued Venice dictation posts to June API");
+        assert_eq!(result.provider, "venice");
+        let (target, parts) = handle.await.expect("server");
+        assert_eq!(target.as_deref(), Some("/v1/dictate"));
+        assert_eq!(
+            field_value(&parts, "model").as_deref(),
+            Some(crate::providers::DEFAULT_TRANSCRIPTION_MODEL),
+            "queued remote dictation must post the saved remote transcription model"
+        );
+        assert_ne!(
+            field_value(&parts, "model").as_deref(),
+            Some(active_model.as_str()),
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_text_routes_to_the_local_endpoint_when_generation_is_local() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"choices":[{"message":{"content":"cleaned up"},"finish_reason":"stop"}]}"#,
+            )
+            .await;
+            buf
+        });
+        let _guard = install_local_generation(&format!("http://{addr}/v1"), "", true);
+
+        let result = cleanup_text(cleanup_request(
+            "the quick brown fox",
+            "note_transcript_cleanup",
+        ))
+        .await
+        .expect("cleanup should succeed");
+        assert_eq!(result, "cleaned up");
+
+        let buf = handle.await.expect("server");
+        assert_eq!(
+            request_target(&buf).as_deref(),
+            Some("/v1/chat/completions")
+        );
+        let header_end = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("header end");
+        let body = &buf[header_end + 4..];
+        let value: serde_json::Value = serde_json::from_slice(body).expect("json body");
+        assert_eq!(value["model"], serde_json::json!("llama3.1:8b"));
+        let messages = value["messages"].as_array().expect("messages array");
+        assert_eq!(messages[0]["role"], "system");
+        assert!(
+            messages[0]["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Standing content policy"),
+            "LOCAL_SAFETY_CONTEXT must lead the messages"
+        );
+        assert_eq!(messages[1]["role"], "system");
+        assert!(
+            messages[1]["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ASR transcript post-processor"),
+            "note transcript cleanup instruction must be the second system message"
+        );
+        assert_eq!(messages[2]["role"], "user");
+        let user = messages[2]["content"].as_str().unwrap_or("");
+        assert!(user.contains("<asr_transcript>"));
+        assert!(user.contains("the quick brown fox"));
+        assert!(user.contains("Return only the corrected transcript text."));
+        assert_eq!(value["stream"], serde_json::json!(false));
+    }
+
+    #[tokio::test]
+    async fn cleanup_text_local_failure_returns_the_original_text() {
+        let cases: &[(&str, &str)] = &[
+            ("HTTP/1.1 500 Internal Server Error", "boom"),
+            ("HTTP/1.1 200 OK", "not-json"),
+            ("HTTP/1.1 200 OK", r#"{"choices":[]}"#),
+            (
+                "HTTP/1.1 200 OK",
+                r#"{"choices":[{"message":{"content":"First sentence. Partial"},"finish_reason":"length"}]}"#,
+            ),
+        ];
+        for (status_line, body) in cases {
+            let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let addr = server.local_addr().expect("addr");
+            let status_line = status_line.to_string();
+            let body = body.to_string();
+            let case_status = status_line.clone();
+            let case_body = body.clone();
+            tokio::spawn(async move {
+                let (mut stream, _) = server.accept().await.expect("conn");
+                let _ = read_request_into_buf(&mut stream).await;
+                write_response(&mut stream, &status_line, &body).await;
+            });
+            let _guard = install_local_generation(&format!("http://{addr}/v1"), "", true);
+
+            let result = cleanup_text(cleanup_request("raw transcript", "note_transcript_cleanup"))
+                .await
+                .expect("cleanup must preserve text on local failure");
+            assert_eq!(
+                result, "raw transcript",
+                "case {:?} body {:?}",
+                case_status, case_body
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_text_stays_on_june_api_when_generation_is_remote() {
+        let _url_lock = acquire_june_api_url_lock();
+        let june_api_server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind june api");
+        let june_api_addr = june_api_server.local_addr().expect("addr");
+        let june_api_handle = tokio::spawn(async move {
+            let (mut stream, _) = june_api_server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"success":true,"data":{"text":"cleaned"}}"#,
+            )
+            .await;
+            request_target(&buf)
+        });
+        let _env_guard = ScopedEnv::set(&[
+            ("JUNE_API_URL", &format!("http://{june_api_addr}")),
+            ("OS_JUNE_LOCAL_DEV", "1"),
+            ("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "cleanup-remote-test"),
+        ]);
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = server.accept().await {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = read_request_into_buf(&mut stream).await;
+                write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"choices":[]}"#).await;
+            }
+        });
+        let _guard = install_local_generation(&format!("http://{addr}/v1"), "", false);
+        let result = cleanup_text(cleanup_request("raw transcript", "note_transcript_cleanup"))
+            .await
+            .expect("remote cleanup should succeed");
+        assert_eq!(result, "cleaned");
+        assert_eq!(
+            june_api_handle.await.expect("june api server").as_deref(),
+            Some("/v1/dictate/cleanup")
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "local endpoint must not be contacted when generation is remote"
+        );
+    }
+
+    fn cleanup_request_with_force(
+        text: &str,
+        style: &str,
+        force: bool,
+    ) -> DictateCleanupRequestParams {
+        let mut params = cleanup_request(text, style);
+        params.force_local_cleanup = force;
+        params
+    }
+
+    #[tokio::test]
+    async fn cleanup_text_force_local_routes_to_local_endpoint_when_generation_is_remote() {
+        let _url_lock = acquire_june_api_url_lock();
+        let june_api_server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind june api");
+        let june_api_addr = june_api_server.local_addr().expect("addr");
+        let june_api_connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let june_api_counter = june_api_connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = june_api_server.accept().await {
+                june_api_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = read_request_into_buf(&mut stream).await;
+                write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"june"}"#).await;
+            }
+        });
+        let _env_guard = ScopedEnv::set(&[("JUNE_API_URL", &format!("http://{june_api_addr}"))]);
+
+        let local_server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind local");
+        let local_addr = local_server.local_addr().expect("addr");
+        let local_handle = tokio::spawn(async move {
+            let (mut stream, _) = local_server.accept().await.expect("conn");
+            let buf = read_request_into_buf(&mut stream).await;
+            write_response(
+                &mut stream,
+                "HTTP/1.1 200 OK",
+                r#"{"choices":[{"message":{"content":"cleaned up"},"finish_reason":"stop"}]}"#,
+            )
+            .await;
+            buf
+        });
+
+        let _guard = install_local_generation(&format!("http://{local_addr}/v1"), "", false);
+
+        let result = cleanup_text(cleanup_request_with_force(
+            "the quick brown fox",
+            "note_transcript_cleanup",
+            true,
+        ))
+        .await
+        .expect("cleanup should succeed via the local endpoint");
+        assert_eq!(result, "cleaned up");
+
+        let buf = local_handle.await.expect("local server");
+        assert_eq!(
+            request_target(&buf).as_deref(),
+            Some("/v1/chat/completions"),
+            "force_local_cleanup must drive egress to the local chat completions endpoint"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            june_api_connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a forced local cleanup must never egress to June API even when generation is remote"
+        );
+    }
+    #[tokio::test]
+    async fn cleanup_text_force_local_preserves_text_when_local_generation_unconfigured() {
+        let _url_lock = acquire_june_api_url_lock();
+        let june_api_server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind june api");
+        let june_api_addr = june_api_server.local_addr().expect("addr");
+        let june_api_connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let june_api_counter = june_api_connections.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = june_api_server.accept().await {
+                june_api_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = read_request_into_buf(&mut stream).await;
+                write_response(&mut stream, "HTTP/1.1 200 OK", r#"{"text":"june"}"#).await;
+            }
+        });
+        let _env_guard = ScopedEnv::set(&[("JUNE_API_URL", &format!("http://{june_api_addr}"))]);
+
+        {
+            let _settings_guard = crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+
+        let result = cleanup_text(cleanup_request_with_force(
+            "raw transcript",
+            "note_transcript_cleanup",
+            true,
+        ))
+        .await
+        .expect("forced local cleanup with no local LLM must preserve the transcript");
+        assert_eq!(result, "raw transcript");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            june_api_connections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a forced local cleanup must not fall back to June API when the local endpoint is absent"
+        );
+
+        let _settings_guard = crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::providers::replace_current_settings_for_tests(
+            crate::providers::default_settings_for_tests(),
+        );
+    }
 }
 
-/// Live tests against a real OpenAI-compatible local endpoint (e.g. Ollama).
-///
-/// Every test is `#[ignore]`d so CI and the normal `cargo test` run never
-/// need a model server. To run them, start the endpoint and pull a model:
-///
-/// ```sh
-/// ollama serve &
-/// ollama pull llama3.1:8b
-/// cargo test --locked -- --ignored live_local
-/// ```
-///
-/// Configuration comes from the environment:
-/// - `JUNE_QA_LOCAL_BASE_URL`: OpenAI-compatible base URL
-///   (default `http://127.0.0.1:11434/v1`)
-/// - `JUNE_QA_LOCAL_MODEL`: model id the endpoint serves
-///   (default `llama3.1:8b`)
-///
-/// Each test skips (passes with a stderr note) when the endpoint is
-/// unreachable, so an accidental `--include-ignored` run does not fail.
-///
-/// The generation tests install settings into the process-wide provider
-/// store that `crate::providers::current_settings()` reads, which is shared
-/// global state. They serialize themselves through a module-local mutex, so
-/// the default parallel test runner is safe for `-- --ignored live_local`;
-/// mixing them with other settings-mutating tests in one run
-/// (`--include-ignored`) requires `--test-threads=1`.
 #[cfg(test)]
 mod live_local_tests {
     use super::*;
     use crate::providers::{
         probe_local_generation_endpoint, LocalGenerationSettings,
-        ProbeLocalGenerationEndpointRequest, PROVIDER_LOCAL,
+        ProbeLocalGenerationEndpointRequest, PROVIDER_LOCAL, TEST_PROVIDER_SETTINGS_LOCK,
     };
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
 
     const DEFAULT_LIVE_BASE_URL: &str = "http://127.0.0.1:11434/v1";
     const DEFAULT_LIVE_MODEL: &str = "llama3.1:8b";
@@ -5606,8 +7048,6 @@ mod live_local_tests {
             .unwrap_or_else(|| DEFAULT_LIVE_MODEL.to_string())
     }
 
-    /// True when the live endpoint answers `GET {base}/models`. Used to skip
-    /// gracefully instead of failing when no server is running.
     async fn live_server_reachable(base_url: &str) -> bool {
         let Ok(client) = reqwest::Client::builder()
             .no_proxy()
@@ -5629,8 +7069,6 @@ mod live_local_tests {
         )
     }
 
-    /// Serializes the tests that mutate the process-wide provider settings
-    /// and restores the defaults afterwards, even on panic.
     struct LiveSettingsGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
 
     impl Drop for LiveSettingsGuard {
@@ -5642,8 +7080,9 @@ mod live_local_tests {
     }
 
     fn install_live_local_provider(base_url: &str, model_id: &str) -> LiveSettingsGuard {
-        static LOCK: Mutex<()> = Mutex::new(());
-        let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut settings = crate::providers::default_settings_for_tests();
         settings.generation_provider = PROVIDER_LOCAL.to_string();
         settings.generation_model = model_id.to_string();
@@ -5656,9 +7095,6 @@ mod live_local_tests {
         LiveSettingsGuard(guard)
     }
 
-    /// Exercises the real probe path (`probe_local_generation_endpoint`:
-    /// reqwest GET `{base}/models` + `parse_local_models_response`) against
-    /// the live server and expects the configured model in the list.
     #[tokio::test]
     #[ignore = "requires a live local OpenAI-compatible server"]
     async fn live_local_probe_lists_pulled_models() {
@@ -5688,9 +7124,6 @@ mod live_local_tests {
         );
     }
 
-    /// Drives `generate_note_from_transcript` end to end on the local path
-    /// with a source-labeled transcript: real prompt assembly, real
-    /// completion parsing, and the source-label cleanup pass.
     #[tokio::test]
     #[ignore = "requires a live local OpenAI-compatible server"]
     async fn live_local_note_generation_returns_clean_markdown() {
@@ -5824,6 +7257,256 @@ Microphone: Great. Let's ship the feed fix this week, then review the onboarding
         assert!(
             has_parseable_delta,
             "SSE stream should contain at least one parseable chat.completion.chunk"
+        );
+    }
+}
+
+#[cfg(test)]
+mod live_local_transcription_tests {
+    use super::*;
+    use crate::providers::{
+        default_settings_for_tests, probe_local_transcription_endpoint,
+        replace_current_settings_for_tests, LocalTranscriptionSettings,
+        ProbeLocalGenerationEndpointRequest, PROVIDER_LOCAL, TEST_PROVIDER_SETTINGS_LOCK,
+    };
+    use std::sync::MutexGuard;
+
+    const DEFAULT_LIVE_STT_BASE_URL: &str = "http://127.0.0.1:8000/v1";
+    const DEFAULT_LIVE_STT_MODEL: &str = "openai/whisper-large-v3";
+
+    fn live_stt_base_url() -> String {
+        std::env::var("JUNE_QA_LOCAL_STT_BASE_URL")
+            .ok()
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_STT_BASE_URL.to_string())
+    }
+
+    fn live_stt_model() -> String {
+        std::env::var("JUNE_QA_LOCAL_STT_MODEL")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_LIVE_STT_MODEL.to_string())
+    }
+
+    async fn live_server_reachable(base_url: &str) -> bool {
+        let Ok(client) = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+        else {
+            return false;
+        };
+        match client.get(format!("{base_url}/models")).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
+    }
+
+    fn skip_message(base_url: &str) -> String {
+        format!(
+            "SKIPPED: no OpenAI-compatible STT server reachable at {base_url}. \
+             Start one (e.g. `vllm serve openai/whisper-large-v3 --task \
+             transcription --upload-audio-once`) or set JUNE_QA_LOCAL_STT_BASE_URL."
+        )
+    }
+
+    struct LiveSettingsGuard(#[allow(dead_code)] MutexGuard<'static, ()>);
+
+    impl Drop for LiveSettingsGuard {
+        fn drop(&mut self) {
+            replace_current_settings_for_tests(default_settings_for_tests());
+        }
+    }
+
+    fn install_live_local_transcription(base_url: &str, model_id: &str) -> LiveSettingsGuard {
+        let guard = TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = default_settings_for_tests();
+        settings.transcription_provider = PROVIDER_LOCAL.to_string();
+        settings.transcription_model = model_id.to_string();
+        settings.local_transcription = LocalTranscriptionSettings {
+            base_url: base_url.to_string(),
+            model_id: model_id.to_string(),
+            api_key: String::new(),
+        };
+        replace_current_settings_for_tests(settings);
+        LiveSettingsGuard(guard)
+    }
+
+    fn write_speech_fixture_wav(path: &Path) {
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/live_stt_speech.wav");
+        fs::copy(&fixture, path).expect("copy tests/fixtures/live_stt_speech.wav fixture");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible STT server"]
+    async fn live_local_probe_lists_asr_models() {
+        let base_url = live_stt_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+
+        let probe = probe_local_transcription_endpoint(ProbeLocalGenerationEndpointRequest {
+            base_url: base_url.clone(),
+            api_key: String::new(),
+        })
+        .await
+        .expect("probe against the live STT endpoint should succeed");
+
+        let model = live_stt_model();
+        assert!(
+            !probe.models.is_empty(),
+            "live STT endpoint advertised no models"
+        );
+        assert!(
+            probe.models.iter().any(|id| id == &model),
+            "expected ASR model {model:?} in the live endpoint's model list {:?}; \
+             load it first (e.g. `vllm serve {model} --task transcription`)",
+            probe.models
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible STT server"]
+    async fn live_local_batch_transcription_returns_text() {
+        let base_url = live_stt_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_stt_model();
+        let _guard = install_live_local_transcription(&base_url, &model);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wav = dir.path().join("clip.wav");
+        write_speech_fixture_wav(&wav);
+
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            audio_path: wav,
+            title: "Live local STT".to_string(),
+            context: None,
+            language: None,
+            operation_id: Some("live-local-stt-batch".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("live local transcription should succeed");
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        assert!(
+            !result.text.trim().is_empty(),
+            "live STT endpoint returned empty text; \
+             verify the model is a real audio model and the fixture has audible content"
+        );
+        eprintln!("live batch transcription ({model}): {}", result.text);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible STT server"]
+    async fn live_local_transcription_respects_language_hint() {
+        let base_url = live_stt_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_stt_model();
+        let _guard = install_live_local_transcription(&base_url, &model);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wav = dir.path().join("clip.wav");
+        write_speech_fixture_wav(&wav);
+
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            audio_path: wav,
+            title: "Live local STT".to_string(),
+            context: None,
+            language: Some("en".to_string()),
+            operation_id: Some("live-local-stt-lang".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("live local transcription with a language hint should succeed");
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        assert!(
+            !result.text.trim().is_empty(),
+            "live STT endpoint returned empty text with language=en"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible STT server"]
+    async fn live_local_transcription_accepts_a_prompt_hint() {
+        let base_url = live_stt_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_stt_model();
+        let _guard = install_live_local_transcription(&base_url, &model);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wav = dir.path().join("clip.wav");
+        write_speech_fixture_wav(&wav);
+
+        let result = transcribe_saved_audio(TranscriptionRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            audio_path: wav,
+            title: "Live local STT".to_string(),
+            context: Some("The quick brown fox jumps over the lazy dog.".to_string()),
+            language: None,
+            operation_id: Some("live-local-stt-prompt".to_string()),
+            preview: false,
+        })
+        .await
+        .expect("live local transcription with a prompt hint should succeed");
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        assert!(
+            !result.text.trim().is_empty(),
+            "live STT endpoint returned empty text with a prompt hint"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live local OpenAI-compatible STT server"]
+    async fn live_local_dictation_round_trip_latency() {
+        let base_url = live_stt_base_url();
+        if !live_server_reachable(&base_url).await {
+            eprintln!("{}", skip_message(&base_url));
+            return;
+        }
+        let model = live_stt_model();
+        let _guard = install_live_local_transcription(&base_url, &model);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wav = dir.path().join("dictation.wav");
+        write_speech_fixture_wav(&wav);
+
+        let started = std::time::Instant::now();
+        let result = dictate_transcribe(DictateTranscribeRequest {
+            provider: PROVIDER_LOCAL.to_string(),
+            audio_path: wav,
+            context: Some("hands-free dictation guidance".to_string()),
+            language: Some("en".to_string()),
+            session_id: "live-local-stt".to_string(),
+            utterance_id: "u1".to_string(),
+        })
+        .await
+        .expect("live local dictation should succeed");
+        let elapsed_ms = started.elapsed().as_millis();
+
+        assert_eq!(result.provider, PROVIDER_LOCAL);
+        eprintln!(
+            "live local dictation round-trip latency: {elapsed_ms} ms ({model}); text: {:?}",
+            result.text
         );
     }
 }

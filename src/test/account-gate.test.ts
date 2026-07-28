@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   depletedBalanceAction,
   depletedBalanceActionLabel,
+  hasActiveLocalTranscriptionRoute,
   isOnMaxPlan,
   shouldOpenPortalForDepletedBalance,
   shouldBlockOnFunding,
@@ -22,6 +23,40 @@ describe("shouldBlockOnSignIn", () => {
         configured: true,
         user: { id: "usr_1", handle: "jakub" },
         balance: { usdMillis: 0 },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("hasActiveLocalTranscriptionRoute", () => {
+  it("allows a configured active local route to bypass the sign-in gate", () => {
+    expect(
+      hasActiveLocalTranscriptionRoute({
+        transcriptionProvider: "local",
+        localTranscription: {
+          baseUrl: "http://127.0.0.1:8000/v1",
+          modelId: "openai/whisper-large-v3",
+          apiKey: "",
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("fails closed for inactive or incomplete local settings", () => {
+    expect(
+      hasActiveLocalTranscriptionRoute({
+        transcriptionProvider: "venice",
+        localTranscription: {
+          baseUrl: "http://127.0.0.1:8000/v1",
+          modelId: "openai/whisper-large-v3",
+          apiKey: "",
+        },
+      }),
+    ).toBe(false);
+    expect(
+      hasActiveLocalTranscriptionRoute({
+        transcriptionProvider: "local",
+        localTranscription: { baseUrl: "", modelId: "openai/whisper-large-v3", apiKey: "" },
       }),
     ).toBe(false);
   });

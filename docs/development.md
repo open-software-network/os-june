@@ -234,6 +234,43 @@ Useful validation docs:
 - [specs/002-system-audio-source-mode/quickstart.md](../specs/002-system-audio-source-mode/quickstart.md)
 - [specs/003-conversation-turns/quickstart.md](../specs/003-conversation-turns/quickstart.md)
 
+## Live local transcription QA
+
+`src-tauri/src/june_api.rs::live_local_transcription_tests` is an
+`#[ignore]`d suite that exercises the real OpenAI-compatible STT endpoint
+(e.g. a vLLM server hosting a Whisper audio model). It never runs in CI or a
+normal `cargo test`; it is for on-demand proof that the local STT wire
+contract works against a real server. Each test skips cleanly when the
+endpoint is unreachable instead of failing. The transcription tests use a
+checked-in short real-speech clip at
+`src-tauri/tests/fixtures/live_stt_speech.wav` (mono 16 kHz 16-bit PCM,
+~2.5 s) so Whisper returns non-empty text without relying on hallucination.
+
+Configuration:
+
+- `JUNE_QA_LOCAL_STT_BASE_URL`: OpenAI-compatible base URL
+  (default `http://127.0.0.1:8000/v1`)
+- `JUNE_QA_LOCAL_STT_MODEL`: ASR model id the endpoint serves
+  (default `openai/whisper-large-v3`)
+
+Run the suite against a reachable server:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --locked \
+  -- --ignored live_local_transcription --nocapture
+```
+
+Confirm the default `cargo test` run still skips them:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml live_local_transcription -- --nocapture
+```
+
+The sibling `live_local_tests` suite covers the OpenAI-compatible chat
+endpoint (e.g. Ollama) with `JUNE_QA_LOCAL_BASE_URL` and
+`JUNE_QA_LOCAL_MODEL`; see the doc comment on the module in
+`src-tauri/src/june_api.rs`.
+
 ## Releases
 
 Production desktop releases are cut from GitHub Actions. macOS produces signed

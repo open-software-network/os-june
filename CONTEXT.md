@@ -151,11 +151,12 @@ _Avoid_: conversion, resampling (that is one step of it).
 Optional, ephemeral chunked transcription shown while recording. Revisable,
 never written to `transcripts`, never the note's source of truth (see
 [ADR-0002](docs/adr/0002-live-transcript-preview-strategy.md)). The Settings
-control for it is labeled **Live transcription** (default on); its disclosure
-copy is the consent surface that makes previews billable extra usage, and
-turning it off stops the preview lanes (gated at capture start and re-checked
-per chunk, so it also takes effect mid-recording) (JUN-375, ADR-0002
-addendum).
+control for it is labeled **Live transcription** (default on). On the June API
+route, its disclosure copy is the consent surface that makes previews billable
+extra usage. On the local transcription route, it uses the configured endpoint
+without a Hold or credits. Turning it off stops the preview lanes (gated at
+capture start and re-checked per chunk, so it also takes effect mid-recording)
+(JUN-375, ADR-0002 addendum).
 _Avoid_: realtime transcription, live captions, streaming.
 
 **Transcript coverage**:
@@ -515,9 +516,33 @@ transcription).
 June records a full meeting or capture session, then transcribes the saved
 audio as a single batch operation and runs **note generation** on the
 transcript. Higher latency tolerance than dictation; cost typically dominates
-dictation by 100×+ per call.
-_Avoid_: transcription (ambiguous between dictation and note transcribe — say
+dictation by 100×+ per call. May run on the **local transcription endpoint**
+instead of June API; on the local route there is no Hold and no charge, and
+the durable identity is encoded into `plan.provider` (see **Transcription
+route** and [ADR 0050](docs/adr/0050-local-transcription-endpoint-and-provider-identity.md)).
+_Avoid_: transcription (ambiguous between dictation and note transcribe - say
 which).
+
+**Local transcription endpoint**:
+The user-configured OpenAI-compatible STT server that June posts audio to
+directly, bypassing June API. Global-only (not per-profile), configured in
+`provider-settings.json` through the Settings UI, and covers note
+transcription, live transcript preview, and dictation together. Unmetered, so
+it needs no OS Accounts session and works signed out. Mirrors **local
+generation** for chat completions.
+_Avoid_: local model (ambiguous with the local generation endpoint - say
+which), local Whisper (the model is the user's choice), BYOK (that names the
+Venice credential path).
+
+**Transcription route**:
+Whether STT for the current settings goes to the **local transcription
+endpoint** or to June API. Decided at the two STT wire functions and threaded
+into durable job plans as the plan-provider identity, so a saved-audio job
+keeps its route even if the user later flips the setting. Distinct from
+**Provider settings / Model mode**, which names *which model*, not *where the
+request goes*.
+_Avoid_: transcription provider (that is the coarse slug on the settings row),
+STT mode.
 
 **Note generation**:
 The step that turns a note transcription (plus any manual notes) into a
@@ -746,6 +771,12 @@ mic grant as covering the other.
   June's model gateway and called by the runtime.
 - **"channel"** is overloaded: a **Source** lane (mic/system), a **release
   channel** (stable/rc), or a WAV interleave channel. Qualify.
+- **`plan.provider`** is now a structured value, not a fixed slug: on the local
+  route it is `local:<16 hex of sha256 of base_url + model_id>` (see
+  [ADR 0050](docs/adr/0050-local-transcription-endpoint-and-provider-identity.md));
+  on the remote route it stays the provider slug (`venice` / `openai`).
+  Anything reading it must use `is_local_transcription_provider`, not equality
+  to a bare slug.
 
 ## Example dialogue
 

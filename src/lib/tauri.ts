@@ -374,6 +374,8 @@ export type ProviderModelSettingsDto = {
   videoModel: string;
   veniceApiKeyConfigured: boolean;
   localGeneration: LocalGenerationSettingsDto;
+  localTranscription: LocalTranscriptionSettingsDto;
+  remoteTranscriptionModel: string;
   /** Venice safe mode for image generation/editing (blurs adult content). On
    * by default; the user opts out via Settings or the consent dialog. */
   imageSafeMode: boolean;
@@ -393,6 +395,12 @@ export type ProfileModelOverridesDto = {
 };
 
 export type LocalGenerationSettingsDto = {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+};
+
+export type LocalTranscriptionSettingsDto = {
   baseUrl: string;
   modelId: string;
   apiKey: string;
@@ -1549,6 +1557,28 @@ export async function setLocalGenerationEnabled(enabled: boolean) {
  * returns the advertised model ids, for the settings "Test connection" flow. */
 export async function probeLocalGenerationEndpoint(input: { baseUrl: string; apiKey: string }) {
   return invoke<{ models: string[] }>("probe_local_generation_endpoint", {
+    request: input,
+  });
+}
+
+export async function saveLocalTranscriptionSettings(input: {
+  baseUrl: string;
+  modelId: string;
+  apiKey: string;
+}) {
+  return invoke<ProviderModelSettingsDto>("save_local_transcription_settings", {
+    request: input,
+  });
+}
+
+export async function setLocalTranscriptionEnabled(enabled: boolean) {
+  return invoke<ProviderModelSettingsDto>("set_local_transcription_enabled", {
+    request: { enabled },
+  });
+}
+
+export async function probeLocalTranscriptionEndpoint(input: { baseUrl: string; apiKey: string }) {
+  return invoke<{ models: string[] }>("probe_local_transcription_endpoint", {
     request: input,
   });
 }

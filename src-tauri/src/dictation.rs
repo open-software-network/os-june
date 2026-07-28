@@ -8,7 +8,9 @@ use crate::june_api::{
     cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
     TranscriptionProviderResult,
 };
-use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
+use crate::providers::{
+    transcription_route, TranscriptionRoute, OPENAI_PROVIDER, PROVIDER_LOCAL, VENICE_PROVIDER,
+};
 use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
@@ -3250,6 +3252,9 @@ fn send_dictation_command(
         reset_shortcut_activation(app);
     }
     if forwarded && matches!(command, DictationCommand::StartListening) {
+        if !dictation_auth_gate_applies(transcription_route()) {
+            return;
+        }
         let Some(start_attempt) = start_attempt else {
             return;
         };
@@ -5221,49 +5226,64 @@ async fn transcribe_recording_ready_inner(
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
-    let Some(access_token) =
-        run_dictation_take_step(take, crate::os_accounts::access_token()).await
-    else {
-        remove_cancelled_dictation_audio(&audio_path, None);
-        return;
-    };
-    match classify_dictation_auth(&access_token) {
-        DictationAuthGate::Proceed => {}
-        DictationAuthGate::Unavailable(error) => {
-            // OS Accounts is temporarily unreachable. The helper has already
-            // finalized this capture to a temp WAV, and there is no retained
-            // retry handle after recording_ready, so remove it before
-            // surfacing the retriable auth error.
-            remove_windows_dictation_audio(&recording.audio_path);
-            if send_dictation_take_command(
-                app,
-                take,
-                serde_json::json!({ "type": "discard_recording" }),
-            )
-            .is_some()
-            {
-                update_shortcut_helper_finalizing(app, false);
-                emit_dictation_take_event(app, take, app_error_event(error));
-            }
+    let transcription_plan_provider = crate::providers::transcription_plan_provider();
+    let transcription_route =
+        if crate::providers::is_local_transcription_provider(&transcription_plan_provider) {
+            TranscriptionRoute::Local
+        } else {
+            TranscriptionRoute::JuneApi
+        };
+    if dictation_auth_gate_applies(transcription_route) {
+        let Some(access_token) =
+            run_dictation_take_step(take, crate::os_accounts::access_token()).await
+        else {
+            remove_cancelled_dictation_audio(&audio_path, None);
             return;
-        }
-        DictationAuthGate::SignedOut => {
-            remove_windows_dictation_audio(&recording.audio_path);
-            if send_dictation_take_command(
-                app,
-                take,
-                serde_json::json!({ "type": "discard_recording" }),
-            )
-            .is_some()
-            {
-                update_shortcut_helper_finalizing(app, false);
-                notify_dictation_not_signed_in(app, Some(take.id()));
+        };
+        match classify_dictation_auth(&access_token) {
+            DictationAuthGate::Proceed => {}
+            DictationAuthGate::Unavailable(error) => {
+                // OS Accounts is temporarily unreachable. The helper has already
+                // finalized this capture to a temp WAV, and there is no retained
+                // retry handle after recording_ready, so remove it before
+                // surfacing the retriable auth error.
+                remove_windows_dictation_audio(&recording.audio_path);
+                if send_dictation_take_command(
+                    app,
+                    take,
+                    serde_json::json!({ "type": "discard_recording" }),
+                )
+                .is_some()
+                {
+                    update_shortcut_helper_finalizing(app, false);
+                    emit_dictation_take_event(app, take, app_error_event(error));
+                }
+                return;
             }
-            let _ = std::fs::remove_file(&audio_path);
-            return;
+            DictationAuthGate::SignedOut => {
+                remove_windows_dictation_audio(&recording.audio_path);
+                if send_dictation_take_command(
+                    app,
+                    take,
+                    serde_json::json!({ "type": "discard_recording" }),
+                )
+                .is_some()
+                {
+                    update_shortcut_helper_finalizing(app, false);
+                    notify_dictation_not_signed_in(app, Some(take.id()));
+                }
+                let _ = std::fs::remove_file(&audio_path);
+                return;
+            }
         }
     }
-    let provider = match dictation_transcription_provider(configured_transcription_provider()) {
+    let provider =
+        if crate::providers::is_local_transcription_provider(&transcription_plan_provider) {
+            PROVIDER_LOCAL.to_string()
+        } else {
+            transcription_plan_provider
+        };
+    let provider = match dictation_transcription_provider(provider) {
         Ok(provider) => provider,
         Err(error) => {
             remove_windows_dictation_audio(&recording.audio_path);
@@ -5316,6 +5336,7 @@ async fn transcribe_recording_ready_inner(
     let result = run_dictation_take_step(
         take,
         dictate_transcribe(DictateTranscribeRequest {
+            provider: provider.clone(),
             audio_path: transcription_audio.clone(),
             context: transcription_context,
             language,
@@ -5573,10 +5594,10 @@ fn dictation_session_id() -> String {
 }
 
 fn dictation_transcription_provider(provider: String) -> Result<String, AppError> {
-    if provider != OPENAI_PROVIDER && provider != VENICE_PROVIDER {
+    if provider != OPENAI_PROVIDER && provider != VENICE_PROVIDER && provider != PROVIDER_LOCAL {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires an OpenAI or Venice transcription model through June API.",
+            "Dictation requires a configured transcription model.",
         ));
     }
     Ok(provider)
@@ -5623,6 +5644,14 @@ async fn dictionary_context_for_app(app: &AppHandle) -> Option<String> {
     build_dictionary_context(&entries)
 }
 
+fn dictation_cleanup_skips_remote(provider: &str, generation_provider: &str) -> bool {
+    provider == PROVIDER_LOCAL && generation_provider != PROVIDER_LOCAL
+}
+
+fn dictation_auth_gate_applies(route: TranscriptionRoute) -> bool {
+    route != TranscriptionRoute::Local
+}
+
 async fn maybe_cleanup_dictation_result(
     app: &AppHandle,
     provider: &str,
@@ -5637,6 +5666,14 @@ async fn maybe_cleanup_dictation_result(
         Ok(transcript) => transcript,
         Err(error) => return Err(error),
     };
+    let force_local_cleanup = crate::providers::is_local_transcription_provider(provider);
+    if dictation_cleanup_skips_remote(provider, &crate::providers::generation_provider()) {
+        tracing::debug!(
+            provider,
+            "local dictation without local generation; preserving raw transcript"
+        );
+        return Ok(transcript);
+    }
     let transcript_bytes = transcript.text.trim().len();
     tracing::info!(
         provider,
@@ -5654,6 +5691,7 @@ async fn maybe_cleanup_dictation_result(
         style,
         session_id,
         utterance_id,
+        force_local_cleanup,
     )
     .await
     {
@@ -5697,6 +5735,7 @@ async fn cleanup_dictation_text(
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
+    force_local_cleanup: bool,
 ) -> Result<String, AppError> {
     let text = text.trim();
     if text.is_empty() {
@@ -5715,6 +5754,7 @@ async fn cleanup_dictation_text(
                 style,
                 session_id,
                 utterance_id,
+                force_local_cleanup,
             ),
         )
         .await
@@ -5733,6 +5773,7 @@ async fn cleanup_dictation_text(
         style,
         session_id,
         utterance_id,
+        force_local_cleanup,
     )
     .await
 }
@@ -5755,6 +5796,7 @@ async fn cleanup_dictation_chunks(
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
+    force_local_cleanup: bool,
 ) -> Result<String, AppError> {
     let total_bytes: usize = chunks.iter().map(|chunk| chunk.len()).sum();
     let deadline = Instant::now() + dictation_cleanup_timeout(total_bytes);
@@ -5784,6 +5826,7 @@ async fn cleanup_dictation_chunks(
                 style,
                 session_id.clone(),
                 chunk_utterance_id,
+                force_local_cleanup,
             ),
         )
         .await
@@ -5890,6 +5933,7 @@ async fn cleanup_dictation_chunk_with_retry(
     style: DictationStyle,
     session_id: String,
     chunk_utterance_id: String,
+    force_local_cleanup: bool,
 ) -> Result<String, AppError> {
     let first = cleanup_dictation_call(
         chunk,
@@ -5898,6 +5942,7 @@ async fn cleanup_dictation_chunk_with_retry(
         style,
         session_id.clone(),
         chunk_utterance_id.clone(),
+        force_local_cleanup,
     )
     .await;
     // A distinct utterance id: the retry wants a fresh model completion, so
@@ -5913,6 +5958,7 @@ async fn cleanup_dictation_chunk_with_retry(
                 style,
                 session_id,
                 retry_utterance_id,
+                force_local_cleanup,
             )
             .await
             {
@@ -5942,6 +5988,7 @@ async fn cleanup_dictation_chunk_with_retry(
                 style,
                 session_id,
                 retry_utterance_id,
+                force_local_cleanup,
             )
             .await
             {
@@ -5977,6 +6024,7 @@ async fn cleanup_dictation_call(
     style: DictationStyle,
     session_id: String,
     utterance_id: String,
+    force_local_cleanup: bool,
 ) -> Result<String, AppError> {
     let cleaned = cleanup_text(DictateCleanupRequestParams {
         text: text.to_string(),
@@ -5985,6 +6033,7 @@ async fn cleanup_dictation_call(
         style: style.instruction().to_string(),
         session_id,
         utterance_id,
+        force_local_cleanup,
     })
     .await?;
     let trimmed = cleaned.trim();
@@ -10867,6 +10916,15 @@ mod tests {
     }
 
     #[test]
+    fn dictation_accepts_local_provider() {
+        assert_eq!(
+            dictation_transcription_provider(crate::providers::PROVIDER_LOCAL.to_string())
+                .expect("local should be accepted"),
+            crate::providers::PROVIDER_LOCAL
+        );
+    }
+
+    #[test]
     fn dictation_context_guides_clean_hands_free_typing() {
         let context = dictation_transcription_context(DictationStyle::Standard);
 
@@ -11343,5 +11401,190 @@ mod tests {
         assert_eq!(event["payload"]["code"], "auth_refresh_unavailable");
         assert_eq!(event["payload"]["silent"], false);
         assert!(!is_silent_transcription_error(&event));
+    }
+
+    #[test]
+    fn dictation_cleanup_skips_remote_when_local_stt_lacks_local_generation() {
+        assert!(
+            dictation_cleanup_skips_remote(crate::providers::PROVIDER_LOCAL, crate::providers::PROVIDER_VENICE),
+            "local STT with remote generation must skip cleanup so the transcript never reaches June API"
+        );
+        assert!(
+            dictation_cleanup_skips_remote(
+                crate::providers::PROVIDER_LOCAL,
+                crate::providers::PROVIDER_OPENAI
+            ),
+            "local STT with the default OpenAI generation provider must also skip cleanup"
+        );
+        assert!(
+            !dictation_cleanup_skips_remote(
+                crate::providers::PROVIDER_LOCAL,
+                crate::providers::PROVIDER_LOCAL
+            ),
+            "local STT with local generation routes cleanup to the local endpoint, not a skip"
+        );
+        assert!(
+            !dictation_cleanup_skips_remote(
+                crate::providers::PROVIDER_VENICE,
+                crate::providers::PROVIDER_VENICE
+            ),
+            "remote STT must still run cleanup through June API"
+        );
+        assert!(
+            !dictation_cleanup_skips_remote(
+                crate::providers::OPENAI_PROVIDER,
+                crate::providers::PROVIDER_LOCAL
+            ),
+            "the remote OPENAI transcription path never enters the local-STT skip"
+        );
+    }
+
+    #[test]
+    fn dictation_auth_gate_applies_only_on_remote_route() {
+        assert!(
+            !dictation_auth_gate_applies(TranscriptionRoute::Local),
+            "local dictation must not require an OS Accounts session"
+        );
+        assert!(
+            dictation_auth_gate_applies(TranscriptionRoute::JuneApi),
+            "remote dictation must keep the sign-in auth gate"
+        );
+    }
+
+    #[test]
+    fn dictation_local_route_resolves_without_os_accounts_session() {
+        let _guard = ProviderSettingsGuard(
+            crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.transcription_provider = crate::providers::PROVIDER_LOCAL.to_string();
+        settings.transcription_model = "openai/whisper-large-v3".to_string();
+        settings.local_transcription = crate::providers::LocalTranscriptionSettings {
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            model_id: "openai/whisper-large-v3".to_string(),
+            api_key: String::new(),
+        };
+        crate::providers::replace_current_settings_for_tests(settings);
+        assert_eq!(transcription_route(), TranscriptionRoute::Local);
+        assert!(!dictation_auth_gate_applies(transcription_route()));
+    }
+
+    #[test]
+    fn dictation_remote_route_keeps_auth_gate() {
+        let _guard = ProviderSettingsGuard(
+            crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        crate::providers::replace_current_settings_for_tests(
+            crate::providers::default_settings_for_tests(),
+        );
+        assert_eq!(transcription_route(), TranscriptionRoute::JuneApi);
+        assert!(dictation_auth_gate_applies(transcription_route()));
+    }
+
+    struct ProviderSettingsGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for ProviderSettingsGuard {
+        fn drop(&mut self) {
+            crate::providers::replace_current_settings_for_tests(
+                crate::providers::default_settings_for_tests(),
+            );
+        }
+    }
+
+    fn install_local_generation_only(base_url: &str) -> ProviderSettingsGuard {
+        let guard = crate::providers::TEST_PROVIDER_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = crate::providers::default_settings_for_tests();
+        settings.local_generation = crate::providers::LocalGenerationSettings {
+            base_url: base_url.to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+        crate::providers::replace_current_settings_for_tests(settings);
+        ProviderSettingsGuard(guard)
+    }
+
+    #[tokio::test]
+    async fn cleanup_dictation_call_threads_force_local_to_cleanup_text() {
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut stream, _) = server.accept().await.expect("conn");
+            let mut buf = Vec::new();
+            let mut header_end = None;
+            loop {
+                let mut chunk = [0u8; 4096];
+                let n = stream.read(&mut chunk).await.expect("read");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if header_end.is_none() {
+                    if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(idx + 4);
+                    }
+                }
+                if let Some(he) = header_end {
+                    let header_str = std::str::from_utf8(&buf[..he]).unwrap_or("");
+                    let content_length: usize = header_str
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if buf.len() - he >= content_length {
+                        break;
+                    }
+                }
+            }
+            let body =
+                r#"{"choices":[{"message":{"content":"Hello world."},"finish_reason":"stop"}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(resp.as_bytes()).await.ok();
+            stream.shutdown().await.ok();
+            buf
+        });
+
+        let _guard = install_local_generation_only(&format!("http://{addr}/v1"));
+
+        let cleaned = cleanup_dictation_call(
+            "hello world",
+            None,
+            None,
+            DictationStyle::Standard,
+            "session".to_string(),
+            "utterance".to_string(),
+            true,
+        )
+        .await
+        .expect("forced local cleanup should route to the local endpoint");
+        assert_eq!(cleaned, "Hello world.");
+
+        let buf = handle.await.expect("local server");
+        let header_end = buf
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("header end");
+        let header = std::str::from_utf8(&buf[..header_end]).unwrap_or("");
+        let request_line = header.lines().next().unwrap_or("");
+        let target = request_line.split_whitespace().nth(1).unwrap_or("");
+        assert_eq!(
+            target, "/v1/chat/completions",
+            "force_local_cleanup must drive dictation cleanup to the local chat completions endpoint"
+        );
     }
 }

@@ -112,9 +112,11 @@ import { retryPendingAutostartDefault } from "../lib/autostart";
 import { applyOnboardingReplayFlag, isOnboardingComplete } from "../lib/onboarding";
 import {
   depletedBalanceActionLabel,
+  hasActiveLocalTranscriptionRoute,
   shouldBlockOnFunding,
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
+import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
 import { reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
@@ -433,7 +435,45 @@ export function App() {
     import.meta.env.DEV &&
     !account.signedIn &&
     (accountLoading || !!accountError || !account.configured);
-  const signInRequired = !devAccountsUnconfigured && shouldBlockOnSignIn(account);
+  const [localTranscriptionRouteActive, setLocalTranscriptionRouteActive] = useState<
+    boolean | undefined
+  >(undefined);
+  useEffect(() => {
+    if (account.signedIn) {
+      setLocalTranscriptionRouteActive(undefined);
+      return;
+    }
+    let cancelled = false;
+    const refreshLocalTranscriptionRoute = () => {
+      void import("../lib/tauri")
+        .then(({ providerModelSettings }) => providerModelSettings())
+        .then(({ settings }) => {
+          if (!cancelled) {
+            setLocalTranscriptionRouteActive(hasActiveLocalTranscriptionRoute(settings));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setLocalTranscriptionRouteActive(false);
+        });
+    };
+    setLocalTranscriptionRouteActive(undefined);
+    refreshLocalTranscriptionRoute();
+    window.addEventListener(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, refreshLocalTranscriptionRoute);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        refreshLocalTranscriptionRoute,
+      );
+    };
+  }, [account.signedIn]);
+  const localTranscriptionRouteLoading =
+    !account.signedIn && localTranscriptionRouteActive === undefined;
+  const signInRequired =
+    !devAccountsUnconfigured &&
+    !localTranscriptionRouteLoading &&
+    !localTranscriptionRouteActive &&
+    shouldBlockOnSignIn(account);
   // Dev console driver (window.__fundingDemo) that parks the out-of-credits
   // surfaces (composer notice, sidebar chip) on a synthetic account snapshot
   // so every funding branch can be inspected without a depleted account. The
@@ -514,7 +554,8 @@ export function App() {
   // Funding no longer blocks the shell or its read-only data. Onboarding still
   // holds bootstrap, update checks, and eager permission probes because the
   // wizard owns the permission prompts while it is on screen.
-  const appBlocked = accountLoading || signInRequired || onboardingRequired;
+  const appBlocked =
+    accountLoading || localTranscriptionRouteLoading || signInRequired || onboardingRequired;
   meetingEndReadyRef.current = !appBlocked && bootstrapped;
   // The referral delight nudge's trigger layer: counts the moments (5th note,
   // first agent completion, 25th dictation) and surfaces the card when the
@@ -2208,7 +2249,8 @@ export function App() {
   const accountGate = renderAppAccountGate({
     account,
     accountError,
-    accountLoading,
+    accountLoading: accountLoading || localTranscriptionRouteLoading,
+    allowSignedOutLocalTranscription: localTranscriptionRouteActive === true,
     devAccountsUnconfigured,
     handleAccountChanged,
     onboardingRequired,

@@ -24,6 +24,9 @@ import {
   saveLocalGenerationSettings,
   setLocalGenerationEnabled,
   probeLocalGenerationEndpoint,
+  saveLocalTranscriptionSettings,
+  setLocalTranscriptionEnabled,
+  probeLocalTranscriptionEndpoint,
   setDictationLanguage,
   setDictationMicrophone,
   setDictationShortcut,
@@ -48,6 +51,7 @@ import type {
   DictationShortcutSetting,
   FolderDto,
   LocalGenerationSettingsDto,
+  LocalTranscriptionSettingsDto,
   ProviderModelMode,
   ProviderModelSettingsDto,
   RecordingSourceMode,
@@ -102,8 +106,21 @@ import {
 import {
   isLoopbackUrl,
   localGenerationOptionId,
+  transcriptionPickerValueForMode,
   withLocalGenerationOption,
+  withLocalTranscriptionOption,
 } from "../../lib/local-generation";
+import {
+  decideConfirmEnable,
+  decidePickerEnable,
+  decideSaveModel,
+  decideToggleOn,
+  draftStillMatchesSent,
+  makeLocalTranscriptionSaveSerializer,
+  reconcileLocalTranscriptionSaveResponse,
+  type PendingLocalTranscriptionSave,
+  type LocalTranscriptionSaveSerializer,
+} from "../../lib/local-draft-sync";
 import { ProviderLogo } from "./ProviderLogo";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "./ModelPickerDialog";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -281,6 +298,12 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
     modelId: "",
     apiKey: "",
   },
+  localTranscription: {
+    baseUrl: "",
+    modelId: "",
+    apiKey: "",
+  },
+  remoteTranscriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
   // On by default, matching the Rust providers default.
   imageSafeMode: true,
   imageSafeModePromptDismissed: false,
@@ -454,17 +477,30 @@ export function AppSettings({
   const [localGenerationDraft, setLocalGenerationDraft] = useState<LocalGenerationSettingsDto>(
     DEFAULT_PROVIDER_MODELS.localGeneration,
   );
+  const [localTranscriptionDraft, setLocalTranscriptionDraft] =
+    useState<LocalTranscriptionSettingsDto>(DEFAULT_PROVIDER_MODELS.localTranscription);
+  const localTranscriptionDraftRef = useRef(localTranscriptionDraft);
+  const pendingLocalTranscriptionSaveRef = useRef<PendingLocalTranscriptionSave>(null);
+  const localTranscriptionSaveSeqRef = useRef(0);
+  const skipNextLocalTranscriptionRehydrateRef = useRef(false);
+  const localTranscriptionSaveSerializerRef = useRef<LocalTranscriptionSaveSerializer>(
+    makeLocalTranscriptionSaveSerializer(),
+  );
   const currentDataPartitionLabel = useCurrentDataPartitionName();
   const showingPartitionModels = currentDataPartitionLabel !== DEFAULT_DATA_PARTITION;
   const [partitionGenerationModel, setPartitionGenerationModel] = useState<string>();
   // Model ids returned by the last successful "Test connection" probe, used to
   // populate the Model ID field's datalist (free text is still allowed).
   const [localProbeModels, setLocalProbeModels] = useState<string[]>([]);
+  const [localTranscriptionProbeModels, setLocalTranscriptionProbeModels] = useState<string[]>([]);
   // A non-loopback endpoint requires an explicit confirm before enabling, so
   // the switch doesn't silently start sending prompts off the device. Set when
   // the switch is flipped for a remote endpoint; the confirm affordance
   // proceeds.
   const [localEnableConfirm, setLocalEnableConfirm] = useState(false);
+  const [localTranscriptionEnableConfirm, setLocalTranscriptionEnableConfirm] = useState(false);
+  const [localTranscriptionConfirmFromPicker, setLocalTranscriptionConfirmFromPicker] =
+    useState(false);
   const [veniceModels, setVeniceModels] = useState<Record<ProviderModelMode, VeniceModelDto[]>>({
     transcription: [],
     generation: [],
@@ -529,6 +565,8 @@ export function AppSettings({
   const [showMoreImageOptions, setShowMoreImageOptions] = useState(false);
   const [localModelSetupVisible, setLocalModelSetupVisible] = useState(false);
   const [localModelStatus, setLocalModelStatus] = useState<string>();
+  const [localTranscriptionSetupVisible, setLocalTranscriptionSetupVisible] = useState(false);
+  const [localTranscriptionStatus, setLocalTranscriptionStatus] = useState<string>();
   const [internalTab, setInternalTab] = useState<SettingsTab>("general");
   const [micPopoverPlacement, setMicPopoverPlacement] =
     useState<SelectPopoverPlacement>("align-selected");
@@ -683,6 +721,21 @@ export function AppSettings({
     providerSettings.localGeneration.baseUrl,
     providerSettings.localGeneration.modelId,
     providerSettings.localGeneration.apiKey,
+  ]);
+
+  useEffect(() => {
+    localTranscriptionDraftRef.current = localTranscriptionDraft;
+  }, [localTranscriptionDraft]);
+
+  useEffect(() => {
+    const skip = skipNextLocalTranscriptionRehydrateRef.current;
+    skipNextLocalTranscriptionRehydrateRef.current = false;
+    if (skip || pendingLocalTranscriptionSaveRef.current) return;
+    setLocalTranscriptionDraft(providerSettings.localTranscription);
+  }, [
+    providerSettings.localTranscription.baseUrl,
+    providerSettings.localTranscription.modelId,
+    providerSettings.localTranscription.apiKey,
   ]);
 
   useEffect(() => {
@@ -1197,6 +1250,8 @@ export function AppSettings({
     }
     if (mode === "generation" && picked?.provider === "local") {
       enableLocalGenerationFromPicker();
+    } else if (mode === "transcription" && picked?.provider === "local") {
+      enableLocalTranscriptionFromPicker();
     } else {
       void selectVeniceModel(mode, modelId);
     }
@@ -1366,6 +1421,209 @@ export function AppSettings({
     }
   }
 
+  function draftMatchesSavedLocalTranscription() {
+    const saved = providerSettings.localTranscription;
+    return (
+      localTranscriptionDraft.baseUrl.trim() === saved.baseUrl.trim() &&
+      localTranscriptionDraft.modelId.trim() === saved.modelId.trim() &&
+      localTranscriptionDraft.apiKey === saved.apiKey
+    );
+  }
+
+  async function commitLocalTranscriptionSettings() {
+    const sent: LocalTranscriptionSettingsDto = {
+      baseUrl: localTranscriptionDraft.baseUrl,
+      modelId: localTranscriptionDraft.modelId,
+      apiKey: localTranscriptionDraft.apiKey,
+    };
+    return localTranscriptionSaveSerializerRef.current(async () => {
+      localTranscriptionSaveSeqRef.current += 1;
+      const seq = localTranscriptionSaveSeqRef.current;
+      pendingLocalTranscriptionSaveRef.current = { seq, sent };
+      try {
+        const next = await saveLocalTranscriptionSettings(sent);
+        const outcome = reconcileLocalTranscriptionSaveResponse({
+          pending: pendingLocalTranscriptionSaveRef.current,
+          responseSeq: seq,
+          responseSettings: next.localTranscription,
+          currentDraft: localTranscriptionDraftRef.current,
+        });
+        if (outcome.kind !== "apply") {
+          return undefined;
+        }
+        if (outcome.clearPending) {
+          pendingLocalTranscriptionSaveRef.current = null;
+        }
+        skipNextLocalTranscriptionRehydrateRef.current = outcome.preserveEdits;
+        setProviderSettings(next);
+        dispatchProviderModelSettingsChanged({
+          mode: "transcription",
+          modelId: next.transcriptionModel,
+        });
+        return next;
+      } catch (error) {
+        if (pendingLocalTranscriptionSaveRef.current?.seq === seq) {
+          pendingLocalTranscriptionSaveRef.current = null;
+        }
+        setLocalTranscriptionStatus(messageFromError(error));
+        return undefined;
+      }
+    });
+  }
+
+  async function handleSaveLocalTranscriptionModel() {
+    const decision = decideSaveModel({
+      enabled: localTranscriptionEnabled,
+      savedBaseUrl: providerSettings.localTranscription.baseUrl,
+      draftBaseUrl: localTranscriptionDraft.baseUrl,
+      draftModelId: localTranscriptionDraft.modelId,
+    });
+    if (decision.kind === "blocked-incomplete") {
+      setLocalTranscriptionStatus("Enter a local endpoint and model ID first.");
+      return;
+    }
+    if (decision.kind === "require-confirm") {
+      setLocalTranscriptionConfirmFromPicker(false);
+      setLocalTranscriptionEnableConfirm(true);
+      setLocalTranscriptionSetupVisible(true);
+      setLocalTranscriptionStatus(
+        "This endpoint is not on this machine. Requests will leave your device. Confirm in More options to enable it.",
+      );
+      return;
+    }
+    const saved = await commitLocalTranscriptionSettings();
+    if (saved) setLocalTranscriptionStatus("Local model saved.");
+  }
+
+  async function commitLocalTranscriptionEnabled() {
+    try {
+      const next = await setLocalTranscriptionEnabled(true);
+      setProviderSettings(next);
+      dispatchProviderModelSettingsChanged({
+        mode: "transcription",
+        modelId: next.transcriptionModel,
+      });
+      setLocalTranscriptionEnableConfirm(false);
+      setLocalTranscriptionConfirmFromPicker(false);
+      setLocalTranscriptionSetupVisible(true);
+      setLocalTranscriptionStatus("Local model enabled.");
+    } catch (error) {
+      setLocalTranscriptionStatus(messageFromError(error));
+    }
+  }
+
+  function enableLocalTranscriptionFromPicker() {
+    const decision = decidePickerEnable({
+      pendingSave: pendingLocalTranscriptionSaveRef.current,
+      savedBaseUrl: providerSettings.localTranscription.baseUrl,
+    });
+    if (decision.kind === "require-confirm") {
+      setLocalTranscriptionConfirmFromPicker(true);
+      setLocalTranscriptionEnableConfirm(true);
+      setLocalTranscriptionSetupVisible(true);
+      setShowMoreVoiceOptions(true);
+      setLocalTranscriptionStatus(
+        "This endpoint is not on this machine. Requests will leave your device. Confirm in More options to enable it.",
+      );
+      return;
+    }
+    void commitLocalTranscriptionEnabled();
+  }
+
+  async function saveDraftForEnable(): Promise<boolean> {
+    const sent: LocalTranscriptionSettingsDto = { ...localTranscriptionDraft };
+    if (!draftMatchesSavedLocalTranscription()) {
+      const saved = await commitLocalTranscriptionSettings();
+      if (!saved) return false;
+    }
+    if (!draftStillMatchesSent(sent, localTranscriptionDraftRef.current)) {
+      setLocalTranscriptionStatus(
+        "Endpoint changed before enabling. Review your settings and enable again.",
+      );
+      return false;
+    }
+    return true;
+  }
+
+  async function enableLocalTranscription() {
+    const decision = decideToggleOn({
+      enabled: localTranscriptionEnabled,
+      savedBaseUrl: providerSettings.localTranscription.baseUrl,
+      draftBaseUrl: localTranscriptionDraft.baseUrl,
+      draftModelId: localTranscriptionDraft.modelId,
+    });
+    if (decision.kind === "incomplete") {
+      setLocalTranscriptionSetupVisible(true);
+      setLocalTranscriptionStatus("Enter a local endpoint and model ID first.");
+      return;
+    }
+    if (decision.kind === "require-confirm") {
+      setLocalTranscriptionConfirmFromPicker(false);
+      setLocalTranscriptionEnableConfirm(true);
+      setLocalTranscriptionSetupVisible(true);
+      return;
+    }
+    if (!(await saveDraftForEnable())) return;
+    await commitLocalTranscriptionEnabled();
+  }
+
+  async function confirmEnableLocalTranscription() {
+    const decision = decideConfirmEnable({
+      fromPicker: localTranscriptionConfirmFromPicker,
+      savedBaseUrl: providerSettings.localTranscription.baseUrl,
+      savedModelId: providerSettings.localTranscription.modelId,
+      draftBaseUrl: localTranscriptionDraft.baseUrl,
+      draftModelId: localTranscriptionDraft.modelId,
+    });
+    if (decision.kind === "incomplete") {
+      setLocalTranscriptionSetupVisible(true);
+      setLocalTranscriptionStatus("Enter a local endpoint and model ID first.");
+      return;
+    }
+    if (decision.kind === "save-draft-then-enable") {
+      if (!(await saveDraftForEnable())) return;
+    }
+    await commitLocalTranscriptionEnabled();
+  }
+
+  async function disableLocalTranscription() {
+    setLocalTranscriptionEnableConfirm(false);
+    setLocalTranscriptionConfirmFromPicker(false);
+    try {
+      const next = await setLocalTranscriptionEnabled(false);
+      setProviderSettings(next);
+      dispatchProviderModelSettingsChanged({
+        mode: "transcription",
+        modelId: next.transcriptionModel,
+      });
+      setLocalTranscriptionStatus("Local model disabled.");
+    } catch (error) {
+      setLocalTranscriptionStatus(messageFromError(error));
+    }
+  }
+
+  function handleLocalTranscriptionToggle(enabled: boolean) {
+    setLocalTranscriptionSetupVisible(true);
+    if (enabled) {
+      void enableLocalTranscription();
+    } else {
+      void disableLocalTranscription();
+    }
+  }
+
+  async function testLocalTranscriptionConnection() {
+    try {
+      const result = await probeLocalTranscriptionEndpoint({
+        baseUrl: localTranscriptionDraft.baseUrl,
+        apiKey: localTranscriptionDraft.apiKey,
+      });
+      setLocalTranscriptionProbeModels(result.models);
+      setLocalTranscriptionStatus(`Connected. ${result.models.length} models available.`);
+    } catch (error) {
+      setLocalTranscriptionStatus(messageFromError(error));
+    }
+  }
+
   async function removeVeniceApiKey() {
     try {
       const next = await clearVeniceApiKey();
@@ -1439,10 +1697,23 @@ export function AppSettings({
   const displayProviderSettings = showingPartitionModels
     ? effectiveProviderSettings
     : providerSettings;
-  const transcriptionOptions = modelOptions(
-    veniceModels.transcription,
-    displayProviderSettings.transcriptionModel,
+  const localTranscriptionEnabled = providerSettings.transcriptionProvider === "local";
+  const transcriptionCatalog = useMemo(
+    () =>
+      withLocalTranscriptionOption(veniceModels.transcription, providerSettings.localTranscription),
+    [
+      veniceModels.transcription,
+      providerSettings.localTranscription.baseUrl,
+      providerSettings.localTranscription.modelId,
+    ],
   );
+  const transcriptionPickerValue = transcriptionPickerValueForMode({
+    localTranscriptionEnabled,
+    localModelId: providerSettings.localTranscription.modelId,
+    showingPartitionModels,
+    effectiveTranscriptionModel: displayProviderSettings.transcriptionModel,
+  });
+  const transcriptionOptions = modelOptions(transcriptionCatalog, transcriptionPickerValue);
   const localModelEnabled = providerSettings.generationProvider === "local";
   const generationCatalog = useMemo(
     () => withLocalGenerationOption(veniceModels.generation, providerSettings.localGeneration),
@@ -1490,6 +1761,22 @@ export function AppSettings({
   const showLocalModelFields =
     localModelEnabled || localModelSetupVisible || localModelHasDraft || localModelHasSavedConfig;
 
+  const localTranscriptionDraftBaseUrl = localTranscriptionDraft.baseUrl.trim();
+  const localTranscriptionNonLoopback =
+    localTranscriptionDraftBaseUrl.length > 0 && !isLoopbackUrl(localTranscriptionDraftBaseUrl);
+  const localTranscriptionHasDraft =
+    localTranscriptionDraftBaseUrl.length > 0 ||
+    localTranscriptionDraft.modelId.trim().length > 0 ||
+    localTranscriptionDraft.apiKey.length > 0;
+  const localTranscriptionHasSavedConfig =
+    providerSettings.localTranscription.baseUrl.trim().length > 0 ||
+    providerSettings.localTranscription.modelId.trim().length > 0;
+  const showLocalTranscriptionFields =
+    localTranscriptionEnabled ||
+    localTranscriptionSetupVisible ||
+    localTranscriptionHasDraft ||
+    localTranscriptionHasSavedConfig;
+
   // Advanced model settings (the Venice key and the local model) sit behind a
   // collapsed "More options" disclosure. Auto-expand it when a local model is
   // already enabled so the active toggle and endpoint config are never hidden
@@ -1501,6 +1788,13 @@ export function AppSettings({
       setLocalModelSetupVisible(true);
     }
   }, [localModelEnabled]);
+
+  useEffect(() => {
+    if (localTranscriptionEnabled) {
+      setShowMoreVoiceOptions(true);
+      setLocalTranscriptionSetupVisible(true);
+    }
+  }, [localTranscriptionEnabled]);
 
   useEffect(() => {
     if (showingPartitionModels) closeModelPicker();
@@ -1581,7 +1875,9 @@ export function AppSettings({
   }
 
   function modelValueForMode(mode: ProviderModelMode) {
-    if (mode === "transcription") return displayProviderSettings.transcriptionModel;
+    if (mode === "transcription") {
+      return transcriptionPickerValue;
+    }
     if (mode === "image") return displayProviderSettings.imageModel;
     if (mode === "video") return displayProviderSettings.videoModel;
     if (showingPartitionModels) {
@@ -2199,13 +2495,149 @@ export function AppSettings({
                   </button>
                   {showMoreVoiceOptions ? (
                     <div id="voice-more-options-panel" className="settings-more-options-panel">
+                      <div className="settings-row settings-local-model-toggle-row">
+                        <div className="settings-row-info">
+                          <h3 className="settings-row-title">Use local model</h3>
+                          <p className="settings-row-description">
+                            Route note transcription and dictation through your own
+                            OpenAI-compatible endpoint.
+                          </p>
+                        </div>
+                        <div className="settings-row-control">
+                          <Switch
+                            checked={localTranscriptionEnabled}
+                            aria-label="Use local transcription model"
+                            onCheckedChange={handleLocalTranscriptionToggle}
+                          />
+                        </div>
+                      </div>
+
+                      {showLocalTranscriptionFields ? (
+                        <div className="settings-row settings-row-stack settings-local-model-fields-row">
+                          <div className="settings-row-info">
+                            <h3 className="settings-row-title">Endpoint</h3>
+                            <p className="settings-row-description">
+                              Add the base URL, model ID, and optional API key for your local
+                              transcription model.
+                            </p>
+                          </div>
+                          <div className="settings-row-control settings-local-model-fields">
+                            <label className="settings-field">
+                              <span>Base URL</span>
+                              <input
+                                value={localTranscriptionDraft.baseUrl}
+                                onChange={(event) => {
+                                  const baseUrl = event.currentTarget.value;
+                                  setLocalTranscriptionDraft((draft) => ({
+                                    ...draft,
+                                    baseUrl,
+                                  }));
+                                  setLocalTranscriptionEnableConfirm(false);
+                                  setLocalTranscriptionStatus(undefined);
+                                }}
+                                placeholder="http://localhost:8000/v1"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
+                              />
+                            </label>
+                            <label className="settings-field">
+                              <span>Model ID</span>
+                              <input
+                                value={localTranscriptionDraft.modelId}
+                                onChange={(event) => {
+                                  const modelId = event.currentTarget.value;
+                                  setLocalTranscriptionDraft((draft) => ({
+                                    ...draft,
+                                    modelId,
+                                  }));
+                                  setLocalTranscriptionStatus(undefined);
+                                }}
+                                placeholder="openai/whisper-large-v3"
+                                list="local-transcription-models"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
+                              />
+                              <datalist id="local-transcription-models">
+                                {localTranscriptionProbeModels.map((id) => (
+                                  <option key={id} value={id} />
+                                ))}
+                              </datalist>
+                            </label>
+                            <label className="settings-field">
+                              <span>Local API key</span>
+                              <input
+                                type="password"
+                                value={localTranscriptionDraft.apiKey}
+                                onChange={(event) => {
+                                  const apiKey = event.currentTarget.value;
+                                  setLocalTranscriptionDraft((draft) => ({
+                                    ...draft,
+                                    apiKey,
+                                  }));
+                                  setLocalTranscriptionStatus(undefined);
+                                }}
+                                placeholder="Optional"
+                                autoCapitalize="none"
+                                autoCorrect="off"
+                                spellCheck={false}
+                              />
+                            </label>
+                            {localTranscriptionNonLoopback ? (
+                              <p className="settings-local-model-warning" role="note">
+                                This endpoint is not on this machine. Requests will leave your
+                                device.
+                              </p>
+                            ) : null}
+                            <div className="settings-local-model-actions">
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => void testLocalTranscriptionConnection()}
+                              >
+                                Test connection
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => void handleSaveLocalTranscriptionModel()}
+                              >
+                                Save local model
+                              </button>
+                            </div>
+                            {localTranscriptionStatus ? (
+                              <p className="settings-local-model-status" role="status">
+                                {localTranscriptionStatus}
+                              </p>
+                            ) : null}
+                            {localTranscriptionEnableConfirm ? (
+                              <div className="settings-local-model-confirm" role="alert">
+                                <p className="settings-row-error">
+                                  This endpoint is not on this machine. Requests will leave your
+                                  device.
+                                </p>
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  onClick={() => void confirmEnableLocalTranscription()}
+                                >
+                                  Enable anyway
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      <div className="settings-row-divider" aria-hidden />
                       <div className="settings-row">
                         <div className="settings-row-info">
                           <h3 className="settings-row-title">Live transcription</h3>
                           <p className="settings-row-description">
-                            Show a live transcript while you record. This transcribes audio twice,
-                            so it may use extra credits; turning it off shows the transcript only
-                            after the recording ends.
+                            {localTranscriptionEnabled
+                              ? "Show a live transcript while you record. This transcribes audio twice using your configured local endpoint; turning it off shows the transcript only after the recording ends."
+                              : "Show a live transcript while you record. This transcribes audio twice, so it may use extra credits; turning it off shows the transcript only after the recording ends."}
                           </p>
                         </div>
                         <div className="settings-row-control">

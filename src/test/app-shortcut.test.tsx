@@ -11,6 +11,7 @@ import {
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
 import {
   AGENT_NEW_SESSION_EVENT,
@@ -2051,6 +2052,34 @@ describe("App shortcuts", () => {
     // Clearing the gate lands in the persistent June conversation, not a new note.
     expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
+  });
+
+  it("allows a signed-out user with active local transcription", async () => {
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: false,
+      configured: true,
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "local",
+        localTranscription: {
+          baseUrl: "http://127.0.0.1:8000/v1",
+          modelId: "openai/whisper-large-v3",
+        },
+      },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
+    expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new Event(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT));
+    });
+    await waitFor(() => expect(mocks.providerModelSettings).toHaveBeenCalledTimes(2));
+    expect(mocks.bootstrapApp).toHaveBeenCalledOnce();
   });
 
   it("uses Windows dictation sign-in copy and opens a fresh agent session after sign-in", async () => {

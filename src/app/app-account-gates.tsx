@@ -11,6 +11,7 @@ type AppAccountGateOptions = {
   account: AccountStatus;
   accountError: string | undefined;
   accountLoading: boolean;
+  allowSignedOutLocalTranscription: boolean;
   devAccountsUnconfigured: boolean;
   handleAccountChanged: (nextAccount: AccountStatus) => void;
   onboardingRequired: boolean;
@@ -23,6 +24,7 @@ export function renderAppAccountGate({
   account,
   accountError,
   accountLoading,
+  allowSignedOutLocalTranscription,
   devAccountsUnconfigured,
   handleAccountChanged,
   onboardingRequired,
@@ -47,7 +49,12 @@ export function renderAppAccountGate({
     );
   }
 
-  if (accountError && !account.signedIn && !devAccountsUnconfigured) {
+  if (
+    accountError &&
+    !account.signedIn &&
+    !devAccountsUnconfigured &&
+    !allowSignedOutLocalTranscription
+  ) {
     return (
       <main className="account-gate-shell">
         <div

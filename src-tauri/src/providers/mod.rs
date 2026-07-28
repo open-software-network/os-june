@@ -7,6 +7,7 @@
 
 use crate::domain::types::AppError;
 use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
@@ -57,6 +58,7 @@ static VENICE_VERIFY_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 pub struct ProviderSettingsState {
     path: PathBuf,
     settings: Mutex<ProviderModelSettings>,
+    is_global: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -84,6 +86,10 @@ pub struct ProviderModelSettings {
     pub venice_api_key: Option<String>,
     #[serde(default)]
     pub local_generation: LocalGenerationSettings,
+    #[serde(default)]
+    pub local_transcription: LocalTranscriptionSettings,
+    #[serde(default = "default_transcription_model")]
+    pub remote_transcription_model: String,
     /// When true, Venice `safe_mode` blurs adult content on generated/edited
     /// images. June defaults it ON; the user opts out via Settings or the
     /// generation-time consent dialog. Defaulted so settings files predating
@@ -124,6 +130,15 @@ pub struct LocalGenerationSettings {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalTranscriptionSettings {
+    pub base_url: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ProfileModelOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcription_provider: Option<String>,
@@ -151,6 +166,8 @@ pub struct ProviderModelSettingsDto {
     pub video_model: String,
     pub venice_api_key_configured: bool,
     pub local_generation: LocalGenerationSettings,
+    pub local_transcription: LocalTranscriptionSettings,
+    pub remote_transcription_model: String,
     pub image_safe_mode: bool,
     pub image_safe_mode_prompt_dismissed: bool,
     pub live_transcription: bool,
@@ -172,6 +189,8 @@ impl From<&ProviderModelSettings> for ProviderModelSettingsDto {
                 .as_deref()
                 .is_some_and(|value| !value.trim().is_empty()),
             local_generation: settings.local_generation.clone(),
+            local_transcription: settings.local_transcription.clone(),
+            remote_transcription_model: settings.remote_transcription_model.clone(),
             image_safe_mode: settings.image_safe_mode,
             image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
             live_transcription: settings.live_transcription,
@@ -248,6 +267,21 @@ pub struct SaveLocalGenerationSettingsRequest {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SetLocalGenerationEnabledRequest {
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveLocalTranscriptionSettingsRequest {
+    pub base_url: String,
+    pub model_id: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLocalTranscriptionEnabledRequest {
     pub enabled: bool,
 }
 
@@ -381,6 +415,14 @@ pub fn generation_provider() -> String {
 
 pub fn local_generation_settings() -> LocalGenerationSettings {
     current_settings().local_generation
+}
+
+pub fn local_transcription_settings() -> LocalTranscriptionSettings {
+    current_settings().local_transcription
+}
+
+pub fn remote_transcription_model() -> String {
+    current_settings().remote_transcription_model
 }
 
 pub fn image_model() -> String {
@@ -553,6 +595,82 @@ pub fn transcription_provider_for_model(model: &str) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptionRoute {
+    Local,
+    JuneApi,
+}
+
+pub fn transcription_route() -> TranscriptionRoute {
+    let settings = effective_current_settings();
+    transcription_route_for(
+        &settings.transcription_provider,
+        &settings.local_transcription,
+    )
+}
+
+fn transcription_route_for(
+    provider: &str,
+    settings: &LocalTranscriptionSettings,
+) -> TranscriptionRoute {
+    if provider == PROVIDER_LOCAL && local_transcription_settings_configured(settings) {
+        TranscriptionRoute::Local
+    } else {
+        TranscriptionRoute::JuneApi
+    }
+}
+
+pub fn transcription_plan_provider() -> String {
+    let settings = effective_current_settings();
+    transcription_plan_provider_for(
+        &settings.transcription_provider,
+        &settings.local_transcription,
+    )
+}
+
+fn transcription_plan_provider_for(
+    provider: &str,
+    settings: &LocalTranscriptionSettings,
+) -> String {
+    if transcription_route_for(provider, settings) == TranscriptionRoute::Local {
+        format!(
+            "{PROVIDER_LOCAL}:{}",
+            local_transcription_identity_hex(settings)
+        )
+    } else {
+        provider.to_string()
+    }
+}
+
+fn local_transcription_identity_hex(settings: &LocalTranscriptionSettings) -> String {
+    let mut digest = Sha256::new();
+    digest.update(settings.base_url.as_bytes());
+    digest.update(b"\n");
+    digest.update(settings.model_id.as_bytes());
+    let hex = format!("{:x}", digest.finalize());
+    hex[..16].to_string()
+}
+
+pub fn is_local_transcription_provider(provider: &str) -> bool {
+    provider == PROVIDER_LOCAL
+        || provider
+            .strip_prefix(&format!("{PROVIDER_LOCAL}:"))
+            .is_some()
+}
+
+pub fn local_transcription_provider_identity_matches_with(
+    provider: &str,
+    settings: &LocalTranscriptionSettings,
+) -> bool {
+    let Some(stored) = provider.strip_prefix(&format!("{PROVIDER_LOCAL}:")) else {
+        return true;
+    };
+    if !local_transcription_settings_configured(settings) {
+        return false;
+    }
+    stored == local_transcription_identity_hex(settings)
+}
+
 #[tauri::command]
 pub fn provider_model_settings(
     state: State<'_, ProviderSettingsState>,
@@ -644,6 +762,7 @@ pub fn set_venice_model(
             settings.transcription_provider =
                 transcription_provider_for_model(model_id).to_string();
             settings.transcription_model = model_id.to_string();
+            settings.remote_transcription_model = model_id.to_string();
         }
         ModelMode::Generation => {
             settings.generation_provider = PROVIDER_VENICE.to_string();
@@ -1098,6 +1217,86 @@ fn set_local_generation_enabled_impl(
     })
 }
 
+#[tauri::command]
+pub fn save_local_transcription_settings(
+    state: State<'_, ProviderSettingsState>,
+    request: SaveLocalTranscriptionSettingsRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    save_local_transcription_settings_impl(&state, request)
+}
+
+fn save_local_transcription_settings_impl(
+    state: &ProviderSettingsState,
+    request: SaveLocalTranscriptionSettingsRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    let raw_base_url = request.base_url.trim();
+    let model_id = request.model_id.trim().to_string();
+    let api_key = request.api_key.trim().to_string();
+    let clearing = raw_base_url.is_empty() && model_id.is_empty() && api_key.is_empty();
+
+    let base_url = if clearing {
+        String::new()
+    } else {
+        normalize_local_base_url(raw_base_url)?
+    };
+
+    let candidate = LocalTranscriptionSettings {
+        base_url,
+        model_id,
+        api_key,
+    };
+    let configured = local_transcription_settings_configured(&candidate);
+
+    update_settings_result(state, |settings| {
+        let provider_is_local = settings.transcription_provider == PROVIDER_LOCAL;
+        if provider_is_local && !configured {
+            return Err(AppError::new(
+                "local_transcription_in_use",
+                "Disable the local transcription model first.",
+            ));
+        }
+        settings.local_transcription = candidate.clone();
+        if provider_is_local {
+            settings.transcription_model = candidate.model_id.clone();
+        }
+        Ok(())
+    })
+}
+
+#[tauri::command]
+pub fn set_local_transcription_enabled(
+    state: State<'_, ProviderSettingsState>,
+    request: SetLocalTranscriptionEnabledRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    set_local_transcription_enabled_impl(&state, request)
+}
+
+fn set_local_transcription_enabled_impl(
+    state: &ProviderSettingsState,
+    request: SetLocalTranscriptionEnabledRequest,
+) -> Result<ProviderModelSettingsDto, AppError> {
+    update_settings_result(state, |settings| {
+        if request.enabled {
+            if !local_transcription_settings_configured(&settings.local_transcription) {
+                return Err(AppError::new(
+                    "local_transcription_not_configured",
+                    "Configure a local transcription endpoint and model ID first.",
+                ));
+            }
+            settings.transcription_provider = PROVIDER_LOCAL.to_string();
+            settings.transcription_model = settings.local_transcription.model_id.trim().to_string();
+        } else {
+            let remote = non_empty_or(
+                settings.remote_transcription_model.clone(),
+                DEFAULT_TRANSCRIPTION_MODEL,
+            );
+            settings.transcription_provider = transcription_provider_for_model(&remote).to_string();
+            settings.transcription_model = remote;
+        }
+        Ok(())
+    })
+}
+
 /// Lists the models an OpenAI-compatible endpoint advertises, so the settings
 /// UI can confirm the endpoint is reachable and offer real model ids. Uses a
 /// short timeout because this runs interactively while the user types.
@@ -1105,8 +1304,22 @@ fn set_local_generation_enabled_impl(
 pub async fn probe_local_generation_endpoint(
     request: ProbeLocalGenerationEndpointRequest,
 ) -> Result<LocalEndpointProbe, AppError> {
-    let base_url = normalize_local_base_url(&request.base_url)?;
-    let api_key = request.api_key.trim().to_string();
+    probe_openai_compatible_models(&request.base_url, &request.api_key).await
+}
+
+#[tauri::command]
+pub async fn probe_local_transcription_endpoint(
+    request: ProbeLocalGenerationEndpointRequest,
+) -> Result<LocalEndpointProbe, AppError> {
+    probe_openai_compatible_models(&request.base_url, &request.api_key).await
+}
+
+async fn probe_openai_compatible_models(
+    base_url: &str,
+    api_key: &str,
+) -> Result<LocalEndpointProbe, AppError> {
+    let base_url = normalize_local_base_url(base_url)?;
+    let api_key = api_key.trim().to_string();
     let url = format!("{base_url}/models");
 
     let client = reqwest::Client::builder()
@@ -1215,6 +1428,7 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(ProviderSettingsState {
         path,
         settings: Mutex::new(settings),
+        is_global: true,
     });
 }
 
@@ -1253,6 +1467,9 @@ pub(crate) fn replace_current_settings_for_tests(settings: ProviderModelSettings
     replace_current_settings(settings);
 }
 
+#[cfg(test)]
+pub(crate) static TEST_PROVIDER_SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Test-only companion to [`replace_current_settings_for_tests`]: the default
 /// (remote) settings, for restoring the store after a live test.
 #[cfg(test)]
@@ -1272,6 +1489,8 @@ fn default_settings() -> ProviderModelSettings {
         video_model: DEFAULT_VIDEO_MODEL.to_string(),
         venice_api_key: None,
         local_generation: LocalGenerationSettings::default(),
+        local_transcription: LocalTranscriptionSettings::default(),
+        remote_transcription_model: DEFAULT_TRANSCRIPTION_MODEL.to_string(),
         image_safe_mode: true,
         image_safe_mode_prompt_dismissed: false,
         image_safe_mode_set_by_user: false,
@@ -1353,8 +1572,31 @@ fn sanitize_settings(
     settings: ProviderModelSettings,
     defaults: &ProviderModelSettings,
 ) -> ProviderModelSettings {
-    let transcription_model =
-        non_empty_or(settings.transcription_model, &defaults.transcription_model);
+    let local_transcription = sanitize_local_transcription(settings.local_transcription);
+    let persisted_transcription_local = settings.transcription_provider == PROVIDER_LOCAL;
+    let local_transcription_active = persisted_transcription_local
+        && local_transcription_settings_configured(&local_transcription);
+
+    let mut remote_transcription_model = non_empty_or(
+        settings.remote_transcription_model,
+        &defaults.transcription_model,
+    );
+    let transcription_model = if local_transcription_active {
+        local_transcription.model_id.clone()
+    } else if persisted_transcription_local {
+        remote_transcription_model.clone()
+    } else {
+        let configured = non_empty_or(settings.transcription_model, &remote_transcription_model);
+        remote_transcription_model = configured.clone();
+        configured
+    };
+
+    let transcription_provider = if local_transcription_active {
+        PROVIDER_LOCAL.to_string()
+    } else {
+        transcription_provider_for_model(&transcription_model).to_string()
+    };
+
     let mut remote_generation_model = non_empty_or(
         settings.remote_generation_model,
         &defaults.remote_generation_model,
@@ -1386,7 +1628,7 @@ fn sanitize_settings(
     };
 
     ProviderModelSettings {
-        transcription_provider: transcription_provider_for_model(&transcription_model).to_string(),
+        transcription_provider,
         generation_provider: if local_active {
             PROVIDER_LOCAL.to_string()
         } else {
@@ -1400,6 +1642,8 @@ fn sanitize_settings(
         video_model: sanitize_video_model(settings.video_model, &defaults.video_model),
         venice_api_key: normalize_api_key_option(settings.venice_api_key),
         local_generation,
+        local_transcription,
+        remote_transcription_model,
         image_safe_mode,
         image_safe_mode_prompt_dismissed: settings.image_safe_mode_prompt_dismissed,
         image_safe_mode_set_by_user: settings.image_safe_mode_set_by_user,
@@ -1620,7 +1864,9 @@ fn update_settings_result(
         .map_err(|_| AppError::new("provider_settings_unavailable", "Settings lock failed."))?;
     update(&mut settings)?;
     save_settings(state, &settings)?;
-    replace_current_settings(settings.clone());
+    if state.is_global {
+        replace_current_settings(settings.clone());
+    }
     Ok(ProviderModelSettingsDto::from(&*settings))
 }
 
@@ -1651,6 +1897,21 @@ fn sanitize_local_generation(settings: LocalGenerationSettings) -> LocalGenerati
 }
 
 fn local_generation_settings_configured(settings: &LocalGenerationSettings) -> bool {
+    !settings.base_url.trim().is_empty() && !settings.model_id.trim().is_empty()
+}
+
+fn sanitize_local_transcription(
+    settings: LocalTranscriptionSettings,
+) -> LocalTranscriptionSettings {
+    let base_url = normalize_local_base_url(&settings.base_url).unwrap_or_default();
+    LocalTranscriptionSettings {
+        base_url,
+        model_id: settings.model_id.trim().to_string(),
+        api_key: settings.api_key.trim().to_string(),
+    }
+}
+
+fn local_transcription_settings_configured(settings: &LocalTranscriptionSettings) -> bool {
     !settings.base_url.trim().is_empty() && !settings.model_id.trim().is_empty()
 }
 
@@ -1746,7 +2007,6 @@ impl ModelMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn provider_settings_path_derives_from_the_isolated_config_dir() {
         let isolated_config_dir = PathBuf::from("/tmp/co.opensoftware.june-dev");
@@ -2260,6 +2520,72 @@ mod tests {
     }
 
     #[test]
+    fn local_transcription_settings_survive_sanitize() {
+        let settings = ProviderModelSettings {
+            transcription_provider: PROVIDER_LOCAL.to_string(),
+            transcription_model: "openai/whisper-large-v3".to_string(),
+            remote_transcription_model: "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            local_transcription: LocalTranscriptionSettings {
+                base_url: "http://192.168.1.5:8000/v1".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(sanitized.transcription_provider, PROVIDER_LOCAL);
+        assert_eq!(sanitized.transcription_model, "openai/whisper-large-v3");
+        assert_eq!(
+            sanitized.local_transcription.base_url,
+            "http://192.168.1.5:8000/v1"
+        );
+    }
+
+    #[test]
+    fn invalid_local_transcription_does_not_activate() {
+        let settings = ProviderModelSettings {
+            transcription_provider: PROVIDER_LOCAL.to_string(),
+            transcription_model: "openai/whisper-large-v3".to_string(),
+            remote_transcription_model: "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            local_transcription: LocalTranscriptionSettings {
+                base_url: "not a url".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(sanitized.transcription_provider, PROVIDER_VENICE);
+        assert_eq!(sanitized.local_transcription.base_url, "");
+        assert_eq!(
+            sanitized.transcription_model,
+            sanitized.remote_transcription_model
+        );
+        assert_eq!(sanitized.transcription_model, "nvidia/parakeet-tdt-0.6b-v3");
+    }
+
+    #[test]
+    fn disabling_local_transcription_restores_the_remote_model() {
+        let settings = ProviderModelSettings {
+            transcription_provider: PROVIDER_LOCAL.to_string(),
+            transcription_model: "openai/whisper-large-v3".to_string(),
+            remote_transcription_model: "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            local_transcription: LocalTranscriptionSettings::default(),
+            ..default_settings()
+        };
+        let sanitized = sanitize_settings(settings, &default_settings());
+
+        assert_eq!(sanitized.transcription_provider, PROVIDER_VENICE);
+        assert_eq!(sanitized.transcription_model, "nvidia/parakeet-tdt-0.6b-v3");
+        assert_eq!(
+            sanitized.remote_transcription_model,
+            "nvidia/parakeet-tdt-0.6b-v3"
+        );
+    }
+
+    #[test]
     fn parse_local_models_response_reads_openai_shape() {
         let body = serde_json::to_vec(&serde_json::json!({
             "object": "list",
@@ -2305,6 +2631,7 @@ mod tests {
         ProviderSettingsState {
             path: dir.join("provider-settings.json"),
             settings: Mutex::new(default_settings()),
+            is_global: false,
         }
     }
 
@@ -2667,6 +2994,183 @@ mod tests {
     }
 
     #[test]
+    fn save_local_transcription_settings_persists_without_activating() {
+        let state = test_state();
+        let updated = save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "http://192.168.1.5:8000/v1/".to_string(),
+                model_id: "  openai/whisper-large-v3  ".to_string(),
+                api_key: "  secret  ".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(updated.transcription_provider, PROVIDER_VENICE);
+        assert_eq!(
+            updated.local_transcription.base_url,
+            "http://192.168.1.5:8000/v1"
+        );
+        assert_eq!(
+            updated.local_transcription.model_id,
+            "openai/whisper-large-v3"
+        );
+        assert_eq!(updated.local_transcription.api_key, "secret");
+    }
+
+    #[test]
+    fn save_local_transcription_settings_rejects_invalid_url_without_wiping() {
+        let state = test_state();
+        save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "http://localhost:8000/v1".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+        )
+        .unwrap();
+
+        let error = save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "not a url".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "local_model_base_url_invalid");
+
+        let settings = state.settings.lock().unwrap();
+        assert_eq!(
+            settings.local_transcription.base_url,
+            "http://localhost:8000/v1"
+        );
+    }
+
+    #[test]
+    fn save_local_transcription_settings_blocks_clearing_while_active() {
+        let state = test_state();
+        save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "http://localhost:8000/v1".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+        )
+        .unwrap();
+        set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: true },
+        )
+        .unwrap();
+
+        let error = save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: String::new(),
+                model_id: String::new(),
+                api_key: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "local_transcription_in_use");
+
+        let settings = state.settings.lock().unwrap();
+        assert_eq!(
+            settings.local_transcription.model_id,
+            "openai/whisper-large-v3"
+        );
+    }
+
+    #[test]
+    fn enable_disable_local_transcription_round_trips_without_touching_endpoint() {
+        let state = test_state();
+        save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "http://localhost:8000/v1".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: "secret".to_string(),
+            },
+        )
+        .unwrap();
+
+        let enabled = set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: true },
+        )
+        .unwrap();
+        assert_eq!(enabled.transcription_provider, PROVIDER_LOCAL);
+        assert_eq!(enabled.transcription_model, "openai/whisper-large-v3");
+
+        let disabled = set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: false },
+        )
+        .unwrap();
+        assert_eq!(disabled.transcription_provider, PROVIDER_VENICE);
+        assert_eq!(disabled.transcription_model, DEFAULT_TRANSCRIPTION_MODEL);
+        assert_eq!(
+            disabled.local_transcription.base_url,
+            "http://localhost:8000/v1"
+        );
+        assert_eq!(
+            disabled.local_transcription.model_id,
+            "openai/whisper-large-v3"
+        );
+        assert_eq!(disabled.local_transcription.api_key, "secret");
+    }
+
+    #[test]
+    fn enable_local_transcription_requires_configuration() {
+        let state = test_state();
+        let error = set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: true },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "local_transcription_not_configured");
+    }
+
+    #[test]
+    fn disable_local_transcription_restores_the_remote_provider_classification() {
+        let state = test_state();
+        update_settings(&state, |settings| {
+            settings.transcription_provider =
+                transcription_provider_for_model("whisper-1").to_string();
+            settings.transcription_model = "whisper-1".to_string();
+            settings.remote_transcription_model = "whisper-1".to_string();
+        })
+        .unwrap();
+        save_local_transcription_settings_impl(
+            &state,
+            SaveLocalTranscriptionSettingsRequest {
+                base_url: "http://localhost:8000/v1".to_string(),
+                model_id: "openai/whisper-large-v3".to_string(),
+                api_key: String::new(),
+            },
+        )
+        .unwrap();
+        set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: true },
+        )
+        .unwrap();
+
+        let disabled = set_local_transcription_enabled_impl(
+            &state,
+            SetLocalTranscriptionEnabledRequest { enabled: false },
+        )
+        .unwrap();
+        assert_eq!(disabled.transcription_provider, PROVIDER_OPENAI);
+        assert_eq!(disabled.transcription_model, "whisper-1");
+        assert_eq!(disabled.remote_transcription_model, "whisper-1");
+    }
+
+    #[test]
     fn api_model_conversion_prefers_retail_price_description_display() {
         let model = VeniceModelDto::from(crate::june_api::ModelDto {
             provider: "openai".to_string(),
@@ -2692,6 +3196,74 @@ mod tests {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)),
             Some("$0.00006 per second audio".to_string())
+        );
+    }
+
+    fn configured_local_transcription() -> LocalTranscriptionSettings {
+        LocalTranscriptionSettings {
+            base_url: "http://192.168.1.5:8000/v1".to_string(),
+            model_id: "openai/whisper-large-v3".to_string(),
+            api_key: String::new(),
+        }
+    }
+
+    #[test]
+    fn transcription_route_requires_configured_local_endpoint() {
+        let blank = LocalTranscriptionSettings::default();
+        let configured = configured_local_transcription();
+
+        assert_eq!(
+            transcription_route_for(PROVIDER_LOCAL, &blank),
+            TranscriptionRoute::JuneApi
+        );
+        assert_eq!(
+            transcription_route_for(PROVIDER_LOCAL, &configured),
+            TranscriptionRoute::Local
+        );
+        assert_eq!(
+            transcription_route_for(PROVIDER_VENICE, &configured),
+            TranscriptionRoute::JuneApi
+        );
+    }
+
+    #[test]
+    fn transcription_plan_provider_is_unchanged_for_remote_routes() {
+        let blank = LocalTranscriptionSettings::default();
+        assert_eq!(
+            transcription_plan_provider_for(PROVIDER_VENICE, &blank),
+            PROVIDER_VENICE
+        );
+        assert_eq!(
+            transcription_plan_provider_for(PROVIDER_OPENAI, &blank),
+            PROVIDER_OPENAI
+        );
+    }
+
+    #[test]
+    fn transcription_plan_provider_distinguishes_local_endpoints() {
+        let settings = configured_local_transcription();
+        let primary = transcription_plan_provider_for(PROVIDER_LOCAL, &settings);
+        assert!(
+            primary.starts_with("local:")
+                && primary.len() == "local:".len() + 16
+                && primary["local:".len()..]
+                    .chars()
+                    .all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "expected local:<16 lowercase hex chars>, got {primary}"
+        );
+
+        let mut changed_base = settings.clone();
+        changed_base.base_url = "http://192.168.1.9:8000/v1".to_string();
+        assert_ne!(
+            transcription_plan_provider_for(PROVIDER_LOCAL, &changed_base),
+            primary
+        );
+
+        let mut changed_model = settings.clone();
+        changed_model.model_id = "openai/whisper-large-v2".to_string();
+        assert_ne!(
+            transcription_plan_provider_for(PROVIDER_LOCAL, &changed_model),
+            primary
         );
     }
 }

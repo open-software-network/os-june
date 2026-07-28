@@ -1,6 +1,6 @@
 import { AUTO_MODEL_ID } from "./agent-model-selection";
 import { modelAvailableForMode } from "./model-privacy";
-import type { AccountStatus, VeniceModelDto } from "./tauri";
+import type { AccountStatus, ProviderModelSettingsDto, VeniceModelDto } from "./tauri";
 
 // Single source of truth for whether an action that depends on OS Accounts
 // should be blocked behind the sign-in prompt. Keep this pure — it's called
@@ -9,6 +9,16 @@ import type { AccountStatus, VeniceModelDto } from "./tauri";
 // upstream provider model to be configured, etc.).
 export function shouldBlockOnSignIn(account: AccountStatus): boolean {
   return !account.signedIn;
+}
+
+export function hasActiveLocalTranscriptionRoute(
+  settings: Pick<ProviderModelSettingsDto, "transcriptionProvider" | "localTranscription">,
+): boolean {
+  return (
+    settings.transcriptionProvider === "local" &&
+    settings.localTranscription.baseUrl.trim().length > 0 &&
+    settings.localTranscription.modelId.trim().length > 0
+  );
 }
 
 export function hasLiveSubscription(account: AccountStatus): boolean {

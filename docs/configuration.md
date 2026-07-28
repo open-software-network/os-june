@@ -44,6 +44,33 @@ debug build into the production app data directory and the production
 use debug-only paths with the `-dev` suffix. Other files read directly from the
 raw Tauri app config directory are unaffected.
 
+### Settings-UI-managed keys (`provider-settings.json`)
+
+These keys live in `provider-settings.json` (managed by the Settings UI, never
+read from `.env`) and persist the local-endpoint route. Both blocks are
+global-only (not per-profile) and accept an OpenAI-compatible `baseUrl`, a
+`modelId`, and an optional `apiKey`.
+
+| Key | Purpose |
+|-----|---------|
+| `localGeneration` | Local OpenAI-compatible chat completions endpoint for note generation and cleanup |
+| `localTranscription` | Local OpenAI-compatible STT endpoint covering note transcription, live transcript preview, and dictation; see [ADR-0050](adr/0050-local-transcription-endpoint-and-provider-identity.md) |
+
+Selecting `local` as the **Transcription** provider mode routes all three STT
+surfaces to `localTranscription`; the local route bypasses June API, so no
+Hold is taken and no credits are charged, and live preview works signed out.
+
+### QA env vars (live local-STT suite)
+
+The ignored `live_local_transcription_tests` suite exercises a real
+OpenAI-compatible STT server. It is documented in
+[development.md](development.md#live-local-transcription-qa) and reads:
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `JUNE_QA_LOCAL_STT_BASE_URL` | OpenAI-compatible base URL | `http://127.0.0.1:8000/v1` |
+| `JUNE_QA_LOCAL_STT_MODEL` | ASR model id the endpoint serves | `openai/whisper-large-v3` |
+
 ## June API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**

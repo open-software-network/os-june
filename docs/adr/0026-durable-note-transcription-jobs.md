@@ -125,3 +125,14 @@ are unnecessary. Completion of an authoritative Turn set supersedes its pending
 fallback atomically; the end of a successful transcription pass supersedes any
 other pending fallback that was deliberately skipped. A successful note must
 therefore have no orphaned pending transcription work.
+
+## 2026-07-28 addendum: provider identity and the remote model id
+
+The `plan.provider` field is now a structured value for the local
+transcription route (`local:<16 hex>` of the configured endpoint and model),
+recorded in [adr/0050](0050-local-transcription-endpoint-and-provider-identity.md).
+That change intentionally leaves the *remote* model id out of
+`note_transcription_input_fingerprint`: switching between two Venice ASR
+models still reuses cached transcripts. The asymmetry is deliberate, because
+adding the remote model id to the hash would change every existing
+fingerprint and re-bill every user's note history.

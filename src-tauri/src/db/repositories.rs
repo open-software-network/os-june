@@ -7588,6 +7588,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transcription_job_local_endpoint_change_invalidates_output() {
+        let repos = test_repositories().await;
+        let (note_id, artifact_id) =
+            recording_fixture(&repos, "session-local-endpoint", "microphone", "checksum-a").await;
+        let mut plan = transcription_plan(
+            "span-local-endpoint",
+            &artifact_id,
+            "microphone",
+            0,
+            1_000,
+            0,
+        );
+        plan.provider = "local:aaaaaaaaaaaaaaaa".to_string();
+
+        let first = repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-local-endpoint",
+                RecordingSourceMode::MicrophonePlusSystem,
+                std::slice::from_ref(&plan),
+            )
+            .await
+            .expect("initial reconcile");
+        assert_eq!(first[0].status, NoteTranscriptionJobStatus::Pending);
+        assert!(repos
+            .claim_note_transcription_job(&plan.span_id)
+            .await
+            .expect("claim"));
+        repos
+            .complete_note_transcription_job_success(
+                &plan.span_id,
+                "Local text",
+                Some("en".to_string()),
+            )
+            .await
+            .expect("complete");
+        assert_eq!(transcript_count(&repos, "session-local-endpoint").await, 1);
+
+        plan.provider = "local:bbbbbbbbbbbbbbbb".to_string();
+        let invalidated = repos
+            .reconcile_note_transcription_jobs(
+                &note_id,
+                "session-local-endpoint",
+                RecordingSourceMode::MicrophonePlusSystem,
+                std::slice::from_ref(&plan),
+            )
+            .await
+            .expect("endpoint-change reconcile");
+        assert_eq!(invalidated[0].status, NoteTranscriptionJobStatus::Pending);
+        assert_ne!(invalidated[0].input_fingerprint, first[0].input_fingerprint);
+        assert!(repos
+            .certified_source_turn_transcripts_for_session("session-local-endpoint")
+            .await
+            .expect("certified projection after invalidation")
+            .is_empty());
+        let persisted_text: String = query(
+            "SELECT text FROM transcripts
+             WHERE recording_session_id = 'session-local-endpoint'",
+        )
+        .fetch_one(&repos.pool)
+        .await
+        .expect("persisted transcript text")
+        .get("text");
+        assert_eq!(persisted_text, "Local text");
+    }
+
+    #[tokio::test]
     async fn transcription_job_reconcile_prunes_removed_turns() {
         let repos = test_repositories().await;
         let (note_id, artifact_id) =

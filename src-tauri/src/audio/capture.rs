@@ -292,6 +292,30 @@ fn microphone_permission_hint() -> String {
     }
 }
 
+fn live_preview_available(
+    live_transcription: bool,
+    route: crate::providers::TranscriptionRoute,
+    june_api_configured: bool,
+    signed_in: bool,
+) -> bool {
+    if !live_transcription {
+        return false;
+    }
+    match route {
+        crate::providers::TranscriptionRoute::Local => true,
+        crate::providers::TranscriptionRoute::JuneApi => june_api_configured && signed_in,
+    }
+}
+
+fn capture_live_preview_available() -> bool {
+    live_preview_available(
+        crate::providers::live_transcription(),
+        crate::providers::transcription_route(),
+        crate::june_api::configured(),
+        crate::os_accounts::cached_signed_in(),
+    )
+}
+
 pub fn start_capture(
     app: tauri::AppHandle,
     paths: &AppPaths,
@@ -365,12 +389,7 @@ pub fn start_capture_with_cancel(
     let stall_latch = Arc::new(Mutex::new(None));
     let paused_flag = Arc::new(AtomicBool::new(false));
     let mic_duck_flag = Arc::new(AtomicBool::new(false));
-    // The user's Live transcription setting gates both preview lanes at the
-    // source: when off, no preview audio leaves the device and nothing is
-    // billed (JUN-375).
-    let live_preview_available = crate::june_api::configured()
-        && crate::os_accounts::cached_signed_in()
-        && crate::providers::live_transcription();
+    let live_preview_available = capture_live_preview_available();
     let live_preview = if live_preview_available {
         Some(start_live_transcript_preview(
             app.clone(),
@@ -1640,6 +1659,48 @@ mod tests {
             issue_state(None, Some(stale_callback), RecordingState::Paused),
             None
         );
+    }
+
+    #[test]
+    fn live_preview_available_on_local_route_without_sign_in() {
+        assert!(live_preview_available(
+            true,
+            crate::providers::TranscriptionRoute::Local,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn live_preview_still_requires_sign_in_on_the_june_api_route() {
+        assert!(!live_preview_available(
+            true,
+            crate::providers::TranscriptionRoute::JuneApi,
+            true,
+            false,
+        ));
+        assert!(live_preview_available(
+            true,
+            crate::providers::TranscriptionRoute::JuneApi,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn live_transcription_setting_off_disables_preview_on_every_route() {
+        assert!(!live_preview_available(
+            false,
+            crate::providers::TranscriptionRoute::Local,
+            false,
+            false,
+        ));
+        assert!(!live_preview_available(
+            false,
+            crate::providers::TranscriptionRoute::JuneApi,
+            true,
+            true,
+        ));
     }
 }
 
