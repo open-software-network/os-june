@@ -7,12 +7,16 @@ use crate::{commands::repositories, db::repositories::Repositories, domain::type
 use futures_util::{SinkExt, StreamExt};
 use june_companion_crypto::Session;
 use june_companion_protocol::{
-    decode_frame, encode_frame, Body, Event, FailureCode, Frame, ProtocolFailure, RelayEnvelope,
-    Response, ResultPayload,
+    decode_frame, encode_frame, Body, Capability, Event, FailureCode, Frame, ProtocolFailure,
+    RelayEnvelope, Response, ResultPayload,
 };
 use rand::Rng;
 use serde::Serialize;
-use std::{collections::HashMap, sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::Ordering,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -38,6 +42,7 @@ struct PeerSession {
     crypto: Session,
     expected_public_key: [u8; 32],
     pairing_id: Option<Uuid>,
+    observed_capabilities: HashSet<Capability>,
 }
 
 struct RelayConnectionGuard<'a> {
@@ -404,6 +409,9 @@ async fn publish_event(
         if !peer.crypto.is_transport_ready() {
             continue;
         }
+        if !peer_supports_event(peer, &event) {
+            continue;
+        }
         *outbound_sequence = outbound_sequence.saturating_add(1);
         let frame = Frame::new(
             Uuid::new_v4(),
@@ -484,6 +492,7 @@ async fn receive_envelope(
             crypto,
             expected_public_key,
             pairing_id: pairing.map(|(pairing_id, _)| pairing_id),
+            observed_capabilities: HashSet::new(),
         };
         if peer.crypto.is_transport_ready() {
             authenticate_peer(app, repos, &identity.account_user_id, peer_id, &mut peer).await?;
@@ -525,6 +534,7 @@ async fn receive_envelope(
             send_envelope(socket, identity.device_id, peer_id, response).await?;
             peer.crypto = replacement;
             peer.pairing_id = pairing.map(|(pairing_id, _)| pairing_id);
+            peer.observed_capabilities.clear();
             if peer.crypto.is_transport_ready() {
                 authenticate_peer(app, repos, &identity.account_user_id, peer_id, peer).await?;
             }
@@ -553,6 +563,10 @@ async fn receive_envelope(
         .map_err(|_| transport_error("The encrypted companion request is invalid."))?;
     let operation_id = frame.operation_id;
     let capability = frame.capability;
+    peer.observed_capabilities.insert(capability);
+    if capability == Capability::ModelEdit {
+        peer.observed_capabilities.insert(Capability::ModelRead);
+    }
     let _operation_guard = reserve_operation(app, operation_id).await?;
     let result = dispatch_request(app, repos, &identity.account_user_id, peer_id, frame).await;
     let response = match result {
@@ -605,6 +619,11 @@ async fn receive_envelope(
         .write(&encoded)
         .map_err(|_| transport_error("The companion response could not be encrypted."))?;
     send_envelope(socket, identity.device_id, peer_id, encrypted).await
+}
+
+fn peer_supports_event(peer: &PeerSession, event: &Event) -> bool {
+    event.capability() != Capability::ModelRead
+        || peer.observed_capabilities.contains(&Capability::ModelRead)
 }
 
 async fn reserve_operation(
@@ -838,7 +857,6 @@ fn transport_error(message: &str) -> AppError {
 mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
-    use june_companion_protocol::Capability;
 
     #[tokio::test]
     #[allow(clippy::result_large_err)]
@@ -996,5 +1014,47 @@ mod tests {
                 expected_wire_code
             );
         }
+    }
+
+    #[test]
+    fn model_events_require_observed_model_capability() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let event = Event::SessionModelChanged {
+            selection: june_companion_protocol::SessionModelSelection {
+                stored_session_id: "session-1".to_string(),
+                model_id: "open-software/auto".to_string(),
+                model_name: "Auto".to_string(),
+                cost_quality: Some(100),
+            },
+        };
+        let mut peer = PeerSession {
+            crypto: Session::linked(false, &desktop.private, &mobile.public).unwrap(),
+            expected_public_key: mobile.public.try_into().unwrap(),
+            pairing_id: None,
+            observed_capabilities: HashSet::new(),
+        };
+
+        assert!(!peer_supports_event(&peer, &event));
+        peer.observed_capabilities.insert(Capability::ModelRead);
+        assert!(peer_supports_event(&peer, &event));
+    }
+
+    #[test]
+    fn existing_events_remain_available_without_new_capability_observation() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let peer = PeerSession {
+            crypto: Session::linked(false, &desktop.private, &mobile.public).unwrap(),
+            expected_public_key: mobile.public.try_into().unwrap(),
+            pairing_id: None,
+            observed_capabilities: HashSet::new(),
+        };
+        let event = Event::AgentStatus {
+            stored_session_id: "session-1".to_string(),
+            status: june_companion_protocol::AgentStatus::Idle,
+        };
+
+        assert!(peer_supports_event(&peer, &event));
     }
 }

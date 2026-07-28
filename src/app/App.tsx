@@ -18,6 +18,7 @@ import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import {
   checkRecordingSourceReadiness,
   companionCompleteFrontendRequest,
+  companionPublishAgentEvent,
   listAgentItems,
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
@@ -31,6 +32,7 @@ import {
   LIVE_TRANSCRIPT_EVENT,
   listSessionPartitions,
   listAgentSessions,
+  listVeniceModels,
   openPrivacySettings,
   osAccountsLogout,
   recoverRecording,
@@ -43,6 +45,7 @@ import {
   NOTE_SAVE_FLUSH_REQUESTED_EVENT,
   patchNote,
   queueMeetingEndFinishRequest,
+  providerModelSettings,
   type LiveTranscriptEventDto,
   type MeetingEndStatus,
 } from "../lib/tauri";
@@ -64,6 +67,17 @@ import {
   companionFrontendConsumerAvailable,
   queueCompanionFrontendRequest,
 } from "../lib/companion-frontend-router";
+import {
+  companionModelOptions,
+  companionSessionModelSelection,
+  companionStoredModelId,
+} from "../lib/companion-models";
+import {
+  AGENT_SESSION_MODEL_CHANGED_EVENT,
+  type AgentSessionModelChangedDetail,
+  loadSessionModels,
+  rememberSessionModel,
+} from "../lib/agent-session-models";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
@@ -1116,6 +1130,39 @@ export function App() {
 
   useEffect(() => {
     if (!companionPairingEnabled) return;
+    const publishModelChange = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
+      if (!detail?.sessionId || !detail.storedModel) return;
+      void Promise.all([
+        listVeniceModels("generation"),
+        providerModelSettings(),
+        companionScopedSessions(),
+      ])
+        .then(([catalog, settings, sessions]) => {
+          const session = sessions.find((candidate) => candidate.id === detail.sessionId);
+          if (!session) return;
+          const currentStoredModel = loadSessionModels()[session.id] ?? session.model;
+          if (currentStoredModel !== detail.storedModel) return;
+          return companionPublishAgentEvent({
+            type: "modelChanged",
+            data: {
+              selection: companionSessionModelSelection(
+                session.id,
+                currentStoredModel,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            },
+          });
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
+    return () => window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
+  }, [companionPairingEnabled, companionScopedSessions]);
+
+  useEffect(() => {
+    if (!companionPairingEnabled) return;
     let aborted = false;
     let unlisten: (() => void) | undefined;
 
@@ -1182,6 +1229,90 @@ export function App() {
               payload.operationId,
               page ? { type: "agentMessages", data: page } : companionCursorError("agent message"),
             );
+            return;
+          }
+          case "modelsList": {
+            const catalog = await listVeniceModels("generation");
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "models",
+              data: { models: companionModelOptions(catalog.models) },
+            });
+            return;
+          }
+          case "sessionModelGet": {
+            const { storedSessionId } = payload.intent.data;
+            const [catalog, settings] = await Promise.all([
+              listVeniceModels("generation"),
+              providerModelSettings(),
+            ]);
+            const session = (await companionScopedSessions()).find(
+              (candidate) => candidate.id === storedSessionId,
+            );
+            if (!session) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "sessionModel",
+              data: companionSessionModelSelection(
+                session.id,
+                loadSessionModels()[session.id] ?? session.model,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            });
+            return;
+          }
+          case "sessionModelSet": {
+            const { storedSessionId, modelId } = payload.intent.data;
+            const [catalog, settings] = await Promise.all([
+              listVeniceModels("generation"),
+              providerModelSettings(),
+            ]);
+            const allowedModels = companionModelOptions(catalog.models);
+            if (!allowedModels.some((model) => model.id === modelId)) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "unsupported",
+                  message: "That model is not available in June's recommended model set.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const session = (await companionScopedSessions()).find(
+              (candidate) => candidate.id === storedSessionId,
+            );
+            if (!session) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const storedModel = companionStoredModelId(modelId, settings.settings.costQuality);
+            rememberSessionModel(session.id, storedModel);
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "sessionModel",
+              data: companionSessionModelSelection(
+                session.id,
+                storedModel,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            });
             return;
           }
           case "agentSend":

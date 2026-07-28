@@ -9,7 +9,8 @@ use base64::{
 };
 use june_companion_crypto::{generate_identity, KEY_BYTES};
 use june_companion_protocol::{
-    AgentStatus, Capability, Event, ResultPayload, MAX_DEVICE_DISPLAY_NAME_BYTES, MAX_TEXT_BYTES,
+    AgentStatus, Body, Capability, Event, Frame, ResultPayload, SessionModelSelection,
+    MAX_DEVICE_DISPLAY_NAME_BYTES, MAX_TEXT_BYTES,
 };
 use rand::{rngs::OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -573,6 +574,8 @@ fn companion_capabilities() -> Vec<Capability> {
         Capability::AgentRead,
         Capability::AgentChat,
         Capability::AgentCancel,
+        Capability::ModelRead,
+        Capability::ModelEdit,
         Capability::SettingsRead,
         Capability::SettingsEditSafe,
         Capability::RecordingControlExisting,
@@ -856,6 +859,9 @@ pub enum CompanionAgentEventRequest {
         stored_session_id: String,
         status: AgentStatus,
     },
+    ModelChanged {
+        selection: SessionModelSelection,
+    },
 }
 
 #[tauri::command]
@@ -864,24 +870,6 @@ pub async fn companion_publish_agent_event(
     request: CompanionAgentEventRequest,
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
-    let (stored_session_id, text) = match &request {
-        CompanionAgentEventRequest::Delta {
-            stored_session_id,
-            text,
-        } => (stored_session_id, Some(text)),
-        CompanionAgentEventRequest::Status {
-            stored_session_id, ..
-        } => (stored_session_id, None),
-    };
-    if stored_session_id.is_empty()
-        || stored_session_id.len() > 256
-        || text.is_some_and(|text| text.is_empty() || text.len() > MAX_TEXT_BYTES)
-    {
-        return Err(AppError::new(
-            "companion_event_invalid",
-            "The companion event exceeded its size limit.",
-        ));
-    }
     let event = match request {
         CompanionAgentEventRequest::Delta {
             stored_session_id,
@@ -897,7 +885,25 @@ pub async fn companion_publish_agent_event(
             stored_session_id,
             status,
         },
+        CompanionAgentEventRequest::ModelChanged { selection } => {
+            Event::SessionModelChanged { selection }
+        }
     };
+    let now_ms = current_time_ms();
+    Frame::new(
+        Uuid::nil(),
+        0,
+        now_ms,
+        event.capability(),
+        Body::Event(event.clone()),
+    )
+    .validate(now_ms)
+    .map_err(|_| {
+        AppError::new(
+            "companion_event_invalid",
+            "The companion event exceeded its size limit.",
+        )
+    })?;
     let sender = runtime
         .event_sender
         .lock()
@@ -1371,6 +1377,14 @@ mod tests {
             ensure_companion_pairing_enabled(&runtime).unwrap_err().code,
             "companion_experimental_disabled"
         );
+    }
+
+    #[test]
+    fn pairing_discloses_separate_model_read_and_edit_grants() {
+        let capabilities = companion_capabilities();
+
+        assert!(capabilities.contains(&Capability::ModelRead));
+        assert!(capabilities.contains(&Capability::ModelEdit));
     }
 
     #[tokio::test]

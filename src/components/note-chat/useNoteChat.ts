@@ -9,6 +9,14 @@ import {
 } from "../../lib/agent-runtime-adapter";
 import type { AgentItemDto, AgentRuntimeEvent } from "../../lib/agent-runtime-contract";
 import { dispatchAgentSessionStatus } from "../../lib/agent-events";
+import { agentModelSelection } from "../../lib/agent-model-selection";
+import {
+  AGENT_SESSION_MODEL_CHANGED_EVENT,
+  type AgentSessionModelChangedDetail,
+  clearSessionModelIfApplied,
+  loadSessionModels,
+  rememberSessionModel,
+} from "../../lib/agent-session-models";
 import { messageFromError } from "../../lib/errors";
 import { agentRuntimeBindings } from "../../lib/tauri";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
@@ -68,30 +76,41 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const [projection, setProjection] = useState<AgentRuntimeProjection>(() =>
     createAgentRuntimeProjection(),
   );
-  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [model, setModelState] = useState(DEFAULT_MODEL);
   const [loading, setLoading] = useState(false);
   const [submissionPending, setSubmissionPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const generationRef = useRef(0);
   const sessionIdRef = useRef<string>();
   const activeSubmitRef = useRef<symbol>();
+  const applyStoredModel = useCallback((storedModel: string) => {
+    setModelState(agentModelSelection(storedModel).modelId || DEFAULT_MODEL);
+  }, []);
+  const setModel = useCallback((nextModel: string) => {
+    setModelState(nextModel);
+    const sessionId = sessionIdRef.current;
+    if (sessionId) rememberSessionModel(sessionId, nextModel);
+  }, []);
 
   const working = runIsActive(projection);
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
 
-  const hydrate = useCallback(async (sessionId: string) => {
-    const [session, items, latestRun] = await Promise.all([
-      agentRuntimeBindings.getSession(sessionId),
-      agentRuntimeBindings.listItems(sessionId),
-      agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
-    ]);
-    if (sessionIdRef.current !== sessionId) return;
-    setProjection({
-      ...createAgentRuntimeProjection({ session, items }),
-      run: latestRun ?? undefined,
-    });
-    setModel(session.model || DEFAULT_MODEL);
-  }, []);
+  const hydrate = useCallback(
+    async (sessionId: string) => {
+      const [session, items, latestRun] = await Promise.all([
+        agentRuntimeBindings.getSession(sessionId),
+        agentRuntimeBindings.listItems(sessionId),
+        agentRuntimeBindings.getLatestRun?.(sessionId) ?? Promise.resolve(null),
+      ]);
+      if (sessionIdRef.current !== sessionId) return;
+      setProjection({
+        ...createAgentRuntimeProjection({ session, items }),
+        run: latestRun ?? undefined,
+      });
+      applyStoredModel(loadSessionModels()[session.id] ?? session.model ?? DEFAULT_MODEL);
+    },
+    [applyStoredModel],
+  );
 
   useEffect(() => {
     const generation = ++generationRef.current;
@@ -153,6 +172,17 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
       unlisten?.();
     };
   }, [hydrate, projection.session?.title]);
+
+  useEffect(() => {
+    const applyExternalSessionModel = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
+      if (!detail || detail.sessionId !== sessionIdRef.current) return;
+      applyStoredModel(detail.storedModel);
+    };
+    window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+    return () =>
+      window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+  }, [applyStoredModel]);
 
   const submit = useCallback(
     async (
@@ -223,15 +253,17 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             items: [...existing.items, optimistic],
           }));
         }
+        const submittedModel = loadSessionModels()[session.id] ?? model;
         const run = await agentRuntimeBindings.startRun({
           sessionId: session.id,
           prompt,
-          model,
+          model: submittedModel,
           safetyMode: "sandboxed",
           workspacePath: session.workspacePath,
           enabledSkillIds: [],
           attachments: attachments.map((attachment) => attachment.path),
         });
+        clearSessionModelIfApplied(session.id, submittedModel);
         accepted = true;
         if (current()) {
           setProjection((existing) => ({ ...existing, session, run }));

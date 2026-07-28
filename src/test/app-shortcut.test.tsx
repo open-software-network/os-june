@@ -12,6 +12,7 @@ import {
 } from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
+import { rememberSessionModel } from "../lib/agent-session-models";
 import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
@@ -26,6 +27,7 @@ import type {
   NoteDto,
   RecordingSessionDto,
   RecordingSourceReadinessDto,
+  VeniceModelDto,
 } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -325,6 +327,23 @@ function agentSession(id: string, title: string): AgentSessionDto {
   };
 }
 
+function generationModel(id: string, overrides: Partial<VeniceModelDto> = {}): VeniceModelDto {
+  return {
+    provider: "venice",
+    id,
+    name: id,
+    modelType: "text",
+    privacy: "private",
+    traits: ["private"],
+    capabilities: ["supportsFunctionCalling"],
+    priceUnit: "tokens",
+    priceDescription: "",
+    inputCreditsPerMillionTokens: 850,
+    outputCreditsPerMillionTokens: 4660,
+    ...overrides,
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((resolvePromise) => {
@@ -394,6 +413,7 @@ describe("App shortcuts", () => {
     vi.clearAllMocks();
     window.localStorage.setItem("june:active-agent-profile", "default");
     window.localStorage.removeItem("june:agent:last-open-session");
+    window.localStorage.removeItem("june.agent.sessionModels");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
@@ -491,7 +511,7 @@ describe("App shortcuts", () => {
       models: [],
     });
     mocks.providerModelSettings.mockResolvedValue({
-      settings: { generationModel: "" },
+      settings: { generationModel: "", costQuality: 100 },
     });
     mocks.p3aSettings.mockResolvedValue({
       settings: {
@@ -608,6 +628,194 @@ describe("App shortcuts", () => {
       }),
     );
     expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
+  });
+
+  it("returns only Auto and the live curated desktop models with canonical labels", async () => {
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        generationModel("kimi-k2-6", { name: "Kimi K2.6" }),
+        generationModel("uncurated", { name: "Uncurated" }),
+        generationModel("zai-org-glm-5-2", { name: "GLM 5.2" }),
+      ],
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-models-list",
+          intent: { type: "modelsList" },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-models-list", {
+        type: "models",
+        data: {
+          models: [
+            expect.objectContaining({
+              id: "open-software/auto",
+              name: "Auto",
+              routing: "automatic",
+            }),
+            expect.objectContaining({
+              id: "zai-org-glm-5-2",
+              name: "GLM 5.2",
+              privacy: "private",
+              privacyLabel: "Private mode",
+            }),
+            expect.objectContaining({
+              id: "kimi-k2-6",
+              name: "Kimi K2.6",
+              priceLabel: "$0.85 input / $4.66 output per 1M tokens",
+            }),
+          ],
+        },
+      }),
+    );
+  });
+
+  it("reads and stages a companion model switch without disturbing an active run", async () => {
+    const session = {
+      ...agentSession("session-model", "Model session"),
+      status: "running" as const,
+      model: "zai-org-glm-5-2",
+    };
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
+    });
+    window.localStorage.setItem(
+      "june.agent.sessionModels",
+      JSON.stringify({ [session.id]: "__june_auto_generation__:20" }),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-get",
+          intent: { type: "sessionModelGet", data: { storedSessionId: session.id } },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-model-get", {
+        type: "sessionModel",
+        data: {
+          storedSessionId: session.id,
+          modelId: "open-software/auto",
+          modelName: "Auto",
+          costQuality: 20,
+        },
+      }),
+    );
+
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-set",
+          intent: {
+            type: "sessionModelSet",
+            data: { storedSessionId: session.id, modelId: "kimi-k2-6" },
+          },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-model-set", {
+        type: "sessionModel",
+        data: {
+          storedSessionId: session.id,
+          modelId: "kimi-k2-6",
+          modelName: "Kimi K2.6",
+        },
+      }),
+    );
+    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({
+      [session.id]: "kimi-k2-6",
+    });
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("publishes a model event when the desktop stages a session choice", async () => {
+    const session = agentSession("session-desktop-model", "Desktop model session");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => rememberSessionModel(session.id, "kimi-k2-6"));
+
+    await waitFor(() =>
+      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+        type: "modelChanged",
+        data: {
+          selection: {
+            storedSessionId: session.id,
+            modelId: "kimi-k2-6",
+            modelName: "Kimi K2.6",
+          },
+        },
+      }),
+    );
+  });
+
+  it("rejects uncurated companion model writes", async () => {
+    const session = agentSession("session-model-rejected", "Rejected model session");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6")],
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-rejected",
+          intent: {
+            type: "sessionModelSet",
+            data: { storedSessionId: session.id, modelId: "uncurated" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-model-rejected",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "unsupported" }),
+        }),
+      ),
+    );
+    expect(window.localStorage.getItem("june.agent.sessionModels")).toBeNull();
   });
 
   it("pages companion agent messages backward from the newest turns", async () => {

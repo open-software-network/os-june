@@ -78,6 +78,8 @@ import {
   type QueuedAgentFollowUps,
 } from "../../lib/agent-follow-up-queue";
 import {
+  AGENT_SESSION_MODEL_CHANGED_EVENT,
+  type AgentSessionModelChangedDetail,
   clearSessionModelIfApplied,
   forgetSessionModel,
   loadSessionModels,
@@ -628,6 +630,17 @@ export function AgentWorkspace({
     }
   }, []);
 
+  useEffect(() => {
+    const applyExternalSessionModel = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
+      if (!detail || detail.sessionId !== selectedIdRef.current) return;
+      applySessionModel(detail.storedModel);
+    };
+    window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+    return () =>
+      window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+  }, [applySessionModel]);
+
   const hydrate = useCallback(
     async (sessionId: string) => {
       const requestId = crypto.randomUUID();
@@ -867,6 +880,9 @@ export function AgentWorkspace({
         switch (payload.intent.type) {
           case "agentSessionsList":
           case "agentMessagesList":
+          case "modelsList":
+          case "sessionModelGet":
+          case "sessionModelSet":
             return;
           case "agentSend": {
             const {

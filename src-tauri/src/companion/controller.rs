@@ -45,6 +45,17 @@ pub enum FrontendIntent {
     AgentCancel {
         stored_session_id: String,
     },
+    ModelsList,
+    SessionModelGet {
+        #[serde(rename = "storedSessionId")]
+        stored_session_id: String,
+    },
+    SessionModelSet {
+        #[serde(rename = "storedSessionId")]
+        stored_session_id: String,
+        #[serde(rename = "modelId")]
+        model_id: String,
+    },
     RecordingPause {
         recording_session_id: String,
     },
@@ -378,6 +389,16 @@ impl Controller {
             )),
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
+            }
+            Body::ModelsList => ControllerOutcome::Frontend(FrontendIntent::ModelsList),
+            Body::SessionModelGet { stored_session_id } => {
+                ControllerOutcome::Frontend(FrontendIntent::SessionModelGet { stored_session_id })
+            }
+            Body::SessionModelSet(request) => {
+                ControllerOutcome::Frontend(FrontendIntent::SessionModelSet {
+                    stored_session_id: request.stored_session_id,
+                    model_id: request.model_id,
+                })
             }
             Body::RecordingPause {
                 recording_session_id,
@@ -774,6 +795,27 @@ mod tests {
         assert!(controller.accept_sequence("phone", 0).is_err());
         controller.accept_sequence("phone", 2).unwrap();
         controller.accept_sequence("tablet", 1).unwrap();
+    }
+
+    #[test]
+    fn model_frontend_intents_keep_the_typed_wire_boundary() {
+        let intents = [
+            FrontendIntent::ModelsList,
+            FrontendIntent::SessionModelGet {
+                stored_session_id: "session-1".to_string(),
+            },
+            FrontendIntent::SessionModelSet {
+                stored_session_id: "session-1".to_string(),
+                model_id: "kimi-k2-6".to_string(),
+            },
+        ];
+        let encoded = serde_json::to_value(intents).unwrap();
+
+        assert_eq!(encoded[0]["type"], "modelsList");
+        assert_eq!(encoded[1]["type"], "sessionModelGet");
+        assert_eq!(encoded[1]["data"]["storedSessionId"], "session-1");
+        assert_eq!(encoded[2]["type"], "sessionModelSet");
+        assert_eq!(encoded[2]["data"]["modelId"], "kimi-k2-6");
     }
 
     #[test]

@@ -65,6 +65,23 @@ beforeEach(() => {
 });
 
 describe("LinkedDevicesSection", () => {
+  it("shows model read and edit as separate linked-device grants", async () => {
+    mocks.listDevices.mockResolvedValue([
+      {
+        id: "00000000-0000-0000-0000-000000000003",
+        displayName: "Jakub's iPhone",
+        linkedAt: "2026-07-28T10:00:00Z",
+        capabilities: ["modelRead", "modelEdit"],
+      },
+    ]);
+
+    render(<LinkedDevicesSection />);
+
+    expect(await screen.findByText("View agent models")).toBeInTheDocument();
+    expect(screen.getByText("Change agent models")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unlink" })).toBeInTheDocument();
+  });
+
   it("shows and copies the same pairing code that can be entered on mobile", async () => {
     const user = userEvent.setup();
     render(<LinkedDevicesSection />);

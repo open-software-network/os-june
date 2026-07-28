@@ -6,6 +6,7 @@ import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
+import { loadSessionModels, rememberSessionModel } from "../lib/agent-session-models";
 import {
   forgetNoteChatSession,
   noteChatSessionIdFor,
@@ -152,6 +153,26 @@ describe("note chat sessions", () => {
       type: "text",
       text: "The decision is to ship Friday.",
     });
+  });
+
+  it("uses a companion-staged model at the next note chat run boundary", async () => {
+    rememberNoteChatSession("note-1", "note-session");
+    rememberSessionModel("note-session", "model-b");
+    mocks.getSession.mockResolvedValue(session());
+    mocks.listItems.mockResolvedValue([]);
+    mocks.startRun.mockResolvedValue(run({ model: "model-b" }));
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Planning" }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.model).toBe("model-b");
+    await act(async () => {
+      await result.current.submit("Use the staged model.");
+    });
+
+    expect(mocks.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "note-session", model: "model-b" }),
+    );
+    expect(loadSessionModels()["note-session"]).toBeUndefined();
   });
 
   it("cancels the active runtime run", async () => {

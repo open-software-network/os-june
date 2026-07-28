@@ -2307,6 +2307,8 @@ export type CompanionCapability =
   | "agentRead"
   | "agentChat"
   | "agentCancel"
+  | "modelRead"
+  | "modelEdit"
   | "settingsRead"
   | "settingsEditSafe"
   | "recordingControlExisting"
@@ -2406,7 +2408,8 @@ export type CompanionAgentStatus =
 
 export type CompanionAgentEventRequest =
   | { type: "delta"; data: { storedSessionId: string; text: string } }
-  | { type: "status"; data: { storedSessionId: string; status: CompanionAgentStatus } };
+  | { type: "status"; data: { storedSessionId: string; status: CompanionAgentStatus } }
+  | { type: "modelChanged"; data: { selection: CompanionSessionModelSelection } };
 
 export async function companionPublishAgentEvent(request: CompanionAgentEventRequest) {
   return invoke<void>("companion_publish_agent_event", { request });
@@ -2427,7 +2430,10 @@ export type CompanionFrontendIntent =
         attachmentReferenceIds: string[];
       };
     }
-  | { type: "agentCancel"; data: { storedSessionId: string } };
+  | { type: "agentCancel"; data: { storedSessionId: string } }
+  | { type: "modelsList" }
+  | { type: "sessionModelGet"; data: { storedSessionId: string } }
+  | { type: "sessionModelSet"; data: { storedSessionId: string; modelId: string } };
 
 export type CompanionFrontendRequest = {
   operationId: string;
@@ -2462,6 +2468,8 @@ export type CompanionResultPayload =
       };
     }
   | { type: "agentAccepted"; data: { storedSessionId: string } }
+  | { type: "models"; data: { models: CompanionModelOption[] } }
+  | { type: "sessionModel"; data: CompanionSessionModelSelection }
   | {
       type: "error";
       data: {
@@ -2484,6 +2492,26 @@ export type CompanionResultPayload =
         retryable: boolean;
       };
     };
+
+export type CompanionModelPrivacy = "endToEndEncrypted" | "private" | "anonymous";
+
+export type CompanionModelOption = {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  routing: "automatic" | "remote";
+  privacy?: CompanionModelPrivacy;
+  privacyLabel?: string;
+  priceLabel?: string;
+};
+
+export type CompanionSessionModelSelection = {
+  storedSessionId: string;
+  modelId: string;
+  modelName: string;
+  costQuality?: number;
+};
 
 export async function companionCompleteFrontendRequest(
   operationId: string,

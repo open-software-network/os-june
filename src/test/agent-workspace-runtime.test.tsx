@@ -37,6 +37,7 @@ import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
+import { rememberSessionModel } from "../lib/agent-session-models";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
@@ -1848,6 +1849,18 @@ describe("AgentWorkspace runtime wiring", () => {
       }),
     );
     expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+  });
+
+  it("updates the desktop picker when a companion stages a session model", async () => {
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+    expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+
+    act(() => rememberSessionModel(session.id, "__june_auto_generation__:20"));
+
+    expect(screen.getByRole("button", { name: "Model: Auto" }).getAttribute("title")).toContain(
+      "Preference: Economy",
+    );
   });
 
   it("resolves clarification interruptions through the typed host command", async () => {
