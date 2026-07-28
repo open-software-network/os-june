@@ -953,6 +953,14 @@ impl ShortcutActivationController {
         self.pending_helper_take_id = Some(take_id.to_string());
     }
 
+    fn promote_untagged_helper_start(&mut self, take_id: &str) {
+        self.helper_is_listening = true;
+        self.helper_take_id = Some(take_id.to_string());
+        if self.pending_helper_take_id.as_deref() == Some(take_id) {
+            self.pending_helper_take_id = None;
+        }
+    }
+
     fn prepare_renderer_command(
         &mut self,
         command_type: &str,
@@ -2906,14 +2914,31 @@ fn helper_discard_cancellation_target(event: &serde_json::Value) -> Option<Optio
     (take_id.is_some() || dictation_discard_reason_from_event(event).is_none()).then_some(take_id)
 }
 
-fn begin_dictation_take(app: &AppHandle, event: &serde_json::Value) {
-    let Some(state) = app.try_state::<DictationTakeState>() else {
-        return;
-    };
-    let id = dictation_take_id_from_event(event)
+fn pending_helper_start_take_id(app: &AppHandle) -> Option<String> {
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .and_then(|controller| controller.pending_helper_take_id.clone())
+        })
+}
+
+fn dictation_start_take_id(event: &serde_json::Value, pending_take_id: Option<&str>) -> String {
+    dictation_take_id_from_event(event)
+        .or(pending_take_id)
         .map(str::to_string)
-        .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()));
-    state.begin(id);
+        .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()))
+}
+
+fn begin_dictation_take(app: &AppHandle, event: &serde_json::Value) -> Option<String> {
+    let state = app.try_state::<DictationTakeState>()?;
+    // Older helpers omit the ID that Rust already sent with the start
+    // command. Keep that identity for the cancellation token.
+    let id = dictation_start_take_id(event, pending_helper_start_take_id(app).as_deref());
+    state.begin(id.clone());
+    Some(id)
 }
 
 fn cancel_dictation_take(app: &AppHandle, take_id: Option<&str>) {
@@ -2942,6 +2967,14 @@ fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
             } else {
                 controller.clear_helper_finalizing();
             }
+        }
+    }
+}
+
+fn promote_untagged_shortcut_helper_start(app: &AppHandle, take_id: &str) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.promote_untagged_helper_start(take_id);
         }
     }
 }
@@ -4730,11 +4763,13 @@ fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
 }
 
 fn handle_helper_event_line(app: &AppHandle, line: String) {
-    let event = serde_json::from_str::<serde_json::Value>(&line).ok();
+    let mut event = serde_json::from_str::<serde_json::Value>(&line).ok();
     let event_type = event
         .as_ref()
         .and_then(|event| event.get("type"))
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let event_type = event_type.as_deref();
     let take_state = app.try_state::<DictationTakeState>();
     // A helper outcome and a replacement command must have one total order.
     // If the outcome wins, its whole lifecycle transition and frontend emit
@@ -4798,8 +4833,14 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         return;
     }
 
+    let listening_take_id = if event_type == Some("listening_started") {
+        event
+            .as_ref()
+            .and_then(|event| begin_dictation_take(app, event))
+    } else {
+        None
+    };
     match (event_type, event.as_ref()) {
-        (Some("listening_started"), Some(event)) => begin_dictation_take(app, event),
         (Some("recording_discarded"), Some(event)) => {
             if let Some(take_id) = helper_discard_cancellation_target(event) {
                 cancel_dictation_take(app, take_id);
@@ -4853,11 +4894,15 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     }
     match event_type {
         Some("listening_started") => {
-            update_shortcut_helper_listening(
-                app,
-                true,
-                event.as_ref().and_then(dictation_take_id_from_event),
-            );
+            let helper_reported_take_id = event.as_ref().and_then(dictation_take_id_from_event);
+            update_shortcut_helper_listening(app, true, helper_reported_take_id);
+            if helper_reported_take_id.is_none() {
+                if let Some(take_id) = listening_take_id.as_deref() {
+                    // Preserve legacy protocol negotiation while promoting the
+                    // coordinator-owned pending ID to confirmed ownership.
+                    promote_untagged_shortcut_helper_start(app, take_id);
+                }
+            }
             update_shortcut_helper_finalizing(app, false);
         }
         Some("finalizing_transcript") => {
@@ -4936,6 +4981,13 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
     // Route through emit_dictation_event_value so error events get the
     // `payload.silent` annotation from a single classification site.
+    if let (Some(take_id), Some(event)) = (listening_take_id.as_deref(), event.as_mut()) {
+        if dictation_take_id_from_event(event).is_none() {
+            // Normalize only after internal protocol handling so an older
+            // helper is not mistaken for one that emits take IDs itself.
+            add_dictation_take_id_to_event(event, take_id);
+        }
+    }
     if let Some(event) = event {
         emit_dictation_event_value(app, event);
     } else {
@@ -8154,6 +8206,26 @@ mod tests {
             Some(false)
         );
         assert!(!controller.matches_helper_take("take-b", None));
+    }
+
+    #[test]
+    fn untagged_listening_start_promotes_the_pending_coordinator_take() {
+        let event = serde_json::json!({
+            "type": "listening_started",
+            "payload": { "recognitionMode": "venice_recording" }
+        });
+        let mut controller = ShortcutActivationController::default();
+        controller.prepare_helper_start("take-pending");
+
+        assert_eq!(
+            dictation_start_take_id(&event, controller.pending_helper_take_id.as_deref()),
+            "take-pending"
+        );
+        controller.promote_untagged_helper_start("take-pending");
+
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-pending"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(!controller.helper_uses_take_ids);
     }
 
     fn test_policy() -> RespawnPolicy {

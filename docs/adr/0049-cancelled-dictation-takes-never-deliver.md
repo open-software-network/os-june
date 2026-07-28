@@ -68,10 +68,12 @@ request must not cancel or deliver into the new take.
   later text for it. Tagged text, stop, and discard commands cannot affect a
   different active or pending take. Rust tracks requested starts separately
   from helper-confirmed ownership: `listening_started` promotes a pending ID,
-  while a correlated start rejection rolls it back without losing control of
-  the prior recording. A terminal command for an older visible take is still
-  sent for the helper to authorize, but it cannot reset the pending
-  replacement's keyboard state.
+  including when an older helper omits that ID from its acknowledgement. Rust
+  mints a legacy fallback only when no pending ID exists. A correlated start
+  rejection rolls the pending ID back without losing control of the prior
+  recording. A terminal command for an older visible take is still sent for
+  the helper to authorize, but it cannot reset the pending replacement's
+  keyboard state.
 - The Dictation HUD ignores every tagged take-owned lifecycle event from an
   older take, not only discard. Rust rejects mismatched tagged events before
   generic controller, microphone-duck, indicator, or window handling. A
