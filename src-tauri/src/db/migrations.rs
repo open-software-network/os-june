@@ -1211,11 +1211,27 @@ const MIGRATIONS: &[Migration] = &[
             )),
         ],
     },
+    Migration {
+        version: 44,
+        name: "calendar_event_html_link",
+        requirements: &[SchemaRequirement::Column {
+            table: "notes",
+            column: "calendar_event_html_link",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "notes",
+            columns: NOTE_CALENDAR_HTML_LINK_COLUMN,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "revision",
     definition: "INTEGER NOT NULL DEFAULT 1",
+}];
+const NOTE_CALENDAR_HTML_LINK_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "calendar_event_html_link",
+    definition: "TEXT",
 }];
 const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "account_user_id",
@@ -1634,12 +1650,35 @@ fn validate_applied_migrations(
     applied: &[AppliedMigration],
     migrations: &[Migration],
 ) -> Result<usize, sqlx::Error> {
+    // Dev builds on the isolated dev data dir tolerate a database stamped past
+    // this catalog: workspaces share one dev database, so an unmerged branch
+    // carrying an extra (append-only, additive per ADR-0037) migration would
+    // otherwise brick every other workspace's build. Production builds — and
+    // dev builds pointed at production data via OS_JUNE_USE_PROD_DATA_DIR —
+    // keep refusing, as downgrade protection for real data.
+    let tolerate_newer = cfg!(debug_assertions) && !crate::app_paths::use_prod_data_dir();
+    validate_applied_migrations_with_tolerance(applied, migrations, tolerate_newer)
+}
+
+fn validate_applied_migrations_with_tolerance(
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+    tolerate_newer: bool,
+) -> Result<usize, sqlx::Error> {
     if applied.len() > migrations.len() {
-        return Err(sqlx::Error::Protocol(
-            "database schema is newer than this June build".to_string(),
-        ));
+        if !tolerate_newer {
+            return Err(sqlx::Error::Protocol(
+                "database schema is newer than this June build".to_string(),
+            ));
+        }
+        eprintln!(
+            "warning: database schema is {} migration(s) ahead of this June build; \
+             continuing because this is a dev build on the dev data dir",
+            applied.len() - migrations.len()
+        );
     }
-    for (index, applied_migration) in applied.iter().enumerate() {
+    let known = applied.len().min(migrations.len());
+    for (index, applied_migration) in applied[..known].iter().enumerate() {
         let expected = &migrations[index];
         // Names are persisted migration identity, not descriptive labels. A
         // rename makes every stamped install fail this check. Per ADR-0037,
@@ -1652,7 +1691,7 @@ fn validate_applied_migrations(
             )));
         }
     }
-    Ok(applied.len())
+    Ok(known)
 }
 
 fn detect_legacy_version(
@@ -2489,5 +2528,58 @@ mod tests {
         assert!(table_exists(&pool, "transaction_existing").await);
         assert!(!table_exists(&pool, "transaction_pending_success").await);
         assert!(!table_exists(&pool, "transaction_failure").await);
+    }
+
+    fn stamped(migrations: &[Migration]) -> Vec<AppliedMigration> {
+        migrations
+            .iter()
+            .map(|migration| AppliedMigration {
+                version: migration.version,
+                name: migration.name.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn newer_schema_is_refused_without_tolerance() {
+        let mut applied = stamped(FAILING_MIGRATIONS);
+        applied.push(AppliedMigration {
+            version: 4,
+            name: "from_an_unmerged_branch".to_string(),
+        });
+
+        let error = validate_applied_migrations_with_tolerance(&applied, FAILING_MIGRATIONS, false)
+            .expect_err("newer stamp must refuse");
+        assert!(error.to_string().contains("newer than this June build"));
+    }
+
+    #[test]
+    fn newer_schema_is_tolerated_as_fully_migrated_in_dev() {
+        let mut applied = stamped(FAILING_MIGRATIONS);
+        applied.push(AppliedMigration {
+            version: 4,
+            name: "from_an_unmerged_branch".to_string(),
+        });
+
+        let current =
+            validate_applied_migrations_with_tolerance(&applied, FAILING_MIGRATIONS, true)
+                .expect("tolerated newer stamp");
+        // The build treats the database as fully migrated for its own catalog,
+        // so migrate applies nothing and the extra stamp is left untouched.
+        assert_eq!(current, FAILING_MIGRATIONS.len());
+    }
+
+    #[test]
+    fn tolerance_still_refuses_a_diverged_known_prefix() {
+        let mut applied = stamped(FAILING_MIGRATIONS);
+        applied[1].name = "renamed_migration".to_string();
+        applied.push(AppliedMigration {
+            version: 4,
+            name: "from_an_unmerged_branch".to_string(),
+        });
+
+        let error = validate_applied_migrations_with_tolerance(&applied, FAILING_MIGRATIONS, true)
+            .expect_err("diverged prefix must still refuse");
+        assert!(error.to_string().contains("diverges at version 2"));
     }
 }

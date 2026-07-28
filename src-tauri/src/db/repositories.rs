@@ -2164,7 +2164,7 @@ impl Repositories {
         let mut note_query = QueryBuilder::<Sqlite>::new(
             "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
-                    calendar_event_end_at, calendar_account_email
+                    calendar_event_end_at, calendar_account_email, calendar_event_html_link
              FROM notes WHERE id = ",
         );
         note_query.push_bind(note_id);
@@ -2243,7 +2243,7 @@ impl Repositories {
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
                  calendar_event_start_at = ?, calendar_event_end_at = ?,
-                 calendar_account_email = ?,
+                 calendar_account_email = ?, calendar_event_html_link = ?,
                  revision = revision + CASE
                      WHEN ? = 1 AND title = ? AND title != ? THEN 1
                      ELSE 0
@@ -2259,6 +2259,7 @@ impl Repositories {
         .bind(&event.start_at)
         .bind(&event.end_at)
         .bind(&event.account_email)
+        .bind(&event.html_link)
         .bind(i64::from(expected_title.trim().is_empty()))
         .bind(expected_title)
         .bind(&event.title)
@@ -6232,6 +6233,12 @@ fn note_calendar_event_from_row(row: &sqlx_sqlite::SqliteRow) -> Option<NoteCale
             .try_get::<Option<String>, _>("calendar_account_email")
             .ok()
             .flatten()?,
+        // Nullable by design: events matched before the column shipped have no
+        // stored link, and the frontend falls back to constructing one.
+        html_link: row
+            .try_get::<Option<String>, _>("calendar_event_html_link")
+            .ok()
+            .flatten(),
     })
 }
 
@@ -6583,6 +6590,9 @@ mod tests {
             start_at: "2026-07-20T14:00:00Z".to_string(),
             end_at: "2026-07-20T14:30:00Z".to_string(),
             account_email: "june@example.com".to_string(),
+            // Round-trips through the equality assertions below, covering the
+            // calendar_event_html_link column.
+            html_link: Some("https://www.google.com/calendar/event?eid=ZXZlbnQtMQ".to_string()),
         };
 
         repos
