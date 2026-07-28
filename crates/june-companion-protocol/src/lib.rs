@@ -950,17 +950,7 @@ pub struct MediaResultReference {
 impl MediaResultReference {
     fn validate(&self) -> Result<(), ProtocolError> {
         validate_id(&self.artifact_id)?;
-        if self.media_type.is_empty()
-            || self.media_type.len() > MAX_MEDIA_TYPE_BYTES
-            || !self
-                .media_type
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"!#$&^_.+-/".contains(&byte))
-            || match self.kind {
-                MediaKind::Image => !self.media_type.starts_with("image/"),
-                MediaKind::Video => !self.media_type.starts_with("video/"),
-            }
-        {
+        if !valid_media_type(&self.media_type, self.kind) {
             return Err(ProtocolError::InvalidMediaReference);
         }
         if self.size_bytes == 0 || self.size_bytes > MAX_MEDIA_BYTES {
@@ -1449,6 +1439,29 @@ fn validate_media_references(references: &[MediaResultReference]) -> Result<(), 
         }
     }
     Ok(())
+}
+
+fn valid_media_type(value: &str, kind: MediaKind) -> bool {
+    if value.is_empty() || value.len() > MAX_MEDIA_TYPE_BYTES || !value.is_ascii() {
+        return false;
+    }
+    let Some((top_level, subtype)) = value.split_once('/') else {
+        return false;
+    };
+    if top_level.is_empty() || subtype.is_empty() || subtype.contains('/') {
+        return false;
+    }
+    let valid_token = |token: &str| {
+        token
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+    };
+    valid_token(top_level)
+        && valid_token(subtype)
+        && match kind {
+            MediaKind::Image => top_level == "image",
+            MediaKind::Video => top_level == "video",
+        }
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -2230,6 +2243,70 @@ mod tests {
         assert!(matches!(
             invalid_chunk.validate(),
             Err(ProtocolError::InvalidMediaChunk)
+        ));
+    }
+
+    #[test]
+    fn media_types_require_one_slash_and_the_full_ascii_token_grammar() {
+        for (kind, media_type) in [
+            (MediaKind::Image, "image/x!#$%&'*+-.^_`|~"),
+            (MediaKind::Video, "video/x!#$%&'*+-.^_`|~"),
+        ] {
+            let reference = MediaResultReference {
+                artifact_id: "artifact-1".to_string(),
+                kind,
+                media_type: media_type.to_string(),
+                width_px: None,
+                height_px: None,
+                duration_ms: None,
+                size_bytes: 1,
+            };
+            reference.validate().unwrap();
+        }
+
+        for media_type in [
+            "image/png/extra",
+            "image/",
+            "/png",
+            "image",
+            "image/p ng",
+            "image/püng",
+            "video/mp4/extra",
+        ] {
+            let reference = MediaResultReference {
+                artifact_id: "artifact-1".to_string(),
+                kind: if media_type.starts_with("video") {
+                    MediaKind::Video
+                } else {
+                    MediaKind::Image
+                },
+                media_type: media_type.to_string(),
+                width_px: None,
+                height_px: None,
+                duration_ms: None,
+                size_bytes: 1,
+            };
+            assert!(
+                matches!(
+                    reference.validate(),
+                    Err(ProtocolError::InvalidMediaReference)
+                ),
+                "{media_type} must be rejected"
+            );
+        }
+
+        let wrong_kind = MediaResultReference {
+            artifact_id: "artifact-1".to_string(),
+            kind: MediaKind::Image,
+            media_type: "video/mp4".to_string(),
+            width_px: None,
+            height_px: None,
+            duration_ms: None,
+            size_bytes: 1,
+        };
+        assert!(matches!(
+            wrong_kind.validate(),
+            Err(ProtocolError::InvalidMediaReference)
         ));
     }
 
