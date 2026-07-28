@@ -425,7 +425,15 @@ describe("RoutinesView templates and creation", () => {
         schedule: "0 9 * * *",
         name: undefined,
         unrestricted: false,
-        enabledToolsets: ["web", "vision", "todo", "memory", "session_search", "context_engine"],
+        enabledToolsets: [
+          "web",
+          "vision",
+          "skills",
+          "todo",
+          "memory",
+          "session_search",
+          "context_engine",
+        ],
       }),
     );
     // Creation lands on the new routine's detail page.

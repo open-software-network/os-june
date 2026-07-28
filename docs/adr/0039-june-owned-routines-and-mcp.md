@@ -52,6 +52,22 @@ June owns both capabilities in the replacement runtime.
   scripts are copied into June-owned recovery storage. June never executes
   them outside the current safety-controlled tool path.
 
+The routine skill surface uses these June-owned in-loop host tools:
+
+| Tool | Contract |
+| --- | --- |
+| `list_skills` | Lists the enabled skills captured in the routine run's policy snapshot. |
+| `load_skill` | Reads the instructions for one skill only when that skill is present and enabled in the run's policy snapshot. |
+
+Both tools require `skills` in the effective run policy. Current saves persist
+that toolset explicitly. For backward compatibility, the host also adds it to a
+pre-catalog routine with no saved catalog and to the recognizable historical
+sandbox base (where Memory may be absent because it was disabled). It does not
+change explicit-empty or imported catalogs. Loading instructions does not grant
+any connector, file, shell, or mutation capability named by those instructions;
+those capabilities remain independently filtered by the routine's saved
+toolsets, account bindings, safety mode, and approval policy.
+
 This decision supersedes the routines and MCP removal described in ADR-0038.
 The rest of ADR-0038 remains in force.
 

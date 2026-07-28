@@ -1160,6 +1160,19 @@ async fn unattended_run_params(
     repository: &AgentRepository,
     request: &UnattendedRunRequest<'_>,
 ) -> Result<Value, AppError> {
+    let skills = if request
+        .enabled_toolsets
+        .iter()
+        .any(|toolset| toolset == "skills")
+    {
+        enabled_skill_ids(&crate::agent_runtime::api::agent_skill_catalog(app, repository).await?)
+    } else {
+        Vec::new()
+    };
+    repository
+        .set_run_enabled_skills(request.run_id, &skills)
+        .await
+        .map_err(app_error)?;
     let tools = unattended_tools(
         app,
         repository,
@@ -1185,8 +1198,16 @@ async fn unattended_run_params(
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
     Ok(
-        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
+}
+
+fn enabled_skill_ids(catalog: &[Value]) -> Vec<String> {
+    catalog
+        .iter()
+        .filter(|skill| skill.get("enabled").and_then(Value::as_bool) == Some(true))
+        .filter_map(|skill| skill.get("id").and_then(Value::as_str).map(str::to_owned))
+        .collect()
 }
 
 /// Reconstructs the unattended contract only for prerelease interrupted runs
@@ -1319,7 +1340,10 @@ async fn unattended_tools(
 }
 
 fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec<String> {
-    match metadata.get("enabledToolsets") {
+    let has_explicit_catalog = matches!(metadata.get("enabledToolsets"), Some(Value::Array(_)));
+    let imported_catalog =
+        metadata.get("importedFrom").and_then(Value::as_str) == Some("legacy_hermes");
+    let mut toolsets = match metadata.get("enabledToolsets") {
         Some(Value::Array(toolsets)) => toolsets
             .iter()
             .filter_map(Value::as_str)
@@ -1333,7 +1357,25 @@ fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec
             .map(str::to_owned)
             .collect(),
         _ => Vec::new(),
+    };
+
+    // Sandboxed routine catalogs created before read-only skill loading omit
+    // only `skills`. Upgrade those snapshots at run time so an existing routine
+    // benefits without needing a no-op edit and save. Memory was optional, so
+    // it is not part of the historical-base fingerprint. Explicit-empty and
+    // imported catalogs remain unchanged.
+    let previous_sandbox_base = ["web", "vision", "todo", "session_search", "context_engine"];
+    if (!imported_catalog
+        && ((legacy_catalog && !has_explicit_catalog)
+            || previous_sandbox_base
+                .iter()
+                .all(|required| toolsets.iter().any(|toolset| toolset == required))))
+        && !toolsets.iter().any(|toolset| toolset == "skills")
+    {
+        toolsets.push("skills".to_string());
     }
+
+    toolsets
 }
 
 async fn routine_trust(pool: &SqlitePool, routine_id: &str) -> (Vec<String>, Option<String>) {
@@ -1358,6 +1400,7 @@ fn routine_base_tool_allowed(name: &str, enabled_toolsets: &[String]) -> bool {
         "search_june" => has("context_engine") || has("memory") || has("session_search"),
         "web_search" | "web_fetch" => has("web"),
         "list_files" | "read_file" | "preview_file" | "search_files" => has("file"),
+        "list_skills" | "load_skill" => has("skills"),
         _ => false,
     }
 }
@@ -1433,7 +1476,9 @@ fn base_unattended_tools() -> Value {
         { "name": "list_files", "description": "List files in the routine workspace.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": [], "additionalProperties": false } },
         { "name": "read_file", "description": "Read a UTF-8 text file in the routine workspace.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } },
         { "name": "preview_file", "description": "Read file metadata and a bounded text preview.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } },
-        { "name": "search_files", "description": "Search text files in the routine workspace.", "parameters": { "type": "object", "properties": { "query": { "type": "string" }, "path": { "type": "string" } }, "required": ["query"], "additionalProperties": false } }
+        { "name": "search_files", "description": "Search text files in the routine workspace.", "parameters": { "type": "object", "properties": { "query": { "type": "string" }, "path": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
+        { "name": "list_skills", "description": "List enabled June skills for this routine.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "load_skill", "description": "Load instructions for one enabled June skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
     ])
 }
 
@@ -1936,8 +1981,121 @@ mod tests {
             .unwrap();
         assert_eq!(
             claim.enabled_toolsets,
-            vec!["context_engine", "session_search", "web", "file"]
+            vec!["context_engine", "session_search", "web", "file", "skills"]
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_empty_pre_catalog_routines_keep_no_tools() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        query("UPDATE routines SET tool_catalog_version = 0 WHERE id = 'routine-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let claim = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(claim.enabled_toolsets.is_empty());
+    }
+
+    #[test]
+    fn old_sandbox_catalogs_gain_only_read_only_skill_loading() {
+        let metadata = json!({
+            "enabledToolsets": [
+                "web",
+                "vision",
+                "todo",
+                "memory",
+                "session_search",
+                "context_engine",
+                "june_notion"
+            ]
+        });
+
+        let toolsets = enabled_toolsets_from_metadata(&metadata, false);
+        assert!(toolsets.iter().any(|toolset| toolset == "skills"));
+        assert!(toolsets.iter().any(|toolset| toolset == "june_notion"));
+        assert!(!toolsets
+            .iter()
+            .any(|toolset| toolset == "june_notion_actions"));
+    }
+
+    #[test]
+    fn old_sandbox_catalogs_without_memory_gain_skill_loading() {
+        let metadata = json!({
+            "enabledToolsets": [
+                "web",
+                "vision",
+                "todo",
+                "session_search",
+                "context_engine"
+            ]
+        });
+
+        let toolsets = enabled_toolsets_from_metadata(&metadata, false);
+        assert!(toolsets.iter().any(|toolset| toolset == "skills"));
+        assert!(!toolsets.iter().any(|toolset| toolset == "memory"));
+    }
+
+    #[test]
+    fn imported_empty_catalogs_remain_deny_by_default() {
+        let metadata = json!({
+            "importedFrom": "legacy_hermes",
+            "enabledToolsets": []
+        });
+
+        let toolsets = enabled_toolsets_from_metadata(&metadata, false);
+        assert!(toolsets.is_empty());
+    }
+
+    #[test]
+    fn imported_partial_catalogs_preserve_exact_toolset_selection() {
+        let metadata = json!({
+            "importedFrom": "legacy_hermes",
+            "enabledToolsets": ["web"]
+        });
+
+        let toolsets = enabled_toolsets_from_metadata(&metadata, false);
+        assert_eq!(toolsets, vec!["web"]);
+    }
+
+    #[test]
+    fn unattended_skill_catalog_keeps_only_enabled_skills() {
+        let catalog = vec![
+            json!({ "id": "notion-meeting-notes-sync", "enabled": true }),
+            json!({ "id": "disabled-skill", "enabled": false }),
+            json!({ "id": "missing-enabled-flag" }),
+            json!({ "enabled": true }),
+        ];
+
+        assert_eq!(
+            enabled_skill_ids(&catalog),
+            vec!["notion-meeting-notes-sync"]
+        );
+    }
+
+    #[test]
+    fn sandboxed_routines_can_load_skill_instructions_without_machine_tools() {
+        let toolsets = crate::connectors::policy::SANDBOXED_ROUTINE_BASE_TOOLSETS
+            .iter()
+            .map(|toolset| (*toolset).to_string())
+            .collect::<Vec<_>>();
+        let tools = base_unattended_tools();
+        let names = tools
+            .as_array()
+            .expect("routine tool catalog")
+            .iter()
+            .filter_map(|tool| tool.get("name").and_then(Value::as_str))
+            .filter(|name| routine_base_tool_allowed(name, &toolsets))
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"list_skills"));
+        assert!(names.contains(&"load_skill"));
+        assert!(!names.contains(&"write_file"));
+        assert!(!names.contains(&"run_shell"));
     }
 
     #[tokio::test]

@@ -1306,7 +1306,7 @@ fn validate_skill_id(skill_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn agent_skill_catalog(
+pub(crate) async fn agent_skill_catalog(
     app: &AppHandle,
     repository: &AgentRepository,
 ) -> Result<Vec<Value>, AppError> {
