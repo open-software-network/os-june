@@ -992,7 +992,7 @@ pub async fn proxy_agent_chat_completions(
 ) -> Result<AgentChatCompletionsResponse, AppError> {
     let managed_auto = body
         .get("model")
-        .and_then(Value::as_str)
+        .and_then(serde_json::Value::as_str)
         .is_some_and(is_agent_auto_model);
     let local_settings = crate::providers::local_generation_settings();
     let route = agent_generation_route(
