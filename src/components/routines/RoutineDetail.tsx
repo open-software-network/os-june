@@ -8,6 +8,7 @@ import { IconPause } from "central-icons/IconPause";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   TRIGGER_META,
+  autonomyRuntimeNeedsRestart,
   eventTriggerScheduleDraft,
   routineToolsetsFor,
   triggerConfigFromDraft,
@@ -34,6 +35,7 @@ import {
   connectorTriggerDelete,
   connectorTriggerSet,
   connectorTriggersList,
+  connectorsApplyRuntime,
   connectorsList,
   routineTrustGet,
   routineTrustSet,
@@ -305,6 +307,10 @@ export function RoutineDetail({
     const previousTrust = storedTrust;
     const previousBrowserAccess = storedBrowserAccess;
 
+    // Whether this save added or removed a per-job autonomy server, which only
+    // enters the rendered config when the runtime restarts.
+    let autoServersChanged = false;
+
     let nextBrowserAccess = storedBrowserAccess;
     if (browserAccessChanged) {
       try {
@@ -324,6 +330,8 @@ export function RoutineDetail({
     if (trustChanged) {
       if (!policy) return;
       try {
+        const previousServers = storedTrust?.autonomousServers ?? [];
+        const previousTools = storedTrust?.autonomousTools ?? [];
         const stored = await routineTrustSet({
           jobId: routine.job_id,
           trustMode,
@@ -334,6 +342,13 @@ export function RoutineDetail({
           unrestricted,
           autonomousServers: stored.autonomousServers,
           routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
+        });
+        autoServersChanged = autonomyRuntimeNeedsRestart({
+          previousServers,
+          nextServers: stored.autonomousServers ?? [],
+          trustMode: stored.trustMode,
+          previousTools,
+          nextTools: stored.autonomousTools ?? [],
         });
       } catch (err) {
         if (browserAccessChanged && previousBrowserAccess) {
@@ -407,6 +422,11 @@ export function RoutineDetail({
               previousTrust?.trustMode === "autonomous" ? previousTrust.autonomousTools : undefined,
           });
           setStoredTrust(restored);
+          // Restoring autonomous trust mints a fresh grant token. A running
+          // auto MCP server still carries the pre-save token in its env, so
+          // re-render/restart after a successful rollback just as we do after
+          // a successful autonomous change below.
+          if (autoServersChanged) await connectorsApplyRuntime();
         } catch (err) {
           toast.error(messageFromError(err));
         }
@@ -418,6 +438,7 @@ export function RoutineDetail({
             enabled: previousBrowserAccess.enabled,
           });
           setStoredBrowserAccess(restored);
+          await connectorsApplyRuntime();
         } catch (err) {
           toast.error(messageFromError(err));
         }
@@ -468,6 +489,13 @@ export function RoutineDetail({
         toast.error(messageFromError(err));
         return;
       }
+    }
+
+    // A new or removed per-job autonomy server only takes effect once the
+    // runtime re-renders its config. Best-effort: it also registers on the
+    // next runtime start.
+    if (autoServersChanged || browserAccessChanged) {
+      await connectorsApplyRuntime().catch(() => {});
     }
   }
 

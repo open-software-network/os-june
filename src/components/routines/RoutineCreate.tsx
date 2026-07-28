@@ -16,6 +16,7 @@ import {
   type ScheduleDraft,
 } from "../../lib/routine-schedule";
 import {
+  connectorsApplyRuntime,
   connectorsConnect,
   connectorsList,
   type ConnectorAccount,
@@ -133,6 +134,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
     setConnectError(null);
     try {
       await connectorsConnect({ scopes: requiredScopes });
+      await connectorsApplyRuntime();
       setAccounts(await connectorsList());
     } catch (err) {
       setConnectError(
