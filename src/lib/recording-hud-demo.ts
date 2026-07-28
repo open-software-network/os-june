@@ -20,7 +20,8 @@
 // Never bundled in production: both registration sites gate the dynamic
 // import on import.meta.env.DEV.
 
-import type { RecordingStatusDto } from "./tauri";
+import { MEETING_END_STATE_EVENT } from "./events";
+import type { MeetingEndStatus, RecordingStatusDto } from "./tauri";
 
 type RecordingHudDemoOptions = {
   /** Dispatch window events on this page instead of emitting on the Tauri
@@ -28,7 +29,7 @@ type RecordingHudDemoOptions = {
   local: boolean;
 };
 
-type DemoState = "recording" | "paused" | "vertical" | "horizontal" | "demo" | "clear";
+type DemoState = "recording" | "paused" | "vertical" | "horizontal" | "end" | "demo" | "clear";
 
 const STATUS_EVENT = "meeting-hud-status";
 const ZONE_EVENT = "meeting-hud-zone";
@@ -43,7 +44,8 @@ const HELP = [
   '  __recordingHud("paused")      dimmed mark, no shimmer, dim bars',
   '  __recordingHud("vertical")    quarter-turn counter-rotation (left/right zone)',
   '  __recordingHud("horizontal")  flat orientation (middle zone)',
-  '  __recordingHud("demo")        scripted: record, pause, resume, back to flat',
+  '  __recordingHud("end", secs?)  meeting-end countdown card (default 15s)',
+  '  __recordingHud("demo")        scripted: record, pause, resume, meeting ends',
   '  __recordingHud("clear")       stop timers; park to a quiet recording state',
   "",
   "Window rotation is Rust-side: on the standalone page only the CSS",
@@ -51,6 +53,14 @@ const HELP = [
   "turning. In the real app the native window only shows when a recording",
   "is live and June is backgrounded/minimized/hidden (Rust-managed), so bus events here",
   "only restyle the pill if it is already on screen.",
+  "",
+  '"end" in the dev app arms the REAL meeting-end countdown on the live',
+  "recording (start one first): the record dock shows the draining notice",
+  "while June is frontmost, and backgrounding June pops the native card",
+  "top-center; Keep/Stop/expiry drive the actual session — Stop now and the",
+  '15s lapse genuinely finish the recording; "clear" suppresses it like Keep',
+  "recording. On the standalone page the same card is faked in place and the",
+  "seconds arg works.",
 ].join("\n");
 
 let timers: number[] = [];
@@ -97,6 +107,16 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
     };
   }
 
+  function emitMeetingEnd(payload: MeetingEndStatus | null) {
+    if (local) {
+      window.dispatchEvent(new CustomEvent(MEETING_END_STATE_EVENT, { detail: payload }));
+      return;
+    }
+    void import("@tauri-apps/api/event")
+      .then((api) => api.emit(MEETING_END_STATE_EVENT, payload))
+      .catch(() => {});
+  }
+
   function cancelTimers() {
     for (const timer of timers) window.clearTimeout(timer);
     window.clearInterval(statusTimer);
@@ -131,8 +151,53 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
     emitStatus(statusFor("paused", 0.12));
   }
 
+  function end(seconds = 15) {
+    cancelTimers();
+    if (!local) {
+      // Dev app: arm the REAL countdown on the live recording (debug-build
+      // Rust command). Everything downstream is production behavior — the
+      // native card force-shows bottom-center, the record dock ticks, and
+      // Keep/Stop/expiry drive the actual session. No fake bus events here:
+      // they would fight the real detector state.
+      void import("@tauri-apps/api/core")
+        .then((api) => api.invoke("debug_force_meeting_end_countdown"))
+        .catch((error) => {
+          console.warn('__recordingHud("end"):', error);
+        });
+      return;
+    }
+    // Standalone page: fake the state event locally. Recording continues
+    // through the grace period — keep the levels alive behind the card so
+    // collapsing back lands on a live pill.
+    emitStatus(statusFor("recording", 0.5));
+    startLevels();
+    emitMeetingEnd({
+      sessionId: "hud-demo-recording",
+      phase: "countdown",
+      expiresAtMs: Date.now() + seconds * 1000,
+    });
+    // When the countdown lapses the real detector finishes the recording and
+    // the HUD window hides; here the card just collapses back to the pill.
+    at(seconds * 1000, () => emitMeetingEnd(null));
+  }
+
   function clear() {
     cancelTimers();
+    if (local) {
+      emitMeetingEnd(null);
+    } else {
+      // A REAL countdown may be live — suppress it the same way the Keep
+      // recording button does, rather than faking a null state event that
+      // would desync the UI from the detector.
+      void import("@tauri-apps/api/core")
+        .then(async (api) => {
+          const status = await api.invoke<MeetingEndStatus | null>("pending_meeting_end_status");
+          if (status?.phase === "countdown") {
+            await api.invoke("keep_meeting_recording", { sessionId: status.sessionId });
+          }
+        })
+        .catch(() => {});
+    }
     // The pill has no hidden state of its own — the native window's visibility
     // is Rust-managed. Park it on a quiet recording state so the standalone
     // page stops animating without going blank.
@@ -151,10 +216,27 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
     });
     at(7000, () => recording());
     at(11000, () => emitZone({ vertical: false, animate: true }));
-    return "Lifecycle running (~11s): record with levels, pause, resume, back to flat.";
+    at(13000, () => end(10));
+    return "Lifecycle running (~23s): record, pause, resume, meeting ends, countdown lapses.";
   }
 
-  (window as unknown as Record<string, unknown>).__recordingHud = (state?: DemoState) => {
+  // Standalone page only: the card's buttons invoke Tauri commands that don't
+  // exist without the bridge, so mirror their outcome locally — either action
+  // collapses the card back to the live pill.
+  if (local) {
+    for (const id of ["mhud-end-keep", "mhud-end-stop"]) {
+      document.getElementById(id)?.addEventListener("click", () => {
+        cancelTimers();
+        emitMeetingEnd(null);
+        recording();
+      });
+    }
+  }
+
+  (window as unknown as Record<string, unknown>).__recordingHud = (
+    state?: DemoState,
+    seconds?: number,
+  ) => {
     switch (state) {
       case "recording":
         recording();
@@ -168,6 +250,9 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
       case "horizontal":
         emitZone({ vertical: false, animate: true });
         return "Horizontal zone: flat orientation.";
+      case "end":
+        end(seconds);
+        return 'Meeting-end countdown card. Keep/Stop or __recordingHud("clear") to collapse it.';
       case "demo":
         return demo();
       case "clear":

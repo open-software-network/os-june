@@ -148,6 +148,7 @@ import {
   resolveJuneHomeThreadSessionId,
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
+  withJuneHomeLatestTaskIntent,
   type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
@@ -157,7 +158,9 @@ import {
   compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   homeConversationContextFromTurns,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
@@ -432,6 +435,7 @@ export function AgentWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(0);
+  const [submittedScrollRevision, setSubmittedScrollRevision] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const projectContextRef = useRef(projectContext);
@@ -447,6 +451,9 @@ export function AgentWorkspace({
       targetProjectContext,
       projectContextSignaturesBySessionId.get(storedSessionId),
     );
+  }, []);
+  const requestSubmittedMessageScroll = useCallback(() => {
+    setSubmittedScrollRevision((revision) => revision + 1);
   }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
@@ -980,6 +987,13 @@ export function AgentWorkspace({
     }
   }, [projection.items]);
 
+  useLayoutEffect(() => {
+    if (submittedScrollRevision === 0) return;
+    const scroller = scrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [submittedScrollRevision]);
+
   useEffect(() => {
     if (
       running ||
@@ -1116,6 +1130,7 @@ export function AgentWorkspace({
       }));
       setComposerDraft("");
       setAttachments([]);
+      requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
         void agentRuntimeBindings
@@ -1257,6 +1272,7 @@ export function AgentWorkspace({
           session: activeSession,
           items: [...current.items, optimistic],
         }));
+        requestSubmittedMessageScroll();
       }
       if (
         !queuedSnapshot &&
@@ -1569,15 +1585,18 @@ export function AgentWorkspace({
         priorDirectTurns,
         readHomeTaskHandoffs(storedSessionId),
       );
+      const greetingReply = homeConversationGreetingReply(message);
+      const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      requestSubmittedMessageScroll();
 
-      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+      if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {
           id: `home:direct:assistant:${suffix}`,
           role: "assistant",
           createdAt: new Date().toISOString(),
           status: "complete",
-          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+          parts: [{ type: "text", text: directConversationReply, status: "complete" }],
         };
         const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
         homeDirectTurnsRef.current = nextTurns;
@@ -1657,9 +1676,20 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
-        const toolCallId = response.task ? `direct:${suffix}` : undefined;
+        const latestHandoffs = readHomeTaskHandoffs(storedSessionId as string);
+        const rejectedStaleTask = Boolean(
+          response.task && isHomeTaskReplayWithoutNewIntent(response.task, message, latestHandoffs),
+        );
+        const responseTask =
+          rejectedStaleTask || !response.task
+            ? undefined
+            : {
+                ...response.task,
+                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+              };
+        const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
-          response.task && toolCallId
+          responseTask && toolCallId
             ? {
                 id: streamingTurnId,
                 role: "assistant",
@@ -1683,7 +1713,9 @@ export function AgentWorkspace({
                 parts: [
                   {
                     type: "text",
-                    text: response.content?.trim() || streamedContent.trim() || "I'm here.",
+                    text: rejectedStaleTask
+                      ? "I'm here. What can I help with?"
+                      : response.content?.trim() || streamedContent.trim() || "I'm here.",
                     status: "complete",
                   },
                 ],
@@ -1696,9 +1728,9 @@ export function AgentWorkspace({
         homeDirectTurnsRef.current = nextTurns;
         setHomeDirectTurns(nextTurns);
         setHomeStreamingReply(null);
-        if (response.task && toolCallId) {
+        if (responseTask && toolCallId) {
           void startHomeTask(
-            response.task,
+            responseTask,
             toolCallId,
             conversation,
             storedSessionId as string,
@@ -1867,7 +1899,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (cause) {
       setError(messageFromError(cause));
     }

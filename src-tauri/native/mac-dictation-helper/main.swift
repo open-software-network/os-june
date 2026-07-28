@@ -24,6 +24,18 @@ func emit(_ type: String, _ payload: [String: String] = [:]) {
     fflush(stdout)
 }
 
+func takePayload(
+    _ payload: [String: String] = [:],
+    takeID: String?
+) -> [String: String] {
+    guard let takeID else {
+        return payload
+    }
+    var correlated = payload
+    correlated["takeId"] = takeID
+    return correlated
+}
+
 func emitJSON(_ type: String, _ payload: [String: Any] = [:]) {
     let event: [String: Any] = [
         "type": type,
@@ -641,6 +653,8 @@ struct ShortcutIdentity: Equatable, Hashable {
     }
 }
 
+private let shortcutHotKeySignature = OSType(0x4A_44_48_4B) // "JDHK"
+
 final class ShortcutKeyMonitor {
     static let shared = ShortcutKeyMonitor()
 
@@ -875,7 +889,7 @@ final class ShortcutKeyMonitor {
             if shortcut.modifiers.shift { carbonModifiers |= UInt32(shiftKey) }
 
             var ref: EventHotKeyRef?
-            let hotKeyId = EventHotKeyID(signature: OSType(0x4A_44_48_4B), id: nextCarbonHotKeyId) // "JDHK"
+            let hotKeyId = EventHotKeyID(signature: shortcutHotKeySignature, id: nextCarbonHotKeyId)
             let status = RegisterEventHotKey(
                 UInt32(shortcut.keyCode),
                 carbonModifiers,
@@ -1152,6 +1166,9 @@ private let carbonHotKeyCallback: EventHandlerUPP = { _, eventRef, userInfo in
     )
     guard status == noErr else {
         return status
+    }
+    guard hotKeyId.signature == shortcutHotKeySignature else {
+        return OSStatus(eventNotHandledErr)
     }
     let monitor = Unmanaged<ShortcutKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
     let pressed = GetEventKind(eventRef) == UInt32(kEventHotKeyPressed)
@@ -1656,6 +1673,112 @@ let micTestCapturePaddingSeconds: Double = 0.35
 // during finalization. Sub-window captures are quarantined before this gate.
 let dictationAudioActivityThreshold: Float = 0.04
 
+private let escapeCancelHotKeySignature = OSType(0x4A_44_45_43) // "JDEC"
+
+final class DictationEscapeCancelMonitor {
+    static let shared = DictationEscapeCancelMonitor()
+
+    private var carbonHandlerRef: EventHandlerRef?
+    private var hotKeyRef: EventHotKeyRef?
+    private let hotKeyId = EventHotKeyID(signature: escapeCancelHotKeySignature, id: 1)
+
+    private init() {}
+
+    func start() -> Bool {
+        guard hotKeyRef == nil else {
+            return true
+        }
+
+        installCarbonHotKeyHandler()
+
+        var ref: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            UInt32(kVK_Escape),
+            0,
+            hotKeyId,
+            GetEventDispatcherTarget(),
+            0,
+            &ref
+        )
+        if status == noErr, let ref {
+            hotKeyRef = ref
+            return true
+        } else {
+            emit("escape_cancel_unavailable", [
+                "message": "Could not register Escape to cancel dictation.",
+            ])
+            return false
+        }
+    }
+
+    func stop() {
+        guard let ref = hotKeyRef else {
+            return
+        }
+
+        UnregisterEventHotKey(ref)
+        hotKeyRef = nil
+    }
+
+    private func installCarbonHotKeyHandler() {
+        guard carbonHandlerRef == nil else {
+            return
+        }
+
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(
+            GetEventDispatcherTarget(),
+            escapeCancelHotKeyCallback,
+            2,
+            &specs,
+            userInfo,
+            &carbonHandlerRef
+        )
+    }
+
+    fileprivate func handleCarbonHotKey(pressed: Bool) {
+        guard pressed else {
+            return
+        }
+
+        runOnMain {
+            dictation.discard(reason: "escape")
+        }
+    }
+}
+
+private let escapeCancelHotKeyCallback: EventHandlerUPP = { _, eventRef, userInfo in
+    guard let eventRef, let userInfo else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    var hotKeyId = EventHotKeyID()
+    let status = GetEventParameter(
+        eventRef,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        &hotKeyId
+    )
+    guard status == noErr else {
+        return status
+    }
+
+    guard hotKeyId.signature == escapeCancelHotKeySignature else {
+        return OSStatus(eventNotHandledErr)
+    }
+
+    let monitor = Unmanaged<DictationEscapeCancelMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+    monitor.handleCarbonHotKey(pressed: GetEventKind(eventRef) == UInt32(kEventHotKeyPressed))
+    return noErr
+}
+
 final class DictationController {
     private var audioRecorder: AVAudioRecorder?
     private var selectedDeviceRecorder: SelectedDeviceRecorder?
@@ -1672,6 +1795,13 @@ final class DictationController {
     private var isFinalizing = false
     private var startPending = false
     private var maxObservedAudioLevel: Float = 0
+    private var activeTakeID: String?
+    private var cancelledTakeIDs = Set<String>()
+    /// Identifies the recorder whose asynchronous callbacks may mutate the
+    /// controller. A selected-device recorder can finish after discard has
+    /// already started a replacement take, so the take ID alone is not enough:
+    /// every callback must still belong to this exact recorder instance.
+    private var recordingInstanceID: UUID?
 
     var listening: Bool {
         isListening || isFinalizing || startPending
@@ -1708,16 +1838,29 @@ final class DictationController {
     /// sees the mismatch and does nothing.
     private var dictationStartGeneration = 0
 
-    func start() {
+    func start(takeID: String? = nil) {
         if startPending {
+            if takeID != activeTakeID {
+                emit("error", takePayload([
+                    "code": "recording_start_busy",
+                    "message": "Dictation is already starting.",
+                ], takeID: takeID))
+            }
             return
         }
         guard !listening else {
-            emit("error", ["code": "already_listening", "message": "Dictation is already listening."])
+            emit("error", takePayload([
+                "code": "already_listening",
+                "message": "Dictation is already listening.",
+            ], takeID: takeID))
             return
         }
 
         startPending = true
+        let requestedTakeID = takeID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        activeTakeID = requestedTakeID
+            .flatMap { !$0.isEmpty && $0.utf8.count <= 128 ? $0 : nil }
+            ?? UUID().uuidString.lowercased()
         dictationStartGeneration += 1
         let generation = dictationStartGeneration
         AVCaptureDevice.requestAccess(for: .audio) { [weak self] microphoneAllowed in
@@ -1729,8 +1872,13 @@ final class DictationController {
                     return
                 }
                 guard microphoneAllowed else {
+                    let rejectedTakeID = self.activeTakeID
                     self.startPending = false
-                    emit("error", ["code": "microphone_permission_missing", "message": "Microphone permission is required."])
+                    self.activeTakeID = nil
+                    emit("error", takePayload([
+                        "code": "microphone_permission_missing",
+                        "message": "Microphone permission is required.",
+                    ], takeID: rejectedTakeID))
                     emit("permission_status", permissionPayload())
                     return
                 }
@@ -1753,31 +1901,42 @@ final class DictationController {
         }
     }
 
-    func stop() {
+    func stop(takeID: String? = nil) {
+        if let takeID, activeTakeID != takeID {
+            return
+        }
         // A stop that lands while a start is still waiting on the permission
         // prompt cancels that start (a grazed push-to-talk key, or the prompt
         // never calling back); erroring not_listening here would wedge the
         // pending flag until a helper restart.
         if startPending && !isListening {
+            let cancelledTakeID = activeTakeID
             cancelAndResetRecording()
-            emit("recording_discarded", ["reason": "start_cancelled"])
+            var payload = ["reason": "start_cancelled"]
+            if let cancelledTakeID {
+                payload["takeId"] = cancelledTakeID
+            }
+            emit("recording_discarded", payload)
             return
         }
         guard isListening, recordingPurpose == .dictation else {
-            emit("error", ["code": "not_listening", "message": "Dictation is not listening."])
+            emit("error", takePayload([
+                "code": "not_listening",
+                "message": "Dictation is not listening.",
+            ], takeID: takeID ?? activeTakeID))
             return
         }
 
         stopActiveRecording()
     }
 
-    func toggle(shortcut: String) {
+    func toggle(shortcut: String, takeID: String? = nil) {
         if isListening || startPending {
             emit("hotkey_trigger", ["action": "stop", "shortcut": shortcut])
-            stop()
+            stop(takeID: takeID)
         } else if !isFinalizing {
             emit("hotkey_trigger", ["action": "start", "shortcut": shortcut])
-            start()
+            start(takeID: takeID)
         }
     }
 
@@ -1807,30 +1966,39 @@ final class DictationController {
         cleanupMicTestSample()
     }
 
-    func paste(text: String) {
+    func paste(text: String, takeID: String?) {
+        guard acceptsDictationText(for: takeID) else {
+            return
+        }
         let text = dictationPasteText(text)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fail(DictationError.missingTranscript)
             return
         }
 
-        emit("final_transcript", ["text": text])
-        PasteboardInserter.paste(text)
+        emit("final_transcript", takePayload(["text": text], takeID: takeID))
+        PasteboardInserter.paste(text, takeID: takeID)
         resetRecordingState()
     }
 
-    func copyForRecovery(text: String, keepRecordingFile: Bool) {
+    func copyForRecovery(text: String, keepRecordingFile: Bool, takeID: String?) {
+        guard acceptsDictationText(for: takeID) else {
+            return
+        }
         let text = dictationPasteText(text)
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             fail(DictationError.missingTranscript)
             return
         }
 
-        let copied = PasteboardInserter.copyForRecovery(text)
+        let copied = PasteboardInserter.copyForRecovery(text, takeID: takeID)
         resetRecordingState(keepRecordingFile: keepRecordingFile && !copied)
     }
 
-    func discard() {
+    func discard(takeID: String? = nil, reason: String? = nil) {
+        if let takeID, activeTakeID != takeID {
+            return
+        }
         // Cancel any start still waiting on the permission prompt — the
         // graze is over, so a later grant must not open the microphone.
         // A discard can also arrive after recording_ready, while the helper is
@@ -1839,10 +2007,37 @@ final class DictationController {
         // announce every active discard. Otherwise that gate only recovers
         // when its 30-second safety timeout expires.
         let hadActiveDictation = startPending || isListening || isFinalizing
+        let cancelledTakeID = activeTakeID
         cancelAndResetRecording()
-        if hadActiveDictation {
-            emit("recording_discarded")
+        if let cancelledTakeID {
+            cancelledTakeIDs.insert(cancelledTakeID)
         }
+        if hadActiveDictation {
+            var payload: [String: String] = [:]
+            if let cancelledTakeID {
+                payload["takeId"] = cancelledTakeID
+            }
+            if let reason {
+                payload["reason"] = reason
+            }
+            emit("recording_discarded", payload)
+        }
+    }
+
+    private func acceptsDictationText(for takeID: String?) -> Bool {
+        if let takeID, cancelledTakeIDs.contains(takeID) {
+            return false
+        }
+        if let takeID, let activeTakeID {
+            return isFinalizing && takeID == activeTakeID
+        }
+        if takeID != nil, listening {
+            return false
+        }
+        // A helper replacement has no active take. Preserve ADR-0014's
+        // clipboard recovery behavior for a result that outlived the helper;
+        // legacy app/helper pairs also omit takeId entirely.
+        return true
     }
 
     func shutdown() {
@@ -1852,10 +2047,14 @@ final class DictationController {
     }
 
     private func startRecording(purpose: RecordingPurpose, durationSeconds: Double?) {
+        let pendingDictationTakeID = purpose == .dictation ? activeTakeID : nil
         resetRecordingState()
+        activeTakeID = pendingDictationTakeID
         cleanupMicTestSample()
         recordingPurpose = purpose
         recordingStartedAt = ProcessInfo.processInfo.systemUptime
+        let recordingInstanceID = UUID()
+        self.recordingInstanceID = recordingInstanceID
 
         let nextRecordingURL = temporaryRecordingURL()
         // Preserve the legacy Auto-detect behavior: AVAudioRecorder delegates
@@ -1868,7 +2067,8 @@ final class DictationController {
                 device: selectedDevice,
                 url: nextRecordingURL,
                 purpose: purpose,
-                durationSeconds: durationSeconds
+                durationSeconds: durationSeconds,
+                recordingInstanceID: recordingInstanceID
             )
             return
         }
@@ -1886,25 +2086,30 @@ final class DictationController {
             recorder.prepareToRecord()
 
             guard recorder.record() else {
-                emit("error", ["code": "audio_start_failed", "message": "Could not start microphone recording."])
+                emit("error", takePayload([
+                    "code": "audio_start_failed",
+                    "message": "Could not start microphone recording.",
+                ], takeID: activeTakeID))
                 resetRecordingState()
                 return
             }
 
             audioRecorder = recorder
             recordingURL = nextRecordingURL
-            startAutoDetectMetering()
+            startAutoDetectMetering(recordingInstanceID: recordingInstanceID)
             markRecordingStarted(
                 microphone: preferredMicrophoneName ?? "Auto-detect",
                 purpose: purpose,
                 durationSeconds: durationSeconds
             )
         } catch {
+            let rejectedTakeID = activeTakeID
             resetRecordingState()
             emitRecordingError(
                 purpose: purpose,
                 code: "audio_start_failed",
-                message: error.localizedDescription
+                message: error.localizedDescription,
+                takeID: rejectedTakeID
             )
         }
     }
@@ -1913,7 +2118,8 @@ final class DictationController {
         device: AVCaptureDevice,
         url: URL,
         purpose: RecordingPurpose,
-        durationSeconds: Double?
+        durationSeconds: Double?,
+        recordingInstanceID: UUID
     ) {
         do {
             let recorder = try SelectedDeviceRecorder(
@@ -1921,12 +2127,18 @@ final class DictationController {
                 outputURL: url,
                 onLevel: { [weak self] level in
                     runOnMain {
-                        self?.observeAudioLevel(level)
+                        self?.observeAudioLevel(
+                            level,
+                            recordingInstanceID: recordingInstanceID
+                        )
                     }
                 },
                 onFailure: { [weak self] error in
                     runOnMain {
-                        self?.failSelectedDeviceRecording(error)
+                        self?.failSelectedDeviceRecording(
+                            error,
+                            recordingInstanceID: recordingInstanceID
+                        )
                     }
                 }
             )
@@ -1939,24 +2151,35 @@ final class DictationController {
                 durationSeconds: durationSeconds
             )
         } catch {
+            let rejectedTakeID = activeTakeID
             resetRecordingState()
             emitRecordingError(
                 purpose: purpose,
                 code: "audio_start_failed",
-                message: error.localizedDescription
+                message: error.localizedDescription,
+                takeID: rejectedTakeID
             )
         }
     }
 
-    private func failSelectedDeviceRecording(_ error: Error) {
-        guard selectedDeviceRecorder != nil else {
+    private func failSelectedDeviceRecording(
+        _ error: Error,
+        recordingInstanceID: UUID
+    ) {
+        guard
+            self.recordingInstanceID == recordingInstanceID,
+            selectedDeviceRecorder != nil
+        else {
             return
         }
         selectedDeviceRecorder = nil
         fail(error)
     }
 
-    private func emitRecordingReady() {
+    private func emitRecordingReady(recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         guard let recordingURL else {
             fail(DictationError.missingRecording)
             return
@@ -1975,11 +2198,14 @@ final class DictationController {
 
         let observedAudioLevel = maxObservedAudioLevel
         let targetBundleIdentifier = FocusTargetController.shared.targetBundleIdentifier() ?? ""
-        let basePayload = [
+        var basePayload = [
             "path": recordingURL.path,
             "observedAudioLevel": String(format: "%.4f", observedAudioLevel),
             "targetBundleIdentifier": targetBundleIdentifier,
         ]
+        if let activeTakeID {
+            basePayload["takeId"] = activeTakeID
+        }
         if let duration = audioDurationSeconds(at: recordingURL),
            duration < speechAnalysisWindowDurationSeconds {
             var payload = basePayload
@@ -1992,7 +2218,12 @@ final class DictationController {
             return
         }
         analyzeSpeechConfidence(at: recordingURL) { [weak self] speechConfidence in
-            guard let self, self.isFinalizing, self.recordingURL == recordingURL else {
+            guard
+                let self,
+                self.recordingInstanceID == recordingInstanceID,
+                self.isFinalizing,
+                self.recordingURL == recordingURL
+            else {
                 return
             }
             var payload = basePayload
@@ -2032,14 +2263,23 @@ final class DictationController {
                 "microphone": microphone,
             ])
         } else {
-            emit("listening_started", [
+            let takeID = activeTakeID ?? UUID().uuidString.lowercased()
+            activeTakeID = takeID
+            let escapeCancelAvailable = DictationEscapeCancelMonitor.shared.start()
+            emitJSON("listening_started", [
                 "recognitionMode": "venice_recording",
                 "microphone": microphone,
+                "escapeCancelAvailable": escapeCancelAvailable,
+                "takeId": takeID,
             ])
         }
     }
 
     private func stopActiveRecording() {
+        guard let recordingInstanceID else {
+            fail(DictationError.missingRecording)
+            return
+        }
         let purpose = recordingPurpose
         if purpose == .dictation {
             // Selected-device recorder teardown is asynchronous, so the paste
@@ -2048,23 +2288,34 @@ final class DictationController {
         }
         isListening = false
         isFinalizing = true
+        DictationEscapeCancelMonitor.shared.stop()
         micTestStopWorkItem?.cancel()
         micTestStopWorkItem = nil
         stopMetering()
         if purpose == .dictation {
-            emit("finalizing_transcript")
+            if let activeTakeID {
+                emit("finalizing_transcript", ["takeId": activeTakeID])
+            } else {
+                emit("finalizing_transcript")
+            }
         }
 
         if let selectedDeviceRecorder {
             selectedDeviceRecorder.stop { [weak self] error in
                 runOnMain {
-                    self?.selectedDeviceRecorder = nil
-                    RecordingCuePlayer.play(.stop)
-                    if let error {
-                        self?.fail(error)
+                    guard
+                        let self,
+                        self.recordingInstanceID == recordingInstanceID
+                    else {
                         return
                     }
-                    self?.emitRecordingReady()
+                    self.selectedDeviceRecorder = nil
+                    RecordingCuePlayer.play(.stop)
+                    if let error {
+                        self.fail(error)
+                        return
+                    }
+                    self.emitRecordingReady(recordingInstanceID: recordingInstanceID)
                 }
             }
             return
@@ -2072,7 +2323,7 @@ final class DictationController {
 
         audioRecorder?.stop()
         RecordingCuePlayer.play(.stop)
-        emitRecordingReady()
+        emitRecordingReady(recordingInstanceID: recordingInstanceID)
     }
 
     private func scheduleMicTestStop(after seconds: Double) {
@@ -2096,21 +2347,21 @@ final class DictationController {
             .appendingPathExtension("m4a")
     }
 
-    private func startMetering() {
+    private func startMetering(recordingInstanceID: UUID) {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
         // 50Hz (20ms) emit rate: a fresh level roughly every rAF frame so the
         // bars track speech without the steppiness of the old 40ms cadence.
         // Tiny JSON lines, so the IPC channel handles it comfortably.
         timer.schedule(deadline: .now(), repeating: .milliseconds(20))
         timer.setEventHandler { [weak self] in
-            self?.emitAudioRecorderLevel()
+            self?.emitAudioRecorderLevel(recordingInstanceID: recordingInstanceID)
         }
         meteringTimer = timer
         timer.resume()
     }
 
-    private func startAutoDetectMetering() {
-        startMetering()
+    private func startAutoDetectMetering(recordingInstanceID: UUID) {
+        startMetering(recordingInstanceID: recordingInstanceID)
         guard autoDetectRawMeteringEnabled() else {
             return
         }
@@ -2118,7 +2369,10 @@ final class DictationController {
         do {
             let inputMeter = AutoDetectInputMeter { [weak self] level in
                 runOnMain {
-                    self?.observeAudioLevel(level)
+                    self?.observeAudioLevel(
+                        level,
+                        recordingInstanceID: recordingInstanceID
+                    )
                 }
             }
             try inputMeter.start()
@@ -2134,7 +2388,10 @@ final class DictationController {
         }
     }
 
-    private func emitAudioRecorderLevel() {
+    private func emitAudioRecorderLevel(recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         guard let audioRecorder, audioRecorder.isRecording else {
             return
         }
@@ -2149,15 +2406,21 @@ final class DictationController {
         let peak = Float(pow(10.0, Double(peakDb) / 20.0))
         let average = Float(pow(10.0, Double(averageDb) / 20.0))
         let level = peak * 0.8 + average * 0.2
-        observeAudioLevel(min(1, level))
+        observeAudioLevel(min(1, level), recordingInstanceID: recordingInstanceID)
     }
 
-    private func observeAudioLevel(_ level: Float) {
+    private func observeAudioLevel(_ level: Float, recordingInstanceID: UUID) {
+        guard self.recordingInstanceID == recordingInstanceID else {
+            return
+        }
         maxObservedAudioLevel = max(maxObservedAudioLevel, level)
         if recordingPurpose == .micTest {
             emit("mic_test_level", ["level": String(format: "%.4f", level)])
         } else {
-            emit("audio_level", ["level": String(format: "%.4f", level)])
+            emit("audio_level", takePayload(
+                ["level": String(format: "%.4f", level)],
+                takeID: activeTakeID
+            ))
         }
     }
 
@@ -2177,16 +2440,25 @@ final class DictationController {
         emitRecordingError(
             purpose: recordingPurpose,
             code: code,
-            message: error.localizedDescription
+            message: error.localizedDescription,
+            takeID: activeTakeID
         )
         resetRecordingState()
     }
 
-    private func emitRecordingError(purpose: RecordingPurpose, code: String, message: String) {
+    private func emitRecordingError(
+        purpose: RecordingPurpose,
+        code: String,
+        message: String,
+        takeID: String?
+    ) {
         if purpose == .micTest {
             emit("mic_test_error", ["code": code, "message": message])
         } else {
-            emit("error", ["code": code, "message": message])
+            emit("error", takePayload(
+                ["code": code, "message": message],
+                takeID: takeID
+            ))
         }
     }
 
@@ -2223,6 +2495,9 @@ final class DictationController {
         isListening = false
         isFinalizing = false
         startPending = false
+        activeTakeID = nil
+        recordingInstanceID = nil
+        DictationEscapeCancelMonitor.shared.stop()
         maxObservedAudioLevel = 0
         recordingStartedAt = 0
         micTestStopWorkItem?.cancel()
@@ -2267,20 +2542,23 @@ enum PasteboardInserter {
     /// to read the transcript from the pasteboard.
     private static let pasteboardRestoreDelay: TimeInterval = 0.7
 
-    private static func emitPasteTargetUnavailable() {
-        emit("error", [
+    private static func emitPasteTargetUnavailable(takeID: String?) {
+        emit("error", takePayload([
             "code": "paste_target_unavailable",
             "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
-        ])
+        ], takeID: takeID))
     }
 
-    static func paste(_ text: String) {
+    static func paste(_ text: String, takeID: String?) {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
-            emit("error", ["code": "pasteboard_write_failed", "message": "Could not write transcript to the clipboard."])
+            emit("error", takePayload([
+                "code": "pasteboard_write_failed",
+                "message": "Could not write transcript to the clipboard.",
+            ], takeID: takeID))
             restore(snapshot, to: pasteboard)
             return
         }
@@ -2296,23 +2574,23 @@ enum PasteboardInserter {
         // permission state so the in-app Accessibility banner appears.
         guard AXIsProcessTrusted() else {
             emit("permission_status", permissionPayload())
-            emit("error", [
+            emit("error", takePayload([
                 "code": "accessibility_permission_missing",
                 "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
-            ])
+            ], takeID: takeID))
             return
         }
 
         guard let target = FocusTargetController.shared.pasteTarget() else {
-            emitPasteTargetUnavailable()
+            emitPasteTargetUnavailable(takeID: takeID)
             return
         }
 
         let targetActivated = target.isActive ? true : target.activate(options: [])
-        emit("paste_target", [
+        emit("paste_target", takePayload([
             "app": FocusTargetController.shared.pasteTargetDescription(),
             "activated": boolStatus(targetActivated),
-        ])
+        ], takeID: takeID))
 
         waitForActivation(
             of: target,
@@ -2324,12 +2602,12 @@ enum PasteboardInserter {
             // abandon the paste rather than guess: the transcript is already on
             // the clipboard, and a manual Cmd+V beats text in the wrong app.
             guard targetIsFrontmost else {
-                emitPasteTargetUnavailable()
+                emitPasteTargetUnavailable(takeID: takeID)
                 return
             }
 
             postPasteShortcut()
-            emit("paste_completed")
+            emit("paste_completed", takePayload(takeID: takeID))
 
             DispatchQueue.global().asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
                 if pasteboard.string(forType: .string) == text {
@@ -2342,24 +2620,24 @@ enum PasteboardInserter {
     /// Last-resort recovery when Dictation history could not save a transcript.
     /// Unlike a normal paste, the clipboard is deliberately not restored after
     /// a successful write.
-    static func copyForRecovery(_ text: String) -> Bool {
+    static func copyForRecovery(_ text: String, takeID: String?) -> Bool {
         let pasteboard = NSPasteboard.general
         let snapshot = capture(pasteboard)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
             restore(snapshot, to: pasteboard)
-            emit("error", [
+            emit("error", takePayload([
                 "code": "pasteboard_write_failed",
                 "message": "Could not save or copy this dictation. The recording was kept for recovery.",
-            ])
+            ], takeID: takeID))
             return false
         }
 
-        emit("error", [
+        emit("error", takePayload([
             "code": "dictation_recovery_clipboard",
             "message": "Could not save this dictation. Use Cmd+V to keep the transcript.",
-        ])
+        ], takeID: takeID))
         return true
     }
 
@@ -2464,12 +2742,14 @@ func handleCommandLine(_ line: String) {
             dictation.emitMicrophones()
         }
     case "start_listening":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.start()
+            dictation.start(takeID: takeID)
         }
     case "stop_and_paste":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.stop()
+            dictation.stop(takeID: takeID)
         }
     case "start_mic_test":
         let durationSeconds = command?["durationSeconds"] as? Double
@@ -2512,26 +2792,31 @@ func handleCommandLine(_ line: String) {
         }
     case "toggle_listening":
         let shortcut = command?["shortcut"] as? String ?? "hotkey"
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.toggle(shortcut: shortcut)
+            dictation.toggle(shortcut: shortcut, takeID: takeID)
         }
     case "paste_text":
         let text = command?["text"] as? String ?? ""
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.paste(text: text)
+            dictation.paste(text: text, takeID: takeID)
         }
     case "copy_text_for_recovery":
         let text = command?["text"] as? String ?? ""
         let keepRecordingFile = command?["keepRecordingFile"] as? Bool ?? false
+        let takeID = command?["takeId"] as? String
         runOnMain {
             dictation.copyForRecovery(
                 text: text,
-                keepRecordingFile: keepRecordingFile
+                keepRecordingFile: keepRecordingFile,
+                takeID: takeID
             )
         }
     case "discard_recording":
+        let takeID = command?["takeId"] as? String
         runOnMain {
-            dictation.discard()
+            dictation.discard(takeID: takeID, reason: "command")
         }
     case "shutdown":
         runOnMain {

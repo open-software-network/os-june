@@ -13,12 +13,13 @@ use chrono::Utc;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     fs,
+    future::Future,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
-        Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering},
+        Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -76,6 +77,58 @@ const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 /// a destructive silence test: quiet speech can also fall below both cutoffs.
 const DICTATION_SPEECH_CONFIDENCE_THRESHOLD: f32 = 0.4;
 const DICTATION_EVENT_LOG: &str = "dictation-events.log";
+#[cfg(target_os = "macos")]
+static DICTATION_TOOLTIP_PANEL: OnceLock<usize> = OnceLock::new();
+/// AppKit cannot resolve the webview's CSS custom properties. These native
+/// boundary values mirror the named Dictation HUD tokens in
+/// `src/styles/tokens.css` and the forced-dark colors in
+/// `src/styles/hud.css`; keep the pair together when those tokens change.
+#[cfg(target_os = "macos")]
+/// Mirrors `--control-lg`.
+const DICTATION_TOOLTIP_WIDTH_LOGICAL: f64 = 32.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--control-hud`.
+const DICTATION_TOOLTIP_HEIGHT_LOGICAL: f64 = 24.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--sp-2`.
+const DICTATION_TOOLTIP_GAP_LOGICAL: f64 = 6.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--border-width`.
+const DICTATION_TOOLTIP_BORDER_WIDTH_LOGICAL: f64 = 1.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--r-sm`.
+const DICTATION_TOOLTIP_CORNER_RADIUS_LOGICAL: f64 = 6.0;
+#[cfg(target_os = "macos")]
+/// Mirrors `--fs-xs`. Separate HUD webviews intentionally keep font scale 1.
+const DICTATION_TOOLTIP_FONT_SIZE_LOGICAL: f64 = 11.0;
+#[cfg(target_os = "macos")]
+/// AppKit's native equivalent of `--fw-medium` (600).
+const DICTATION_TOOLTIP_FONT_WEIGHT_MEDIUM: f64 = 0.23;
+#[cfg(target_os = "macos")]
+/// sRGB conversion of the forced-dark `--hud-bg`.
+const DICTATION_TOOLTIP_BACKGROUND_RED: f64 = 0.083;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_GREEN: f64 = 0.082;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_BLUE: f64 = 0.079;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_BACKGROUND_ALPHA: f64 = 0.92;
+#[cfg(target_os = "macos")]
+/// `--hud-border` resolves to a white alpha on the forced-dark HUD.
+const DICTATION_TOOLTIP_BORDER_ALPHA: f64 = 0.12;
+#[cfg(target_os = "macos")]
+/// sRGB conversion of the forced-dark `--muted-foreground`.
+const DICTATION_TOOLTIP_TEXT_RED: f64 = 0.633;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_GREEN: f64 = 0.631;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_BLUE: f64 = 0.627;
+// NSTextField has no tokenized vertical-centering primitive. These two
+// one-off AppKit baseline metrics center the token-sized label in the panel.
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_Y_LOGICAL: f64 = 3.0;
+#[cfg(target_os = "macos")]
+const DICTATION_TOOLTIP_TEXT_HEIGHT_LOGICAL: f64 = 17.0;
 
 static SETTINGS_CACHE: OnceLock<Mutex<DictationSettings>> = OnceLock::new();
 
@@ -120,6 +173,242 @@ impl Default for HelperState {
     }
 }
 
+const DICTATION_TAKE_CAPTURING: u8 = 0;
+const DICTATION_TAKE_PROCESSING: u8 = 1;
+const DICTATION_TAKE_CANCELLED: u8 = 2;
+const DICTATION_TAKE_DELIVERING: u8 = 3;
+
+#[derive(Clone)]
+struct DictationTakeToken {
+    inner: Arc<DictationTakeTokenInner>,
+}
+
+struct DictationTakeTokenInner {
+    id: String,
+    state: AtomicU8,
+    cancellation: tokio::sync::watch::Sender<bool>,
+}
+
+impl DictationTakeToken {
+    fn new(id: String) -> Self {
+        let (cancellation, _) = tokio::sync::watch::channel(false);
+        Self {
+            inner: Arc::new(DictationTakeTokenInner {
+                id,
+                state: AtomicU8::new(DICTATION_TAKE_CAPTURING),
+                cancellation,
+            }),
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.inner.id
+    }
+
+    fn cancel(&self) -> bool {
+        if self
+            .inner
+            .state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                matches!(state, DICTATION_TAKE_CAPTURING | DICTATION_TAKE_PROCESSING)
+                    .then_some(DICTATION_TAKE_CANCELLED)
+            })
+            .is_err()
+        {
+            return false;
+        }
+        self.inner.cancellation.send_replace(true);
+        true
+    }
+
+    fn try_begin_processing(&self) -> bool {
+        self.inner
+            .state
+            .compare_exchange(
+                DICTATION_TAKE_CAPTURING,
+                DICTATION_TAKE_PROCESSING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    fn try_begin_delivery(&self) -> Option<DictationDeliveryClaim> {
+        self.inner
+            .state
+            .compare_exchange(
+                DICTATION_TAKE_PROCESSING,
+                DICTATION_TAKE_DELIVERING,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .ok()
+            .map(|_| DictationDeliveryClaim { take: self.clone() })
+    }
+
+    fn state(&self) -> u8 {
+        self.inner.state.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    fn same_take(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    async fn cancelled(&self) {
+        let mut cancellation = self.inner.cancellation.subscribe();
+        while !*cancellation.borrow_and_update() {
+            if cancellation.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+struct DictationDeliveryClaim {
+    take: DictationTakeToken,
+}
+
+enum DictationFinalizedTake {
+    Start(DictationTakeToken),
+    Cancelled,
+    Duplicate,
+    Stale,
+}
+
+/// The one helper-owned take that may still produce text. A cancelled token is
+/// retained by its dictation transcription task after a replacement take begins,
+/// so late completion cannot inherit the replacement's delivery authority.
+#[derive(Default)]
+pub struct DictationTakeState {
+    current: Mutex<Option<DictationTakeToken>>,
+    helper_command_generation: Mutex<u64>,
+}
+
+impl DictationTakeState {
+    fn begin(&self, id: String) -> DictationTakeToken {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = current
+            .as_ref()
+            .filter(|existing| existing.id() == id.as_str())
+        {
+            return existing.clone();
+        }
+        if let Some(previous) = current.take() {
+            previous.cancel();
+        }
+        let token = DictationTakeToken::new(id);
+        *current = Some(token.clone());
+        token
+    }
+
+    fn claim_finalized(&self, id: Option<&str>) -> DictationFinalizedTake {
+        let mut current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = current.as_ref() {
+            if id.is_some_and(|id| existing.id() != id) {
+                return DictationFinalizedTake::Stale;
+            }
+            if existing.try_begin_processing() {
+                return DictationFinalizedTake::Start(existing.clone());
+            }
+            return match existing.state() {
+                DICTATION_TAKE_CANCELLED => DictationFinalizedTake::Cancelled,
+                DICTATION_TAKE_PROCESSING | DICTATION_TAKE_DELIVERING => {
+                    DictationFinalizedTake::Duplicate
+                }
+                _ => DictationFinalizedTake::Stale,
+            };
+        }
+        let id = id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()));
+        let token = DictationTakeToken::new(id);
+        let processing_started = token.try_begin_processing();
+        debug_assert!(processing_started);
+        *current = Some(token.clone());
+        DictationFinalizedTake::Start(token)
+    }
+
+    fn cancel(&self, id: Option<&str>) -> bool {
+        let current = self
+            .current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if id.is_some_and(|id| current.as_ref().is_some_and(|current| current.id() != id)) {
+            return false;
+        }
+        current.as_ref().is_some_and(DictationTakeToken::cancel)
+    }
+
+    fn current_take_id(&self) -> Option<String> {
+        self.current
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|take| take.id().to_string())
+    }
+
+    fn run_new_helper_command<T>(&self, operation: impl FnOnce(u64) -> T) -> (u64, T) {
+        let mut generation = self
+            .helper_command_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *generation = generation.wrapping_add(1);
+        let current = *generation;
+        (current, operation(current))
+    }
+
+    fn run_new_helper_command_if<P, T>(
+        &self,
+        prepare: impl FnOnce() -> Option<P>,
+        operation: impl FnOnce(u64, P) -> T,
+    ) -> Option<(u64, T)> {
+        let mut generation = self
+            .helper_command_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prepared = prepare()?;
+        *generation = generation.wrapping_add(1);
+        let current = *generation;
+        Some((current, operation(current, prepared)))
+    }
+
+    fn run_if_current_helper_command<T>(
+        &self,
+        expected_generation: u64,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let generation = self
+            .helper_command_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (*generation == expected_generation).then(operation)
+    }
+
+    fn lock_helper_commands(&self) -> std::sync::MutexGuard<'_, u64> {
+        self.helper_command_generation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+async fn run_dictation_take_step<F, T>(take: &DictationTakeToken, future: F) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        _ = take.cancelled() => None,
+        output = future => Some(output),
+    }
+}
+
 pub struct LastDictationEvent {
     event: Mutex<Option<String>>,
 }
@@ -156,12 +445,14 @@ pub struct HudClientRect {
 /// Hover state for HUD controls. Polled by [`spawn_hud_hover_thread`]; we
 /// don't poll from JS because WebKit throttles timers on the non-key HUD
 /// panel (and CSS :hover is unreliable there for the same reason). The
-/// stop button and the meeting prompt's corner dismiss each get a rect.
+/// stop button, cancel button, and the meeting prompt controls each get a rect.
 /// The window includes a small transparent gutter for the CSS shadow, but
 /// hover still keys off the controls themselves rather than the full frame.
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     last_hover: std::sync::atomic::AtomicBool,
+    cancel_bounds: Mutex<Option<HudClientRect>>,
+    last_cancel_hover: std::sync::atomic::AtomicBool,
     dismiss_bounds: Mutex<Option<HudClientRect>>,
     last_dismiss_hover: std::sync::atomic::AtomicBool,
     record_bounds: Mutex<Option<HudClientRect>>,
@@ -516,6 +807,16 @@ struct ShortcutActivationController {
     /// Updated only from helper lifecycle events. Unlike `active_mode`, this
     /// also reflects recordings started by the composer button.
     helper_is_listening: bool,
+    /// The take the helper has acknowledged with `listening_started`.
+    helper_take_id: Option<String>,
+    /// A start command written to the helper but not yet acknowledged. Keeping
+    /// it separate from confirmed ownership lets a correlated rejection roll
+    /// back the attempted start without losing control of the prior take.
+    pending_helper_take_id: Option<String>,
+    /// Set after this helper process emits any take-correlated lifecycle
+    /// event. Once negotiated, an untagged take-owned event cannot terminate a
+    /// tagged active take; untagged global errors remain event-only.
+    helper_uses_take_ids: bool,
     push_to_talk_is_down: bool,
     push_started_at: Option<Instant>,
     toggle_command_in_flight: bool,
@@ -536,6 +837,19 @@ enum DictationCommand {
     StopAndPaste,
     DiscardListening,
     ToggleListening,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HelperLifecycleDisposition {
+    Apply,
+    EmitOnly,
+    Ignore,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MalformedRecordingReadyCleanup {
+    take_id: Option<String>,
+    send_helper_discard: bool,
 }
 
 impl ShortcutActivationController {
@@ -630,13 +944,215 @@ impl ShortcutActivationController {
         self.helper_finalizing_since = None;
     }
 
-    fn set_helper_listening(&mut self, listening: bool) {
+    fn set_helper_listening(&mut self, listening: bool, take_id: Option<&str>) {
         self.helper_is_listening = listening;
+        if listening {
+            self.helper_uses_take_ids |= take_id.is_some();
+            self.helper_take_id = take_id.map(str::to_string);
+            if self.pending_helper_take_id.as_deref() == take_id {
+                self.pending_helper_take_id = None;
+            }
+        }
+    }
+
+    fn prepare_helper_start(&mut self, take_id: &str) {
+        self.pending_helper_take_id = Some(take_id.to_string());
+    }
+
+    fn promote_untagged_helper_start(&mut self, take_id: &str) {
+        self.helper_is_listening = true;
+        self.helper_take_id = Some(take_id.to_string());
+        if self.pending_helper_take_id.as_deref() == Some(take_id) {
+            self.pending_helper_take_id = None;
+        }
+    }
+
+    fn malformed_recording_ready_cleanup(
+        &self,
+        event_take_id: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> MalformedRecordingReadyCleanup {
+        let take_id = event_take_id
+            .map(str::to_string)
+            .or_else(|| self.helper_take_id.clone())
+            .or_else(|| current_take_id.map(str::to_string));
+        MalformedRecordingReadyCleanup {
+            take_id,
+            // A tagged discard is safe because a current helper authorizes
+            // its target. An older helper ignores tags, so do not send its
+            // untagged cleanup after a replacement start is pending.
+            send_helper_discard: event_take_id.is_some() || self.pending_helper_take_id.is_none(),
+        }
+    }
+
+    fn prepare_renderer_command(
+        &mut self,
+        command_type: &str,
+        requested_take_id: Option<String>,
+        current_take_id: Option<String>,
+    ) -> (bool, Option<String>) {
+        let starts_recording = command_type == "start_listening"
+            || (command_type == "toggle_listening"
+                && !self.helper_is_listening
+                && self.pending_helper_take_id.is_none());
+        let active_take_id = self
+            .pending_helper_take_id
+            .clone()
+            .or_else(|| self.helper_take_id.clone())
+            .or(current_take_id);
+        let take_id = requested_take_id.or_else(|| {
+            starts_recording
+                .then(|| uuid::Uuid::new_v4().to_string())
+                .or(active_take_id)
+        });
+
+        if helper_command_type_resets_shortcut_activation(command_type) {
+            let targets_input_activation = take_id.as_deref().map_or(true, |take_id| {
+                self.pending_helper_take_id.as_deref() == Some(take_id)
+                    || (self.pending_helper_take_id.is_none()
+                        && self.helper_take_id.as_deref() == Some(take_id))
+            });
+            if targets_input_activation {
+                self.reset_input_activation();
+            }
+        }
+        if starts_recording {
+            if let Some(take_id) = take_id.as_deref() {
+                self.prepare_helper_start(take_id);
+            }
+        }
+
+        (starts_recording, take_id)
+    }
+
+    fn matches_helper_take(&self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        self.pending_helper_take_id.as_deref() == Some(take_id)
+            || self.helper_take_id.as_deref() == Some(take_id)
+            || (self.pending_helper_take_id.is_none()
+                && self.helper_take_id.is_none()
+                && current_take_id == Some(take_id))
+    }
+
+    fn matches_delivery_take(&self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        if let Some(pending_take_id) = self.pending_helper_take_id.as_deref() {
+            return pending_take_id == take_id;
+        }
+        self.helper_take_id.as_deref() == Some(take_id)
+            || (self.helper_take_id.is_none() && current_take_id == Some(take_id))
+    }
+
+    fn reset_for_helper_discard(
+        &mut self,
+        take_id: Option<&str>,
+        reason: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> HelperLifecycleDisposition {
+        self.helper_uses_take_ids |= take_id.is_some();
+        let matches_active_take = match take_id {
+            Some(take_id) => self.matches_helper_take(take_id, current_take_id),
+            // New helpers explain untagged terminal events such as a
+            // start-pending stop. A payload with neither field is an older
+            // helper, where resetting remains the compatible behavior.
+            None => reason.is_none() && !self.helper_uses_take_ids,
+        };
+        if !matches_active_take {
+            return HelperLifecycleDisposition::Ignore;
+        }
+        let preserves_confirmed_take = if let Some(take_id) = take_id {
+            self.finish_helper_take(take_id, current_take_id)
+        } else {
+            self.reset();
+            false
+        };
+        if preserves_confirmed_take {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Apply
+        }
+    }
+
+    fn finish_helper_take(&mut self, take_id: &str, current_take_id: Option<&str>) -> bool {
+        let finished_pending = self.pending_helper_take_id.as_deref() == Some(take_id);
+        let finished_confirmed = self.helper_take_id.as_deref() == Some(take_id);
+        let preserves_confirmed_take = finished_pending
+            && self
+                .helper_take_id
+                .as_deref()
+                .is_some_and(|confirmed| confirmed != take_id);
+        if finished_pending {
+            self.pending_helper_take_id = None;
+            self.reset_input_activation();
+        }
+        if finished_confirmed {
+            self.helper_take_id = None;
+            self.helper_is_listening = false;
+            self.helper_finalizing_since = None;
+            if self.pending_helper_take_id.is_none() {
+                self.reset_input_activation();
+            }
+        }
+        if !finished_pending
+            && !finished_confirmed
+            && self.pending_helper_take_id.is_none()
+            && self.helper_take_id.is_none()
+            && current_take_id == Some(take_id)
+        {
+            self.reset();
+        }
+        preserves_confirmed_take
+    }
+
+    fn finish_for_helper_event(
+        &mut self,
+        take_id: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> HelperLifecycleDisposition {
+        let Some(take_id) = take_id else {
+            self.reset();
+            return HelperLifecycleDisposition::Apply;
+        };
+        self.helper_uses_take_ids = true;
+        if !self.matches_helper_take(take_id, current_take_id) {
+            return HelperLifecycleDisposition::Ignore;
+        }
+        if self.finish_helper_take(take_id, current_take_id) {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Apply
+        }
+    }
+
+    fn clear_helper_take(&mut self) {
+        self.helper_take_id = None;
+        self.pending_helper_take_id = None;
+    }
+
+    fn clear_helper_protocol(&mut self) {
+        self.clear_helper_take();
+        self.helper_uses_take_ids = false;
+    }
+
+    fn untagged_take_event_disposition(
+        &self,
+        event_type: Option<&str>,
+    ) -> HelperLifecycleDisposition {
+        if !self.helper_uses_take_ids
+            || (self.helper_take_id.is_none() && self.pending_helper_take_id.is_none())
+        {
+            return HelperLifecycleDisposition::Apply;
+        }
+        if event_type == Some("error") {
+            HelperLifecycleDisposition::EmitOnly
+        } else {
+            HelperLifecycleDisposition::Ignore
+        }
     }
 
     fn command_starts_recording(&self, command: DictationCommand) -> bool {
         matches!(command, DictationCommand::StartListening)
-            || (matches!(command, DictationCommand::ToggleListening) && !self.helper_is_listening)
+            || (matches!(command, DictationCommand::ToggleListening)
+                && !self.helper_is_listening
+                && self.pending_helper_take_id.is_none())
     }
 
     fn track_composer_request(&mut self, request_id: Option<String>) {
@@ -653,18 +1169,35 @@ impl ShortcutActivationController {
         if self.pending_composer_request_id.as_deref() != Some(request_id) {
             return false;
         }
-        self.reset();
+        self.pending_composer_request_id = None;
+        self.pending_helper_take_id = None;
+        self.reset_input_activation();
         true
     }
 
+    fn finish_start_for_auth_failure(&mut self, take_id: &str) -> Option<bool> {
+        let owns_start = self.pending_helper_take_id.as_deref() == Some(take_id)
+            || self.helper_take_id.as_deref() == Some(take_id);
+        if !owns_start {
+            return None;
+        }
+        Some(self.finish_helper_take(take_id, None))
+    }
+
     fn reset(&mut self) {
+        self.reset_input_activation();
+        self.helper_take_id = None;
+        self.pending_helper_take_id = None;
+        self.helper_finalizing_since = None;
+        self.pending_composer_request_id = None;
+    }
+
+    fn reset_input_activation(&mut self) {
         self.active_mode = None;
         self.push_to_talk_is_down = false;
         self.push_started_at = None;
         self.toggle_command_in_flight = false;
         self.last_toggle_command_at = None;
-        self.helper_finalizing_since = None;
-        self.pending_composer_request_id = None;
     }
 }
 
@@ -835,6 +1368,8 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(HudHoverState {
         stop_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
+        cancel_bounds: Mutex::new(None),
+        last_cancel_hover: std::sync::atomic::AtomicBool::new(false),
         dismiss_bounds: Mutex::new(None),
         last_dismiss_hover: std::sync::atomic::AtomicBool::new(false),
         record_bounds: Mutex::new(None),
@@ -852,6 +1387,7 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(ShortcutActivationState {
         controller: Mutex::new(ShortcutActivationController::default()),
     });
+    app.manage(DictationTakeState::default());
 
     // Install state before spawning so a helper that exits immediately can be
     // observed by its stdout supervisor instead of disappearing during setup.
@@ -1084,6 +1620,18 @@ pub fn dictation_helper_command(
             ));
         }
     }
+    if let Some(take_id) = command.get("takeId") {
+        let valid = take_id
+            .as_str()
+            .map(str::trim)
+            .is_some_and(|id| !id.is_empty() && id.len() <= 128);
+        if !valid {
+            return Err(AppError::new(
+                "dictation_take_invalid",
+                "The dictation take identifier was invalid.",
+            ));
+        }
+    }
     let command_type = command
         .get("type")
         .and_then(serde_json::Value::as_str)
@@ -1156,10 +1704,6 @@ pub fn dictation_helper_command(
         }
         command
     };
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if helper_command_resets_shortcut_activation(&command) {
-        reset_shortcut_activation(&app);
-    }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     if state
@@ -1169,6 +1713,56 @@ pub fn dictation_helper_command(
         .unwrap_or(true)
     {
         return handle_missing_helper_command(&app, &command);
+    }
+
+    if matches!(
+        command_type.as_str(),
+        "start_listening" | "stop_and_paste" | "discard_recording" | "toggle_listening"
+    ) {
+        if let Some(take_state) = app.try_state::<DictationTakeState>() {
+            let (_, result) = take_state.run_new_helper_command(|_| {
+                let current_take_id = take_state.current_take_id();
+                let requested_take_id = command
+                    .get("takeId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let (_, take_id) = app
+                    .try_state::<ShortcutActivationState>()
+                    .and_then(|activation| {
+                        activation.controller.lock().ok().map(|mut controller| {
+                            controller.prepare_renderer_command(
+                                &command_type,
+                                requested_take_id.clone(),
+                                current_take_id.clone(),
+                            )
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        let starts_recording = matches!(
+                            command_type.as_str(),
+                            "start_listening" | "toggle_listening"
+                        );
+                        let take_id = requested_take_id.or_else(|| {
+                            starts_recording
+                                .then(|| uuid::Uuid::new_v4().to_string())
+                                .or(current_take_id)
+                        });
+                        (starts_recording, take_id)
+                    });
+
+                let mut command = command;
+                if let (Some(take_id), Some(object)) = (take_id.as_deref(), command.as_object_mut())
+                {
+                    object.insert("takeId".into(), serde_json::json!(take_id));
+                }
+                if command_type == "discard_recording" {
+                    cancel_dictation_take(&app, take_id.as_deref());
+                }
+                send_helper_command(&state, command)
+            });
+            return result;
+        }
+        return send_helper_command(&state, command);
     }
 
     send_helper_command(&state, command)
@@ -1204,10 +1798,10 @@ fn is_foreground_window_handle(_window_handle: isize) -> bool {
     false
 }
 
-fn helper_command_resets_shortcut_activation(command: &serde_json::Value) -> bool {
+fn helper_command_type_resets_shortcut_activation(command_type: &str) -> bool {
     matches!(
-        command.get("type").and_then(serde_json::Value::as_str),
-        Some("stop_and_paste" | "discard_recording" | "toggle_listening")
+        command_type,
+        "stop_and_paste" | "discard_recording" | "toggle_listening"
     )
 }
 
@@ -1268,6 +1862,16 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
 }
 
 #[tauri::command]
+pub fn dictation_hud_set_cancel_bounds(
+    state: State<'_, HudHoverState>,
+    rect: Option<HudClientRect>,
+) {
+    if let Ok(mut guard) = state.cancel_bounds.lock() {
+        *guard = rect;
+    }
+}
+
+#[tauri::command]
 pub fn dictation_hud_set_dismiss_bounds(
     state: State<'_, HudHoverState>,
     rect: Option<HudClientRect>,
@@ -1318,6 +1922,93 @@ pub fn dictation_hud_preferred_error_placement(app: AppHandle) -> String {
     } else {
         "below".to_string()
     }
+}
+
+/// Shows the macOS Esc hint in its own click-through panel. Keeping the hint
+/// outside the Dictation HUD means its transparent vertical slot cannot
+/// intercept clicks in the app underneath. Other platforms retain the in-DOM
+/// fallback and return `false`.
+#[tauri::command]
+pub fn dictation_hud_set_tooltip_visible(
+    app: AppHandle,
+    visible: bool,
+    placement: Option<String>,
+) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if !visible {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+
+        let Some(hud) = app.get_webview_window("hud") else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        if !hud.is_visible().unwrap_or(false) {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+        let cancel_rect = app
+            .try_state::<HudHoverState>()
+            .and_then(|state| state.cancel_bounds.lock().ok()?.clone());
+        let Some(cancel_rect) = cancel_rect else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        let Ok(hud_handle) = hud.ns_window() else {
+            hide_dictation_tooltip(&app);
+            return true;
+        };
+        if hud_handle.is_null() {
+            hide_dictation_tooltip(&app);
+            return true;
+        }
+        let placement = if placement.as_deref() == Some("above") {
+            HudTooltipPlacement::Above
+        } else {
+            HudTooltipPlacement::Below
+        };
+        let hud_pointer = hud_handle as usize;
+        let _ = app.run_on_main_thread(move || {
+            show_dictation_tooltip(hud_pointer, &cancel_rect, placement);
+        });
+        true
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, visible, placement);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum HudTooltipPlacement {
+    Above,
+    Below,
+}
+
+#[cfg(target_os = "macos")]
+fn hud_tooltip_origin(
+    hud_frame_x: f64,
+    hud_frame_y: f64,
+    hud_content_height: f64,
+    cancel_rect: &HudClientRect,
+    placement: HudTooltipPlacement,
+) -> (f64, f64) {
+    let control_center_x = hud_frame_x + (cancel_rect.left + cancel_rect.right) / 2.0;
+    let x = control_center_x - DICTATION_TOOLTIP_WIDTH_LOGICAL / 2.0;
+    let control_top = hud_frame_y + hud_content_height - cancel_rect.top;
+    let control_bottom = hud_frame_y + hud_content_height - cancel_rect.bottom;
+    let y = match placement {
+        HudTooltipPlacement::Above => control_top + DICTATION_TOOLTIP_GAP_LOGICAL,
+        HudTooltipPlacement::Below => {
+            control_bottom - DICTATION_TOOLTIP_GAP_LOGICAL - DICTATION_TOOLTIP_HEIGHT_LOGICAL
+        }
+    };
+    (x, y)
 }
 
 /// Serializes window-frame motion (resize morphs, the error shake) so two
@@ -1548,6 +2239,7 @@ pub fn dictation_hud_set_chrome(app: AppHandle, _frostless: bool) {
 /// until hidden.
 #[tauri::command]
 pub fn dictation_hud_exit(app: AppHandle) {
+    hide_dictation_tooltip(&app);
     let Some(hud) = app.get_webview_window("hud") else {
         return;
     };
@@ -1649,12 +2341,61 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Polls the cursor against the cached control bounds (stop button, meeting
-/// dismiss) and emits hover state changes. Short-circuits when no bounds
+/// Polls the cursor against the cached control bounds (stop button, cancel
+/// button, meeting dismiss) and emits hover state changes. Short-circuits when no bounds
 /// are registered.
+/// Hover intent for the Esc tooltip, in 33ms polls (~330ms). The cancel X's own
+/// hover event is immediate; only this teaching affordance waits for intent.
+const CANCEL_TOOLTIP_IN_POLLS: u32 = 10;
+/// Grace before the Esc tooltip closes, in polls (~130ms). The X's own hover
+/// still clears immediately.
+const CANCEL_TOOLTIP_OUT_POLLS: u32 = 4;
+
+#[derive(Default)]
+struct CancelTooltipIntent {
+    inside_streak: u32,
+    outside_streak: u32,
+    hovered: bool,
+}
+
+impl CancelTooltipIntent {
+    fn update(&mut self, inside: bool) -> Option<bool> {
+        if inside {
+            self.inside_streak = self.inside_streak.saturating_add(1);
+            self.outside_streak = 0;
+        } else {
+            self.outside_streak = self.outside_streak.saturating_add(1);
+            self.inside_streak = 0;
+        }
+
+        let next = if self.hovered {
+            self.outside_streak < CANCEL_TOOLTIP_OUT_POLLS
+        } else {
+            self.inside_streak >= CANCEL_TOOLTIP_IN_POLLS
+        };
+        if next == self.hovered {
+            return None;
+        }
+
+        self.hovered = next;
+        Some(next)
+    }
+
+    fn reset(&mut self) -> Option<bool> {
+        self.inside_streak = 0;
+        self.outside_streak = 0;
+        if !self.hovered {
+            return None;
+        }
+        self.hovered = false;
+        Some(false)
+    }
+}
+
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         let tick = Duration::from_millis(33);
+        let mut cancel_tooltip_intent = CancelTooltipIntent::default();
         loop {
             thread::sleep(tick);
 
@@ -1669,6 +2410,11 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let visible = hud.is_visible().unwrap_or(false);
 
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
+            let cancel_rect = hover_state
+                .cancel_bounds
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
             let dismiss_rect = hover_state
                 .dismiss_bounds
                 .lock()
@@ -1681,10 +2427,20 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                 .and_then(|g| g.clone());
 
             // Hidden or no hoverable controls on screen: drop stale hover.
-            if !visible || (stop_rect.is_none() && dismiss_rect.is_none() && record_rect.is_none())
+            if !visible
+                || (stop_rect.is_none()
+                    && cancel_rect.is_none()
+                    && dismiss_rect.is_none()
+                    && record_rect.is_none())
             {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
+                }
+                if hover_state.last_cancel_hover.swap(false, Ordering::Relaxed) {
+                    let _ = app.emit("hud-cancel-hover", false);
+                }
+                if let Some(hovered) = cancel_tooltip_intent.reset() {
+                    let _ = app.emit("hud-cancel-tooltip-hover", hovered);
                 }
                 if hover_state
                     .last_dismiss_hover
@@ -1722,6 +2478,21 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                 let _ = app.emit("hud-stop-hover", stop_hovered);
             }
 
+            let cancel_inside = match cancel_rect.as_ref() {
+                Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
+                None => false,
+            };
+            let last_cancel = hover_state.last_cancel_hover.load(Ordering::Relaxed);
+            if cancel_inside != last_cancel {
+                hover_state
+                    .last_cancel_hover
+                    .store(cancel_inside, Ordering::Relaxed);
+                let _ = app.emit("hud-cancel-hover", cancel_inside);
+            }
+            if let Some(hovered) = cancel_tooltip_intent.update(cancel_inside) {
+                let _ = app.emit("hud-cancel-tooltip-hover", hovered);
+            }
+
             let dismiss_hovered = match dismiss_rect.as_ref() {
                 Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
                 None => false,
@@ -1748,6 +2519,7 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 }
 
 pub fn stop_helper(app: &AppHandle) {
+    cancel_current_dictation_take(app);
     let state = app.state::<HelperState>();
     // Mark the teardown as intentional before killing so the supervisor thread
     // (woken by the resulting stdout EOF) skips respawning instead of fighting
@@ -2051,23 +2823,58 @@ fn handle_shortcut_key_event(
         return;
     };
 
-    let action = app
-        .try_state::<ShortcutActivationState>()
-        .and_then(|state| {
-            state.controller.lock().ok().and_then(|mut state| {
-                let command = state.handle_edge(edge, kind, Instant::now())?;
-                let starts_recording = state.command_starts_recording(command);
-                Some((command, starts_recording))
-            })
-        });
-
     let shortcut = match kind {
         DictationShortcutKind::PushToTalk => settings.push_to_talk_shortcut,
         DictationShortcutKind::Toggle => settings.toggle_shortcut,
     };
 
-    if let Some((command, starts_recording)) = action {
-        send_dictation_command(app, command, &shortcut.label, starts_recording);
+    let prepare_action = || {
+        app.try_state::<ShortcutActivationState>()
+            .and_then(|state| {
+                state.controller.lock().ok().and_then(|mut state| {
+                    let command = state.handle_edge(edge, kind, Instant::now())?;
+                    let starts_recording = state.command_starts_recording(command);
+                    let command_take_id = if starts_recording {
+                        Some(uuid::Uuid::new_v4().to_string())
+                    } else {
+                        state
+                            .pending_helper_take_id
+                            .clone()
+                            .or_else(|| state.helper_take_id.clone())
+                    };
+                    if let Some(take_id) = command_take_id.as_deref().filter(|_| starts_recording) {
+                        state.prepare_helper_start(take_id);
+                    }
+                    Some((command, starts_recording, command_take_id))
+                })
+            })
+    };
+
+    if let Some(take_state) = app.try_state::<DictationTakeState>() {
+        take_state.run_new_helper_command_if(prepare_action, |start_attempt, action| {
+            let (command, starts_recording, command_take_id) = action;
+            let command_take_id = command_take_id.or_else(|| take_state.current_take_id());
+            send_dictation_command(
+                app,
+                command,
+                &shortcut.label,
+                starts_recording,
+                Some(start_attempt),
+                command_take_id,
+            );
+        });
+        return;
+    }
+
+    if let Some((command, starts_recording, command_take_id)) = prepare_action() {
+        send_dictation_command(
+            app,
+            command,
+            &shortcut.label,
+            starts_recording,
+            None,
+            command_take_id,
+        );
     }
 }
 
@@ -2096,6 +2903,99 @@ fn reset_shortcut_activation(app: &AppHandle) {
     }
 }
 
+fn finish_shortcut_start_for_auth_failure(app: &AppHandle, take_id: &str) -> Option<bool> {
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .and_then(|mut controller| controller.finish_start_for_auth_failure(take_id))
+        })
+}
+
+fn dictation_take_id_from_event(event: &serde_json::Value) -> Option<&str> {
+    event
+        .get("payload")
+        .and_then(|payload| payload.get("takeId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && id.len() <= 128)
+}
+
+fn dictation_discard_reason_from_event(event: &serde_json::Value) -> Option<&str> {
+    event
+        .get("payload")
+        .and_then(|payload| payload.get("reason"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn helper_discard_cancellation_target(event: &serde_json::Value) -> Option<Option<&str>> {
+    let take_id = dictation_take_id_from_event(event);
+    // New helpers include a reason on terminal events that do not belong to
+    // an active take. Do not let that idle echo cancel crash-recovery work
+    // still owned by Rust. A reasonless event retains legacy compatibility.
+    (take_id.is_some() || dictation_discard_reason_from_event(event).is_none()).then_some(take_id)
+}
+
+fn pending_helper_start_take_id(app: &AppHandle) -> Option<String> {
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .and_then(|controller| controller.pending_helper_take_id.clone())
+        })
+}
+
+fn malformed_recording_ready_cleanup(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> MalformedRecordingReadyCleanup {
+    let event_take_id = dictation_take_id_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state.controller.lock().ok().map(|controller| {
+                controller
+                    .malformed_recording_ready_cleanup(event_take_id, current_take_id.as_deref())
+            })
+        })
+        .unwrap_or_else(|| MalformedRecordingReadyCleanup {
+            take_id: event_take_id.map(str::to_string).or(current_take_id),
+            send_helper_discard: true,
+        })
+}
+
+fn dictation_start_take_id(event: &serde_json::Value, pending_take_id: Option<&str>) -> String {
+    dictation_take_id_from_event(event)
+        .or(pending_take_id)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()))
+}
+
+fn begin_dictation_take(app: &AppHandle, event: &serde_json::Value) -> Option<String> {
+    let state = app.try_state::<DictationTakeState>()?;
+    // Older helpers omit the ID that Rust already sent with the start
+    // command. Keep that identity for the cancellation token.
+    let id = dictation_start_take_id(event, pending_helper_start_take_id(app).as_deref());
+    state.begin(id.clone());
+    Some(id)
+}
+
+fn cancel_dictation_take(app: &AppHandle, take_id: Option<&str>) {
+    if let Some(state) = app.try_state::<DictationTakeState>() {
+        state.cancel(take_id);
+    }
+}
+
+fn cancel_current_dictation_take(app: &AppHandle) {
+    cancel_dictation_take(app, None);
+}
+
 fn acknowledge_shortcut_toggle(app: &AppHandle) {
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
@@ -2116,12 +3016,207 @@ fn update_shortcut_helper_finalizing(app: &AppHandle, finalizing: bool) {
     }
 }
 
-fn update_shortcut_helper_listening(app: &AppHandle, listening: bool) {
+fn promote_untagged_shortcut_helper_start(app: &AppHandle, take_id: &str) {
     if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
-            controller.set_helper_listening(listening);
+            controller.promote_untagged_helper_start(take_id);
         }
     }
+}
+
+fn update_shortcut_helper_listening(app: &AppHandle, listening: bool, take_id: Option<&str>) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.set_helper_listening(listening, take_id);
+        }
+    }
+}
+
+fn clear_shortcut_helper_take(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.clear_helper_take();
+        }
+    }
+}
+
+fn clear_shortcut_helper_protocol(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.clear_helper_protocol();
+        }
+    }
+}
+
+fn reset_shortcut_for_helper_discard(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> HelperLifecycleDisposition {
+    let take_id = dictation_take_id_from_event(event);
+    let reason = dictation_discard_reason_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            return controller.reset_for_helper_discard(
+                take_id,
+                reason,
+                current_take_id.as_deref(),
+            );
+        }
+    }
+    HelperLifecycleDisposition::Ignore
+}
+
+fn finish_shortcut_for_helper_event(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> HelperLifecycleDisposition {
+    let take_id = dictation_take_id_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            return controller.finish_for_helper_event(take_id, current_take_id.as_deref());
+        }
+    }
+    if take_id.is_some() && current_take_id.as_deref() != take_id {
+        HelperLifecycleDisposition::Ignore
+    } else {
+        HelperLifecycleDisposition::Apply
+    }
+}
+
+fn helper_event_matches_active_take(app: &AppHandle, event: &serde_json::Value) -> bool {
+    let Some(take_id) = dictation_take_id_from_event(event) else {
+        return true;
+    };
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(controller) = state.controller.lock() {
+            return controller.matches_helper_take(take_id, current_take_id.as_deref());
+        }
+    }
+    current_take_id.as_deref() == Some(take_id)
+}
+
+fn dictation_delivery_matches_active_take(app: &AppHandle, take_id: &str) -> bool {
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(controller) = state.controller.lock() {
+            return controller.matches_delivery_take(take_id, current_take_id.as_deref());
+        }
+    }
+    current_take_id.as_deref() == Some(take_id)
+}
+
+fn helper_audio_level_matches_active_take(app: &AppHandle, event: &serde_json::Value) -> bool {
+    let Some(take_id) = dictation_take_id_from_event(event) else {
+        return true;
+    };
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state.controller.lock().ok().map(|controller| {
+                controller.helper_is_listening
+                    && controller.helper_take_id.as_deref() == Some(take_id)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn note_helper_take_protocol(app: &AppHandle, event: Option<&serde_json::Value>) {
+    if event.and_then(dictation_take_id_from_event).is_none() {
+        return;
+    }
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.helper_uses_take_ids = true;
+        }
+    }
+}
+
+fn helper_event_serializes_with_commands(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some(
+            "listening_started"
+                | "audio_level"
+                | "recording_ready"
+                | "recording_discarded"
+                | "finalizing_transcript"
+                | "final_transcript"
+                | "paste_target"
+                | "paste_completed"
+                | "error"
+        )
+    )
+}
+
+fn helper_event_requires_take_match(event_type: Option<&str>) -> bool {
+    matches!(
+        event_type,
+        Some(
+            "listening_started"
+                | "finalizing_transcript"
+                | "final_transcript"
+                | "paste_target"
+                | "paste_completed"
+                | "error"
+        )
+    )
+}
+
+fn untagged_take_event_disposition(
+    app: &AppHandle,
+    event_type: Option<&str>,
+    event: Option<&serde_json::Value>,
+) -> HelperLifecycleDisposition {
+    if event.and_then(dictation_take_id_from_event).is_some()
+        || !matches!(
+            event_type,
+            Some(
+                "audio_level"
+                    | "finalizing_transcript"
+                    | "final_transcript"
+                    | "paste_target"
+                    | "paste_completed"
+                    | "error"
+            )
+        )
+    {
+        return HelperLifecycleDisposition::Apply;
+    }
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .map(|controller| controller.untagged_take_event_disposition(event_type))
+        })
+        .unwrap_or(HelperLifecycleDisposition::Apply)
+}
+
+fn emit_helper_event_without_lifecycle(app: &AppHandle, mut event: serde_json::Value) {
+    if let Some(payload) = event
+        .get_mut("payload")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        payload.insert(
+            "preserveActiveTake".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    annotate_silent_error(&mut event);
+    let event_type = event.get("type").and_then(serde_json::Value::as_str);
+    append_dictation_event_log(app, event_type, &event);
+    let _ = app.emit("dictation-event", event.to_string());
 }
 
 fn send_dictation_command(
@@ -2129,6 +3224,8 @@ fn send_dictation_command(
     command: DictationCommand,
     shortcut_label: &str,
     starts_recording: bool,
+    start_attempt: Option<u64>,
+    command_take_id: Option<String>,
 ) {
     // The start path needs a signed-in OS Accounts session for the
     // transcription that follows, but the token check must not sit between
@@ -2142,11 +3239,20 @@ fn send_dictation_command(
     // before. ToggleListening can also start, but we can't tell
     // start-from-stop without extra state; transcribe_recording_ready acts
     // as the backstop there.
-    let forwarded = forward_dictation_command(app, command, shortcut_label, starts_recording);
+    let forwarded = forward_dictation_command(
+        app,
+        command,
+        shortcut_label,
+        starts_recording,
+        command_take_id.as_deref(),
+    );
     if !forwarded && matches!(command, DictationCommand::ToggleListening) {
         reset_shortcut_activation(app);
     }
-    if matches!(command, DictationCommand::StartListening) {
+    if forwarded && matches!(command, DictationCommand::StartListening) {
+        let Some(start_attempt) = start_attempt else {
+            return;
+        };
         let app = app.clone();
         let label = shortcut_label.to_string();
         tauri::async_runtime::spawn(async move {
@@ -2158,14 +3264,41 @@ fn send_dictation_command(
                 // the finalized audio and shows a retriable error.
                 DictationAuthGate::Unavailable(_) => {}
                 DictationAuthGate::SignedOut => {
-                    forward_dictation_command(
-                        &app,
-                        DictationCommand::DiscardListening,
-                        &label,
-                        false,
-                    );
-                    notify_dictation_not_signed_in(&app);
-                    reset_shortcut_activation(&app);
+                    let Some(take_state) = app.try_state::<DictationTakeState>() else {
+                        return;
+                    };
+                    let Some(take_id) = command_take_id.as_deref() else {
+                        return;
+                    };
+                    let should_focus = take_state
+                        .run_if_current_helper_command(start_attempt, || {
+                            // A helper may reject this attempted start while a
+                            // previously confirmed take keeps recording. Retire
+                            // only the start this auth result belongs to; if that
+                            // take was already rejected, the result is stale even
+                            // though no newer command advanced the generation.
+                            let preserved_confirmed_take =
+                                finish_shortcut_start_for_auth_failure(&app, take_id)?;
+                            let _ = forward_dictation_command(
+                                &app,
+                                DictationCommand::DiscardListening,
+                                &label,
+                                false,
+                                Some(take_id),
+                            );
+                            Some(emit_start_auth_not_signed_in(
+                                &app,
+                                take_id,
+                                preserved_confirmed_take,
+                            ))
+                        })
+                        .flatten();
+                    // Focusing does not change helper or HUD lifecycle state,
+                    // so keep the serialized section above limited to the
+                    // ownership-sensitive discard and error emission.
+                    if should_focus == Some(true) {
+                        focus_main_window(&app);
+                    }
                 }
             }
         });
@@ -2177,7 +3310,11 @@ fn forward_dictation_command(
     command: DictationCommand,
     shortcut_label: &str,
     starts_recording: bool,
+    command_take_id: Option<&str>,
 ) -> bool {
+    if matches!(command, DictationCommand::DiscardListening) {
+        cancel_dictation_take(app, command_take_id);
+    }
     let Some(state) = app.try_state::<HelperState>() else {
         emit_dictation_event_value(
             app,
@@ -2190,6 +3327,9 @@ fn forward_dictation_command(
     };
 
     let mut helper_command = command.helper_command(shortcut_label);
+    if let (Some(take_id), Some(object)) = (command_take_id, helper_command.as_object_mut()) {
+        object.insert("takeId".into(), serde_json::json!(take_id));
+    }
     let mut composer_request_id = None;
     if starts_recording {
         if let Ok(registration) = state.composer_registration.lock() {
@@ -2244,10 +3384,7 @@ static LAST_NOT_SIGNED_IN_AT_MS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 const NOT_SIGNED_IN_DEDUPE_MS: u64 = 2_000;
 
-/// Emits the signed-out prompt and pulls the app forward, unless the same
-/// prompt fired within the dedupe window. Owns the focus pull too, so
-/// callers can't split the prompt from it.
-fn notify_dictation_not_signed_in(app: &AppHandle) {
+fn claim_not_signed_in_prompt() -> bool {
     use std::sync::atomic::Ordering;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2255,17 +3392,71 @@ fn notify_dictation_not_signed_in(app: &AppHandle) {
         .unwrap_or(0);
     let last = LAST_NOT_SIGNED_IN_AT_MS.load(Ordering::Relaxed);
     if now_ms.saturating_sub(last) < NOT_SIGNED_IN_DEDUPE_MS {
-        return;
+        return false;
     }
-    if LAST_NOT_SIGNED_IN_AT_MS
+    LAST_NOT_SIGNED_IN_AT_MS
         .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        // Another path won the race within the same window.
-        return;
+        .is_ok()
+}
+
+/// Emits a start-time auth failure while the caller holds the helper-command
+/// generation lock. This avoids recursively acquiring that lock through the
+/// general correlated emitter.
+fn emit_start_auth_not_signed_in(
+    app: &AppHandle,
+    take_id: &str,
+    preserved_confirmed_take: bool,
+) -> bool {
+    let mut event = dictation_not_signed_in_event();
+    add_dictation_take_id_to_event(&mut event, take_id);
+    if preserved_confirmed_take {
+        // The rejected start never owned the active recording. Keep the
+        // diagnostic event, but do not mutate that recording's lifecycle or
+        // consume the dedupe slot its own auth backstop may need.
+        emit_helper_event_without_lifecycle(app, event);
+        return false;
     }
-    emit_dictation_event_value(app, dictation_not_signed_in_event());
-    focus_main_window(app);
+    if !claim_not_signed_in_prompt() {
+        return false;
+    }
+    emit_dictation_event_value(app, event);
+    true
+}
+
+/// Emits the signed-out prompt and pulls the app forward, unless the same
+/// visible prompt fired within the dedupe window.
+fn notify_dictation_not_signed_in(app: &AppHandle, take_id: Option<&str>) {
+    let emitted_visible_prompt = if let Some(take_id) = take_id {
+        emit_correlated_not_signed_in(app, take_id)
+    } else if claim_not_signed_in_prompt() {
+        emit_dictation_event_value(app, dictation_not_signed_in_event());
+        true
+    } else {
+        false
+    };
+    if emitted_visible_prompt {
+        focus_main_window(app);
+    }
+}
+
+fn emit_correlated_not_signed_in(app: &AppHandle, take_id: &str) -> bool {
+    let mut event = dictation_not_signed_in_event();
+    add_dictation_take_id_to_event(&mut event, take_id);
+    let take_state = app.try_state::<DictationTakeState>();
+    let _helper_command_guard = take_state
+        .as_ref()
+        .map(|state| state.lock_helper_commands());
+    if !dictation_delivery_matches_active_take(app, take_id) {
+        // A late auth backstop is still useful in the event log, but it must
+        // neither mutate a replacement nor suppress that take's own prompt.
+        emit_helper_event_without_lifecycle(app, event);
+        return false;
+    }
+    if !claim_not_signed_in_prompt() {
+        return false;
+    }
+    emit_dictation_event_value(app, event);
+    true
 }
 
 fn dictation_not_signed_in_event() -> serde_json::Value {
@@ -3608,7 +4799,8 @@ fn reapply_helper_settings(app: &AppHandle) {
 }
 
 fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
-    update_shortcut_helper_listening(app, false);
+    update_shortcut_helper_listening(app, false, None);
+    clear_shortcut_helper_protocol(app);
     let event = helper_unavailable_event(reason, message);
     if let Some(status) = app.try_state::<HotkeyStatus>() {
         set_hotkey_status(&status, event.clone());
@@ -3617,16 +4809,103 @@ fn emit_helper_unavailable(app: &AppHandle, reason: &str, message: &str) {
 }
 
 fn handle_helper_event_line(app: &AppHandle, line: String) {
-    let event = serde_json::from_str::<serde_json::Value>(&line).ok();
+    let mut event = serde_json::from_str::<serde_json::Value>(&line).ok();
     let event_type = event
         .as_ref()
         .and_then(|event| event.get("type"))
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let event_type = event_type.as_deref();
+    let take_state = app.try_state::<DictationTakeState>();
+    // A helper outcome and a replacement command must have one total order.
+    // If the outcome wins, its whole lifecycle transition and frontend emit
+    // finish before the replacement is prepared. If the command wins, its
+    // take correlation is already installed and the stale outcome is ignored.
+    let _helper_command_guard = helper_event_serializes_with_commands(event_type)
+        .then(|| {
+            take_state
+                .as_ref()
+                .map(|state| state.lock_helper_commands())
+        })
+        .flatten();
+    note_helper_take_protocol(app, event.as_ref());
+
+    if event_type == Some("audio_level")
+        && event
+            .as_ref()
+            .is_some_and(|event| !helper_audio_level_matches_active_take(app, event))
+    {
+        return;
+    }
+    if helper_event_requires_take_match(event_type)
+        && event
+            .as_ref()
+            .is_some_and(|event| !helper_event_matches_active_take(app, event))
+    {
+        if event_type == Some("error") {
+            handle_shortcut_composer_response(app, event_type, event.as_ref());
+            if let Some(event) = event.as_ref().cloned() {
+                emit_helper_event_without_lifecycle(app, event);
+            }
+        }
+        tracing::info!(
+            event_type,
+            take_id = event.as_ref().and_then(dictation_take_id_from_event),
+            "ignoring helper lifecycle event that does not belong to the active dictation take"
+        );
+        return;
+    }
+    let lifecycle_disposition =
+        match untagged_take_event_disposition(app, event_type, event.as_ref()) {
+            HelperLifecycleDisposition::Apply => match (event_type, event.as_ref()) {
+                (Some("recording_discarded"), Some(event)) => {
+                    reset_shortcut_for_helper_discard(app, event)
+                }
+                (Some("final_transcript" | "error"), Some(event))
+                    if dictation_take_id_from_event(event).is_some() =>
+                {
+                    finish_shortcut_for_helper_event(app, event)
+                }
+                _ => HelperLifecycleDisposition::Apply,
+            },
+            disposition => disposition,
+        };
+    if lifecycle_disposition == HelperLifecycleDisposition::Ignore {
+        tracing::info!(
+            event_type,
+            take_id = event.as_ref().and_then(dictation_take_id_from_event),
+            "ignoring helper lifecycle event that does not belong to the active dictation take"
+        );
+        return;
+    }
+
+    let listening_take_id = if event_type == Some("listening_started") {
+        event
+            .as_ref()
+            .and_then(|event| begin_dictation_take(app, event))
+    } else {
+        None
+    };
+    match (event_type, event.as_ref()) {
+        (Some("recording_discarded"), Some(event)) => {
+            if let Some(take_id) = helper_discard_cancellation_target(event) {
+                cancel_dictation_take(app, take_id);
+            }
+        }
+        (Some("recording_discarded"), None) => cancel_current_dictation_take(app),
+        _ => {}
+    }
 
     if let (Some(state), Some(event)) = (app.try_state::<HelperState>(), event.as_ref()) {
         consume_started_composer_registration(&state, event_type, event);
     }
     handle_shortcut_composer_response(app, event_type, event.as_ref());
+    if lifecycle_disposition == HelperLifecycleDisposition::EmitOnly {
+        if let Some(event) = event {
+            emit_helper_event_without_lifecycle(app, event);
+        }
+        return;
+    }
 
     if matches!(
         event_type,
@@ -3638,30 +4917,59 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
     }
 
     handle_shortcut_key_event(app, event_type, event.as_ref());
-    if matches!(
+    let correlated_terminal_transition = matches!(
         event_type,
-        Some(
-            "listening_started"
-                | "finalizing_transcript"
-                | "recording_discarded"
-                | "final_transcript"
-                | "error"
+        Some("recording_discarded" | "final_transcript" | "error")
+    ) && event
+        .as_ref()
+        .and_then(dictation_take_id_from_event)
+        .is_some();
+    if !correlated_terminal_transition
+        && matches!(
+            event_type,
+            Some(
+                "listening_started"
+                    | "finalizing_transcript"
+                    | "recording_discarded"
+                    | "final_transcript"
+                    | "error"
+            )
         )
-    ) {
+    {
         acknowledge_shortcut_toggle(app);
     }
     match event_type {
         Some("listening_started") => {
-            update_shortcut_helper_listening(app, true);
+            let helper_reported_take_id = event.as_ref().and_then(dictation_take_id_from_event);
+            update_shortcut_helper_listening(app, true, helper_reported_take_id);
+            if helper_reported_take_id.is_none() {
+                if let Some(take_id) = listening_take_id.as_deref() {
+                    // Preserve legacy protocol negotiation while promoting the
+                    // coordinator-owned pending ID to confirmed ownership.
+                    promote_untagged_shortcut_helper_start(app, take_id);
+                }
+            }
             update_shortcut_helper_finalizing(app, false);
         }
         Some("finalizing_transcript") => {
-            update_shortcut_helper_listening(app, false);
+            update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, true);
         }
-        Some("recording_discarded" | "final_transcript" | "error") => {
-            update_shortcut_helper_listening(app, false);
+        Some("recording_discarded" | "final_transcript" | "error")
+            if !correlated_terminal_transition =>
+        {
+            update_shortcut_helper_listening(app, false, None);
             update_shortcut_helper_finalizing(app, false);
+        }
+        _ => {}
+    }
+
+    // A matching Escape/X cancel was reset before generic lifecycle handling,
+    // so a stale terminal event cannot clear the replacement take's flags.
+    match (event_type, event.as_ref()) {
+        (Some("recording_discarded"), None) => reset_shortcut_activation(app),
+        (Some("final_transcript" | "error"), _) if !correlated_terminal_transition => {
+            clear_shortcut_helper_take(app)
         }
         _ => {}
     }
@@ -3670,18 +4978,61 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         if let Some(event) = event.as_ref() {
             match recording_ready_info_from_event(event) {
                 Ok(info) => {
-                    let app = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        transcribe_recording_ready(app, info).await;
-                    });
+                    let finalized_take = app
+                        .try_state::<DictationTakeState>()
+                        .map(|state| state.claim_finalized(info.take_id.as_deref()))
+                        .unwrap_or(DictationFinalizedTake::Stale);
+                    match finalized_take {
+                        DictationFinalizedTake::Start(take) => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                transcribe_recording_ready(app, info, take).await;
+                            });
+                        }
+                        DictationFinalizedTake::Cancelled | DictationFinalizedTake::Stale => {
+                            tracing::info!(
+                                take_id = info.take_id.as_deref(),
+                                "discarding recording from a cancelled or stale dictation take"
+                            );
+                            let _ = std::fs::remove_file(&info.audio_path);
+                            return;
+                        }
+                        DictationFinalizedTake::Duplicate => {
+                            tracing::warn!(
+                                take_id = info.take_id.as_deref(),
+                                "ignoring duplicate ready event for a dictation take"
+                            );
+                            return;
+                        }
+                    }
                 }
                 Err(error) => {
-                    let state = app.state::<HelperState>();
-                    let _ = send_helper_command(
-                        &state,
-                        serde_json::json!({ "type": "discard_recording" }),
-                    );
-                    emit_dictation_event_value(app, app_error_event(error));
+                    let cleanup = malformed_recording_ready_cleanup(app, event);
+                    cancel_dictation_take(app, cleanup.take_id.as_deref());
+                    if cleanup.send_helper_discard {
+                        let mut command = serde_json::json!({ "type": "discard_recording" });
+                        if let (Some(take_id), Some(object)) =
+                            (cleanup.take_id.as_deref(), command.as_object_mut())
+                        {
+                            object.insert("takeId".into(), serde_json::json!(take_id));
+                        }
+                        let state = app.state::<HelperState>();
+                        let _ = send_helper_command(&state, command);
+                    }
+                    if let Some(take_id) = cleanup.take_id.as_deref() {
+                        // `recording_ready` already holds the helper-command
+                        // lock, so correlate directly instead of recursively
+                        // acquiring it through `emit_dictation_take_id_event`.
+                        let mut event = app_error_event(error);
+                        add_dictation_take_id_to_event(&mut event, take_id);
+                        if dictation_delivery_matches_active_take(app, take_id) {
+                            emit_dictation_event_value(app, event);
+                        } else {
+                            emit_helper_event_without_lifecycle(app, event);
+                        }
+                    } else {
+                        emit_dictation_event_value(app, app_error_event(error));
+                    }
                 }
             }
         }
@@ -3689,6 +5040,13 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
 
     // Route through emit_dictation_event_value so error events get the
     // `payload.silent` annotation from a single classification site.
+    if let (Some(take_id), Some(event)) = (listening_take_id.as_deref(), event.as_mut()) {
+        if dictation_take_id_from_event(event).is_none() {
+            // Normalize only after internal protocol handling so an older
+            // helper is not mistaken for one that emits take IDs itself.
+            add_dictation_take_id_to_event(event, take_id);
+        }
+    }
     if let Some(event) = event {
         emit_dictation_event_value(app, event);
     } else {
@@ -3715,7 +5073,10 @@ fn handle_shortcut_composer_response(
     if event_type == Some("listening_started") {
         clear_shortcut_composer_request(app, request_id);
     } else if event_type == Some("error")
-        && payload.get("code").and_then(serde_json::Value::as_str) == Some("composer_delivery_busy")
+        && matches!(
+            payload.get("code").and_then(serde_json::Value::as_str),
+            Some("composer_delivery_busy" | "recording_start_busy" | "recording_start_failed")
+        )
     {
         if let Some(state) = app.try_state::<ShortcutActivationState>() {
             if let Ok(mut controller) = state.controller.lock() {
@@ -3758,7 +5119,80 @@ fn consume_started_composer_registration(
     }
 }
 
-async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInfo) {
+async fn transcribe_recording_ready(
+    app: AppHandle,
+    recording: RecordingReadyInfo,
+    take: DictationTakeToken,
+) {
+    transcribe_recording_ready_inner(&app, recording, &take).await;
+}
+
+fn add_dictation_take_id(command: &mut serde_json::Value, claim: &DictationDeliveryClaim) {
+    if let Some(object) = command.as_object_mut() {
+        object.insert("takeId".into(), serde_json::json!(claim.take.id()));
+    }
+}
+
+fn add_dictation_take_id_to_event(event: &mut serde_json::Value, take_id: &str) {
+    if let Some(payload) = event
+        .get_mut("payload")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        payload.insert("takeId".into(), serde_json::json!(take_id));
+    }
+}
+
+fn emit_dictation_take_event(app: &AppHandle, take: &DictationTakeToken, event: serde_json::Value) {
+    emit_dictation_take_id_event(app, take.id(), event);
+}
+
+fn emit_dictation_take_id_event(app: &AppHandle, take_id: &str, mut event: serde_json::Value) {
+    add_dictation_take_id_to_event(&mut event, take_id);
+    let take_state = app.try_state::<DictationTakeState>();
+    let _helper_command_guard = take_state
+        .as_ref()
+        .map(|state| state.lock_helper_commands());
+    if dictation_delivery_matches_active_take(app, take_id) {
+        emit_dictation_event_value(app, event);
+    } else {
+        emit_helper_event_without_lifecycle(app, event);
+    }
+}
+
+fn send_claimed_dictation_take_command(
+    app: &AppHandle,
+    claim: &DictationDeliveryClaim,
+    mut command: serde_json::Value,
+) -> Result<(), AppError> {
+    add_dictation_take_id(&mut command, claim);
+    let state = app.state::<HelperState>();
+    send_helper_command(&state, command)
+}
+
+fn send_dictation_take_command(
+    app: &AppHandle,
+    take: &DictationTakeToken,
+    command: serde_json::Value,
+) -> Option<Result<(), AppError>> {
+    let claim = take.try_begin_delivery()?;
+    Some(send_claimed_dictation_take_command(app, &claim, command))
+}
+
+fn remove_cancelled_dictation_audio(
+    recording_path: &std::path::Path,
+    prepared_path: Option<&std::path::Path>,
+) {
+    if let Some(prepared_path) = prepared_path.filter(|path| *path != recording_path) {
+        let _ = fs::remove_file(prepared_path);
+    }
+    let _ = fs::remove_file(recording_path);
+}
+
+async fn transcribe_recording_ready_inner(
+    app: &AppHandle,
+    recording: RecordingReadyInfo,
+    take: &DictationTakeToken,
+) {
     let audio_path = recording.audio_path.clone();
     // Resolve the paste target before the first await. Prefer the bundle id
     // the helper captured with the recording: the helper pins that same app
@@ -3774,7 +5208,7 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     // Pin the owning profile now, like the paste target above: dictation
     // processing can take seconds, and a profile switch mid-flight must not
     // relabel this dictation's history row to the new profile.
-    let history_profile = crate::commands::active_profile(&app);
+    let history_profile = crate::commands::active_profile(app);
     let low_speech_evidence = recording_has_low_speech_evidence(&recording);
     if low_speech_evidence {
         tracing::info!(
@@ -3787,7 +5221,13 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     // Backstop for the toggle-start path (where the start-time gate in
     // send_dictation_command can't tell start from stop) and for tokens that
     // expired between start and finish.
-    match classify_dictation_auth(&crate::os_accounts::access_token().await) {
+    let Some(access_token) =
+        run_dictation_take_step(take, crate::os_accounts::access_token()).await
+    else {
+        remove_cancelled_dictation_audio(&audio_path, None);
+        return;
+    };
+    match classify_dictation_auth(&access_token) {
         DictationAuthGate::Proceed => {}
         DictationAuthGate::Unavailable(error) => {
             // OS Accounts is temporarily unreachable. The helper has already
@@ -3795,18 +5235,30 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
             // retry handle after recording_ready, so remove it before
             // surfacing the retriable auth error.
             remove_windows_dictation_audio(&recording.audio_path);
-            let state = app.state::<HelperState>();
-            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-            update_shortcut_helper_finalizing(&app, false);
-            emit_dictation_event_value(&app, app_error_event(error));
+            if send_dictation_take_command(
+                app,
+                take,
+                serde_json::json!({ "type": "discard_recording" }),
+            )
+            .is_some()
+            {
+                update_shortcut_helper_finalizing(app, false);
+                emit_dictation_take_event(app, take, app_error_event(error));
+            }
             return;
         }
         DictationAuthGate::SignedOut => {
             remove_windows_dictation_audio(&recording.audio_path);
-            let state = app.state::<HelperState>();
-            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-            update_shortcut_helper_finalizing(&app, false);
-            notify_dictation_not_signed_in(&app);
+            if send_dictation_take_command(
+                app,
+                take,
+                serde_json::json!({ "type": "discard_recording" }),
+            )
+            .is_some()
+            {
+                update_shortcut_helper_finalizing(app, false);
+                notify_dictation_not_signed_in(app, Some(take.id()));
+            }
             let _ = std::fs::remove_file(&audio_path);
             return;
         }
@@ -3815,18 +5267,29 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         Ok(provider) => provider,
         Err(error) => {
             remove_windows_dictation_audio(&recording.audio_path);
-            let state = app.state::<HelperState>();
-            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-            update_shortcut_helper_finalizing(&app, false);
-            emit_dictation_event_value(&app, app_error_event(error));
+            if send_dictation_take_command(
+                app,
+                take,
+                serde_json::json!({ "type": "discard_recording" }),
+            )
+            .is_some()
+            {
+                update_shortcut_helper_finalizing(app, false);
+                emit_dictation_take_event(app, take, app_error_event(error));
+            }
             let _ = std::fs::remove_file(&audio_path);
             return;
         }
     };
-    let current_settings = current_dictation_settings(&app).unwrap_or_default();
+    let current_settings = current_dictation_settings(app).unwrap_or_default();
     let style = current_settings.style;
     let language = current_settings.language;
-    let dictionary_context = dictionary_context_for_app(&app).await;
+    let Some(dictionary_context) =
+        run_dictation_take_step(take, dictionary_context_for_app(app)).await
+    else {
+        remove_cancelled_dictation_audio(&audio_path, None);
+        return;
+    };
     let session_id = dictation_session_id();
     let utterance_id = uuid::Uuid::new_v4().to_string();
     let transcription_context = merge_transcription_context(
@@ -3837,51 +5300,121 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
         Ok(path) => path,
         Err(error) => {
             remove_windows_dictation_audio(&recording.audio_path);
-            let state = app.state::<HelperState>();
-            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
-            update_shortcut_helper_finalizing(&app, false);
-            emit_dictation_event_value(&app, app_error_event(error));
+            if send_dictation_take_command(
+                app,
+                take,
+                serde_json::json!({ "type": "discard_recording" }),
+            )
+            .is_some()
+            {
+                update_shortcut_helper_finalizing(app, false);
+                emit_dictation_take_event(app, take, app_error_event(error));
+            }
             return;
         }
     };
-    let result = dictate_transcribe(DictateTranscribeRequest {
-        audio_path: transcription_audio.clone(),
-        context: transcription_context,
-        language,
-        session_id: session_id.clone(),
-        utterance_id: utterance_id.clone(),
-    })
+    let result = run_dictation_take_step(
+        take,
+        dictate_transcribe(DictateTranscribeRequest {
+            audio_path: transcription_audio.clone(),
+            context: transcription_context,
+            language,
+            session_id: session_id.clone(),
+            utterance_id: utterance_id.clone(),
+        }),
+    )
     .await;
+    let Some(result) = result else {
+        tracing::info!(
+            take_id = take.id(),
+            utterance_id,
+            "dictation take cancelled after metered dictation transcription started"
+        );
+        remove_cancelled_dictation_audio(&audio_path, Some(&transcription_audio));
+        return;
+    };
     if transcription_audio != recording.audio_path {
         let _ = fs::remove_file(&transcription_audio);
     }
     remove_windows_dictation_audio(&recording.audio_path);
-    let result = maybe_cleanup_dictation_result(
-        &app,
-        &provider,
-        result,
-        dictionary_context,
-        app_context,
-        style,
-        session_id,
-        utterance_id,
+    let result = run_dictation_take_step(
+        take,
+        maybe_cleanup_dictation_result(
+            app,
+            &provider,
+            result,
+            dictionary_context,
+            app_context,
+            style,
+            session_id,
+            utterance_id,
+        ),
     )
     .await;
+    let Some(result) = result else {
+        remove_cancelled_dictation_audio(&audio_path, None);
+        return;
+    };
     let outcome = outcome_from_transcription_result(result, recording.observed_audio_level, style);
+    let mut delivery_claim = None;
     let history_already_persisted = if low_speech_evidence {
         let recovery_transcript = outcome
             .transcript
             .as_ref()
             .or(outcome.quarantine_transcript.as_ref());
         if let Some(transcript) = recovery_transcript {
-            match persist_dictation_history_item(&app, transcript, &history_profile).await {
-                Ok(()) => true,
+            let staged = run_dictation_take_step(
+                take,
+                stage_dictation_history_item(app, transcript, &history_profile),
+            )
+            .await;
+            let Some(staged) = staged else {
+                remove_cancelled_dictation_audio(&audio_path, None);
+                return;
+            };
+            match staged {
+                Ok(Some(pending)) => {
+                    let Some(claim) = take.try_begin_delivery() else {
+                        if let Err(error) = pending.rollback().await {
+                            tracing::error!(
+                                %error,
+                                take_id = take.id(),
+                                "cancelled dictation history rollback failed"
+                            );
+                        }
+                        remove_cancelled_dictation_audio(&audio_path, None);
+                        return;
+                    };
+                    match pending.commit().await {
+                        Ok(_) => {
+                            delivery_claim = Some(claim);
+                            true
+                        }
+                        Err(error) => {
+                            let error = dictation_history_save_error(error);
+                            retain_low_speech_evidence_recording(
+                                app,
+                                &claim,
+                                &audio_path,
+                                transcript,
+                                &error,
+                            );
+                            return;
+                        }
+                    }
+                }
+                Ok(None) => false,
                 Err(error) => {
-                    retain_low_speech_evidence_recording(&app, &audio_path, transcript, &error);
-                    let state = app.state::<HelperState>();
-                    let _ = send_helper_command(
-                        &state,
-                        serde_json::json!({ "type": "discard_recording" }),
+                    let Some(claim) = take.try_begin_delivery() else {
+                        remove_cancelled_dictation_audio(&audio_path, None);
+                        return;
+                    };
+                    retain_low_speech_evidence_recording(
+                        app,
+                        &claim,
+                        &audio_path,
+                        transcript,
+                        &error,
                     );
                     return;
                 }
@@ -3894,7 +5427,9 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
     };
     let outcome = quarantine_low_speech_evidence_outcome(outcome, low_speech_evidence);
     deliver_dictation_outcome(
-        &app,
+        app,
+        take,
+        delivery_claim,
         &audio_path,
         outcome,
         history_already_persisted,
@@ -3905,12 +5440,20 @@ async fn transcribe_recording_ready(app: AppHandle, recording: RecordingReadyInf
 
 fn deliver_dictation_outcome(
     app: &AppHandle,
+    take: &DictationTakeToken,
+    delivery_claim: Option<DictationDeliveryClaim>,
     audio_path: &std::path::Path,
     outcome: DictationTranscriptionOutcome,
     history_already_persisted: bool,
     history_profile: &str,
     composer_request_id: Option<&str>,
 ) {
+    let mut helper_command = outcome.helper_command;
+    let claim = delivery_claim.or_else(|| take.try_begin_delivery());
+    let Some(claim) = claim else {
+        let _ = std::fs::remove_file(audio_path);
+        return;
+    };
     // Low-evidence transcripts reach this point only after a successful,
     // awaited history write. Normal transcripts keep the existing best-effort
     // background write so their paste path does not gain database latency.
@@ -3927,7 +5470,6 @@ fn deliver_dictation_outcome(
             );
         }
     }
-    let mut helper_command = outcome.helper_command;
     if helper_command
         .get("type")
         .and_then(serde_json::Value::as_str)
@@ -3939,10 +5481,9 @@ fn deliver_dictation_outcome(
             object.insert("composerRequestId".into(), serde_json::json!(request_id));
         }
     }
-    let state = app.state::<HelperState>();
-    if let Err(error) = send_helper_command(&state, helper_command) {
+    if let Err(error) = send_claimed_dictation_take_command(app, &claim, helper_command) {
         update_shortcut_helper_finalizing(app, false);
-        emit_dictation_event_value(app, app_error_event(error));
+        emit_dictation_take_event(app, &claim.take, app_error_event(error));
         let _ = std::fs::remove_file(audio_path);
         return;
     }
@@ -3953,13 +5494,14 @@ fn deliver_dictation_outcome(
     // leaving Fn suppressed until the 30-second safety timeout expired.
     update_shortcut_helper_finalizing(app, false);
     if let Some(event) = outcome.event {
-        emit_dictation_event_value(app, event);
+        emit_dictation_take_event(app, &claim.take, event);
     }
     let _ = std::fs::remove_file(audio_path);
 }
 
 fn retain_low_speech_evidence_recording(
     app: &AppHandle,
+    claim: &DictationDeliveryClaim,
     audio_path: &std::path::Path,
     transcript: &TranscriptionProviderResult,
     history_error: &AppError,
@@ -3969,26 +5511,31 @@ fn retain_low_speech_evidence_recording(
         audio_path = %audio_path.display(),
         "dictation history save failed; retaining low-evidence recording"
     );
-    let state = app.state::<HelperState>();
     let command = serde_json::json!({
         "type": "copy_text_for_recovery",
         "text": transcript.text,
         "keepRecordingFile": true,
     });
-    if let Err(error) = send_helper_command(&state, command) {
-        update_shortcut_helper_finalizing(app, false);
-        emit_dictation_event_value(
-            app,
-            app_error_event(AppError::new(
-                "dictation_recovery_unavailable",
-                "June couldn't save this dictation. The recording was kept for recovery.",
-            )),
-        );
-        tracing::error!(
-            code = %error.code,
-            audio_path = %audio_path.display(),
-            "could not hand retained dictation to helper"
-        );
+    match send_claimed_dictation_take_command(app, claim, command) {
+        Ok(()) => {
+            update_shortcut_helper_finalizing(app, false);
+        }
+        Err(error) => {
+            update_shortcut_helper_finalizing(app, false);
+            emit_dictation_take_event(
+                app,
+                &claim.take,
+                app_error_event(AppError::new(
+                    "dictation_recovery_unavailable",
+                    "June couldn't save this dictation. The recording was kept for recovery.",
+                )),
+            );
+            tracing::error!(
+                code = %error.code,
+                audio_path = %audio_path.display(),
+                "could not hand retained dictation to helper"
+            );
+        }
     }
 }
 
@@ -4787,6 +6334,7 @@ fn recording_ready_info_from_event(
         })?;
     Ok(RecordingReadyInfo {
         audio_path: PathBuf::from(path),
+        take_id: dictation_take_id_from_event(event).map(str::to_string),
         observed_audio_level: observed_audio_level_from_event(event),
         speech_confidence: speech_confidence_from_event(event),
         speech_analysis_status: speech_analysis_status_from_event(event),
@@ -4861,6 +6409,9 @@ enum SpeechAnalysisStatus {
 #[derive(Debug)]
 struct RecordingReadyInfo {
     audio_path: PathBuf,
+    /// Opaque helper-generated identity for this capture. Older helper builds
+    /// omit it and use the coordinator's single active legacy token.
+    take_id: Option<String>,
     observed_audio_level: Option<f32>,
     /// Maximum confidence for the macOS built-in `speech` class over the
     /// finalized capture. Missing when analysis failed, produced no complete
@@ -5401,14 +6952,39 @@ async fn persist_dictation_history_item(
             &transcript.provider,
         )
         .await
-        .map_err(|error| {
-            tracing::error!(%error, "dictation history insert failed");
-            AppError::new(
-                "dictation_history_save_failed",
-                "Dictation history could not save this transcript.",
-            )
-        })?;
+        .map_err(dictation_history_save_error)?;
     Ok(())
+}
+
+async fn stage_dictation_history_item(
+    app: &AppHandle,
+    transcript: &TranscriptionProviderResult,
+    data_partition: &str,
+) -> Result<Option<crate::db::repositories::PendingDictationHistoryItem>, AppError> {
+    let repos = crate::commands::repositories(app).await.map_err(|error| {
+        tracing::error!(code = %error.code, "dictation history repository unavailable");
+        AppError::new(
+            "dictation_history_save_failed",
+            "Dictation history could not save this transcript.",
+        )
+    })?;
+    repos
+        .stage_dictation_history_item(
+            data_partition,
+            &transcript.text,
+            transcript.language.clone(),
+            &transcript.provider,
+        )
+        .await
+        .map_err(dictation_history_save_error)
+}
+
+fn dictation_history_save_error(error: sqlx::error::Error) -> AppError {
+    tracing::error!(%error, "dictation history insert failed");
+    AppError::new(
+        "dictation_history_save_failed",
+        "Dictation history could not save this transcript.",
+    )
 }
 
 fn app_error_event(error: AppError) -> serde_json::Value {
@@ -5668,6 +7244,7 @@ fn dictation_event_visibility(event_type: Option<&str>) -> DictationEventVisibil
         ) => DictationEventVisibility::Show,
         Some(
             "paste_completed"
+            | "recording_discarded"
             | "agent_session_prompt"
             | "error"
             | "shutdown_ack"
@@ -5773,6 +7350,7 @@ fn schedule_hud_hide(app: &AppHandle, delay: Duration) {
         if let Some(hud) = app.get_webview_window("hud") {
             let _ = hud.hide();
         }
+        hide_dictation_tooltip(&app);
     });
 }
 
@@ -5923,6 +7501,199 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
         });
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn show_dictation_tooltip(
+    hud_pointer: usize,
+    cancel_rect: &HudClientRect,
+    placement: HudTooltipPlacement,
+) {
+    use objc2::{msg_send, runtime::AnyObject, MainThreadMarker};
+    use objc2_foundation::{NSPoint, NSRect};
+
+    let Some(_mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let hud = hud_pointer as *mut AnyObject;
+    if hud.is_null() {
+        return;
+    }
+    let Some(panel) = dictation_tooltip_panel() else {
+        return;
+    };
+
+    unsafe {
+        let frame: NSRect = msg_send![hud, frame];
+        let content: *mut AnyObject = msg_send![hud, contentView];
+        if content.is_null() {
+            return;
+        }
+        let bounds: NSRect = msg_send![content, bounds];
+        let (x, y) = hud_tooltip_origin(
+            frame.origin.x,
+            frame.origin.y,
+            bounds.size.height,
+            cancel_rect,
+            placement,
+        );
+        let _: () = msg_send![panel, setFrameOrigin: NSPoint::new(x, y)];
+        let _: () = msg_send![panel, orderFrontRegardless];
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn dictation_tooltip_panel() -> Option<*mut objc2::runtime::AnyObject> {
+    use objc2::{msg_send, runtime::AnyClass, runtime::AnyObject};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let pointer = *DICTATION_TOOLTIP_PANEL.get_or_init(|| unsafe {
+        let Some(panel_class) = AnyClass::get(c"NSPanel") else {
+            return 0;
+        };
+        let allocated: *mut AnyObject = msg_send![panel_class, alloc];
+        let panel: *mut AnyObject = msg_send![
+            allocated,
+            initWithContentRect: NSRect::new(
+                NSPoint::new(-200.0, -200.0),
+                NSSize::new(
+                    DICTATION_TOOLTIP_WIDTH_LOGICAL,
+                    DICTATION_TOOLTIP_HEIGHT_LOGICAL,
+                ),
+            ),
+            styleMask: (1u64 << 7),
+            backing: 2u64,
+            defer: false
+        ];
+        if panel.is_null() {
+            return 0;
+        }
+        let _: () = msg_send![panel, setOpaque: false];
+        let _: () = msg_send![panel, setHasShadow: true];
+        let _: () = msg_send![panel, setIgnoresMouseEvents: true];
+        let _: () = msg_send![panel, setAcceptsMouseMovedEvents: false];
+        let _: () = msg_send![panel, setBecomesKeyOnlyIfNeeded: true];
+        let _: () = msg_send![panel, setLevel: 25i64];
+        let _: () = msg_send![panel, setCollectionBehavior: (1u64 | (1 << 4) | (1 << 8))];
+        let _: () = msg_send![panel, setReleasedWhenClosed: false];
+        let _: () = msg_send![panel, setHidesOnDeactivate: false];
+
+        if let Some(color_class) = AnyClass::get(c"NSColor") {
+            let clear: *mut AnyObject = msg_send![color_class, clearColor];
+            let _: () = msg_send![panel, setBackgroundColor: clear];
+        }
+
+        let content: *mut AnyObject = msg_send![panel, contentView];
+        if content.is_null() {
+            return 0;
+        }
+        let _: () = msg_send![content, setWantsLayer: true];
+        let layer: *mut AnyObject = msg_send![content, layer];
+        if !layer.is_null() {
+            if let Some(color_class) = AnyClass::get(c"NSColor") {
+                let background: *mut AnyObject = msg_send![
+                    color_class,
+                    colorWithSRGBRed: DICTATION_TOOLTIP_BACKGROUND_RED,
+                    green: DICTATION_TOOLTIP_BACKGROUND_GREEN,
+                    blue: DICTATION_TOOLTIP_BACKGROUND_BLUE,
+                    alpha: DICTATION_TOOLTIP_BACKGROUND_ALPHA
+                ];
+                let border: *mut AnyObject = msg_send![
+                    color_class,
+                    colorWithSRGBRed: 1.0_f64,
+                    green: 1.0_f64,
+                    blue: 1.0_f64,
+                    alpha: DICTATION_TOOLTIP_BORDER_ALPHA
+                ];
+                let background_cg: *mut AnyObject = msg_send![background, CGColor];
+                let border_cg: *mut AnyObject = msg_send![border, CGColor];
+                let _: () = msg_send![layer, setBackgroundColor: background_cg];
+                let _: () = msg_send![layer, setBorderColor: border_cg];
+            }
+            let _: () = msg_send![layer, setBorderWidth: DICTATION_TOOLTIP_BORDER_WIDTH_LOGICAL];
+            let _: () = msg_send![layer, setCornerRadius: DICTATION_TOOLTIP_CORNER_RADIUS_LOGICAL];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+        }
+
+        let Some(text_field_class) = AnyClass::get(c"NSTextField") else {
+            return 0;
+        };
+        let field: *mut AnyObject = msg_send![text_field_class, alloc];
+        let field: *mut AnyObject = msg_send![
+            field,
+            initWithFrame: NSRect::new(
+                NSPoint::new(0.0, DICTATION_TOOLTIP_TEXT_Y_LOGICAL),
+                NSSize::new(
+                    DICTATION_TOOLTIP_WIDTH_LOGICAL,
+                    DICTATION_TOOLTIP_TEXT_HEIGHT_LOGICAL,
+                ),
+            )
+        ];
+        if field.is_null() {
+            return 0;
+        }
+        if let Some(string_class) = AnyClass::get(c"NSString") {
+            let text: *mut AnyObject =
+                msg_send![string_class, stringWithUTF8String: c"Esc".as_ptr()];
+            let _: () = msg_send![field, setStringValue: text];
+        }
+        let _: () = msg_send![field, setEditable: false];
+        let _: () = msg_send![field, setSelectable: false];
+        let _: () = msg_send![field, setBezeled: false];
+        let _: () = msg_send![field, setDrawsBackground: false];
+        let _: () = msg_send![field, setAlignment: 1isize];
+        if let Some(font_class) = AnyClass::get(c"NSFont") {
+            // `--font-sans` falls back through system-ui/-apple-system. ABC
+            // Diatype is a WKWebView webfont rather than an installed AppKit
+            // face, so NSFont's system sans is the first native member of the
+            // same token stack.
+            let font: *mut AnyObject = msg_send![
+                font_class,
+                systemFontOfSize: DICTATION_TOOLTIP_FONT_SIZE_LOGICAL,
+                weight: DICTATION_TOOLTIP_FONT_WEIGHT_MEDIUM
+            ];
+            let _: () = msg_send![field, setFont: font];
+        }
+        if let Some(color_class) = AnyClass::get(c"NSColor") {
+            let text_color: *mut AnyObject = msg_send![
+                color_class,
+                colorWithSRGBRed: DICTATION_TOOLTIP_TEXT_RED,
+                green: DICTATION_TOOLTIP_TEXT_GREEN,
+                blue: DICTATION_TOOLTIP_TEXT_BLUE,
+                alpha: 1.0_f64
+            ];
+            let _: () = msg_send![field, setTextColor: text_color];
+        }
+        let _: () = msg_send![content, addSubview: field];
+        panel as usize
+    });
+    (pointer != 0).then_some(pointer as *mut AnyObject)
+}
+
+fn hide_dictation_tooltip(app: &AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(|| {
+            use objc2::{msg_send, runtime::AnyObject, MainThreadMarker};
+
+            let Some(_mtm) = MainThreadMarker::new() else {
+                return;
+            };
+            let Some(pointer) = DICTATION_TOOLTIP_PANEL
+                .get()
+                .copied()
+                .filter(|pointer| *pointer != 0)
+            else {
+                return;
+            };
+            let panel = pointer as *mut AnyObject;
+            unsafe {
+                let _: () = msg_send![panel, orderOut: std::ptr::null_mut::<AnyObject>()];
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = app;
 }
 
 /// macOS: reclass the HUD's NSWindow to NSPanel and set the
@@ -6099,6 +7870,54 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancel_tooltip_intent_has_independent_open_and_close_delays() {
+        let mut intent = CancelTooltipIntent::default();
+
+        for _ in 1..CANCEL_TOOLTIP_IN_POLLS {
+            assert_eq!(intent.update(true), None);
+        }
+        assert_eq!(intent.update(true), Some(true));
+
+        for _ in 1..CANCEL_TOOLTIP_OUT_POLLS {
+            assert_eq!(intent.update(false), None);
+        }
+        assert_eq!(intent.update(false), Some(false));
+        assert_eq!(intent.update(false), None);
+    }
+
+    #[test]
+    fn cancel_tooltip_intent_reset_closes_only_an_open_tooltip() {
+        let mut intent = CancelTooltipIntent::default();
+        assert_eq!(intent.reset(), None);
+
+        for _ in 0..CANCEL_TOOLTIP_IN_POLLS {
+            intent.update(true);
+        }
+        assert_eq!(intent.reset(), Some(false));
+        assert_eq!(intent.reset(), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_tooltip_tracks_the_cancel_control_above_and_below() {
+        let cancel_rect = HudClientRect {
+            left: 18.0,
+            right: 42.0,
+            top: 18.0,
+            bottom: 50.0,
+        };
+
+        assert_eq!(
+            hud_tooltip_origin(100.0, 200.0, 68.0, &cancel_rect, HudTooltipPlacement::Below,),
+            (114.0, 188.0)
+        );
+        assert_eq!(
+            hud_tooltip_origin(100.0, 200.0, 68.0, &cancel_rect, HudTooltipPlacement::Above,),
+            (114.0, 256.0)
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -6428,6 +8247,75 @@ mod tests {
     fn indicator_ignores_unrelated_events() {
         assert_eq!(indicator_action_for_event(Some("permission_status")), None);
         assert_eq!(indicator_action_for_event(None), None);
+    }
+
+    #[test]
+    fn listening_start_is_ordered_and_correlated_with_its_start_command() {
+        assert!(helper_event_serializes_with_commands(Some(
+            "listening_started"
+        )));
+        assert!(helper_event_requires_take_match(Some("listening_started")));
+
+        let mut controller = ShortcutActivationController::default();
+        controller.prepare_helper_start("take-b");
+        assert!(controller.matches_helper_take("take-b", None));
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(false)
+        );
+        assert!(!controller.matches_helper_take("take-b", None));
+    }
+
+    #[test]
+    fn untagged_listening_start_promotes_the_pending_coordinator_take() {
+        let event = serde_json::json!({
+            "type": "listening_started",
+            "payload": { "recognitionMode": "venice_recording" }
+        });
+        let mut controller = ShortcutActivationController::default();
+        controller.prepare_helper_start("take-pending");
+
+        assert_eq!(
+            dictation_start_take_id(&event, controller.pending_helper_take_id.as_deref()),
+            "take-pending"
+        );
+        controller.promote_untagged_helper_start("take-pending");
+
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-pending"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(!controller.helper_uses_take_ids);
+    }
+
+    #[test]
+    fn malformed_legacy_ready_does_not_discard_a_pending_replacement() {
+        assert!(helper_event_serializes_with_commands(Some(
+            "recording_ready"
+        )));
+
+        let mut controller = ShortcutActivationController::default();
+        controller.promote_untagged_helper_start("take-a");
+        assert_eq!(
+            controller.malformed_recording_ready_cleanup(None, Some("take-a")),
+            MalformedRecordingReadyCleanup {
+                take_id: Some("take-a".to_string()),
+                send_helper_discard: true,
+            }
+        );
+
+        controller.prepare_helper_start("take-b");
+        assert_eq!(
+            controller.malformed_recording_ready_cleanup(None, Some("take-a")),
+            MalformedRecordingReadyCleanup {
+                take_id: Some("take-a".to_string()),
+                send_helper_discard: false,
+            }
+        );
+        assert!(
+            controller
+                .malformed_recording_ready_cleanup(Some("take-a"), Some("take-a"))
+                .send_helper_discard
+        );
     }
 
     fn test_policy() -> RespawnPolicy {
@@ -7030,6 +8918,259 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_reset_after_cancel_ignores_later_release() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down
+            ),
+            Some(DictationCommand::StartListening)
+        );
+
+        controller.reset();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
+    fn confirmed_previous_discard_preserves_a_pending_replacement_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        controller.set_helper_listening(true, Some("take-a"));
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-a"), Some("command"), Some("take-a"),),
+            HelperLifecycleDisposition::Apply
+        );
+        assert!(controller.helper_take_id.is_none());
+        assert_eq!(controller.pending_helper_take_id.as_deref(), Some("take-b"));
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn pending_start_rejection_preserves_the_confirmed_take() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-b"), Some("take-a")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_pending_start_cleanup_preserves_the_confirmed_take() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(true)
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.pending_helper_take_id.is_none());
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_cleanup_ignores_an_already_rejected_start() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-b"), Some("take-a")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+
+        assert_eq!(controller.finish_start_for_auth_failure("take-b"), None);
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn signed_out_cleanup_finishes_the_confirmed_start_it_owns() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(false)
+        );
+        assert!(controller.helper_take_id.is_none());
+        assert!(!controller.helper_is_listening);
+    }
+
+    #[test]
+    fn stale_terminal_event_cannot_finish_a_confirmed_replacement() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert_eq!(
+            controller.finish_for_helper_event(Some("take-a"), Some("take-a")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-b"));
+        assert!(controller.helper_is_listening);
+    }
+
+    #[test]
+    fn pending_replacement_owns_new_delivery_lifecycle_events() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+        controller.prepare_helper_start("take-b");
+
+        assert!(!controller.matches_delivery_take("take-a", Some("take-a")));
+        assert!(controller.matches_delivery_take("take-b", Some("take-a")));
+    }
+
+    #[test]
+    fn matching_helper_discard_resets_the_active_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+        controller.set_helper_listening(true, Some("take-b"));
+
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-b"), Some("escape"), Some("take-b"),),
+            HelperLifecycleDisposition::Apply
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
+    fn reasoned_untagged_discard_does_not_reset_a_replacement_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        assert_eq!(
+            controller.reset_for_helper_discard(None, Some("start_cancelled"), Some("take-b"),),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn reasoned_untagged_discard_does_not_cancel_crash_recovery_work() {
+        let idle_echo = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": { "reason": "not_listening" },
+        });
+        let tagged = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": { "takeId": "take-a", "reason": "command" },
+        });
+        let legacy = serde_json::json!({
+            "type": "recording_discarded",
+            "payload": {},
+        });
+
+        assert_eq!(helper_discard_cancellation_target(&idle_echo), None);
+        assert_eq!(
+            helper_discard_cancellation_target(&tagged),
+            Some(Some("take-a"))
+        );
+        assert_eq!(helper_discard_cancellation_target(&legacy), Some(None));
+    }
+
+    #[test]
+    fn legacy_untagged_discard_still_resets_the_shortcut() {
+        let mut controller = ShortcutActivationController::default();
+        let down = Instant::now();
+        let up = down + PUSH_TO_TALK_MIN_HOLD;
+
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                down,
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        assert_eq!(
+            controller.reset_for_helper_discard(None, None, Some("take-b")),
+            HelperLifecycleDisposition::Apply
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationShortcutKind::PushToTalk, up),
+            None
+        );
+    }
+
+    #[test]
+    fn negotiated_take_protocol_rejects_untagged_take_outcomes() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+
+        assert_eq!(
+            controller.untagged_take_event_disposition(Some("final_transcript")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(
+            controller.untagged_take_event_disposition(Some("error")),
+            HelperLifecycleDisposition::EmitOnly
+        );
+        assert_eq!(
+            controller.reset_for_helper_discard(None, None, Some("take-a")),
+            HelperLifecycleDisposition::Ignore
+        );
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+    }
+
+    #[test]
     fn toggle_mode_toggles_on_down_and_ignores_up() {
         let mut controller = ShortcutActivationController::default();
         let now = Instant::now();
@@ -7160,11 +9301,11 @@ mod tests {
         let mut controller = ShortcutActivationController::default();
 
         assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
-        controller.set_helper_listening(true);
+        controller.set_helper_listening(true, Some("take-1"));
         assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
         controller.reset();
         assert!(!controller.command_starts_recording(DictationCommand::ToggleListening));
-        controller.set_helper_listening(false);
+        controller.set_helper_listening(false, None);
         assert!(controller.command_starts_recording(DictationCommand::ToggleListening));
         assert!(controller.command_starts_recording(DictationCommand::StartListening));
         assert!(!controller.command_starts_recording(DictationCommand::StopAndPaste));
@@ -7341,18 +9482,68 @@ mod tests {
 
     #[test]
     fn direct_helper_listening_commands_reset_shortcut_activation() {
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "stop_and_paste" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "stop_and_paste"
         ));
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "discard_recording" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "discard_recording"
         ));
-        assert!(helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "toggle_listening" })
+        assert!(helper_command_type_resets_shortcut_activation(
+            "toggle_listening"
         ));
-        assert!(!helper_command_resets_shortcut_activation(
-            &serde_json::json!({ "type": "start_shortcut_capture" })
+        assert!(!helper_command_type_resets_shortcut_activation(
+            "start_shortcut_capture"
         ));
+    }
+
+    #[test]
+    fn direct_terminal_command_keeps_the_active_take_id_before_reset() {
+        let mut controller = ShortcutActivationController::default();
+        controller.set_helper_listening(true, Some("take-a"));
+
+        let (starts_recording, take_id) =
+            controller.prepare_renderer_command("discard_recording", None, None);
+
+        assert!(!starts_recording);
+        assert_eq!(take_id.as_deref(), Some("take-a"));
+        assert_eq!(controller.helper_take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_is_listening);
+        assert_eq!(
+            controller.reset_for_helper_discard(Some("take-a"), Some("command"), Some("take-a"),),
+            HelperLifecycleDisposition::Apply
+        );
+    }
+
+    #[test]
+    fn stale_renderer_terminal_command_does_not_reset_the_replacement_take() {
+        let mut controller = ShortcutActivationController::default();
+        let now = Instant::now();
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Down,
+                DictationShortcutKind::PushToTalk,
+                now
+            ),
+            Some(DictationCommand::StartListening)
+        );
+        controller.prepare_helper_start("take-b");
+
+        let (_, take_id) = controller.prepare_renderer_command(
+            "discard_recording",
+            Some("take-a".to_string()),
+            Some("take-a".to_string()),
+        );
+        assert_eq!(take_id.as_deref(), Some("take-a"));
+        assert!(controller.helper_take_id.is_none());
+        assert_eq!(controller.pending_helper_take_id.as_deref(), Some("take-b"));
+        assert_eq!(
+            controller.handle_edge(
+                ShortcutKeyEdge::Up,
+                DictationShortcutKind::PushToTalk,
+                now + PUSH_TO_TALK_MIN_HOLD,
+            ),
+            Some(DictationCommand::StopAndPaste)
+        );
     }
 
     #[cfg(target_os = "windows")]
@@ -7722,6 +9913,14 @@ mod tests {
     }
 
     #[test]
+    fn recording_discarded_hides_dictation_hud() {
+        assert!(matches!(
+            dictation_event_visibility(Some("recording_discarded")),
+            DictationEventVisibility::Hide
+        ));
+    }
+
+    #[test]
     fn hey_june_detection_requires_first_two_words() {
         assert_eq!(
             agent_session_prompt_from_dictation("Hey June open settings").as_deref(),
@@ -7907,6 +10106,329 @@ mod tests {
     }
 
     #[test]
+    fn recording_ready_carries_only_a_bounded_non_empty_take_id() {
+        let event = |take_id: serde_json::Value| {
+            serde_json::json!({
+                "type": "recording_ready",
+                "payload": {
+                    "path": "/tmp/os-june-dictation-test.m4a",
+                    "takeId": take_id,
+                }
+            })
+        };
+
+        let valid = recording_ready_info_from_event(&event(serde_json::json!("take-1")))
+            .expect("recording info");
+        let empty = recording_ready_info_from_event(&event(serde_json::json!("   ")))
+            .expect("recording info");
+        let oversized = recording_ready_info_from_event(&event(serde_json::json!("x".repeat(129))))
+            .expect("recording info");
+
+        assert_eq!(valid.take_id.as_deref(), Some("take-1"));
+        assert_eq!(empty.take_id, None);
+        assert_eq!(oversized.take_id, None);
+    }
+
+    #[test]
+    fn cancelling_a_finalized_take_prevents_late_delivery() {
+        let state = DictationTakeState::default();
+        state.begin("take-1".to_string());
+        let DictationFinalizedTake::Start(take) = state.claim_finalized(Some("take-1")) else {
+            panic!("first ready event should own processing");
+        };
+
+        assert!(state.cancel(Some("take-1")));
+        assert!(take.try_begin_delivery().is_none());
+    }
+
+    #[test]
+    fn a_late_ready_event_recovers_the_terminal_cancelled_take() {
+        let state = DictationTakeState::default();
+        let cancelled = state.begin("take-1".to_string());
+        assert!(state.cancel(Some("take-1")));
+
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Cancelled
+        ));
+        assert!(cancelled.try_begin_delivery().is_none());
+    }
+
+    #[test]
+    fn starting_a_replacement_take_retires_the_terminal_take() {
+        let state = DictationTakeState::default();
+        let cancelled = state.begin("take-1".to_string());
+        assert!(state.cancel(Some("take-1")));
+
+        let replacement = state.begin("take-2".to_string());
+        let DictationFinalizedTake::Start(finalized) = state.claim_finalized(Some("take-2")) else {
+            panic!("replacement take should own processing");
+        };
+
+        assert!(!finalized.same_take(&cancelled));
+        assert!(finalized.same_take(&replacement));
+        assert!(finalized.try_begin_delivery().is_some());
+    }
+
+    #[test]
+    fn duplicate_ready_event_cannot_start_a_second_pipeline() {
+        let state = DictationTakeState::default();
+        state.begin("take-1".to_string());
+
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Start(_)
+        ));
+        assert!(matches!(
+            state.claim_finalized(Some("take-1")),
+            DictationFinalizedTake::Duplicate
+        ));
+    }
+
+    #[test]
+    fn a_new_helper_command_invalidates_an_older_auth_result() {
+        let state = DictationTakeState::default();
+        let (first, ()) = state.run_new_helper_command(|_| ());
+        assert!(state.run_if_current_helper_command(first, || ()).is_some());
+
+        let (second, ()) = state.run_new_helper_command(|_| ());
+
+        assert!(state.run_if_current_helper_command(first, || ()).is_none());
+        assert!(state.run_if_current_helper_command(second, || ()).is_some());
+    }
+
+    #[test]
+    fn start_attempt_waits_for_current_auth_discard_to_finish() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        let controller = Arc::new(Mutex::new(ShortcutActivationController::default()));
+        let (first, ()) = state.run_new_helper_command(|_| ());
+        let (auth_entered_tx, auth_entered_rx) = mpsc::channel();
+        let (release_auth_tx, release_auth_rx) = mpsc::channel();
+        let auth_state = Arc::clone(&state);
+        let auth_controller = Arc::clone(&controller);
+        let auth = thread::spawn(move || {
+            let result = auth_state.run_if_current_helper_command(first, || {
+                auth_entered_tx
+                    .send(())
+                    .expect("test should observe the auth discard");
+                release_auth_rx
+                    .recv()
+                    .expect("test should release the auth discard");
+                auth_controller
+                    .lock()
+                    .expect("shortcut controller should lock")
+                    .reset();
+            });
+            assert!(result.is_some());
+        });
+        auth_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("auth discard should acquire the generation lock");
+
+        let (start_attempted_tx, start_attempted_rx) = mpsc::channel();
+        let (start_finished_tx, start_finished_rx) = mpsc::channel();
+        let start_state = Arc::clone(&state);
+        let start_controller = Arc::clone(&controller);
+        let start = thread::spawn(move || {
+            start_attempted_tx
+                .send(())
+                .expect("test should observe the replacement start attempt");
+            let (generation, ()) = start_state
+                .run_new_helper_command_if(
+                    || {
+                        let mut controller = start_controller
+                            .lock()
+                            .expect("shortcut controller should lock");
+                        let command = controller.handle_edge(
+                            ShortcutKeyEdge::Down,
+                            DictationShortcutKind::PushToTalk,
+                            Instant::now(),
+                        )?;
+                        controller.prepare_helper_start("take-b");
+                        Some(command)
+                    },
+                    |_, command| {
+                        assert_eq!(command, DictationCommand::StartListening);
+                    },
+                )
+                .expect("replacement shortcut should start");
+            start_finished_tx
+                .send(generation)
+                .expect("test should observe the replacement start");
+        });
+        start_attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should reach the serialized operation");
+        assert!(matches!(
+            start_finished_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_auth_tx
+            .send(())
+            .expect("test should release the auth discard");
+        auth.join().expect("auth discard thread should finish");
+        start
+            .join()
+            .expect("replacement start thread should finish");
+        assert_eq!(
+            start_finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("replacement start should finish after auth discard"),
+            first.wrapping_add(1)
+        );
+        assert_eq!(
+            controller
+                .lock()
+                .expect("shortcut controller should lock")
+                .handle_edge(
+                    ShortcutKeyEdge::Up,
+                    DictationShortcutKind::PushToTalk,
+                    Instant::now() + PUSH_TO_TALK_MIN_HOLD,
+                ),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn replacement_start_waits_for_a_terminal_control_write() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        state.begin("take-a".to_string());
+        let (terminal_entered_tx, terminal_entered_rx) = mpsc::channel();
+        let (release_terminal_tx, release_terminal_rx) = mpsc::channel();
+        let terminal_state = Arc::clone(&state);
+        let terminal = thread::spawn(move || {
+            terminal_state
+                .run_new_helper_command(|_| {
+                    let take_id = terminal_state.current_take_id();
+                    terminal_entered_tx
+                        .send(())
+                        .expect("test should observe the terminal control");
+                    release_terminal_rx
+                        .recv()
+                        .expect("test should release the terminal control");
+                    take_id
+                })
+                .1
+        });
+        terminal_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal control should acquire the command generation lock");
+
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let replacement_state = Arc::clone(&state);
+        let replacement = thread::spawn(move || {
+            replacement_state.run_new_helper_command(|_| {
+                start_entered_tx
+                    .send(())
+                    .expect("test should observe the replacement start");
+            });
+        });
+        assert!(matches!(
+            start_entered_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_terminal_tx
+            .send(())
+            .expect("test should release the terminal control");
+        assert_eq!(
+            terminal
+                .join()
+                .expect("terminal control thread should finish")
+                .as_deref(),
+            Some("take-a")
+        );
+        start_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should run after the terminal write");
+        replacement
+            .join()
+            .expect("replacement start thread should finish");
+    }
+
+    #[test]
+    fn replacement_start_waits_for_a_correlated_helper_lifecycle_event() {
+        use std::sync::mpsc;
+
+        let state = Arc::new(DictationTakeState::default());
+        let (event_entered_tx, event_entered_rx) = mpsc::channel();
+        let (release_event_tx, release_event_rx) = mpsc::channel();
+        let event_state = Arc::clone(&state);
+        let event = thread::spawn(move || {
+            let _guard = event_state.lock_helper_commands();
+            event_entered_tx
+                .send(())
+                .expect("test should observe the helper lifecycle event");
+            release_event_rx
+                .recv()
+                .expect("test should release the helper lifecycle event");
+        });
+        event_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("helper lifecycle event should acquire the command lock");
+
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let replacement_state = Arc::clone(&state);
+        let replacement = thread::spawn(move || {
+            replacement_state.run_new_helper_command(|_| {
+                start_entered_tx
+                    .send(())
+                    .expect("test should observe the replacement start");
+            });
+        });
+        assert!(matches!(
+            start_entered_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        release_event_tx
+            .send(())
+            .expect("test should release the helper lifecycle event");
+        event
+            .join()
+            .expect("helper lifecycle event thread should finish");
+        start_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("replacement start should run after the lifecycle event");
+        replacement
+            .join()
+            .expect("replacement start thread should finish");
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_an_in_flight_dictation_step() {
+        let state = DictationTakeState::default();
+        state.begin("take-1".to_string());
+        let DictationFinalizedTake::Start(take) = state.claim_finalized(Some("take-1")) else {
+            panic!("first ready event should own processing");
+        };
+        let pending = async {
+            std::future::pending::<()>().await;
+            "transcribed"
+        };
+        let cancellation = take.clone();
+        let in_flight = take.clone();
+
+        let result = tokio::time::timeout(Duration::from_secs(1), async move {
+            tokio::spawn(async move {
+                tokio::task::yield_now().await;
+                cancellation.cancel();
+            });
+            run_dictation_take_step(&in_flight, pending).await
+        })
+        .await
+        .expect("cancellation should interrupt the pending request");
+
+        assert!(result.is_none());
+        assert!(take.try_begin_delivery().is_none());
+    }
+
+    #[test]
     fn composer_registration_waits_for_its_confirmed_recording_start() {
         let state = HelperState::default();
         *state.composer_registration.lock().expect("registration") =
@@ -7987,6 +10509,7 @@ mod tests {
         let info =
             |speech_confidence, speech_analysis_status, observed_audio_level| RecordingReadyInfo {
                 audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+                take_id: None,
                 observed_audio_level,
                 speech_confidence,
                 speech_analysis_status,
@@ -8025,6 +10548,7 @@ mod tests {
     fn short_capture_is_quarantined_regardless_of_level_but_analysis_failure_fails_open() {
         let info = |status, speech_confidence| RecordingReadyInfo {
             audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            take_id: None,
             observed_audio_level: Some(0.0305),
             speech_confidence,
             speech_analysis_status: Some(status),
@@ -8038,6 +10562,7 @@ mod tests {
         )));
         let loud_short_capture = RecordingReadyInfo {
             audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            take_id: None,
             observed_audio_level: Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
             speech_confidence: None,
             speech_analysis_status: Some(SpeechAnalysisStatus::NoCompleteWindow),

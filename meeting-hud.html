@@ -26,6 +26,19 @@
           <span class="mhud-bar"></span>
         </div>
       </div>
+      <div class="mhud-end" aria-live="polite">
+        <div class="mhud-end-body">
+          <span class="mhud-mark mhud-end-mark" aria-hidden="true"></span>
+          <span class="mhud-end-title">Meeting ended</span>
+        </div>
+        <div class="mhud-end-actions">
+          <button id="mhud-end-stop" type="button" aria-label="Stop recording now">
+            Stop now
+            <span id="mhud-end-seconds" class="mhud-end-seconds" aria-hidden="true">15s</span>
+          </button>
+          <button id="mhud-end-keep" type="button">Keep recording</button>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/meeting-hud.ts"></script>
   </body>

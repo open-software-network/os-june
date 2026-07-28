@@ -13,16 +13,37 @@ use hotkeys::{HotkeyEvent, HotkeyManager};
 use permissions::ComApartment;
 use protocol::{error_event, event, simple_event, CommandEnvelope, ShortcutKind};
 use std::{
+    collections::HashSet,
     io::{self, BufRead, Write},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(700);
 const CLIPBOARD_RESTORE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const CLIPBOARD_RESTORE_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const COMPOSER_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+static NEXT_TAKE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn next_take_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let sequence = NEXT_TAKE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{sequence}", std::process::id())
+}
+
+fn take_id_or_next(requested: Option<String>) -> String {
+    requested
+        .map(|take_id| take_id.trim().to_string())
+        .filter(|take_id| !take_id.is_empty() && take_id.len() <= 128)
+        .unwrap_or_else(next_take_id)
+}
 
 #[derive(Clone)]
 struct EventWriter {
@@ -69,6 +90,19 @@ struct PendingComposerAck {
     deadline: std::time::Instant,
     text: String,
     backup: Option<clipboard::ClipboardBackup>,
+    take_id: Option<String>,
+}
+
+fn with_take_id(mut value: serde_json::Value, take_id: Option<&str>) -> serde_json::Value {
+    if let (Some(take_id), Some(payload)) = (
+        take_id,
+        value
+            .get_mut("payload")
+            .and_then(serde_json::Value::as_object_mut),
+    ) {
+        payload.insert("takeId".to_string(), serde_json::json!(take_id));
+    }
+    value
 }
 
 fn composer_error_event(
@@ -98,6 +132,8 @@ struct HelperApp {
     direct_composer_request: Option<DirectComposerRequest>,
     pending_composer_ack: Option<PendingComposerAck>,
     awaiting_transcript: bool,
+    active_take_id: Option<String>,
+    cancelled_take_ids: HashSet<String>,
     last_mic_test_path: Option<std::path::PathBuf>,
 }
 
@@ -186,6 +222,8 @@ impl HelperApp {
             direct_composer_request: None,
             pending_composer_ack: None,
             awaiting_transcript: false,
+            active_take_id: None,
+            cancelled_take_ids: HashSet::new(),
             last_mic_test_path: None,
         }
     }
@@ -245,23 +283,29 @@ impl HelperApp {
                 command.composer_request_id,
                 command.june_process_id,
                 command.june_window_handle,
+                command.take_id,
             ),
-            "stop_and_paste" => self.stop_and_paste(),
+            "stop_and_paste" => self.stop_and_paste(command.take_id),
             "toggle_listening" => {
                 if self.recorder.is_some() {
-                    self.stop_and_paste();
+                    self.stop_and_paste(command.take_id);
                 } else {
                     self.start_listening(
                         command.composer_request_id,
                         command.june_process_id,
                         command.june_window_handle,
+                        command.take_id,
                     );
                 }
             }
             "paste_text" => self.paste_text(
                 command.text.unwrap_or_default(),
                 command.composer_request_id,
+                command.take_id,
             ),
+            "copy_text_for_recovery" => {
+                self.copy_text_for_recovery(command.text.unwrap_or_default(), command.take_id)
+            }
             "composer_delivery_result" => self.composer_delivery_result(
                 command.composer_request_id,
                 command.inserted.unwrap_or(false),
@@ -270,7 +314,7 @@ impl HelperApp {
                 self.start_mic_test(command.duration_seconds.unwrap_or(5).clamp(1, 10))
             }
             "discard_mic_test" => self.discard_mic_test(),
-            "discard_recording" => self.discard_recording(),
+            "discard_recording" => self.discard_recording(command.take_id),
             "shutdown" => {
                 self.writer.emit(simple_event("shutdown_ack"));
                 return false;
@@ -324,16 +368,33 @@ impl HelperApp {
         composer_request_id: Option<String>,
         june_pid: Option<u32>,
         june_window_handle: Option<isize>,
+        requested_take_id: Option<String>,
     ) {
         if !self.can_start_listening(composer_request_id.as_deref()) {
-            if self.pending_composer_ack.is_some() {
-                if let Some(request_id) = composer_request_id {
-                    self.writer.emit(composer_error_event(
+            if let Some(request_id) = composer_request_id {
+                let (code, message) = if self.pending_composer_ack.is_some() {
+                    (
                         "composer_delivery_busy",
                         "June is finishing the previous dictation. Try again.",
-                        &request_id,
-                    ));
-                }
+                    )
+                } else {
+                    (
+                        "recording_start_busy",
+                        "Dictation is already listening or finalizing.",
+                    )
+                };
+                self.writer.emit(with_take_id(
+                    composer_error_event(code, message, &request_id),
+                    requested_take_id.as_deref(),
+                ));
+            } else {
+                self.writer.emit(with_take_id(
+                    error_event(
+                        "recording_start_busy",
+                        "Dictation is already listening or finalizing.",
+                    ),
+                    requested_take_id.as_deref(),
+                ));
             }
             return;
         }
@@ -341,7 +402,9 @@ impl HelperApp {
         let start_target = focus::pin_foreground_window();
         match Recorder::start(self.selected_microphone_id.as_deref()) {
             Ok(recorder) => {
+                let take_id = take_id_or_next(requested_take_id);
                 self.recorder = Some(recorder);
+                self.active_take_id = Some(take_id.clone());
                 self.pinned_target = None;
                 self.direct_composer_request = composer_request_id.map(|id| {
                     let verified_start_target = match (june_pid, june_window_handle, start_target) {
@@ -362,24 +425,31 @@ impl HelperApp {
                 self.writer.emit(event(
                     "listening_started",
                     serde_json::json!({
+                        "escapeCancelAvailable": false,
                         "composerRequestId": self
                             .direct_composer_request
                             .as_ref()
                             .map(|request| request.id.as_str()),
+                        "takeId": take_id,
                     }),
                 ));
                 self.spawn_level_thread();
             }
             Err(error) => {
                 if let Some(request_id) = composer_request_id {
-                    self.writer.emit(composer_error_event(
-                        "recording_start_failed",
-                        error.to_string(),
-                        &request_id,
+                    self.writer.emit(with_take_id(
+                        composer_error_event(
+                            "recording_start_failed",
+                            error.to_string(),
+                            &request_id,
+                        ),
+                        requested_take_id.as_deref(),
                     ));
                 } else {
-                    self.writer
-                        .emit(error_event("recording_start_failed", error.to_string()));
+                    self.writer.emit(with_take_id(
+                        error_event("recording_start_failed", error.to_string()),
+                        requested_take_id.as_deref(),
+                    ));
                 }
             }
         }
@@ -392,17 +462,27 @@ impl HelperApp {
             && (composer_request_id.is_none() || self.pending_composer_ack.is_none())
     }
 
-    fn stop_and_paste(&mut self) {
+    fn stop_and_paste(&mut self, take_id: Option<String>) {
+        if !accepts_dictation_take_control(self.active_take_id.as_deref(), take_id.as_deref()) {
+            return;
+        }
         let Some(recorder) = self.recorder.take() else {
             if self.awaiting_transcript {
                 return;
             }
-            self.writer.emit(simple_event("recording_discarded"));
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({ "reason": "not_listening" }),
+            ));
             return;
         };
         self.awaiting_transcript = true;
         self.pinned_target = focus::pin_foreground_window();
-        self.writer.emit(simple_event("finalizing_transcript"));
+        let active_take_id = self.active_take_id.clone();
+        self.writer.emit(event(
+            "finalizing_transcript",
+            serde_json::json!({ "takeId": active_take_id.as_deref() }),
+        ));
         match recorder.stop() {
             Ok(summary) => {
                 let target = self.pinned_target;
@@ -420,26 +500,46 @@ impl HelperApp {
                         "targetWindowHandle": target.map(|target| target.hwnd_value()),
                         "targetWindowTitle": target.map(|target| target.title()),
                         "composerRequestId": composer_request_id,
+                        "takeId": active_take_id.as_deref(),
                     }),
                 ));
             }
             Err(error) => {
                 self.awaiting_transcript = false;
+                self.active_take_id = None;
                 if let Some(request) = self.direct_composer_request.take() {
-                    self.writer.emit(composer_error_event(
-                        "recording_stop_failed",
-                        error.to_string(),
-                        &request.id,
+                    self.writer.emit(with_take_id(
+                        composer_error_event(
+                            "recording_stop_failed",
+                            error.to_string(),
+                            &request.id,
+                        ),
+                        active_take_id.as_deref(),
                     ));
                 } else {
-                    self.writer
-                        .emit(error_event("recording_stop_failed", error.to_string()));
+                    self.writer.emit(with_take_id(
+                        error_event("recording_stop_failed", error.to_string()),
+                        active_take_id.as_deref(),
+                    ));
                 }
             }
         }
     }
 
-    fn paste_text(&mut self, text: String, composer_request_id: Option<String>) {
+    fn paste_text(
+        &mut self,
+        text: String,
+        composer_request_id: Option<String>,
+        take_id: Option<String>,
+    ) {
+        if !accepts_dictation_take_text(
+            self.active_take_id.as_deref(),
+            &self.cancelled_take_ids,
+            take_id.as_deref(),
+            self.awaiting_transcript,
+        ) {
+            return;
+        }
         let owns_current_request = match (
             self.direct_composer_request.as_ref(),
             composer_request_id.as_deref(),
@@ -456,45 +556,59 @@ impl HelperApp {
             match clipboard::replace_text(&text) {
                 Ok(_) => self.delayed_clipboard_restore = None,
                 Err(error) => {
-                    self.writer
-                        .emit(error_event("clipboard_write_failed", error.to_string()));
+                    self.writer.emit(with_take_id(
+                        error_event("clipboard_write_failed", error.to_string()),
+                        take_id.as_deref(),
+                    ));
                     return;
                 }
             }
             if let Some(request_id) = composer_request_id {
-                self.writer.emit(composer_error_event(
-                    "composer_request_unavailable",
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                    &request_id,
+                self.writer.emit(with_take_id(
+                    composer_error_event(
+                        "composer_request_unavailable",
+                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                        &request_id,
+                    ),
+                    take_id.as_deref(),
                 ));
             } else {
-                self.writer.emit(error_event(
-                    "paste_target_unavailable",
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                self.writer.emit(with_take_id(
+                    error_event(
+                        "paste_target_unavailable",
+                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    ),
+                    take_id.as_deref(),
                 ));
             }
             return;
         }
         self.awaiting_transcript = false;
+        self.active_take_id = None;
         self.finish_clipboard_restore(false);
         if self.direct_composer_request.is_none() && composer_request_id.is_none() {
-            self.writer.emit(event(
-                "final_transcript",
-                serde_json::json!({ "text": text }),
+            self.writer.emit(with_take_id(
+                event("final_transcript", serde_json::json!({ "text": text })),
+                take_id.as_deref(),
             ));
         }
         let previous_clipboard = match clipboard::replace_text(&text) {
             Ok(previous) => previous,
             Err(error) => {
                 if let Some(request) = self.direct_composer_request.take() {
-                    self.writer.emit(composer_error_event(
-                        "clipboard_write_failed",
-                        error.to_string(),
-                        &request.id,
+                    self.writer.emit(with_take_id(
+                        composer_error_event(
+                            "clipboard_write_failed",
+                            error.to_string(),
+                            &request.id,
+                        ),
+                        take_id.as_deref(),
                     ));
                 } else {
-                    self.writer
-                        .emit(error_event("clipboard_write_failed", error.to_string()));
+                    self.writer.emit(with_take_id(
+                        error_event("clipboard_write_failed", error.to_string()),
+                        take_id.as_deref(),
+                    ));
                 }
                 return;
             }
@@ -514,33 +628,43 @@ impl HelperApp {
             });
             self.pinned_target = None;
             if !exact_request || !exact_target {
-                self.writer.emit(composer_error_event(
-                    "paste_target_unavailable",
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                    &request.id,
+                self.writer.emit(with_take_id(
+                    composer_error_event(
+                        "paste_target_unavailable",
+                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                        &request.id,
+                    ),
+                    take_id.as_deref(),
                 ));
                 return;
             }
-            self.writer.emit(event(
-                "final_transcript",
-                serde_json::json!({
-                    "text": text,
-                    "delivery": "agent_composer",
-                    "composerRequestId": request.id,
-                }),
+            self.writer.emit(with_take_id(
+                event(
+                    "final_transcript",
+                    serde_json::json!({
+                        "text": text,
+                        "delivery": "agent_composer",
+                        "composerRequestId": request.id,
+                    }),
+                ),
+                take_id.as_deref(),
             ));
             self.pending_composer_ack = Some(PendingComposerAck {
                 id: request.id,
                 deadline: std::time::Instant::now() + COMPOSER_ACK_TIMEOUT,
                 text,
                 backup: previous_clipboard,
+                take_id,
             });
             return;
         }
         let Some(target) = self.pinned_target.take() else {
-            self.writer.emit(error_event(
-                "paste_target_unavailable",
-                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+            self.writer.emit(with_take_id(
+                error_event(
+                    "paste_target_unavailable",
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                ),
+                take_id.as_deref(),
             ));
             return;
         };
@@ -550,22 +674,28 @@ impl HelperApp {
             } else {
                 "paste_target_restricted"
             };
-            self.writer.emit(error_event(
-                code,
-                format!(
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+            self.writer.emit(with_take_id(
+                error_event(
+                    code,
+                    format!(
+                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+                    ),
                 ),
+                take_id.as_deref(),
             ));
             return;
         }
-        self.writer.emit(event(
-            "paste_target",
-            serde_json::json!({
-                "targetProcessId": target.pid(),
-                "targetWindowHandle": target.hwnd_value(),
-                "targetWindowTitle": target.title(),
-                "activated": true,
-            }),
+        self.writer.emit(with_take_id(
+            event(
+                "paste_target",
+                serde_json::json!({
+                    "targetProcessId": target.pid(),
+                    "targetWindowHandle": target.hwnd_value(),
+                    "targetWindowTitle": target.title(),
+                    "activated": true,
+                }),
+            ),
+            take_id.as_deref(),
         ));
         let submission = match focus::submit_ctrl_v_if_foreground(target) {
             Ok(submission) => submission,
@@ -580,14 +710,18 @@ impl HelperApp {
                 } else {
                     "Press Ctrl+V to paste it."
                 };
-                self.writer.emit(error_event(
-                    code,
-                    format!("June copied the dictation to the clipboard. {guidance} ({error})"),
+                self.writer.emit(with_take_id(
+                    error_event(
+                        code,
+                        format!("June copied the dictation to the clipboard. {guidance} ({error})"),
+                    ),
+                    take_id.as_deref(),
                 ));
                 return;
             }
         };
-        self.writer.emit(paste_completed_event(&submission));
+        self.writer
+            .emit(paste_completed_event(&submission, take_id.as_deref()));
         if let Some(backup) = previous_clipboard {
             let now = std::time::Instant::now();
             self.delayed_clipboard_restore = Some(DelayedClipboardRestore {
@@ -596,6 +730,31 @@ impl HelperApp {
                 text,
                 backup,
             });
+        }
+    }
+
+    fn copy_text_for_recovery(&mut self, text: String, take_id: Option<String>) {
+        if !accepts_dictation_take_text(
+            self.active_take_id.as_deref(),
+            &self.cancelled_take_ids,
+            take_id.as_deref(),
+            self.awaiting_transcript,
+        ) {
+            return;
+        }
+        self.awaiting_transcript = false;
+        self.active_take_id = None;
+        self.pinned_target = None;
+        self.direct_composer_request = None;
+        self.finish_clipboard_restore(false);
+        match clipboard::replace_text(&text) {
+            Ok(_) => self
+                .writer
+                .emit(with_take_id(recovery_clipboard_event(), take_id.as_deref())),
+            Err(error) => self.writer.emit(with_take_id(
+                error_event("clipboard_write_failed", error.to_string()),
+                take_id.as_deref(),
+            )),
         }
     }
 
@@ -610,22 +769,28 @@ impl HelperApp {
             return;
         }
         if !inserted {
-            self.writer.emit(composer_error_event(
-                "composer_delivery_failed",
-                "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
-                &pending.id,
+            self.writer.emit(with_take_id(
+                composer_error_event(
+                    "composer_delivery_failed",
+                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    &pending.id,
+                ),
+                pending.take_id.as_deref(),
             ));
             return;
         }
-        self.writer.emit(event(
-            "paste_completed",
-            serde_json::json!({
-                "inputSubmitted": false,
-                "deliveryConfirmed": true,
-                "eventsSubmitted": 0,
-                "delivery": "agent_composer",
-                "composerRequestId": pending.id,
-            }),
+        self.writer.emit(with_take_id(
+            event(
+                "paste_completed",
+                serde_json::json!({
+                    "inputSubmitted": false,
+                    "deliveryConfirmed": true,
+                    "eventsSubmitted": 0,
+                    "delivery": "agent_composer",
+                    "composerRequestId": pending.id,
+                }),
+            ),
+            pending.take_id.as_deref(),
         ));
         if let Some(backup) = pending.backup {
             let now = std::time::Instant::now();
@@ -719,10 +884,13 @@ impl HelperApp {
             .is_some_and(|pending| std::time::Instant::now() >= pending.deadline)
         {
             if let Some(pending) = self.pending_composer_ack.take() {
-                self.writer.emit(composer_error_event(
-                    "composer_delivery_timeout",
-                    "June could not confirm the dictation was inserted. The text is on the clipboard if you need to paste it manually.",
-                    &pending.id,
+                self.writer.emit(with_take_id(
+                    composer_error_event(
+                        "composer_delivery_timeout",
+                        "June could not confirm the dictation was inserted. The text is on the clipboard if you need to paste it manually.",
+                        &pending.id,
+                    ),
+                    pending.take_id.as_deref(),
                 ));
             }
         }
@@ -763,7 +931,11 @@ impl HelperApp {
         }
     }
 
-    fn discard_recording(&mut self) {
+    fn discard_recording(&mut self, take_id: Option<String>) {
+        if !accepts_dictation_take_control(self.active_take_id.as_deref(), take_id.as_deref()) {
+            return;
+        }
+        let cancelled_take_id = self.active_take_id.take();
         if let Some(recorder) = self.recorder.take() {
             if let Ok(summary) = recorder.stop() {
                 let _ = std::fs::remove_file(summary.path);
@@ -771,21 +943,38 @@ impl HelperApp {
         }
         self.awaiting_transcript = false;
         self.pinned_target = None;
+        if let Some(cancelled_take_id) = cancelled_take_id.as_ref() {
+            self.cancelled_take_ids.insert(cancelled_take_id.clone());
+        }
         if let Some(request) = self.direct_composer_request.take() {
             self.writer.emit(event(
                 "recording_discarded",
                 serde_json::json!({
                     "delivery": "agent_composer",
                     "composerRequestId": request.id,
+                    "takeId": cancelled_take_id,
+                    "reason": "command",
+                }),
+            ));
+        } else if let Some(cancelled_take_id) = cancelled_take_id {
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({
+                    "takeId": cancelled_take_id,
+                    "reason": "command",
                 }),
             ));
         } else {
-            self.writer.emit(simple_event("recording_discarded"));
+            self.writer.emit(event(
+                "recording_discarded",
+                serde_json::json!({ "reason": "command" }),
+            ));
         }
     }
 
     fn spawn_level_thread(&self) {
         let writer = self.writer.clone();
+        let take_id = self.active_take_id.clone();
         let Some((latest_level, active)) =
             self.recorder.as_ref().map(Recorder::latest_level_handle)
         else {
@@ -795,9 +984,37 @@ impl HelperApp {
             while active.load(std::sync::atomic::Ordering::SeqCst) {
                 thread::sleep(Duration::from_millis(80));
                 let level = latest_level.lock().map(|level| *level).unwrap_or_default();
-                writer.emit(event("audio_level", serde_json::json!({ "level": level })));
+                writer.emit(with_take_id(
+                    event("audio_level", serde_json::json!({ "level": level })),
+                    take_id.as_deref(),
+                ));
             }
         });
+    }
+}
+
+fn accepts_dictation_take_control(
+    active_take_id: Option<&str>,
+    incoming_take_id: Option<&str>,
+) -> bool {
+    incoming_take_id.is_none() || incoming_take_id == active_take_id
+}
+
+fn accepts_dictation_take_text(
+    active_take_id: Option<&str>,
+    cancelled_take_ids: &HashSet<String>,
+    incoming_take_id: Option<&str>,
+    awaiting_transcript: bool,
+) -> bool {
+    if incoming_take_id.is_some_and(|take_id| cancelled_take_ids.contains(take_id)) {
+        return false;
+    }
+    match (active_take_id, incoming_take_id) {
+        (Some(active), Some(incoming)) => awaiting_transcript && active == incoming,
+        // Missing IDs preserve compatibility with an older coordinator. No
+        // active take preserves ADR-0014's clipboard recovery after a helper
+        // replacement loses the original paste target.
+        _ => true,
     }
 }
 
@@ -847,14 +1064,27 @@ fn clipboard_restore_after_composer_ack(
     }
 }
 
-fn paste_completed_event(submission: &focus::InputSubmission) -> serde_json::Value {
-    event(
-        "paste_completed",
-        serde_json::json!({
-            "inputSubmitted": true,
-            "deliveryConfirmed": false,
-            "eventsSubmitted": submission.events_submitted,
-        }),
+fn paste_completed_event(
+    submission: &focus::InputSubmission,
+    take_id: Option<&str>,
+) -> serde_json::Value {
+    with_take_id(
+        event(
+            "paste_completed",
+            serde_json::json!({
+                "inputSubmitted": true,
+                "deliveryConfirmed": false,
+                "eventsSubmitted": submission.events_submitted,
+            }),
+        ),
+        take_id,
+    )
+}
+
+fn recovery_clipboard_event() -> serde_json::Value {
+    error_event(
+        "dictation_recovery_clipboard",
+        "Could not save this dictation. Use Ctrl+V to keep the transcript.",
     )
 }
 
@@ -883,15 +1113,41 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coordinator_take_id_is_used_when_bounded() {
+        assert_eq!(
+            take_id_or_next(Some(" take-1 ".to_string())),
+            "take-1".to_string()
+        );
+        assert_ne!(take_id_or_next(Some(String::new())), "");
+        assert_ne!(take_id_or_next(Some("x".repeat(129))), "x".repeat(129));
+    }
+
+    #[test]
     fn paste_completed_reports_input_submission_without_claiming_delivery() {
-        let event = paste_completed_event(&focus::InputSubmission {
-            events_submitted: 4,
-        });
+        let event = paste_completed_event(
+            &focus::InputSubmission {
+                events_submitted: 4,
+            },
+            Some("take-1"),
+        );
 
         assert_eq!(event["type"], "paste_completed");
         assert_eq!(event["payload"]["inputSubmitted"], true);
         assert_eq!(event["payload"]["deliveryConfirmed"], false);
         assert_eq!(event["payload"]["eventsSubmitted"], 4);
+        assert_eq!(event["payload"]["takeId"], "take-1");
+    }
+
+    #[test]
+    fn recovery_clipboard_copy_emits_a_visible_terminal_event() {
+        let event = with_take_id(recovery_clipboard_event(), Some("take-1"));
+
+        assert_eq!(event["type"], "error");
+        assert_eq!(event["payload"]["code"], "dictation_recovery_clipboard");
+        assert_eq!(event["payload"]["takeId"], "take-1");
+        assert!(event["payload"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("Ctrl+V")));
     }
 
     #[test]
@@ -910,13 +1166,61 @@ mod tests {
                 deadline: std::time::Instant::now() + COMPOSER_ACK_TIMEOUT,
                 text: "first transcript".to_string(),
                 backup: None,
+                take_id: Some("take-1".to_string()),
             }),
             awaiting_transcript: false,
+            active_take_id: None,
+            cancelled_take_ids: HashSet::new(),
             last_mic_test_path: None,
         };
 
         assert!(!app.can_start_listening(Some("replacement-request")));
         assert!(app.can_start_listening(None));
+    }
+
+    #[test]
+    fn cancelled_take_text_is_rejected_but_restart_recovery_remains_available() {
+        let cancelled_take_ids = HashSet::from(["take-1".to_string(), "older-take".to_string()]);
+        let no_cancelled_take_ids = HashSet::new();
+
+        assert!(!accepts_dictation_take_text(
+            Some("take-1"),
+            &cancelled_take_ids,
+            Some("take-1"),
+            false,
+        ));
+        assert!(!accepts_dictation_take_text(
+            Some("take-2"),
+            &cancelled_take_ids,
+            Some("older-take"),
+            true,
+        ));
+        assert!(accepts_dictation_take_text(
+            None,
+            &no_cancelled_take_ids,
+            Some("take-from-exited-helper"),
+            false,
+        ));
+        assert!(accepts_dictation_take_text(
+            Some("take-1"),
+            &no_cancelled_take_ids,
+            None,
+            true,
+        ));
+    }
+
+    #[test]
+    fn tagged_terminal_control_only_targets_the_matching_active_take() {
+        assert!(accepts_dictation_take_control(
+            Some("take-1"),
+            Some("take-1")
+        ));
+        assert!(!accepts_dictation_take_control(
+            Some("take-2"),
+            Some("take-1")
+        ));
+        assert!(!accepts_dictation_take_control(None, Some("take-1")));
+        assert!(accepts_dictation_take_control(Some("take-1"), None));
     }
 
     fn restore_with_expiry(

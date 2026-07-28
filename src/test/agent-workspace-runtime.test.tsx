@@ -328,7 +328,7 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByRole("button", { name: "Open session" })).toBeVisible();
   });
 
-  it("does not create another Home task when the user acknowledges a handoff", async () => {
+  it("does not create another Home task for conversation after a handoff", async () => {
     const user = userEvent.setup();
     const homeSession: AgentSessionDto = {
       ...session,
@@ -405,6 +405,44 @@ describe("AgentWorkspace runtime wiring", () => {
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
     ).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Hey there, June 👋");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Hey! What can I help with?")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Greetings, June");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(screen.getAllByText("Hey! What can I help with?")).toHaveLength(2));
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Plan a trip to Rome");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("I'm here. What can I help with?")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(2);
   });
 
   it("repairs a stale Home mapping when its June-owned session is missing", async () => {
@@ -993,10 +1031,22 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop June" })).toBeVisible());
 
+    const scroller = document.querySelector<HTMLElement>(".agent-scroll");
+    expect(scroller).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(scroller as HTMLElement, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 400 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
     const activeComposer = screen.getByRole("textbox", { name: "Message June" });
     activeComposer.textContent = "Use the launch plan";
     fireEvent.input(activeComposer);
     await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" }));
 
     const steerCall = mocks.invoke.mock.calls.find(([command]) => command === "steer_agent_run");
     expect(steerCall?.[1]).toMatchObject({

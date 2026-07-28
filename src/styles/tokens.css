@@ -160,6 +160,8 @@
   --control-md: 28px;
   --control-lg: 32px;
   --control-xl: 36px;
+  /* Compact icon controls inside the Dictation HUD. */
+  --control-hud: var(--sp-8);
   /* Shared width for the model picker's nested detail and choice panels. */
   --model-picker-nested-w: 248px;
   --line-width: 1px;
@@ -185,6 +187,11 @@
   --sidebar-w: 240px;
   --sidebar-w-collapsed: 56px;
   --sidebar-section-title-h: 22px;
+  --sidebar-active-section-min-h: calc(
+    var(--sidebar-section-title-h) +
+    var(--sp-1) +
+    var(--control-sm)
+  );
   --sidebar-pinned-list-max-h: 134px;
   --titlebar-h: 28px;
   /* macOS traffic lights live in the titlebar strip and their geometry is

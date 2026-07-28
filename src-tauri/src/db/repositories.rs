@@ -3,8 +3,8 @@ use crate::domain::types::{
     DictionaryEntryDto, FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto,
     NoteCalendarEventDto, NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind,
     NoteTranscriptionJobPlan, NoteTranscriptionJobRecord, NoteTranscriptionJobStatus,
-    ProcessingStatus, ProfileDataSummaryDto, RecordingSourceMode, RecordingState, SessionFolderDto,
-    SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
+    ProcessingStatus, ProfileDataSummaryDto, RecordingOriginMetadata, RecordingSourceMode,
+    RecordingState, SessionFolderDto, SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -36,6 +36,26 @@ const MAX_PENDING_COMPANION_OPERATIONS_PER_DEVICE: i64 = 128;
 #[derive(Clone)]
 pub struct Repositories {
     pub pool: SqlitePool,
+}
+
+pub struct PendingDictationHistoryItem {
+    transaction: sqlx::transaction::Transaction<'static, Sqlite>,
+    item: DictationHistoryItemDto,
+}
+
+impl PendingDictationHistoryItem {
+    pub async fn commit(mut self) -> Result<DictationHistoryItemDto, sqlx::error::Error> {
+        query("DELETE FROM dictation_history WHERE created_at < ?")
+            .bind(dictation_history_cutoff_timestamp())
+            .execute(&mut *self.transaction)
+            .await?;
+        self.transaction.commit().await?;
+        Ok(self.item)
+    }
+
+    pub async fn rollback(self) -> Result<(), sqlx::error::Error> {
+        self.transaction.rollback().await
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2815,6 +2835,22 @@ impl Repositories {
         language: Option<String>,
         provider: &str,
     ) -> Result<Option<DictationHistoryItemDto>, sqlx::error::Error> {
+        let pending = self
+            .stage_dictation_history_item(profile, text, language, provider)
+            .await?;
+        match pending {
+            Some(pending) => pending.commit().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn stage_dictation_history_item(
+        &self,
+        data_partition: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+    ) -> Result<Option<PendingDictationHistoryItem>, sqlx::error::Error> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(None);
@@ -2826,6 +2862,7 @@ impl Repositories {
             provider: provider.to_string(),
             created_at: timestamp(),
         };
+        let mut transaction = self.pool.begin().await?;
         query(
             "INSERT INTO dictation_history (id, text, language, provider, profile, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -2834,12 +2871,11 @@ impl Repositories {
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
-        .bind(profile)
+        .bind(data_partition)
         .bind(&item.created_at)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.prune_old_dictation_history().await?;
-        Ok(Some(item))
+        Ok(Some(PendingDictationHistoryItem { transaction, item }))
     }
 
     pub async fn list_dictation_history(
@@ -3705,20 +3741,32 @@ impl Repositories {
         note_id: &str,
         session_id: &str,
         source_mode: RecordingSourceMode,
+        origin: &RecordingOriginMetadata,
         partial_path: &str,
         final_path: &str,
         device_label: Option<String>,
         sources: &[(String, String, String)],
     ) -> Result<(), sqlx::error::Error> {
         let now = timestamp();
+        let meeting_app_bundle_families =
+            serde_json::to_string(&origin.meeting_app_bundle_families)
+                .unwrap_or_else(|_| "[]".to_string());
         let mut tx = self.pool.begin().await?;
         query(
-            "INSERT INTO recording_sessions (id, note_id, source_mode, status, started_at, expected_elapsed_ms, device_label, permission_state, partial_path, final_path)
-             VALUES (?, ?, ?, 'recording', ?, 0, ?, 'granted', ?, ?)",
+            "INSERT INTO recording_sessions (
+                 id, note_id, source_mode, recording_origin,
+                 meeting_app_bundle_families, auto_finish_eligible,
+                 status, started_at, expected_elapsed_ms, device_label,
+                 permission_state, partial_path, final_path
+             )
+             VALUES (?, ?, ?, ?, ?, ?, 'recording', ?, 0, ?, 'granted', ?, ?)",
         )
         .bind(session_id)
         .bind(note_id)
         .bind(source_mode.as_db())
+        .bind(origin.origin.as_db())
+        .bind(meeting_app_bundle_families)
+        .bind(origin.auto_finish_eligible)
         .bind(&now)
         .bind(device_label)
         .bind(partial_path)
@@ -6465,7 +6513,7 @@ mod tests {
     };
     use crate::domain::types::{
         NoteCalendarEventDto, NoteTranscriptionJobKind, NoteTranscriptionJobPlan,
-        NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode,
+        NoteTranscriptionJobStatus, ProcessingStatus, RecordingOriginMetadata, RecordingSourceMode,
     };
     use sqlx::query::query;
     use sqlx::row::Row;
@@ -6505,6 +6553,48 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn staged_dictation_history_is_visible_only_after_commit() {
+        let repos = test_repositories().await;
+        let rolled_back = repos
+            .stage_dictation_history_item(
+                "default",
+                "cancelled transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage cancelled history")
+            .expect("non-empty transcript");
+        rolled_back.rollback().await.expect("rollback history");
+
+        let count_after_rollback: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count rolled back history")
+            .get("count");
+        assert_eq!(count_after_rollback, 0);
+
+        let committed = repos
+            .stage_dictation_history_item(
+                "default",
+                "delivered transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage delivered history")
+            .expect("non-empty transcript");
+        committed.commit().await.expect("commit history");
+
+        let count_after_commit: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count committed history")
+            .get("count");
+        assert_eq!(count_after_commit, 1);
     }
 
     #[tokio::test]
@@ -6882,11 +6972,20 @@ mod tests {
             ),
         ];
 
+        let origin = RecordingOriginMetadata {
+            origin: crate::domain::types::RecordingOrigin::MeetingPrompt,
+            meeting_app_bundle_families: vec![
+                "com.google.chrome".to_string(),
+                "us.zoom.xos".to_string(),
+            ],
+            auto_finish_eligible: true,
+        };
         repos
             .create_recording_start(
                 &note.id,
                 "atomic-session",
                 RecordingSourceMode::MicrophonePlusSystem,
+                &origin,
                 "/tmp/combined.partial.wav",
                 "/tmp/combined.wav",
                 Some("Studio microphone".to_string()),
@@ -6896,7 +6995,9 @@ mod tests {
             .expect("create recording recovery state");
 
         let session = query(
-            "SELECT note_id, source_mode, status, device_label, partial_path, final_path
+            "SELECT note_id, source_mode, recording_origin,
+                    meeting_app_bundle_families, auto_finish_eligible,
+                    status, device_label, partial_path, final_path
              FROM recording_sessions WHERE id = ?",
         )
         .bind("atomic-session")
@@ -6908,6 +7009,18 @@ mod tests {
             session.get::<String, _>("source_mode"),
             "microphone_plus_system"
         );
+        assert_eq!(
+            session.get::<String, _>("recording_origin"),
+            "meeting_prompt"
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(
+                &session.get::<String, _>("meeting_app_bundle_families")
+            )
+            .expect("bundle family metadata"),
+            origin.meeting_app_bundle_families
+        );
+        assert!(session.get::<bool, _>("auto_finish_eligible"));
         assert_eq!(session.get::<String, _>("status"), "recording");
         assert_eq!(
             session.get::<Option<String>, _>("device_label").as_deref(),
@@ -7006,6 +7119,7 @@ mod tests {
                 &note.id,
                 "rolled-back-session",
                 RecordingSourceMode::MicrophonePlusSystem,
+                &RecordingOriginMetadata::default(),
                 "/tmp/combined.partial.wav",
                 "/tmp/combined.wav",
                 None,

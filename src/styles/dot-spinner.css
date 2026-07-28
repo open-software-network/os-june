@@ -92,7 +92,14 @@
   opacity: var(--june-cell-opacity);
   transform: scale(1);
   animation: june-sweep-sm var(--june-dur) var(--ease-in-out) infinite;
-  animation-delay: calc(var(--june-order) * var(--june-frame) - var(--june-dur));
+  /* Contexts that reveal a spinner from display:none can phase its first
+   * visible frame forward without changing the shared cycle. */
+  animation-delay: calc(
+    var(--june-order) *
+    var(--june-frame) -
+    var(--june-dur) -
+    var(--june-phase, 0ms)
+  );
   will-change: opacity;
 }
 

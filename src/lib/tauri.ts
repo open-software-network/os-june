@@ -945,12 +945,17 @@ export async function agentHudSetLayout(input: {
   contextMenuOpen?: boolean;
   width?: number;
   height?: number;
+  placement?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
 }) {
   return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function agentHudOpenAgent(session?: AgentSessionDto) {
-  return invoke<void>("agent_hud_open_agent", { session });
+export async function agentHudMainFocused() {
+  return invoke<boolean>("agent_hud_main_focused");
+}
+
+export async function agentHudOpenAgent(session?: AgentSessionDto, storedSessionId?: string) {
+  return invoke<void>("agent_hud_open_agent", { session, storedSessionId });
 }
 
 export async function sendAppNotification(input: {
@@ -965,8 +970,8 @@ export async function sendAppNotification(input: {
 
 /**
  * Tells the backend the webview can receive "june:agent:open" events and
- * returns the session id of a notification clicked before that (the click
- * launched the app), so bootstrap can navigate straight to it.
+ * returns the stored session id of a notification clicked before that (the
+ * click launched the app), so bootstrap can navigate straight to it.
  */
 export async function agentOpenReady() {
   return invoke<string | null>("agent_open_ready");
@@ -985,6 +990,37 @@ export async function pendingMeetingStartRequest() {
 
 export async function acknowledgeMeetingStartRequest(requestId: string) {
   return invoke<boolean>("acknowledge_meeting_start_request", { requestId });
+}
+
+export type MeetingEndStatus = {
+  sessionId: string;
+  phase: "tracking" | "countdown" | "suppressed" | "finishQueued";
+  expiresAtMs?: number;
+};
+
+export type PendingMeetingEndFinishRequest = {
+  requestId: string;
+  sessionId: string;
+};
+
+export async function pendingMeetingEndStatus() {
+  return invoke<MeetingEndStatus | null>("pending_meeting_end_status");
+}
+
+export async function pendingMeetingEndFinishRequest() {
+  return invoke<PendingMeetingEndFinishRequest | null>("pending_meeting_end_finish_request");
+}
+
+export async function queueMeetingEndFinishRequest(sessionId: string) {
+  return invoke<void>("queue_meeting_end_finish_request", { sessionId });
+}
+
+export async function keepMeetingRecording(sessionId: string) {
+  return invoke<void>("keep_meeting_recording", { sessionId });
+}
+
+export async function acknowledgeMeetingEndFinishRequest(requestId: string) {
+  return invoke<boolean>("acknowledge_meeting_end_finish_request", { requestId });
 }
 
 export type SubmitIssueReportRequest = {

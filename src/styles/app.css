@@ -9849,9 +9849,30 @@ button.agent-user-attachment:hover {
   gap: var(--sp-1);
 }
 
-.sidebar-pinned-section,
-.sidebar-completed-section {
+.sidebar-pinned-section {
   flex: 0 0 auto;
+}
+
+/* The account footer always owns its space. Completed sessions can give up
+ * height in a short window, with their rows scrolling inside the remaining
+ * room instead of pushing the identity below the viewport. */
+.sidebar-completed-section {
+  flex: 0 1 auto;
+  min-height: var(--sidebar-section-title-h);
+  overflow: hidden;
+}
+
+.sidebar-completed-section > .section-title {
+  flex: 0 0 auto;
+}
+
+/* Keep the active list's title and first row available before Completed claims
+ * space. Clip any remaining internal overflow so it cannot paint through the
+ * lower sections or footer. */
+.sidebar-agent-section {
+  flex: 1 0 var(--sidebar-active-section-min-h);
+  min-height: var(--sidebar-active-section-min-h);
+  overflow: hidden;
 }
 
 /* Doubled class so these beat the later .notes-nav rule, whose height: 100%
@@ -9863,6 +9884,10 @@ button.agent-user-attachment:hover {
   max-height: var(--sidebar-pinned-list-max-h);
   overflow-y: auto;
   padding-bottom: 0;
+}
+
+.sidebar-completed-section .notes-nav.sidebar-completed-list {
+  min-height: 0;
 }
 
 /* Section headers share one height so the Pinned and Agent groups sit on the
@@ -10185,7 +10210,7 @@ button.agent-user-attachment:hover {
 
 .agent-sidebar-row .note-row-main {
   grid-template-columns: minmax(0, 1fr);
-  min-height: 26px;
+  min-height: var(--control-sm);
   padding: var(--sp-1) var(--sp-3);
 }
 
@@ -10297,6 +10322,18 @@ button.agent-user-attachment:hover {
   background: var(--popover);
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
+}
+
+.sidebar-context-menu {
+  --scroll-fade-size: var(--sp-6);
+
+  max-height: calc(100vh - var(--sp-6));
+  overflow: hidden;
+}
+
+.sidebar-context-menu-scroll {
+  max-height: calc(100vh - var(--sp-6) - 2 * var(--sp-1) - 2 * var(--border-width));
+  overflow-y: auto;
 }
 
 .context-menu button {
@@ -12321,6 +12358,50 @@ button.agent-user-attachment:hover {
 
 .record-dock .record-consent-note-surface .inline-notice-actions .btn-ghost:hover {
   color: var(--foreground);
+}
+
+/* Meeting-end countdown: the Stop now button's own background is the timer —
+ * a subtle currentColor wash that drains left to right over the grace period
+ * and fires when empty (the undo-toast pattern), so the notice body stays
+ * static prose. `--meeting-end-remaining` is the remaining fraction (1 → 0),
+ * stepped once a second by NoteEditor; the 1s linear transform transition
+ * sweeps the drain smoothly between ticks. Keep in sync with #mhud-end-stop
+ * in meeting-hud.css. */
+.record-dock .meeting-end-notice .meeting-end-stop {
+  position: relative;
+  overflow: hidden;
+}
+
+/* A composited clip-path drain, not a width tween (the css-stabilization
+ * guard bans height/width transitions): the full-size wash is clipped from
+ * the right, and the inset's rounding keeps the moving edge on the button's
+ * own radius. */
+.record-dock .meeting-end-notice .meeting-end-stop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, currentColor 12%, transparent);
+  clip-path: inset(0 calc((1 - var(--meeting-end-remaining, 1)) * 100%) 0 0 round var(--r-md));
+  transition: clip-path 1s linear;
+  pointer-events: none;
+}
+
+/* The precise seconds, riding the drain: number for precision, drain for
+ * shape (the drain also keeps the ticking value reading as a timer rather
+ * than a click delay). A live-ticking value — the sanctioned tabular-nums
+ * exception (spec/no-tabular-numerals.md). min-width holds the button's
+ * frame through the two-to-one digit drop so the drain doesn't jump. */
+.record-dock .meeting-end-notice .meeting-end-seconds {
+  min-width: 3ch;
+  color: color-mix(in oklch, currentColor 62%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-dock .meeting-end-notice .meeting-end-stop::before {
+    transition: none;
+  }
 }
 
 .record-options-trigger {

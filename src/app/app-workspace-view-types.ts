@@ -52,6 +52,7 @@ export type RenderAppWorkspaceDependencies = {
   handleEnableMicrophone: () => void;
   handleEnableSystemAudio: () => void;
   handleFinishRecording: (sessionId: string, options?: { rethrow?: boolean }) => Promise<void>;
+  handleKeepRecordingAfterMeetingEnd: (sessionId: string) => void;
   handleFlushNote: (noteId: string) => Promise<void>;
   handleFoldersImported: (folders: FolderDto[]) => void;
   handleNewAgentSession: () => void;
@@ -97,11 +98,13 @@ export type RenderAppWorkspaceDependencies = {
   handleSourceModeChange: (next: RecordingSourceMode) => void;
   handleStartBundleChat: (prompt: string) => void;
   handleStartRecording: () => Promise<void>;
+  handleStopNowAfterMeetingEnd: (sessionId: string) => void;
   handleToggleSessionCompleted: (sessionId: string, completed: boolean) => Promise<void>;
   handleTopUp: () => void;
   handleUpdateNote: (noteId: string, patch: NoteEditablePatch) => void;
   homeStoredSessionId: string | undefined;
   memoryFolderFilter: string | undefined;
+  meetingEndCountdown: { sessionId: string; secondsRemaining: number } | null;
   microphoneBlocked: boolean;
   microphoneStatus: string | undefined;
   noteDetailScrollRef: React.MutableRefObject<HTMLDivElement | null>;

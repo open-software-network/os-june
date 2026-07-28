@@ -210,9 +210,8 @@ export function NoteChatPanel({
     }
   }
 
-  // Focus the composer, then toggle the dictation helper's listening state —
-  // the same command the hotkey path sends. The helper records, shows the
-  // HUD, and pastes the transcription into the focused field (the composer).
+  // Focus the composer, then explicitly start the dictation helper. Stop and
+  // discard controls are correlated separately with the take shown in the HUD.
   async function startDictation() {
     if (creditActionsDisabledReason) {
       setComposerError(creditActionsDisabledReason);
@@ -220,7 +219,7 @@ export function NoteChatPanel({
     }
     composerRef.current?.focus();
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (err) {
       setComposerError(messageFromError(err));
     }

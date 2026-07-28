@@ -1,12 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconMicrophone } from "central-icons-filled/IconMicrophone";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { spinners } from "unicode-animations";
 import {
   clamp,
   createBarMeter,
@@ -17,6 +17,7 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
+import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
@@ -52,19 +53,52 @@ const appWindow = (() => {
 lifecycle.addCleanup(installNativeContextMenuGuard());
 
 const hud = document.querySelector<HTMLDivElement>("#hud");
-const dragHandle = document.querySelector<HTMLElement>("#hud-handle");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
-const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
+const spinnerNode = document.querySelector<HTMLElement>("#hud-spinner");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const errorIcon = document.querySelector<HTMLElement>(".hud-error-icon");
 const errorLayer = document.querySelector<HTMLElement>(".hud-error-layer");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
+const cancelButton = document.querySelector<HTMLButtonElement>("#hud-cancel");
 const meetingStartButton = document.querySelector<HTMLButtonElement>("#hud-meeting-start");
 const meetingAppLabel = document.querySelector<HTMLElement>("#hud-meeting-app");
 const meetingDismissButton = document.querySelector<HTMLButtonElement>("#hud-meeting-dismiss");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
+const escTip = document.querySelector<HTMLElement>("#hud-esc-tip");
 
 // House iconography (central-icons), injected like the agent HUD does.
+// The cancel X is the cross-medium cut at 16px: its drawn span (~8.3px)
+// sits at optical parity with the stop's 8px solid square, while the muted
+// resting tone keeps the escape hatch subordinate to the submit action. A
+// bare X reads larger than its box — don't size it past the stop's mass.
+if (cancelButton) {
+  cancelButton.innerHTML = renderToStaticMarkup(
+    createElement(IconCrossMedium, {
+      size: 16,
+      ariaHidden: true,
+      focusable: false,
+    }),
+  );
+}
+// The June dot spinner (the app-wide 3×3 mark), built by hand against the
+// shared dot-spinner.css because this page has no React tree — same approach
+// as the agent HUD's appendDotSpinner.
+if (spinnerNode) {
+  const spinner = document.createElement("span");
+  spinner.className = "dot-spinner";
+  spinner.dataset.size = "md";
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.style.setProperty("--june-cols", String(JUNE_SPINNER_COLS.md));
+  for (const cell of juneSpinnerGrid("md")) {
+    const dot = document.createElement("span");
+    dot.style.setProperty("--june-order", String(cell.order));
+    if (cell.mark) {
+      dot.dataset.mark = "";
+    }
+    spinner.appendChild(dot);
+  }
+  spinnerNode.appendChild(spinner);
+}
 if (meetingDismissButton) {
   meetingDismissButton.innerHTML = renderToStaticMarkup(
     createElement(IconCrossSmall, {
@@ -97,8 +131,6 @@ if (meetingStartIcon) {
 let hideTimer: number | undefined;
 let meetingPromptTimer: number | undefined;
 let longDictationNoticeTimer: number | undefined;
-let brailleTimer: number | undefined;
-let brailleFrame = 0;
 let meetingPromptSuppressed = false;
 let pendingMeetingPrompt: DictationHudEvent | undefined;
 let hideRequestId = 0;
@@ -106,15 +138,16 @@ let showRequestId = 0;
 let showQueue: Promise<void> = Promise.resolve();
 
 lifecycle.addCleanup(() => {
+  // Invalidate async show/hide work that may still be awaiting a native
+  // resize, font load, animation frame, or timeout when this webview dies.
+  // Without this, an exit fallback from the old HUD instance can wake later
+  // and hide a newly created window.
+  hideRequestId += 1;
+  showRequestId += 1;
   window.clearTimeout(hideTimer);
   window.clearTimeout(meetingPromptTimer);
   window.clearTimeout(longDictationNoticeTimer);
-  window.clearInterval(brailleTimer);
 });
-
-// waverows shows multiple horizontal rows of dots flowing across — reads as a
-// "thinking/processing" texture rather than a single dot bouncing.
-const brailleWave = spinners.waverows;
 
 // Matches the .hud[data-state="exiting"] transition in hud.css. Long
 // enough to read as a deliberate dissolve rather than a blink-out.
@@ -124,11 +157,19 @@ const MORPH_FADE_MS = 80;
 // Transparent margin around the frostless HUD surface. The compact HUD shadow
 // paints here and the meeting dismiss can overhang the card's edge. Keep this
 // in sync with --shadow-hud's maximum spread in tokens.css; using the larger
-// app-card shadows here clips the overlay or forces a click-blocking window.
+// app-card shadows here clips the Dictation HUD or forces a click-blocking window.
 const WINDOW_GUTTER = 18;
-// Gap between the error pill and the message layer that draws above/below it
-// — must match the .hud-error-layer margin in hud.css.
-const ERROR_LAYER_GAP = 8;
+// On macOS the Esc hint lives in a lightweight native click-through panel.
+// Browser demos and other platforms keep the in-DOM fallback.
+const HAS_TAURI_BRIDGE = "__TAURI_INTERNALS__" in window;
+const USES_NATIVE_ESC_TOOLTIP =
+  HAS_TAURI_BRIDGE && /Mac/i.test(`${navigator.platform} ${navigator.userAgent}`);
+// The stop press collapses the wide pill down to the spinner square as a pure
+// CSS width tween — the transparent native frame stays at the listening size
+// (invisible) and snaps down only after the motion settles, so the frame can
+// never clip the pill mid-flight. transitionend is authoritative; this only
+// bounds the wait if an environment never dispatches it.
+const COLLAPSE_SETTLE_FALLBACK_MS = 600;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 // A short dictation round-trips in well under a second. Past this, the
 // user is watching a spinner wondering whether June hung, so say so.
@@ -228,8 +269,15 @@ function setHud(state: string, status: string): HudTransition {
   const id = ++hudTransitionId;
   if (!hud || !statusText) return { changed: false, id };
   const previous = hud.dataset.state;
+  const entersProcessing =
+    (state === "transcribing" || state === "pasting") &&
+    previous !== "transcribing" &&
+    previous !== "pasting";
   hud.dataset.state = state;
   statusText.textContent = status;
+  if (entersProcessing) {
+    restartSpinnerAnimation();
+  }
   // Keep the error message through "exiting" so it dissolves with the
   // window's native alpha fade instead of vanishing a frame early; the
   // post-hide flip to "idle" clears it.
@@ -245,17 +293,15 @@ function setHud(state: string, status: string): HudTransition {
   if (state !== "transcribing") {
     clearLongDictationNotice();
   }
-  if (state === "transcribing" || state === "pasting") {
-    startBraille();
-  } else if (previous === "transcribing" || previous === "pasting") {
-    stopBraille();
-  }
   if (state === "listening") {
     startBarLoop();
     if (previous !== "listening") {
       pushStopBoundsToNative();
+      pushCancelBoundsToNative();
     }
   } else if (previous === "listening") {
+    cancelPendingAudioLevel();
+    stopBarLoop();
     clearStopHover();
   }
   if (state !== previous && hud) {
@@ -271,14 +317,26 @@ function setHud(state: string, status: string): HudTransition {
   return { changed: state !== previous, id, previous };
 }
 
+function restartSpinnerAnimation() {
+  if (!spinnerNode || prefersReducedMotion()) return;
+  // WebKit does not instantiate descendant CSS animations when their nearest
+  // display:none ancestor first becomes visible. Briefly resolve the dots to
+  // animation:none after the processing state makes the spinner displayable,
+  // then restore the shared animation declaration from a clean rendered frame.
+  spinnerNode.classList.add("hud-spinner-reset");
+  spinnerNode.offsetWidth;
+  spinnerNode.classList.remove("hud-spinner-reset");
+}
+
 async function updateErrorPlacement() {
-  if (!hud) return;
+  if (!hud || lifecycle.signal.aborted) return;
   let placement: unknown;
   try {
     placement = await Promise.resolve(invoke("dictation_hud_preferred_error_placement"));
   } catch {
     placement = undefined;
   }
+  if (lifecycle.signal.aborted) return;
   hud.dataset.errorPlacement = placement === "above" ? "above" : "below";
 }
 
@@ -319,6 +377,20 @@ function startBarLoop() {
     }
   };
   rafHandle = lifecycle.requestAnimationFrame(tick);
+}
+
+function stopBarLoop() {
+  // A hidden WKWebView may suspend a queued animation frame indefinitely.
+  // Clear both scheduling paths when listening ends so the next dictation
+  // cannot mistake an orphaned callback for a live waveform loop.
+  if (rafHandle !== undefined) {
+    lifecycle.cancelAnimationFrame(rafHandle);
+    rafHandle = undefined;
+  }
+  if (shimmerTimer !== undefined) {
+    window.clearTimeout(shimmerTimer);
+    shimmerTimer = undefined;
+  }
 }
 
 function resetBars() {
@@ -393,27 +465,86 @@ function cancelPendingAudioLevel() {
   pendingRawLevel = null;
 }
 
-function startBraille() {
-  if (!brailleNode || brailleTimer !== undefined) return;
-  brailleFrame = 0;
-  brailleNode.textContent = brailleWave.frames[0] ?? "";
-  brailleTimer = window.setInterval(() => {
-    brailleFrame = (brailleFrame + 1) % brailleWave.frames.length;
-    if (brailleNode) {
-      brailleNode.textContent = brailleWave.frames[brailleFrame] ?? "";
-    }
-  }, brailleWave.interval);
-}
-
-function stopBraille() {
-  if (brailleTimer !== undefined) {
-    window.clearInterval(brailleTimer);
-    brailleTimer = undefined;
-  }
-}
-
 function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
+}
+
+function setCancelHover(isHovered: boolean) {
+  cancelButton?.classList.toggle("is-hovered", isHovered);
+}
+
+// Standalone browser demos own their key events. Native helpers must
+// explicitly advertise a global Escape monitor before the HUD teaches it.
+let escapeCancelAvailable = !HAS_TAURI_BRIDGE;
+let activeDictationTakeId: string | undefined;
+
+function dictationTakeId(event: DictationHudEvent) {
+  const takeId = event.payload?.takeId;
+  return typeof takeId === "string" && takeId.trim().length > 0 && takeId.length <= 128
+    ? takeId.trim()
+    : undefined;
+}
+
+function correlatedHelperCommand(type: "stop_and_paste" | "discard_recording") {
+  return activeDictationTakeId ? { type, takeId: activeDictationTakeId } : { type };
+}
+
+function setCancelTooltipHover(isHovered: boolean) {
+  setEscTipVisible(isHovered && escapeCancelAvailable && hud?.dataset.state === "listening");
+}
+
+// The Esc hint is a real tooltip beside the pill. macOS renders it in a
+// separate click-through native panel; the standalone/browser fallback keeps
+// its slot reserved in the HUD frame. Neither path resizes the visible pill
+// on hover, which would stale the control rects polled by the native thread.
+let escTipOpen = false;
+let escTipToken = 0;
+
+lifecycle.addCleanup(() => {
+  escTipOpen = false;
+  escTipToken += 1;
+  hud?.classList.remove("hud-esc-tip-open");
+  if (USES_NATIVE_ESC_TOOLTIP) {
+    invokeBestEffort("dictation_hud_set_tooltip_visible", { visible: false });
+  }
+});
+
+function setEscTipVisible(visible: boolean) {
+  if (!hud || escTipOpen === visible) return;
+  escTipOpen = visible;
+  const token = ++escTipToken;
+  if (!visible) {
+    hud.classList.remove("hud-esc-tip-open");
+    if (USES_NATIVE_ESC_TOOLTIP) {
+      invokeBestEffort("dictation_hud_set_tooltip_visible", { visible: false });
+    }
+    return;
+  }
+  void updateEscTipPlacement().then(() => {
+    if (lifecycle.signal.aborted || token !== escTipToken || !escTipOpen) return;
+    if (USES_NATIVE_ESC_TOOLTIP) {
+      invokeBestEffort("dictation_hud_set_tooltip_visible", {
+        visible: true,
+        placement: hud?.dataset.tipPlacement,
+      });
+    } else {
+      hud?.classList.add("hud-esc-tip-open");
+    }
+  });
+}
+
+// Same screen-half heuristic the error layer uses: the tip flips above the
+// pill when the pill sits in the lower half of the screen.
+async function updateEscTipPlacement() {
+  if (!hud || lifecycle.signal.aborted) return;
+  let placement: unknown;
+  try {
+    placement = await Promise.resolve(invoke("dictation_hud_preferred_error_placement"));
+  } catch {
+    placement = undefined;
+  }
+  if (lifecycle.signal.aborted) return;
+  hud.dataset.tipPlacement = placement === "above" ? "above" : "below";
 }
 
 function setDismissHover(isHovered: boolean) {
@@ -478,6 +609,17 @@ function pushStopBoundsToNative() {
   });
 }
 
+function pushCancelBoundsToNative() {
+  if (!cancelButton || hud?.dataset.state !== "listening") {
+    invokeBestEffort("dictation_hud_set_cancel_bounds", { rect: null });
+    return;
+  }
+  const { left, right, top, bottom } = cancelButton.getBoundingClientRect();
+  invokeBestEffort("dictation_hud_set_cancel_bounds", {
+    rect: { left, right, top, bottom },
+  });
+}
+
 // The native window size the current state wants. getBoundingClientRect
 // includes transforms, and the exit leaves one in play: "exiting" eases the
 // pill to scale(0.94), and when the window hides mid-flight the suspended
@@ -499,7 +641,20 @@ function measureWindowSize() {
     // leaves the pill dead centre while the layer reveals vertically.
     const layer = errorLayer.getBoundingClientRect();
     width = Math.max(width, layer.width);
-    height += 2 * (ERROR_LAYER_GAP + layer.height);
+    height += 2 * (cssPixelToken("--sp-2") + layer.height);
+  }
+  if (
+    hud.dataset.state === "listening" &&
+    escTip &&
+    escapeCancelAvailable &&
+    !USES_NATIVE_ESC_TOOLTIP
+  ) {
+    // The browser/non-macOS fallback reserves the Esc tooltip slot for the
+    // whole session, mirrored vertically so the pill sits dead-center.
+    // macOS uses a separate click-through native panel and skips this band.
+    const tip = escTip.getBoundingClientRect();
+    width = Math.max(width, tip.width);
+    height += 2 * (cssPixelToken("--sp-2") + tip.height);
   }
   if (usesFrostlessChrome(hud.dataset.state)) {
     // The frostless HUD includes the transparent gutter its CSS shadow (and
@@ -519,7 +674,13 @@ function measureWindowSize() {
 // glass eases to its new frame, then fade back in (the invoke resolves when
 // the native motion finishes).
 async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }) {
-  if (!hud) return;
+  if (!hud || lifecycle.signal.aborted) return;
+  // A stop-collapse is pure CSS under a stationary frame; let it settle
+  // before measuring, or the frame would snap down mid-motion and clip it.
+  while (collapseSettled) {
+    await collapseSettled;
+    if (lifecycle.signal.aborted) return;
+  }
   // ABC Diatype may still be loading on the window's first show; measuring
   // with the fallback font bakes the wrong width into the window frame.
   if (typeof document.fonts?.ready?.then === "function") {
@@ -532,6 +693,7 @@ async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }
       }
     }
   }
+  if (lifecycle.signal.aborted) return;
   if (options?.morph) {
     hud.classList.add("is-morphing");
     // Let the contents finish fading before the glass starts moving: the
@@ -540,6 +702,7 @@ async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }
     // worst on the meeting card, which changes height as well as width.
     if (!prefersReducedMotion()) {
       await new Promise((resolve) => window.setTimeout(resolve, MORPH_FADE_MS));
+      if (lifecycle.signal.aborted) return;
     }
   }
   const { width, height } = measureWindowSize();
@@ -551,10 +714,12 @@ async function syncWindowToPill(options?: { animate?: boolean; morph?: boolean }
     height,
     animate: options?.animate ?? !prefersReducedMotion(),
   });
+  if (lifecycle.signal.aborted) return;
   lifecycle.requestAnimationFrame(() => {
     lifecycle.requestAnimationFrame(() => {
       hud?.classList.remove("is-morphing");
       pushStopBoundsToNative();
+      pushCancelBoundsToNative();
       pushDismissBoundsToNative();
     });
   });
@@ -613,7 +778,10 @@ function triggerShake() {
 
 function clearStopHover() {
   setStopHover(false);
+  setCancelHover(false);
+  setCancelTooltipHover(false);
   invokeBestEffort("dictation_hud_set_stop_bounds", { rect: null });
+  invokeBestEffort("dictation_hud_set_cancel_bounds", { rect: null });
 }
 
 function clearHideTimer() {
@@ -631,9 +799,10 @@ function clearMeetingPromptTimer() {
 }
 
 function startMeetingPromptTimer() {
-  if (meetingPromptTimer !== undefined) return;
+  if (lifecycle.signal.aborted || meetingPromptTimer !== undefined) return;
   meetingPromptTimer = window.setTimeout(() => {
     meetingPromptTimer = undefined;
+    if (lifecycle.signal.aborted) return;
     if (hud?.dataset.state !== "meeting") return;
     meetingPromptSuppressed = true;
     void hideHud();
@@ -648,9 +817,10 @@ function clearLongDictationNotice() {
 }
 
 function startLongDictationNotice() {
-  if (longDictationNoticeTimer !== undefined) return;
+  if (lifecycle.signal.aborted || longDictationNoticeTimer !== undefined) return;
   longDictationNoticeTimer = window.setTimeout(() => {
     longDictationNoticeTimer = undefined;
+    if (lifecycle.signal.aborted) return;
     if (hud?.dataset.state !== "transcribing") return;
     const transition = setHud("transcribing", "Still transcribing");
     void showHud(showOptionsForTransition(transition));
@@ -658,6 +828,7 @@ function startLongDictationNotice() {
 }
 
 async function hideHud() {
+  if (lifecycle.signal.aborted) return;
   const requestId = ++hideRequestId;
   showRequestId += 1;
   clearHideTimer();
@@ -679,7 +850,6 @@ async function hideHud() {
       hud.dataset.exitState = exitState;
     }
     setHud("exiting", statusText?.textContent || "Idle");
-    stopBraille();
     if (meetingExit) {
       // The meeting card leaves the way it came in: a native slide-up +
       // fade that also hides the window (the invoke resolves once it's
@@ -705,6 +875,7 @@ async function hideHud() {
   // hide() rejects on the standalone browser page (no Tauri bridge); the
   // demo driver still needs the state machine to advance.
   await appWindow?.hide().catch(() => {});
+  if (lifecycle.signal.aborted || requestId !== hideRequestId) return;
   setWindowAlpha(1);
   // Don't park on "exiting" (opacity 0, pointer-events none): if the native
   // window is ever shown again without new content, a pill stuck in that
@@ -727,6 +898,10 @@ function shouldMorphTransition(transition: HudTransition) {
 
 function showOptionsForTransition(transition: HudTransition) {
   const current = hud?.dataset.state;
+  // The processing chain never morphs: transcribing and pasting share the
+  // compact spinner layout (a fade would blink the spinner), and leaving
+  // "listening" is handled by collapseToSpinner's CSS width tween — this
+  // path only sees it as a snap fallback (reduced motion, zero-width pill).
   const processingContinuation =
     (transition.previous === "listening" && current === "transcribing") ||
     (transition.previous === "transcribing" && current === "pasting") ||
@@ -739,6 +914,7 @@ function showOptionsForTransition(transition: HudTransition) {
 }
 
 function showHud(options?: { fresh?: boolean; morph?: boolean }) {
+  if (lifecycle.signal.aborted) return Promise.resolve();
   const requestId = ++showRequestId;
   hideRequestId += 1;
   clearHideTimer();
@@ -750,7 +926,7 @@ function showHud(options?: { fresh?: boolean; morph?: boolean }) {
 }
 
 async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?: boolean }) {
-  if (requestId !== showRequestId) return;
+  if (lifecycle.signal.aborted || requestId !== showRequestId) return;
   if (options?.fresh) {
     setWindowAlpha(0);
   }
@@ -763,7 +939,7 @@ async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?
     animate: options?.morph ? !prefersReducedMotion() : false,
     morph: options?.morph,
   });
-  if (requestId !== showRequestId) return;
+  if (lifecycle.signal.aborted || requestId !== showRequestId) return;
   // A fresh meeting prompt always enters at the top-center default spot,
   // and (motion permitting) slides down from the top edge while the
   // window alpha ramps up. The motion is native (the invoke resolves when
@@ -780,7 +956,7 @@ async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?
     // No bridge (standalone page): fall back to the CSS entrance.
     if (meetingEntrance && animate) replayCssEntrance();
   }
-  if (requestId !== showRequestId) return;
+  if (lifecycle.signal.aborted || requestId !== showRequestId) return;
   // Force a layout flush before reading rects.
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
@@ -788,6 +964,7 @@ async function showHudNow(requestId: number, options?: { fresh?: boolean; morph?
     pushDismissBoundsToNative();
   } else {
     pushStopBoundsToNative();
+    pushCancelBoundsToNative();
     pushDismissBoundsToNative();
   }
   assertWindowMatchesPill();
@@ -816,12 +993,16 @@ function clearFrameSettleTimer() {
 
 function assertWindowMatchesPill() {
   // Standalone browser page: the viewport is the whole tab, never the pill.
-  if (!appWindow) return;
+  if (!appWindow || lifecycle.signal.aborted) return;
   clearFrameSettleTimer();
   frameSettleTimer = window.setTimeout(() => {
     frameSettleTimer = undefined;
+    if (lifecycle.signal.aborted) return;
     const state = hud?.dataset.state;
     if (!hud || !state || state === "idle" || state === "exiting") return;
+    // Never measure mid-collapse: hud-snap would jump the width tween to its
+    // end value. The collapse runs its own snap resize when it settles.
+    if (collapseSettled) return;
     const expected = measureWindowSize();
     const drift = Math.max(
       Math.abs(window.innerWidth - expected.width),
@@ -835,8 +1016,10 @@ function assertWindowMatchesPill() {
 }
 
 function hideSoon(delay = 900) {
+  if (lifecycle.signal.aborted) return;
   clearHideTimer();
   hideTimer = window.setTimeout(() => {
+    if (lifecycle.signal.aborted) return;
     void hideHud();
   }, delay);
 }
@@ -844,11 +1027,40 @@ function hideSoon(delay = 900) {
 async function handleDictationEventPayload(payload: unknown) {
   const dictationEvent = parseEvent(payload);
   if (!dictationEvent) return;
+  if (activeDictationTakeId && dictationEvent.payload?.preserveActiveTake === true) {
+    return;
+  }
+  const eventTakeId = dictationTakeId(dictationEvent);
+  if (
+    activeDictationTakeId &&
+    eventTakeId &&
+    eventTakeId !== activeDictationTakeId &&
+    [
+      "audio_level",
+      "finalizing_transcript",
+      "final_transcript",
+      "paste_target",
+      "paste_completed",
+      "recording_discarded",
+      "error",
+    ].includes(dictationEvent.type)
+  ) {
+    return;
+  }
 
   if (dictationEvent.type === "listening_started") {
+    activeDictationTakeId = dictationTakeId(dictationEvent);
+    escapeCancelAvailable =
+      !HAS_TAURI_BRIDGE || dictationEvent.payload?.escapeCancelAvailable === true;
     resetBars();
     const transition = setHud("listening", "Listening");
     await showHud(showOptionsForTransition(transition));
+    return;
+  }
+
+  if (dictationEvent.type === "escape_cancel_unavailable") {
+    escapeCancelAvailable = false;
+    setEscTipVisible(false);
     return;
   }
 
@@ -856,7 +1068,7 @@ async function handleDictationEventPayload(payload: unknown) {
     // The helper flushes a final coalesced level when the recorder stops, which
     // arrives AFTER finalizing_transcript. Once we've moved past listening, that
     // stray level must NOT pull the HUD back to "listening" — otherwise it kills
-    // the transcribing braille and the pill looks stuck until the paste lands.
+    // the processing spinner and the pill looks stuck until the paste lands.
     const state = hud?.dataset.state;
     if (
       state === "idle" ||
@@ -877,8 +1089,15 @@ async function handleDictationEventPayload(payload: unknown) {
     // Drop any level still queued from listening so it can't push a stray
     // sample into the meter after we've moved on to transcribing.
     cancelPendingAudioLevel();
-    const transition = setHud("transcribing", "Transcribing");
-    await showHud(showOptionsForTransition(transition));
+    if (hud?.dataset.state === "listening") {
+      // Push-to-talk release (or any stop that skipped the button): same
+      // collapse the stop button plays.
+      await collapseToSpinner("Transcribing");
+    } else {
+      const transition = setHud("transcribing", "Transcribing");
+      await showHud(showOptionsForTransition(transition));
+    }
+    if (lifecycle.signal.aborted) return;
     startLongDictationNotice();
     return;
   }
@@ -899,11 +1118,13 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "paste_completed") {
+    activeDictationTakeId = undefined;
     void hideHud();
     return;
   }
 
   if (dictationEvent.type === "recording_discarded") {
+    activeDictationTakeId = undefined;
     // A grazed push-to-talk key or a signed-out session: the recording was
     // dropped without transcription, so the listening HUD just goes away.
     void hideHud();
@@ -958,13 +1179,13 @@ async function handleDictationEventPayload(payload: unknown) {
     // can arrive during that IPC call, and its secondary not_listening error
     // must not dismiss the actionable start failure.
     await updateErrorPlacement();
-    if (transition.id !== hudTransitionId) return;
+    if (lifecycle.signal.aborted || transition.id !== hudTransitionId) return;
     // Render the pill with the message layer drawn in, snap the window to
     // the full (layer-included) size with no native motion, then draw the
     // layer out in CSS — the pill never moves and nothing clips.
     hud?.classList.add("hud-reveal-collapsed");
     await showHud({ fresh: pillIsBlank(transition.previous) });
-    if (transition.id !== hudTransitionId) return;
+    if (lifecycle.signal.aborted || transition.id !== hudTransitionId) return;
     playErrorReveal();
     triggerShake();
     // Hold long enough for the shake to finish and the message to read.
@@ -1015,6 +1236,7 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
 }
 
 async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
+  if (lifecycle.signal.aborted) return;
   if (meetingPromptSuppressed || !canShowMeetingPrompt(hud?.dataset.state)) {
     // Rust may have shown the native window before emitting this event.
     // When the prompt won't render and the pill has no other content, put
@@ -1030,6 +1252,7 @@ async function showMeetingPrompt(meetingEvent: DictationHudEvent) {
   }
   const transition = setHud("meeting", "Meeting detected");
   await showHud(showOptionsForTransition(transition));
+  if (lifecycle.signal.aborted) return;
   startMeetingPromptTimer();
 }
 
@@ -1040,7 +1263,7 @@ function hideBlankWindowIfNeeded() {
 }
 
 function showPendingMeetingPromptAfterOnboarding() {
-  if (!pendingMeetingPrompt || !isOnboardingComplete()) return;
+  if (lifecycle.signal.aborted || !pendingMeetingPrompt || !isOnboardingComplete()) return;
   const meetingEvent = pendingMeetingPrompt;
   pendingMeetingPrompt = undefined;
   void showMeetingPrompt(meetingEvent);
@@ -1086,28 +1309,170 @@ function parseEvent(payload: unknown): DictationHudEvent | undefined {
   return undefined;
 }
 
-dragHandle?.addEventListener("pointerdown", (event) => {
+function cssPixelToken(token: string) {
+  if (!hud) return 0;
+  const value = Number.parseFloat(window.getComputedStyle(hud).getPropertyValue(token));
+  return Number.isFinite(value) ? value : 0;
+}
+
+// The whole pill is a drag surface — press anywhere that isn't a control and
+// move it. The explicit pointer path is more reliable than
+// data-tauri-drag-region on the non-activating macOS panel.
+hud?.addEventListener("pointerdown", (event) => {
   if (event.button !== 0) return;
+  if (event.target instanceof Element && event.target.closest("button")) return;
   event.preventDefault();
-  event.stopPropagation();
   void appWindow?.startDragging().catch(() => {});
 });
+
+// While the collapse tween plays, window sizing is locked (syncWindowToPill
+// awaits this) so nothing snaps the frame down mid-motion.
+let collapseSettled: Promise<void> | undefined;
+let cancelCollapse: (() => void) | undefined;
+let collapseFallbackTimer: number | undefined;
+
+function interruptCollapse() {
+  cancelCollapse?.();
+  cancelCollapse = undefined;
+  collapseSettled = undefined;
+  window.clearTimeout(collapseFallbackTimer);
+  collapseFallbackTimer = undefined;
+  hud?.classList.remove("hud-collapse-active");
+  hud?.classList.remove("hud-collapse");
+  if (hud) hud.style.width = "";
+}
+
+lifecycle.addCleanup(interruptCollapse);
+
+// The stop moment: the shell width tweens down around the incoming spinner
+// (CSS, see .hud.hud-collapse) while the waveform ghost fades in place. The
+// native frame holds the old, larger size — it is transparent, so only the
+// pill's motion is visible — and snaps to the square once the tween settles.
+async function collapseToSpinner(status: string) {
+  if (!hud || lifecycle.signal.aborted) return;
+  const fromWidth = hud.getBoundingClientRect().width;
+  const collapsedPillSize = cssPixelToken("--control-lg") || hud.getBoundingClientRect().height;
+  if (prefersReducedMotion() || collapsedPillSize <= 0 || fromWidth <= collapsedPillSize) {
+    // Reduced motion, or nothing measurable to tween (jsdom): atomic swap.
+    const transition = setHud("transcribing", status);
+    if (!transition.changed) return;
+    await showHud(showOptionsForTransition(transition));
+    return;
+  }
+
+  // Prime both sides of the morph while the listening waveform still owns the
+  // visible state. The previous sequence changed data-state first, so the
+  // waveform was already display:none and the spinner was already renderable
+  // by the time this class arrived. WebKit therefore had no painted "from"
+  // frame to animate on the first collapse.
+  hud.style.width = `${fromWidth}px`;
+  hud.classList.add("hud-collapse");
+  const transition = setHud("transcribing", status);
+  if (!transition.changed) {
+    hud.classList.remove("hud-collapse");
+    hud.style.width = "";
+    return;
+  }
+  hud.offsetWidth;
+  hud.classList.add("hud-collapse-active");
+  hud.style.width = `${collapsedPillSize}px`;
+  // Settle on the width transition actually finishing, not a timer: WebKit
+  // throttles JS timers on this non-key panel, and a late timer left the
+  // collapse class (and the window-sync lock) stuck for seconds. The timer
+  // stays only as a generous fallback for environments with no transitions.
+  const settled = new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(collapseFallbackTimer);
+      collapseFallbackTimer = undefined;
+      hud?.removeEventListener("transitionend", onTransitionEnd);
+      if (cancelCollapse === finish) cancelCollapse = undefined;
+      resolve();
+    };
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (event.target === hud && event.propertyName === "width") finish();
+    };
+    hud?.addEventListener("transitionend", onTransitionEnd);
+    collapseFallbackTimer = window.setTimeout(finish, COLLAPSE_SETTLE_FALLBACK_MS);
+    cancelCollapse = finish;
+  });
+  collapseSettled = settled;
+  await settled;
+  if (lifecycle.signal.aborted) return;
+  if (collapseSettled === settled) collapseSettled = undefined;
+  hud.classList.remove("hud-collapse-active");
+  hud.classList.remove("hud-collapse");
+  hud.style.width = "";
+  const state = hud.dataset.state;
+  if (state === "transcribing" || state === "pasting") {
+    await syncWindowToPill({ animate: false });
+  }
+}
 
 stopButton?.addEventListener("click", async (event) => {
   event.preventDefault();
   setStopHover(false);
   if (hud?.dataset.state === "listening") {
-    const transition = setHud("transcribing", "Transcribing");
-    void showHud(showOptionsForTransition(transition));
+    void collapseToSpinner("Transcribing");
   }
   try {
     await invoke("dictation_helper_command", {
-      command: { type: "stop_and_paste" },
+      command: correlatedHelperCommand("stop_and_paste"),
     });
   } catch {
-    void hideHud();
+    if (lifecycle.signal.aborted) return;
+    if (hud?.dataset.state === "transcribing") {
+      interruptCollapse();
+      const transition = setHud("listening", "Listening");
+      await showHud(showOptionsForTransition(transition));
+      triggerShake();
+    }
   }
 });
+
+// Cancel makes the current take terminal before asking the helper to discard
+// it. Work that has not started is suppressed; a metered request whose
+// settlement June API already spawned cannot be revoked at the desktop
+// boundary. The helper answers with recording_discarded, which is the
+// authoritative confirmation that capture actually stopped. Keep the
+// listening HUD visible if the command write fails so an active recording is
+// never concealed behind a dismissed panel.
+async function cancelDictation() {
+  if (hud?.dataset.state !== "listening") return;
+  setStopHover(false);
+  setCancelHover(false);
+  setCancelTooltipHover(false);
+  try {
+    await invoke("dictation_helper_command", {
+      command: correlatedHelperCommand("discard_recording"),
+    });
+  } catch {
+    if (!lifecycle.signal.aborted) triggerShake();
+  }
+}
+
+cancelButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  await cancelDictation();
+});
+
+// In-app the Escape press is captured globally by the dictation helper (the
+// HUD panel never becomes key, so this webview sees no keystrokes); this
+// listener covers the standalone browser page, where the demo driver runs
+// without that native path.
+window.addEventListener(
+  "keydown",
+  (event) => {
+    if (event.key !== "Escape" || hud?.dataset.state !== "listening") return;
+    event.preventDefault();
+    event.stopPropagation();
+    void cancelDictation();
+  },
+  { capture: true, signal: lifecycle.signal },
+);
 
 meetingStartButton?.addEventListener("click", async (event) => {
   event.preventDefault();
@@ -1118,11 +1483,13 @@ meetingStartButton?.addEventListener("click", async (event) => {
   try {
     await invoke("queue_meeting_start_request");
   } catch {
+    if (lifecycle.signal.aborted) return;
     // The request was not durably queued, so leave the prompt available for
     // another click instead of hiding a failed action.
     meetingStartButton.disabled = false;
     return;
   }
+  if (lifecycle.signal.aborted) return;
   meetingPromptSuppressed = true;
   clearMeetingPromptTimer();
   void hideHud().finally(() => {
@@ -1162,6 +1529,18 @@ lifecycle.trackUnlisten(
 );
 
 lifecycle.trackUnlisten(
+  listen<boolean>("hud-cancel-hover", (event) => {
+    setCancelHover(Boolean(event.payload));
+  }),
+);
+
+lifecycle.trackUnlisten(
+  listen<boolean>("hud-cancel-tooltip-hover", (event) => {
+    setCancelTooltipHover(Boolean(event.payload));
+  }),
+);
+
+lifecycle.trackUnlisten(
   listen<boolean>("hud-dismiss-hover", (event) => {
     setDismissHover(Boolean(event.payload));
   }),
@@ -1178,6 +1557,7 @@ lifecycle.trackUnlisten(
 // When the faces land, re-fit the window to whatever is showing.
 if (typeof document.fonts?.ready?.then === "function") {
   void document.fonts.ready.then(() => {
+    if (lifecycle.signal.aborted) return;
     const state = hud?.dataset.state;
     if (state && state !== "idle" && state !== "exiting") {
       void syncWindowToPill();
@@ -1213,16 +1593,17 @@ lifecycle.addCleanup(subscribeToOnboardingComplete(showPendingMeetingPromptAfter
 // "detected") drives the meeting-detection prompt. See lib/dictation-hud-demo.ts
 // and lib/meeting-hud-demo.ts.
 if (import.meta.env.DEV) {
-  void import("./lib/dictation-hud-demo").then(({ registerDictationHudDemo }) =>
-    registerDictationHudDemo({ local: true }),
-  );
-  void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
-    registerMeetingHudDemo({ local: true }),
-  );
+  void import("./lib/dictation-hud-demo").then(({ registerDictationHudDemo }) => {
+    if (!lifecycle.signal.aborted) registerDictationHudDemo({ local: true });
+  });
+  void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) => {
+    if (!lifecycle.signal.aborted) registerMeetingHudDemo({ local: true });
+  });
 }
 
 void invoke<string | undefined>("latest_dictation_event")
   .then((payload) => {
+    if (lifecycle.signal.aborted) return;
     if (payload) {
       return handleDictationEventPayload(payload);
     }
