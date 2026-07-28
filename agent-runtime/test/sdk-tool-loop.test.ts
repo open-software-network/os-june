@@ -9,6 +9,7 @@ import type { EngineEvent, EngineRunInput, JsonObject } from "../src/types.ts";
 
 const AUTO_RUN_MODEL = "__june_auto_generation__:73";
 const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
+const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
 test("continues model inference after a host tool result", async () => {
   const modelRequests: JsonObject[] = [];
@@ -463,6 +464,7 @@ test("serializes an approval interruption after assistant history", async () => 
 });
 
 test("resumes a serialized approval and continues after the host tool result", async () => {
+  const modelRequests: JsonObject[] = [];
   let modelRequestCount = 0;
   let toolInvocationCount = 0;
   const engine = new OpenAIAgentsEngine(async (input) => {
@@ -475,6 +477,7 @@ test("resumes a serialized approval and continues after the host tool result", a
       throw new Error("The test streams complete in one page");
     }
     modelRequestCount += 1;
+    modelRequests.push(input.arguments.request);
     if (modelRequestCount === 1) {
       return streamPage("approval-start", {
         id: "completion-approval-start",
@@ -487,6 +490,8 @@ test("resumes a serialized approval and continues after the host tool result", a
             finish_reason: "tool_calls",
             delta: {
               role: "assistant",
+              reasoning: "I should write the requested file.",
+              reasoning_content: "",
               tool_calls: [
                 {
                   index: 0,
@@ -556,6 +561,9 @@ test("resumes a serialized approval and continues after the host tool result", a
   });
   assert.equal(paused.interruptions.length, 1);
   assert.ok(paused.serializedState);
+  const nativeStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(nativeStateEnvelope.juneVersion, 1);
+  assert.equal(nativeStateEnvelope.reasoningWireFormat, "reasoning");
 
   const resumed = await engine.resume({
     sessionId: "session-resume",
@@ -579,9 +587,20 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.equal(modelRequestCount, 2);
   assert.equal(resumed.finalOutput, "The file contains OK.");
   assert.equal(resumed.interruptions.length, 0);
+  const resumedMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(resumedMessages));
+  const resumedAssistant = resumedMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(resumedAssistant));
+  assert.equal(resumedAssistant.reasoning, "I should write the requested file.");
+  assert.equal(resumedAssistant.reasoning_content, undefined);
 });
 
-test("preserves GLM reasoning_content across a tool-call continuation", async () => {
+test("preserves observed reasoning_content for an unlisted model alias", async () => {
   const modelRequests: JsonObject[] = [];
   const toolCalls: Array<{ name: string; callId?: string }> = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
@@ -602,14 +621,14 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
             id: "glm-reasoning-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "z-ai/glm-5.2",
+            model: UNLISTED_GLM_MODEL,
             choices: [
               {
                 index: 0,
                 finish_reason: null,
                 delta: {
                   role: "assistant",
-                  reasoning_content: "I should check ",
+                  reasoning: "I should check ",
                 },
               },
             ],
@@ -618,7 +637,7 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
             id: "glm-reasoning-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "z-ai/glm-5.2",
+            model: UNLISTED_GLM_MODEL,
             choices: [
               {
                 index: 0,
@@ -633,7 +652,7 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
             id: "glm-reasoning-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "z-ai/glm-5.2",
+            model: UNLISTED_GLM_MODEL,
             choices: [
               {
                 index: 0,
@@ -664,7 +683,7 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
       id: "glm-reasoning-2",
       object: "chat.completion.chunk",
       created: 2,
-      model: "z-ai/glm-5.2",
+      model: UNLISTED_GLM_MODEL,
       choices: [
         {
           index: 0,
@@ -682,7 +701,7 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
     emit: () => {},
     takeSteering: () => [],
     params: {
-      model: "z-ai/glm-5.2",
+      model: UNLISTED_GLM_MODEL,
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
       workspace: "/tmp/june-workspace",
@@ -1118,6 +1137,9 @@ test("pins an Auto-routed GLM model across an approval resume", async () => {
   });
   assert.equal(paused.interruptions.length, 1);
   assert.ok(paused.serializedState);
+  const glmStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(glmStateEnvelope.juneVersion, 1);
+  assert.equal(glmStateEnvelope.reasoningWireFormat, "reasoning_content");
   // The start result must carry both observational route metadata and the
   // canonical model that can pin the resumed request.
   assert.equal(paused.usage.endpoint, "phala-glm-5.2");

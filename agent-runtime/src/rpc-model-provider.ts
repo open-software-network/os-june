@@ -18,12 +18,15 @@ export type ModelRpcInvoker = (input: {
   signal?: AbortSignal;
 }) => Promise<JsonValue>;
 
+export type ReasoningWireFormat = "reasoning" | "reasoning_content";
+
 export class RpcChatCompletionsModelProvider implements ModelProvider {
   readonly invoke: ModelRpcInvoker;
   readonly takeSteering: (() => SteeringMessage[]) | undefined;
   readonly onSteeringConsumed: ((message: SteeringMessage) => void) | undefined;
   latestRoute: ModelRoute | undefined;
   resolvedModel: string | undefined;
+  reasoningWireFormat: ReasoningWireFormat | undefined;
 
   constructor(
     invoke: ModelRpcInvoker,
@@ -32,11 +35,13 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
     initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ) {
     this.invoke = invoke;
     this.takeSteering = steering?.takeSteering;
     this.onSteeringConsumed = steering?.onSteeringConsumed;
     this.resolvedModel = concreteModel(initialResolvedModel);
+    this.reasoningWireFormat = initialReasoningWireFormat;
   }
 
   getModel(modelName?: string): Model {
@@ -81,7 +86,9 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       ];
       for (const message of steering) this.onSteeringConsumed?.(message);
     }
-    normalizeOutgoingReasoning(request, autoRequested ? this.resolvedModel : undefined);
+    if (this.reasoningWireFormat === "reasoning_content") {
+      restoreReasoningContent(request);
+    }
     const toolArgumentState = new Map<string, boolean>();
     let page = requireStreamPage(
       await this.invoke({
@@ -101,7 +108,13 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
           }
           if (chunkModel) this.resolvedModel = chunkModel;
         }
-        yield normalizeEmptyToolArguments(normalizeReasoningContent(chunk), toolArgumentState);
+        const normalizedReasoning = normalizeReasoningContent(chunk);
+        if (normalizedReasoning.wireFormat === "reasoning_content") {
+          this.reasoningWireFormat = "reasoning_content";
+        } else {
+          this.reasoningWireFormat ??= normalizedReasoning.wireFormat;
+        }
+        yield normalizeEmptyToolArguments(normalizedReasoning.chunk, toolArgumentState);
       }
       if (page.done) {
         if (autoRequested && !this.resolvedModel) {
@@ -182,19 +195,32 @@ function normalizeEmptyToolArguments(
 // present, `reasoning_content` wins (it is the provider-native field) and
 // `reasoning` is replaced. Safe for all models: a model that does not emit
 // `reasoning_content` is untouched.
-function normalizeReasoningContent(chunk: JsonObject): JsonObject {
-  if (!Array.isArray(chunk.choices)) return chunk;
+function normalizeReasoningContent(chunk: JsonObject): {
+  chunk: JsonObject;
+  wireFormat?: ReasoningWireFormat;
+} {
+  if (!Array.isArray(chunk.choices)) return { chunk };
   let changed = false;
+  let wireFormat: ReasoningWireFormat | undefined;
   const choices = chunk.choices.map((choiceValue) => {
     if (!isRecord(choiceValue)) return choiceValue;
     const delta = asRecord(choiceValue.delta);
-    if (typeof delta.reasoning_content !== "string") return choiceValue;
+    if (typeof delta.reasoning_content !== "string" || delta.reasoning_content === "") {
+      if (typeof delta.reasoning === "string" && delta.reasoning !== "") {
+        wireFormat ??= "reasoning";
+      }
+      return choiceValue;
+    }
+    wireFormat = "reasoning_content";
     changed = true;
     const rest: Record<string, unknown> = { ...delta };
     delete rest.reasoning_content;
     return { ...choiceValue, delta: { ...rest, reasoning: delta.reasoning_content } };
   });
-  return changed ? { ...chunk, choices } : chunk;
+  return {
+    chunk: changed ? { ...chunk, choices } : chunk,
+    ...(wireFormat === undefined ? {} : { wireFormat }),
+  };
 }
 
 export type ModelRoute = {
@@ -202,16 +228,6 @@ export type ModelRoute = {
   privacyLevel?: string;
   endpoint?: string;
 };
-
-// Known GLM model IDs that require `reasoning_content` (not `reasoning`) on
-// assistant tool-call replay. Auto is normalized only after its canonical
-// response model has been pinned; observational route metadata is never used.
-const GLM_MODEL_IDS = new Set([
-  "zai-org-glm-5-2",
-  "zai-org-glm-5-1",
-  "zai-org-glm-5",
-  "z-ai/glm-5.2",
-]);
 
 function concreteModel(model: string | undefined): string | undefined {
   const normalized = model?.trim();
@@ -239,14 +255,10 @@ function isAutoModel(model: string | undefined): boolean {
   return model === AUTO_MODEL_ID || model?.startsWith(AUTO_MODEL_PREFIX) === true;
 }
 
-// Renames `assistant.reasoning` → `assistant.reasoning_content` on outgoing
-// requests to GLM/Z.AI models. The SDK replays reasoning as `reasoning`, but
-// GLM expects its native `reasoning_content` field. Idempotent: messages that
-// already carry `reasoning_content` are left alone. Only applies when the
-// request uses a known GLM model ID.
-function normalizeOutgoingReasoning(request: JsonObject, resolvedModel?: string): void {
-  const model = resolvedModel ?? stringValue(request.model);
-  if (!model || !GLM_MODEL_IDS.has(model)) return;
+// Restores the response's observed reasoning field on assistant replay. The
+// SDK retains reasoning under `reasoning`, while some compatible providers
+// require their native `reasoning_content` field on continuation requests.
+function restoreReasoningContent(request: JsonObject): void {
   const messages = Array.isArray(request.messages) ? request.messages : [];
   for (const message of messages) {
     if (!isRecord(message) || message.role !== "assistant") continue;
