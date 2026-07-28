@@ -8,7 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use june_companion_crypto::Session;
 use june_companion_protocol::{
     decode_frame, decode_peer_hello, encode_frame, Body, Capability, Event, FailureCode, Frame,
-    ProtocolFailure, RelayEnvelope, Response, ResultPayload,
+    ProtocolError, ProtocolFailure, RelayEnvelope, Response, ResultPayload,
 };
 use rand::Rng;
 use serde::Serialize;
@@ -427,8 +427,9 @@ async fn publish_event(
             event.capability(),
             Body::Event(event.clone()),
         );
-        let encoded = encode_frame(&frame)
-            .map_err(|_| transport_error("The companion event exceeded its size limit."))?;
+        let encoded = encode_outbound_frame(&frame).map_err(|_| {
+            transport_error("The companion event failed outbound protocol validation.")
+        })?;
         let encrypted = peer
             .crypto
             .write(&encoded)
@@ -606,9 +607,9 @@ async fn receive_envelope(
         capability,
         Body::Response(response),
     );
-    let encoded = match encode_frame(&response_frame) {
+    let encoded = match encode_outbound_frame(&response_frame) {
         Ok(encoded) => encoded,
-        Err(_) => encode_frame(&Frame::new(
+        Err(ProtocolError::FrameTooLarge) => encode_outbound_frame(&Frame::new(
             operation_id,
             *outbound_sequence,
             current_time_ms(),
@@ -624,6 +625,11 @@ async fn receive_envelope(
             }),
         ))
         .map_err(|_| transport_error("The companion response exceeded its size limit."))?,
+        Err(_) => {
+            return Err(transport_error(
+                "The companion response failed outbound protocol validation.",
+            ));
+        }
     };
     let encrypted = peer
         .crypto
@@ -640,6 +646,11 @@ fn peer_supports_event(peer: &PeerSession, event: &Event) -> bool {
             .contains(&Capability::ComputerUseApprove),
         _ => true,
     }
+}
+
+fn encode_outbound_frame(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
+    frame.validate(current_time_ms())?;
+    encode_frame(frame)
 }
 
 async fn reserve_operation(
@@ -885,7 +896,10 @@ fn transport_error(message: &str) -> AppError {
 mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
-    use june_companion_protocol::{encode_peer_hello, Capability, PeerHello};
+    use june_companion_protocol::{
+        encode_peer_hello, BrowseEntry, Capability, Page, PeerHello, ProtocolError,
+        MAX_PAGE_CURSOR_BYTES,
+    };
 
     #[tokio::test]
     #[allow(clippy::result_large_err)]
@@ -1035,6 +1049,28 @@ mod tests {
             }),
         };
         assert!(should_cache_response(&response));
+    }
+
+    #[test]
+    fn outbound_boundary_rejects_an_overlong_browse_cursor() {
+        let frame = Frame::new(
+            Uuid::new_v4(),
+            1,
+            current_time_ms(),
+            june_companion_protocol::Capability::FilesBrowse,
+            Body::Response(Response {
+                capability: june_companion_protocol::Capability::FilesBrowse,
+                result: ResultPayload::BrowseEntries(Page::<BrowseEntry> {
+                    items: Vec::new(),
+                    next_cursor: Some("x".repeat(MAX_PAGE_CURSOR_BYTES + 1)),
+                }),
+            }),
+        );
+
+        assert!(matches!(
+            encode_outbound_frame(&frame),
+            Err(ProtocolError::InvalidPageSize)
+        ));
     }
 
     #[test]

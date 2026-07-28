@@ -14,6 +14,7 @@ pub const MAX_RELAY_ENVELOPE_BYTES: usize = 64 * 1024;
 pub const MAX_TEXT_BYTES: usize = 32 * 1024;
 pub const MAX_PAGE_SIZE: u16 = 100;
 pub const MAX_DEVICE_DISPLAY_NAME_BYTES: usize = 128;
+pub const MAX_PAGE_CURSOR_BYTES: usize = 512;
 pub const MAX_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_UPLOAD_CHUNK_BYTES: usize = 32 * 1024;
 pub const MAX_ATTACHMENT_REFERENCES: usize = 8;
@@ -465,7 +466,7 @@ impl PageRequest {
         if self
             .cursor
             .as_deref()
-            .is_some_and(|value| value.len() > 512)
+            .is_some_and(|value| value.len() > MAX_PAGE_CURSOR_BYTES)
         {
             return Err(ProtocolError::TextTooLarge);
         }
@@ -657,7 +658,7 @@ impl Response {
                     || page
                         .next_cursor
                         .as_deref()
-                        .is_some_and(|value| value.len() > 512)
+                        .is_some_and(|value| value.len() > MAX_PAGE_CURSOR_BYTES)
                 {
                     return Err(ProtocolError::InvalidPageSize);
                 }

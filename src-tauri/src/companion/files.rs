@@ -25,6 +25,7 @@ const MAX_STAGED_UPLOAD_BYTES_PER_DEVICE: i64 = 50 * 1024 * 1024;
 const MAX_BROWSE_REFERENCES_PER_DEVICE: usize = 128;
 const MAX_ROOT_DISPLAY_NAME_BYTES: usize = 128;
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+const BROWSE_CURSOR_PREFIX: &str = "v1:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BrowseRootRecord {
@@ -251,8 +252,18 @@ pub(super) async fn list_directory(
             .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
             .then_with(|| left.name.cmp(&right.name))
     });
+    paginate_browse_entries(items, page)
+}
+
+fn paginate_browse_entries(
+    mut items: Vec<BrowseEntry>,
+    page: &PageRequest,
+) -> Result<Page<BrowseEntry>, AppError> {
     if let Some(cursor) = page.cursor.as_deref() {
-        let Some(index) = items.iter().position(|entry| entry.relative_path == cursor) else {
+        let Some(index) = items
+            .iter()
+            .position(|entry| browse_cursor(&entry.relative_path) == cursor)
+        else {
             return Err(AppError::new(
                 "companion_browse_cursor_invalid",
                 "This folder changed. Refresh it and try again.",
@@ -260,11 +271,17 @@ pub(super) async fn list_directory(
         };
         items.drain(..=index);
     }
-    let limit = usize::from(page.limit.min(MAX_PAGE_SIZE));
-    let next_cursor =
-        (items.len() > limit).then(|| items[limit.saturating_sub(1)].relative_path.clone());
+    let limit = usize::from(page.limit.clamp(1, MAX_PAGE_SIZE));
+    let next_cursor = (items.len() > limit).then(|| browse_cursor(&items[limit - 1].relative_path));
     items.truncate(limit);
     Ok(Page { items, next_cursor })
+}
+
+fn browse_cursor(relative_path: &str) -> String {
+    format!(
+        "{BROWSE_CURSOR_PREFIX}{:x}",
+        Sha256::digest(relative_path.as_bytes())
+    )
 }
 
 pub(super) async fn stat_file(
@@ -1360,6 +1377,7 @@ fn upload_io_error(_error: std::io::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use june_companion_protocol::{MAX_PAGE_CURSOR_BYTES, MAX_RELATIVE_PATH_BYTES};
     use sqlx_sqlite::SqlitePoolOptions;
 
     async fn test_repositories() -> Repositories {
@@ -1460,6 +1478,53 @@ mod tests {
         let error = validate_root(&root_path).unwrap_err();
 
         assert_eq!(error.code, "companion_root_invalid");
+    }
+
+    #[test]
+    fn deep_browse_paths_use_compact_opaque_pagination_cursors() {
+        let deep_relative_path = vec!["a".repeat(255); 8].join("/");
+        assert_eq!(deep_relative_path.len(), MAX_RELATIVE_PATH_BYTES - 1);
+        let entries = vec![
+            BrowseEntry {
+                name: "a".repeat(255),
+                relative_path: deep_relative_path.clone(),
+                kind: BrowseEntryKind::Directory,
+                size_bytes: None,
+                modified_at: None,
+            },
+            BrowseEntry {
+                name: "z.txt".to_string(),
+                relative_path: "z.txt".to_string(),
+                kind: BrowseEntryKind::File,
+                size_bytes: Some(1),
+                modified_at: None,
+            },
+        ];
+
+        let first_page = paginate_browse_entries(
+            entries.clone(),
+            &PageRequest {
+                cursor: None,
+                limit: 1,
+            },
+        )
+        .unwrap();
+        let cursor = first_page.next_cursor.expect("next cursor");
+        assert_eq!(cursor.len(), BROWSE_CURSOR_PREFIX.len() + 64);
+        assert!(cursor.len() <= MAX_PAGE_CURSOR_BYTES);
+        assert!(!cursor.contains(&deep_relative_path));
+
+        let second_page = paginate_browse_entries(
+            entries,
+            &PageRequest {
+                cursor: Some(cursor),
+                limit: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(second_page.items.len(), 1);
+        assert_eq!(second_page.items[0].relative_path, "z.txt");
+        assert!(second_page.next_cursor.is_none());
     }
 
     #[tokio::test]
