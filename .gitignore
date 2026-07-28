@@ -31,6 +31,7 @@ keys/
 coverage
 .tauri-hermes/
 .tauri-agent-runtime/
+/artifacts/windows-unsigned/
 
 # Scratch verification captures (screenshots etc.). Root-anchored so committed
 # proof under docs/verification/ is unaffected.

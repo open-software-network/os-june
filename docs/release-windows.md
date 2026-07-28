@@ -1,9 +1,10 @@
 # Releasing June for Windows
 
 June ships Windows builds as an NSIS installer. The production Windows release
-workflow builds from `main`, signs the app executable and installer with
-Authenticode, signs updater artifacts with the Tauri updater key, and attaches
-Windows assets to the existing `open-software-network/os-june-releases` release.
+workflow builds from the promoted commit recorded by `stable-build.json`, signs
+the app executable and installer with Authenticode, signs updater artifacts with
+the Tauri updater key, and attaches Windows assets to the existing
+`open-software-network/os-june-releases` release.
 
 ## Windows support
 
