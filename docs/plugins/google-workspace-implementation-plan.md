@@ -31,8 +31,10 @@ trust modes, and the approval journal.
 - `june_gmail*` and `june_gcal*` establish the base/action server convention.
 - The connector approval tray, runtime config merge, restart discipline, and
   live schema fixtures already exist.
-- The current local mode supports one Google account. This plan does not smuggle
-  multi-account routing into the expansion.
+- The current local mode supports multiple Google accounts. Every new tool
+  accepts an explicit account id, unqualified reads fan out and merge, and
+  mutations ask for an account when the user's intent is ambiguous. Trigger
+  rows and autonomous grants keep their existing account binding.
 
 ## Proposed runtime surface
 

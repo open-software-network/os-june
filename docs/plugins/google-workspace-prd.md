@@ -47,8 +47,9 @@ that can read the account.
    note with stable provider references.
 5. June can draft a reply, create or update an event, and create a new Docs or
    Sheets artifact. Every outward action follows the routine's trust mode.
-6. The user can disconnect one Google account and verify that every Google
-   capability is off.
+6. The user can connect multiple Google accounts, see each account's capability
+   grants, and disconnect or expand access for one identity without changing
+   the others.
 
 ## Scope
 
@@ -63,11 +64,12 @@ that can read the account.
 - Add Meet space, recording, and transcript discovery where the account and
   edition expose them.
 - Add meeting-prep and follow-up skills plus gallery routine templates.
+- Preserve explicit account routing for triggers and autonomous actions.
 
 ### Later
 
 - Slides generation after the artifact foundation exists.
-- BigQuery, admin-wide deployment, multi-account routing, and away-mode events.
+- BigQuery, admin-wide deployment, and away-mode events.
 - Proactive Drive change triggers after the event architecture is approved.
 
 ## Non-goals

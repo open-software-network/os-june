@@ -1769,6 +1769,9 @@ export type RoutineTrust = {
   approvalRunCount: number;
   /** Connector action tool names the user granted for autonomous runs. */
   autonomousTools: string[];
+  /** Google account stored on the routine's event trigger or autonomous
+   * grant. Null for routines that do not have an account binding yet. */
+  accountId?: string | null;
   /** Per-job auto MCP server names minted for an autonomous grant (e.g.
    * "june_gmail_auto_ab12cd34"). Returned by routine_trust_set; the job's
    * enabled_toolsets swaps the actions servers for these. */
@@ -1854,6 +1857,17 @@ export type PendingComputerUseApprovalDto = {
  * re-fetch via connectorsList(). */
 export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
 
+/** Payload emitted while a local Google or Linear OAuth flow is waiting for
+ * the browser callback. The URL is safe to copy but only resolves on this
+ * Mac because its redirect targets June's loopback listener. */
+export type ConnectorAuthorizationUrlPayload = {
+  url: string;
+};
+
+/** Tauri event: a local OAuth authorization URL is ready for the waiting
+ * dialog's manual-open fallback. */
+export const CONNECTOR_AUTHORIZATION_URL_EVENT = "june://connector-authorization-url";
+
 /** Payload emitted by `june://connectors-github-device-code` while a GitHub
  * device-flow connect is in progress. May be emitted more than once (a
  * restarted poll re-emits the latest code). The backend opens the
@@ -1902,6 +1916,10 @@ export async function connectorsConnect(input: {
 
 export async function connectorsCancelConnect() {
   return invoke<void>("connectors_cancel_connect");
+}
+
+export async function openExternalUrl(url: string) {
+  return invoke<void>("june_open_external_url", { url });
 }
 
 export type NotionConnectionStatus = {
@@ -2035,12 +2053,14 @@ export async function routineTrustSet(input: {
   jobId: string;
   trustMode: RoutineTrustMode;
   autonomousTools?: string[];
+  accountId?: string;
 }) {
   return invoke<RoutineTrust>("routine_trust_set", {
     request: {
       jobId: input.jobId,
       trustMode: input.trustMode,
       autonomousTools: input.autonomousTools,
+      accountId: input.accountId,
     },
   });
 }

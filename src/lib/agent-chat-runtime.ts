@@ -28,6 +28,7 @@ export type AgentChatApprovalPart = {
   sessionId?: string;
   command: string;
   description: string;
+  accountEmail?: string;
   allowPermanent: boolean;
   choice?: AgentApprovalChoice;
   status: "pending" | "resolved" | "expired";

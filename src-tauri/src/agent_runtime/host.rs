@@ -760,7 +760,9 @@ async fn persist_and_emit_event(
                         .and_then(Value::as_str)
                         .unwrap_or("unknown_tool");
                     let command = approval_command(tool_name, params.get("arguments"));
-                    json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
+                    let account_email =
+                        google_mutation_account_email(tool_name, params.get("arguments"));
+                    json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "accountEmail": account_email, "allowAlways": false })
                 }
             };
             data = json!({ "itemId": persistence_external_id, "interruption": interruption });
@@ -983,6 +985,27 @@ fn approval_command(tool_name: &str, arguments: Option<&Value>) -> String {
     sanitize_log(&format!("{tool_name} {details}"))
 }
 
+fn google_mutation_account_email(tool_name: &str, arguments: Option<&Value>) -> Option<String> {
+    const GOOGLE_MUTATIONS: &[&str] = &[
+        "create_draft",
+        "send_email",
+        "modify_labels",
+        "archive",
+        "create_event",
+        "insert_event",
+        "respond_to_invite",
+    ];
+    if !GOOGLE_MUTATIONS.contains(&tool_name) {
+        return None;
+    }
+    arguments?
+        .get("accountId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|account_id| !account_id.is_empty())
+        .map(str::to_string)
+}
+
 fn interruption_stable_id(params: &Value, event_id: &str) -> String {
     params
         .get("id")
@@ -1202,6 +1225,25 @@ mod tests {
         assert!(command.contains("/workspace/report.md"));
         assert!(command.contains("safe content"));
         assert!(command.contains("[redacted]"));
+    }
+
+    #[test]
+    fn google_mutation_approval_identifies_the_acting_account() {
+        assert_eq!(
+            google_mutation_account_email(
+                "send_email",
+                Some(&json!({ "accountId": "work@example.com" })),
+            )
+            .as_deref(),
+            Some("work@example.com")
+        );
+        assert_eq!(
+            google_mutation_account_email(
+                "search_messages",
+                Some(&json!({ "accountId": "work@example.com" })),
+            ),
+            None
+        );
     }
 
     #[test]

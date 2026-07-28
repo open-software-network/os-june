@@ -50,6 +50,7 @@ import {
 import { messageFromError } from "../../lib/errors";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
+import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { toast } from "../ui/Toaster";
 import { userFacingFailureMessage } from "../note-editor/NoteFailureBanner";
@@ -130,6 +131,8 @@ export function RoutineDetail({
   const [storedTrigger, setStoredTrigger] = useState<ConnectorTrigger | null>(null);
   const [trigger, setTrigger] = useState<TriggerDraft>({ source: "schedule" });
   const [accounts, setAccounts] = useState<ConnectorAccount[]>([]);
+  const [storedAccountId, setStoredAccountId] = useState<string | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"details" | "history">("details");
   // "Run now" only queues the job for the scheduler's next tick, so the
   // confirmation is a short-lived label swap rather than a new run row.
@@ -163,32 +166,35 @@ export function RoutineDetail({
 
   useEffect(() => {
     let cancelled = false;
-    routineTrustGet(routine.job_id)
-      .then((trust) => {
-        if (cancelled || !trust) return;
+    void Promise.all([
+      routineTrustGet(routine.job_id).catch(() => null),
+      connectorTriggersList(routine.job_id).catch(() => []),
+      connectorsList().catch(() => []),
+    ]).then(([trust, triggers, list]) => {
+      if (cancelled) return;
+      if (trust) {
         setStoredTrust(trust);
         setTrustMode(trust.trustMode);
         setAutonomousTools(trust.autonomousTools);
-      })
-      .catch(() => {});
+      }
+      const stored = triggers[0] ?? null;
+      setStoredTrigger(stored);
+      if (stored) setTrigger(triggerDraftFromStored(stored));
+      setAccounts(list);
+      const accountId = trust?.accountId ?? stored?.accountId ?? null;
+      const connectedGoogle = list.filter(
+        (account) => account.provider === "google" && account.status === "connected",
+      );
+      const defaultAccountId =
+        accountId ?? (connectedGoogle.length === 1 ? connectedGoogle[0].accountId : null);
+      setStoredAccountId(accountId);
+      setSelectedAccountId(defaultAccountId);
+    });
     routineBrowserAccessGet(routine.job_id)
       .then((access) => {
         if (cancelled) return;
         setStoredBrowserAccess(access);
         setBrowserAccess(access.enabled);
-      })
-      .catch(() => {});
-    connectorTriggersList(routine.job_id)
-      .then((triggers) => {
-        if (cancelled) return;
-        const stored = triggers[0] ?? null;
-        setStoredTrigger(stored);
-        if (stored) setTrigger(triggerDraftFromStored(stored));
-      })
-      .catch(() => {});
-    connectorsList()
-      .then((list) => {
-        if (!cancelled) setAccounts(list);
       })
       .catch(() => {});
     return () => {
@@ -233,6 +239,14 @@ export function RoutineDetail({
   const trustChanged =
     trustMode !== storedTrustMode ||
     (trustMode === "autonomous" && JSON.stringify(autonomousTools) !== JSON.stringify(storedTools));
+  const googleAccounts = accounts.filter((entry) => entry.provider === "google");
+  const selectedAccount = googleAccounts.find((entry) => entry.accountId === selectedAccountId);
+  const accountPickerRequired =
+    trigger.source !== "schedule" ||
+    trustMode === "autonomous" ||
+    storedTrigger !== null ||
+    storedTrust?.trustMode === "autonomous";
+  const accountChanged = accountPickerRequired && selectedAccountId !== storedAccountId;
   const storedTriggerDraft: TriggerDraft = storedTrigger
     ? triggerDraftFromStored(storedTrigger)
     : { source: "schedule" };
@@ -244,7 +258,8 @@ export function RoutineDetail({
     modeChanged ||
     browserAccessChanged ||
     trustChanged ||
-    triggerChanged;
+    triggerChanged ||
+    accountChanged;
 
   function changeTrigger(next: TriggerDraft) {
     // Event routines store a far-future one-off schedule only as a dormant
@@ -264,6 +279,7 @@ export function RoutineDetail({
     const connectorPolicyNeeded =
       trustChanged ||
       triggerChanged ||
+      accountChanged ||
       browserAccessChanged ||
       (modeChanged && storedTrust != null);
     if (connectorPolicyNeeded && !policy) {
@@ -281,14 +297,13 @@ export function RoutineDetail({
     // trust/grant change to unwind.
     let triggerAccount: ConnectorAccount | undefined;
     const switchingToEvent = triggerChanged && trigger.source !== "schedule";
-    if (switchingToEvent) {
+    const writingEventTrigger = trigger.source !== "schedule" && (triggerChanged || accountChanged);
+    if (writingEventTrigger) {
       // Google only: triggers poll Gmail/Calendar, so a connected Linear
       // workspace must never be picked as the trigger account.
-      triggerAccount = accounts.find(
-        (entry) => entry.provider === "google" && entry.status === "connected",
-      );
+      triggerAccount = selectedAccount?.status === "connected" ? selectedAccount : undefined;
       if (!triggerAccount) {
-        toast.error("Connect a Google account before using an event trigger.");
+        toast.error("Choose a connected Google account before using an event trigger.");
         return;
       }
       // The account must hold the scope this trigger's daemon polls, or the
@@ -327,7 +342,8 @@ export function RoutineDetail({
 
     // Trust first: an autonomous grant mints per-job auto server names that
     // the toolset override must reference.
-    if (trustChanged) {
+    const trustAccountChanged = accountChanged && trustMode === "autonomous";
+    if (trustChanged || trustAccountChanged) {
       if (!policy) return;
       try {
         const previousServers = storedTrust?.autonomousServers ?? [];
@@ -336,6 +352,7 @@ export function RoutineDetail({
           jobId: routine.job_id,
           trustMode,
           autonomousTools: trustMode === "autonomous" ? autonomousTools : undefined,
+          accountId: selectedAccountId ?? undefined,
         });
         setStoredTrust(stored);
         updates.enabledToolsets = routineToolsetsFor(policy, trustMode, {
@@ -343,13 +360,14 @@ export function RoutineDetail({
           autonomousServers: stored.autonomousServers,
           routineBrowserServer: nextBrowserAccess?.serverName ?? undefined,
         });
-        autoServersChanged = autonomyRuntimeNeedsRestart({
-          previousServers,
-          nextServers: stored.autonomousServers ?? [],
-          trustMode: stored.trustMode,
-          previousTools,
-          nextTools: stored.autonomousTools ?? [],
-        });
+        autoServersChanged =
+          autonomyRuntimeNeedsRestart({
+            previousServers,
+            nextServers: stored.autonomousServers ?? [],
+            trustMode: stored.trustMode,
+            previousTools,
+            nextTools: stored.autonomousTools ?? [],
+          }) || trustAccountChanged;
       } catch (err) {
         if (browserAccessChanged && previousBrowserAccess) {
           try {
@@ -413,13 +431,14 @@ export function RoutineDetail({
       // and gate_action parks (not denies) an orphaned grant, so an approval
       // could still let that run act on Google. No trigger row was written yet,
       // so there is nothing else to unwind.
-      if (trustChanged) {
+      if (trustChanged || trustAccountChanged) {
         try {
           const restored = await routineTrustSet({
             jobId: routine.job_id,
             trustMode: previousTrust?.trustMode ?? "read_only",
             autonomousTools:
               previousTrust?.trustMode === "autonomous" ? previousTrust.autonomousTools : undefined,
+            accountId: storedAccountId ?? undefined,
           });
           setStoredTrust(restored);
           // Restoring autonomous trust mints a fresh grant token. A running
@@ -452,7 +471,7 @@ export function RoutineDetail({
     // far-future schedule and active state already persisted), which is
     // safe: it under-fires rather than acting on stale config. Surface it so the
     // user can retry.
-    if (triggerChanged) {
+    if (triggerChanged || (accountChanged && trigger.source !== "schedule")) {
       try {
         if (trigger.source === "schedule") {
           // Ensure the routine is active first so a runtime failure leaves the existing event
@@ -490,6 +509,8 @@ export function RoutineDetail({
         return;
       }
     }
+
+    if (accountChanged) setStoredAccountId(selectedAccountId);
 
     // A new or removed per-job autonomy server only takes effect once the
     // runtime re-renders its config. Best-effort: it also registers on the
@@ -564,7 +585,13 @@ export function RoutineDetail({
             <button
               type="button"
               className="primary-action primary-solid"
-              disabled={!dirty || !prompt.trim() || saving || busy}
+              disabled={
+                !dirty ||
+                !prompt.trim() ||
+                saving ||
+                busy ||
+                (accountPickerRequired && !selectedAccountId)
+              }
               onClick={() => void save()}
             >
               {saving ? "Saving…" : "Save"}
@@ -707,18 +734,44 @@ export function RoutineDetail({
                   )}
                   scopeWarning={
                     policy
-                      ? triggerScopeWarning(
-                          policy,
-                          trigger,
-                          accounts.find(
-                            (entry) => entry.provider === "google" && entry.status === "connected",
-                          )?.scopes ?? null,
-                        )
+                      ? triggerScopeWarning(policy, trigger, selectedAccount?.scopes ?? null)
                       : null
                   }
                   onTriggerChange={changeTrigger}
                   onScheduleChange={setDraft}
                 />
+                {accountPickerRequired ? (
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <div className="settings-row-title">Google account</div>
+                      <div className="settings-row-description">
+                        This account receives the trigger and performs autonomous actions.
+                      </div>
+                    </div>
+                    <div className="settings-row-control">
+                      <Select
+                        value={selectedAccountId}
+                        options={googleAccounts
+                          .filter(
+                            (account) =>
+                              account.status === "connected" ||
+                              account.accountId === storedAccountId,
+                          )
+                          .map((account) => ({
+                            value: account.accountId,
+                            label:
+                              account.status === "connected"
+                                ? account.email
+                                : `${account.email} (reconnect needed)`,
+                          }))}
+                        placeholder="Choose account"
+                        ariaLabel="Google account"
+                        onChange={setSelectedAccountId}
+                        popoverWidth="trigger"
+                      />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </section>
 

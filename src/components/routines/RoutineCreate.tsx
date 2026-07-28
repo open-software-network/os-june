@@ -24,6 +24,7 @@ import {
 } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { InlineNotice } from "../ui/InlineNotice";
+import { Select } from "../ui/Select";
 import { GrowingTextarea } from "./GrowingTextarea";
 import { RoutineModePicker } from "./RoutineModePicker";
 import { TriggerPicker } from "./TriggerPicker";
@@ -40,7 +41,7 @@ export type RoutineCreateInput = {
   autonomousTools: string[];
   /** The "When" choice: a schedule, or a connector event trigger. */
   trigger: TriggerDraft;
-  /** Account the event trigger subscribes on (first connected account). */
+  /** Explicit Google account selected for an event trigger or autonomous grant. */
   triggerAccountId?: string;
   /** Set when installing a connector template, so the create flow knows to
    * persist trust and queue the immediate first run. */
@@ -79,6 +80,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   // null while loading; connector features degrade quietly (plain routines
   // never need an account, and the Rust side may not be present in dev).
   const [accounts, setAccounts] = useState<ConnectorAccount[] | null>(null);
+  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
 
@@ -97,19 +99,32 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   }, []);
 
   const requiredScopes = template?.connectorScopes;
-  // The routine runs against the first connected account (triggerAccountId
-  // below, and June registers the same account for its connector tools), so
-  // the scope gate must check that exact account. Checking "any account" would
-  // enable Create while the routine still polls/calls Google with an account
-  // that lacks the scope, silently missing triggers or failing on scope errors.
-  const connectedAccount = (accounts ?? []).find(
+  const connectedAccounts = (accounts ?? []).filter(
     (account) => account.provider === "google" && account.status === "connected",
   );
+  useEffect(() => {
+    if (selectedAccountId || connectedAccounts.length !== 1) return;
+    setSelectedAccountId(connectedAccounts[0].accountId);
+  }, [connectedAccounts, selectedAccountId]);
+  const selectedAccount = connectedAccounts.find(
+    (account) => account.accountId === selectedAccountId,
+  );
+  // Only event triggers and autonomous grants have a persisted account
+  // binding. Scheduled reads fan out across every connected account, and
+  // attended mutations ask the user when the account is unclear.
+  const accountPickerRequired = trigger.source !== "schedule" || trustMode === "autonomous";
+  const scopeAccount = accountPickerRequired
+    ? selectedAccount
+    : connectedAccounts.find(
+        (account) =>
+          !requiredScopes ||
+          (policy != null && scopesCoverBundles(policy, account.scopes, requiredScopes)),
+      );
   const scopeGateSatisfied =
     !requiredScopes ||
     (policy != null &&
-      connectedAccount != null &&
-      scopesCoverBundles(policy, connectedAccount.scopes, requiredScopes));
+      scopeAccount != null &&
+      scopesCoverBundles(policy, scopeAccount.scopes, requiredScopes));
   // A connector trigger must run on an account that holds the scope its daemon
   // polls (Gmail read for new mail, calendar read for upcoming events). Checking
   // "any account connected" is not enough: a calendar-only account can't back an
@@ -121,21 +136,28 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
     trigger.source === "schedule" ||
     (policy != null &&
       triggerBundles.length > 0 &&
-      connectedAccount != null &&
-      scopesCoverBundles(policy, connectedAccount.scopes, triggerBundles));
+      selectedAccount != null &&
+      scopesCoverBundles(policy, selectedAccount.scopes, triggerBundles));
   const connectorPolicyRequired =
     Boolean(requiredScopes) || trigger.source !== "schedule" || trustMode !== "read_only";
   const blocked =
-    (connectorPolicyRequired && policy == null) || !scopeGateSatisfied || !triggerScopeSatisfied;
+    (connectorPolicyRequired && policy == null) ||
+    (accountPickerRequired && !selectedAccount) ||
+    !scopeGateSatisfied ||
+    !triggerScopeSatisfied;
 
   async function connectForTemplate() {
     if (!requiredScopes || !policy || connectBusy) return;
     setConnectBusy(true);
     setConnectError(null);
     try {
-      await connectorsConnect({ scopes: requiredScopes });
+      const connected = await connectorsConnect({
+        scopes: requiredScopes,
+        loginHint: selectedAccount?.email,
+      });
       await connectorsApplyRuntime();
       setAccounts(await connectorsList());
+      setSelectedAccountId(connected.accountId);
     } catch (err) {
       setConnectError(
         isConnectorNotConfiguredError(err)
@@ -157,7 +179,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
       trustMode,
       autonomousTools,
       trigger,
-      triggerAccountId: connectedAccount?.accountId,
+      triggerAccountId: selectedAccount?.accountId,
       connectorScopes: requiredScopes,
     });
   }
@@ -202,7 +224,9 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
           </p>
         ) : null}
 
-        {requiredScopes && !scopeGateSatisfied ? (
+        {requiredScopes &&
+        !scopeGateSatisfied &&
+        !(accountPickerRequired && connectedAccounts.length > 1 && !selectedAccount) ? (
           <InlineNotice
             tone="info"
             aria-label="Google account required"
@@ -234,15 +258,38 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
               <TriggerPicker
                 trigger={trigger}
                 scheduleDraft={draft}
-                hasAccount={Boolean(connectedAccount)}
+                hasAccount={connectedAccounts.length > 0}
                 scopeWarning={
                   policy
-                    ? triggerScopeWarning(policy, trigger, connectedAccount?.scopes ?? null)
+                    ? triggerScopeWarning(policy, trigger, selectedAccount?.scopes ?? null)
                     : null
                 }
                 onTriggerChange={setTrigger}
                 onScheduleChange={setDraft}
               />
+              {accountPickerRequired ? (
+                <div className="settings-row">
+                  <div className="settings-row-info">
+                    <div className="settings-row-title">Google account</div>
+                    <div className="settings-row-description">
+                      This account receives the trigger and performs autonomous actions.
+                    </div>
+                  </div>
+                  <div className="settings-row-control">
+                    <Select
+                      value={selectedAccountId}
+                      options={connectedAccounts.map((account) => ({
+                        value: account.accountId,
+                        label: account.email,
+                      }))}
+                      placeholder="Choose account"
+                      ariaLabel="Google account"
+                      onChange={setSelectedAccountId}
+                      popoverWidth="trigger"
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
           </section>
 

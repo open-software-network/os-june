@@ -78,21 +78,28 @@ pub async fn connectors_connect(
     }
 
     // Re-mint autonomous grants for routines that still declare autonomous
-    // trust. A prior disconnect deletes an account's grants but keeps the
-    // routine_trust rows and the jobs' auto toolsets, so reconnecting the same
-    // account must restore the grants or those routines stay autonomous in name
-    // only (their action servers never render). Single-account mode makes "the
-    // connected account" unambiguous. Best-effort and per routine: a re-mint
-    // failure must not fail the connect, and each grant is recreated with the
-    // token carried over when the tool set is unchanged, so this is a no-op for
-    // routines that already hold valid grants (a plain scope escalation).
-    // Google-only: the grants are Gmail/Calendar autonomy, so a Linear connect
-    // never touches them.
+    // trust. Preserve each routine's already-stored account binding; connecting
+    // a second Google account must never retarget an older routine. A legacy
+    // routine with no stored binding stays untouched until the user explicitly
+    // chooses an account in the routine editor. Best-effort and per routine: a
+    // re-mint failure must not fail the connect.
     let repos = crate::commands::repositories(&app).await?;
     match repos.list_routine_trust_by_mode("autonomous").await {
         Ok(records) => {
             for record in records {
-                if let Err(error) = mint_autonomy_grants(&app, &repos, &record).await {
+                let account_id = match stored_routine_account_id(&repos, &record.job_id).await {
+                    Ok(Some(account_id)) => Some(account_id),
+                    Ok(None) => None,
+                    Err(error) => {
+                        tracing::warn!(error_code = %error.code, "autonomous routine account lookup on connect failed");
+                        None
+                    }
+                };
+                let Some(account_id) = account_id else {
+                    tracing::warn!(job_id = %record.job_id, "autonomous routine has no unambiguous Google account");
+                    continue;
+                };
+                if let Err(error) = mint_autonomy_grants(&repos, &record, &account_id).await {
                     tracing::warn!(error_code = %error.code, "re-mint autonomous grants on connect failed");
                 }
             }
@@ -285,6 +292,10 @@ pub struct RoutineTrustDto {
     pub trust_mode: String,
     pub approval_run_count: i64,
     pub autonomous_tools: Vec<String>,
+    /// Google account already bound to this routine's event trigger or
+    /// autonomous grant. Absent for plain/legacy routines with no stored
+    /// account choice.
+    pub account_id: Option<String>,
     /// Names of the per-job auto MCP servers minted for the current
     /// autonomous grants (`june_<provider>_auto_<jobid8>`), sorted. Empty
     /// unless the routine is autonomous with granted mutating tools.
@@ -303,7 +314,8 @@ pub async fn routine_trust_get(
     // Reflect the persisted grants so the UI shows the right toolset
     // composition on load.
     let servers = grant_server_names(&repos, &job_id).await?;
-    Ok(Some(trust_dto(record, servers)))
+    let account_id = stored_routine_account_id(&repos, &job_id).await?;
+    Ok(Some(trust_dto(record, servers, account_id)))
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +328,11 @@ pub struct RoutineTrustSetRequest {
     /// means keep the existing grants.
     #[serde(default)]
     pub autonomous_tools: Option<Vec<String>>,
+    /// Google account selected for this routine. Optional keeps older
+    /// frontends compatible; the native side preserves a stored binding or
+    /// defaults only when exactly one connected account exists.
+    #[serde(default)]
+    pub account_id: Option<String>,
 }
 
 #[tauri::command]
@@ -326,6 +343,20 @@ pub async fn routine_trust_set(
     validate_trust_mode(&request.trust_mode)?;
     let repos = crate::commands::repositories(&app).await?;
     let existing = repos.routine_trust_get(&request.job_id).await?;
+    let existing_account_id = stored_routine_account_id(&repos, &request.job_id).await?;
+    let requested_account_id = request
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|account_id| !account_id.is_empty())
+        .map(str::to_string);
+    let sole_account_id = sole_connected_google_account_id(&app).await;
+    let account_id = requested_account_id
+        .or(existing_account_id)
+        .or(sole_account_id);
+    if let Some(account_id) = account_id.as_deref() {
+        require_google_routine_account(&repos, account_id).await?;
+    }
     if request.trust_mode == "autonomous" {
         let run_count = existing
             .as_ref()
@@ -353,12 +384,18 @@ pub async fn routine_trust_set(
     // attribution: an autonomous routine gets a per-provider grant (token +
     // tool names) that the bridge carries into a per-job auto MCP server.
     let servers = if record.trust_mode == "autonomous" {
-        mint_autonomy_grants(&app, &repos, &record).await?
+        let account_id = account_id.as_deref().ok_or_else(|| {
+            AppError::new(
+                "routine_account_required",
+                "Choose a connected Google account for this routine.",
+            )
+        })?;
+        mint_autonomy_grants(&repos, &record, account_id).await?
     } else {
         repos.delete_connector_grants(&record.job_id).await?;
         Vec::new()
     };
-    Ok(trust_dto(record, servers))
+    Ok(trust_dto(record, servers, account_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -389,17 +426,73 @@ pub async fn routine_trust_record_run(
         return Ok(None);
     };
     let servers = grant_server_names(&repos, &request.job_id).await?;
-    Ok(Some(trust_dto(record, servers)))
+    let account_id = stored_routine_account_id(&repos, &request.job_id).await?;
+    Ok(Some(trust_dto(record, servers, account_id)))
 }
 
 /// Build the trust DTO from a persisted record plus its current auto-server
 /// names.
-fn trust_dto(record: RoutineTrustRecord, autonomous_servers: Vec<String>) -> RoutineTrustDto {
+fn trust_dto(
+    record: RoutineTrustRecord,
+    autonomous_servers: Vec<String>,
+    account_id: Option<String>,
+) -> RoutineTrustDto {
     RoutineTrustDto {
         trust_mode: record.trust_mode,
         approval_run_count: record.approval_run_count,
         autonomous_tools: record.autonomous_tools,
+        account_id,
         autonomous_servers,
+    }
+}
+
+async fn stored_routine_account_id(
+    repos: &Repositories,
+    job_id: &str,
+) -> Result<Option<String>, AppError> {
+    if let Some(account_id) = repos
+        .connector_grants_for_job(job_id)
+        .await?
+        .into_iter()
+        .map(|grant| grant.account_id)
+        .find(|account_id| !account_id.is_empty())
+    {
+        return Ok(Some(account_id));
+    }
+    Ok(repos
+        .list_connector_triggers(Some(job_id))
+        .await?
+        .into_iter()
+        .map(|trigger| trigger.account_id)
+        .find(|account_id| !account_id.is_empty()))
+}
+
+async fn sole_connected_google_account_id(app: &tauri::AppHandle) -> Option<String> {
+    let mut account_ids = list_google_accounts(app)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|account| account.status == ConnectorAccountStatus::Connected)
+        .map(|account| account.account_id);
+    let account_id = account_ids.next()?;
+    account_ids.next().is_none().then_some(account_id)
+}
+
+async fn require_google_routine_account(
+    repos: &Repositories,
+    account_id: &str,
+) -> Result<(), AppError> {
+    let is_google = repos
+        .get_connector_account(account_id)
+        .await?
+        .is_some_and(|record| record.provider == ConnectorProvider::Google.as_str());
+    if is_google {
+        Ok(())
+    } else {
+        Err(AppError::new(
+            "connector_account_not_found",
+            "That Google account is not connected.",
+        ))
     }
 }
 
@@ -466,16 +559,11 @@ fn tools_match(existing: &[String], wanted: &[String]) -> bool {
 /// tools actually change. Providers no longer granted are dropped. Returns
 /// the minted server names, sorted.
 ///
-/// Account resolution is best-effort: the first connected Google account's
-/// email. When none is connected the grant is still written with an empty
-/// `account_id` (the bridge simply will not spawn a usable server); this is not
-/// an error, so setting autonomy before connecting an account still succeeds.
 async fn mint_autonomy_grants(
-    app: &tauri::AppHandle,
     repos: &Repositories,
     record: &RoutineTrustRecord,
+    account_id: &str,
 ) -> Result<Vec<String>, AppError> {
-    let account_id = first_connected_google_account_email(app).await;
     let job_suffix = job_server_suffix(&record.job_id);
 
     // Granted mutating tools grouped by provider (deduped, sorted, ordered).
@@ -508,18 +596,14 @@ async fn mint_autonomy_grants(
     let mut server_names = Vec::with_capacity(by_provider.len());
     for (provider, tools) in &by_provider {
         let server_name = format!("june_{provider}_auto_{job_suffix}");
-        let token = match existing.get(*provider) {
-            Some(previous) if tools_match(&previous.tools, tools) => previous.token.clone(),
-            _ => super::random_b64url(32),
-        };
-        let grant = ConnectorGrant {
-            job_id: record.job_id.clone(),
-            provider: (*provider).to_string(),
-            server_name: server_name.clone(),
-            token,
-            tools: tools.clone(),
-            account_id: account_id.clone(),
-        };
+        let grant = build_autonomy_grant(
+            record,
+            provider,
+            server_name.clone(),
+            tools.clone(),
+            account_id,
+            existing.get(*provider),
+        );
         repos.set_connector_grant(&grant, &created_at).await?;
         server_names.push(server_name);
     }
@@ -527,24 +611,30 @@ async fn mint_autonomy_grants(
     Ok(server_names)
 }
 
-async fn first_connected_google_account_email(app: &tauri::AppHandle) -> String {
-    match list_google_accounts(app).await {
-        Ok(accounts) => first_connected_google_account_email_from(accounts),
-        // Never fail the trust change on an account-enumeration hiccup; the
-        // grant is still written and can be re-minted once an account exists.
-        Err(_) => String::new(),
+fn build_autonomy_grant(
+    record: &RoutineTrustRecord,
+    provider: &str,
+    server_name: String,
+    tools: Vec<String>,
+    account_id: &str,
+    previous: Option<&ConnectorGrant>,
+) -> ConnectorGrant {
+    let token = match previous {
+        Some(previous)
+            if previous.account_id == account_id && tools_match(&previous.tools, &tools) =>
+        {
+            previous.token.clone()
+        }
+        _ => super::random_b64url(32),
+    };
+    ConnectorGrant {
+        job_id: record.job_id.clone(),
+        provider: provider.to_string(),
+        server_name,
+        token,
+        tools,
+        account_id: account_id.to_string(),
     }
-}
-
-fn first_connected_google_account_email_from(accounts: Vec<ConnectorAccount>) -> String {
-    accounts
-        .into_iter()
-        .find(|account| {
-            account.provider == ConnectorProvider::Google
-                && account.status == ConnectorAccountStatus::Connected
-        })
-        .map(|account| account.email)
-        .unwrap_or_default()
 }
 
 // --- Connector triggers --------------------------------------------------------
@@ -945,50 +1035,45 @@ mod tests {
     }
 
     #[test]
-    fn google_identity_selection_ignores_synthetic_notion_account() {
-        let notion = ConnectorAccount {
-            account_id: notion::notion_account_id().to_string(),
-            provider: ConnectorProvider::Notion,
-            email: notion::notion_account_email().to_string(),
-            scopes: Vec::new(),
-            status: ConnectorAccountStatus::Connected,
-            workspace_name: None,
-            workspace_url_key: None,
-            selected_teams: Vec::new(),
+    fn autonomy_grants_bind_and_remint_for_the_explicit_account() {
+        let record = RoutineTrustRecord {
+            job_id: "routine-1".to_string(),
+            trust_mode: "autonomous".to_string(),
+            approval_run_count: 3,
+            autonomous_tools: vec!["send_email".to_string()],
+            approval_since: None,
+            updated_at: "2026-07-28T00:00:00Z".to_string(),
         };
-        let reconnecting_google = ConnectorAccount {
-            account_id: "stale@example.com".to_string(),
-            provider: ConnectorProvider::Google,
-            email: "stale@example.com".to_string(),
-            scopes: Vec::new(),
-            status: ConnectorAccountStatus::ReconnectRequired,
-            workspace_name: None,
-            workspace_url_key: None,
-            selected_teams: Vec::new(),
-        };
-        let connected_google = ConnectorAccount {
-            account_id: "user@example.com".to_string(),
-            provider: ConnectorProvider::Google,
-            email: "user@example.com".to_string(),
-            scopes: Vec::new(),
-            status: ConnectorAccountStatus::Connected,
-            workspace_name: None,
-            workspace_url_key: None,
-            selected_teams: Vec::new(),
-        };
+        let first = build_autonomy_grant(
+            &record,
+            "gmail",
+            "june_gmail_auto_routine1".to_string(),
+            vec!["send_email".to_string()],
+            "first@example.com",
+            None,
+        );
+        assert_eq!(first.account_id, "first@example.com");
 
-        assert_eq!(
-            first_connected_google_account_email_from(vec![notion.clone()]),
-            ""
+        let same_account = build_autonomy_grant(
+            &record,
+            "gmail",
+            first.server_name.clone(),
+            first.tools.clone(),
+            "first@example.com",
+            Some(&first),
         );
-        assert_eq!(
-            first_connected_google_account_email_from(vec![
-                notion.clone(),
-                reconnecting_google,
-                connected_google,
-            ]),
-            "user@example.com"
+        assert_eq!(same_account.token, first.token);
+
+        let changed_account = build_autonomy_grant(
+            &record,
+            "gmail",
+            first.server_name.clone(),
+            first.tools.clone(),
+            "second@example.com",
+            Some(&first),
         );
+        assert_eq!(changed_account.account_id, "second@example.com");
+        assert_ne!(changed_account.token, first.token);
     }
 
     #[test]

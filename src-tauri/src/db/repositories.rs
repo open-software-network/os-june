@@ -8889,6 +8889,28 @@ mod tests {
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0].scopes.len(), 3);
 
+        // Google is deliberately multi-account. A second distinct email is a
+        // separate row, while reconnecting the first still upserts in place.
+        repos
+            .upsert_connector_account(
+                "other@example.com",
+                "google",
+                "other@example.com",
+                &scopes(&["openid", "email"]),
+                "connected",
+                "{}",
+            )
+            .await
+            .expect("insert second Google account");
+        let accounts = repos.list_connector_accounts().await.expect("list");
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts
+            .iter()
+            .any(|account| account.account_id == "user@example.com"));
+        assert!(accounts
+            .iter()
+            .any(|account| account.account_id == "other@example.com"));
+
         repos
             .set_connector_account_status("user@example.com", "reconnect_required")
             .await
@@ -8903,7 +8925,7 @@ mod tests {
             .get_connector_account("other@example.com")
             .await
             .expect("get")
-            .is_none());
+            .is_some());
     }
 
     #[tokio::test]

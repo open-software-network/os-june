@@ -1889,6 +1889,15 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.agent-action-card-account {
+  max-width: 50%;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The description reads at all times; collapsed it clamps to two lines so a long
  * reason never pushes the actions down. Expanding (via Details) restores the
  * full prose. */
@@ -28136,6 +28145,47 @@ button.memory-project:hover {
   background: var(--secondary);
 }
 
+.connector-provider-row-has-accounts {
+  margin-bottom: calc(-1 * var(--sp-1));
+}
+
+.connector-account-row {
+  grid-template-columns: var(--control-lg) minmax(0, 1fr) auto;
+  margin-left: var(--sp-4);
+  border-radius: var(--r-sm);
+}
+
+.connector-account-guide {
+  justify-self: center;
+  width: 1px;
+  height: var(--control-md);
+  background: var(--border-subtle);
+}
+
+.connector-account-email {
+  overflow: hidden;
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connector-account-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.connector-scope-chip {
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1;
+}
+
 .connectors-advanced-row {
   display: flex;
   padding: var(--sp-1) var(--sp-3) var(--sp-2);
@@ -28271,6 +28321,58 @@ button.memory-project:hover {
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.45;
+}
+
+.connector-authorization-fallback {
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.connector-authorization-fallback summary {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.connector-authorization-fallback-body {
+  display: grid;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+}
+
+.connector-authorization-fallback-body label {
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.connector-authorization-url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.connector-authorization-url-row .text-input {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+
+.connector-authorization-url-row .btn,
+.connector-authorization-open {
+  min-height: var(--control-md);
+}
+
+.connector-authorization-open {
+  justify-self: start;
+}
+
+.connector-authorization-fallback-body p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
 }
 
 .connectors-revoke-option {

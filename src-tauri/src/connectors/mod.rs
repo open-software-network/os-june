@@ -927,22 +927,20 @@ fn append_notion_account(
     Ok(())
 }
 
-/// The identity of an already-stored account, for the SAME provider, that
-/// differs from the one being connected, if any. The identity string is
-/// whatever keys that provider's accounts: the email for Google, the
-/// workspace id for Linear. Local mode is single-account per provider
-/// (every connector surface for a given provider resolves the one connected
-/// account for that provider), so a second, distinct account for that
-/// provider is refused to avoid a cross-account read/write mix-up. A
-/// different provider's account never conflicts: a connected Google account
-/// must not block connecting Linear, and vice versa. Comparison is
-/// case-insensitive, so reconnecting or adding scope to the same identity
-/// returns `None` and is allowed.
+/// The identity of an already-stored account, for a provider that remains
+/// single-account, that differs from the one being connected. Linear and
+/// GitHub use this guard; Google routes every operation by account id and
+/// deliberately allows multiple accounts. A different provider's account
+/// never conflicts. Comparison is case-insensitive, so reconnecting or adding
+/// scope to the same identity returns `None` and is allowed.
 fn conflicting_existing_account<'a>(
     existing: impl IntoIterator<Item = (&'a str, &'a str)>,
     connecting_provider: &str,
     connecting_identity: &str,
 ) -> Option<String> {
+    if connecting_provider == ConnectorProvider::Google.as_str() {
+        return None;
+    }
     existing
         .into_iter()
         .filter(|(provider, _)| *provider == connecting_provider)
@@ -978,6 +976,7 @@ pub async fn begin_connect(
 
     let requested = policy::requested_scopes(bundles);
     let grant = oauth::authorize(
+        app,
         flow,
         &client.client_id,
         &client.client_secret,
@@ -1000,32 +999,7 @@ pub async fn begin_connect(
         }
     }
 
-    // Local mode v1 binds every connector surface to a single account: the base
-    // Gmail/Calendar MCP servers, the per-job autonomy servers, and every
-    // trigger all independently resolve "the connected account" (the first
-    // connected row). A second, distinct account would let a routine created
-    // against account B silently read or mutate account A's mail and calendar,
-    // a cross-account privacy leak. Refuse a different account while one is
-    // already stored; reconnecting or adding scope to the same email still
-    // passes (the email matches). Multi-account routing is a documented
-    // follow-up. Checked after auth because the account identity is only known
-    // once Google returns it; the settings UI also hides "add another" so this
-    // guard is the safety net, not the primary path.
     let existing_accounts = repos.list_connector_accounts().await?;
-    if let Some(existing_email) = conflicting_existing_account(
-        existing_accounts
-            .iter()
-            .map(|record| (record.provider.as_str(), record.email.as_str())),
-        ConnectorProvider::Google.as_str(),
-        &email,
-    ) {
-        return Err(AppError::new(
-            "connector_single_account_only",
-            format!(
-                "June local mode uses one Google account at a time. Disconnect {existing_email} before connecting another."
-            ),
-        ));
-    }
 
     // Persist the account's scopes. When Google omits the response scope field
     // on an incremental grant, this unions the requested scopes with the ones
@@ -1165,7 +1139,8 @@ pub async fn begin_connect_linear(
     }
 
     let requested = policy::requested_linear_scopes(bundles);
-    let grant = linear::authorize(flow, &client_id, &requested, &linear_loopback_ports()).await?;
+    let grant =
+        linear::authorize(app, flow, &client_id, &requested, &linear_loopback_ports()).await?;
     let identity = grant.identity;
     let workspace_id = identity.workspace_id.clone();
 
@@ -1182,8 +1157,7 @@ pub async fn begin_connect_linear(
         }
     }
 
-    // Same single-account rationale as the Google guard above, scoped to the
-    // Linear provider: every Linear surface resolves "the connected
+    // Linear remains single-account: every Linear surface resolves "the connected
     // workspace", so a second, distinct workspace is refused. Compared by
     // workspace id (the account id), never email.
     let existing_accounts = repos.list_connector_accounts().await?;
@@ -1431,7 +1405,7 @@ pub async fn begin_connect_github(
         }
     }
 
-    // Same single-account rationale as Google and Linear, scoped to GitHub.
+    // GitHub remains single-account, scoped independently from Linear.
     let existing_accounts = repos.list_connector_accounts().await?;
     if let Some(existing_id) = conflicting_existing_account(
         existing_accounts
@@ -2027,31 +2001,43 @@ mod tests {
     }
 
     #[test]
-    fn single_account_guard_blocks_a_different_account_only() {
+    fn single_account_guard_blocks_a_different_linear_workspace_only() {
         // First-ever connect: nothing stored, nothing conflicts.
         assert_eq!(
-            conflicting_existing_account([], "google", "a@example.com"),
+            conflicting_existing_account([], "linear", "workspace-a"),
             None
         );
         // Reconnect or scope-add on the same account (any casing) is allowed.
         assert_eq!(
-            conflicting_existing_account([("google", "a@example.com")], "google", "A@Example.com"),
+            conflicting_existing_account([("linear", "workspace-a")], "linear", "WORKSPACE-A"),
             None
         );
         // A second, distinct account is refused, naming the stored one.
         assert_eq!(
-            conflicting_existing_account([("google", "a@example.com")], "google", "b@example.com"),
-            Some("a@example.com".to_string())
+            conflicting_existing_account([("linear", "workspace-a")], "linear", "workspace-b"),
+            Some("workspace-a".to_string())
         );
         // The stored account is reported even when the new one is also present
         // in the list (defensive: only the differing email matters).
         assert_eq!(
             conflicting_existing_account(
-                [("google", "a@example.com"), ("google", "b@example.com")],
-                "google",
-                "b@example.com"
+                [("linear", "workspace-a"), ("linear", "workspace-b"),],
+                "linear",
+                "workspace-b"
             ),
-            Some("a@example.com".to_string())
+            Some("workspace-a".to_string())
+        );
+    }
+
+    #[test]
+    fn google_accounts_never_hit_the_single_account_guard() {
+        assert_eq!(
+            conflicting_existing_account(
+                [("google", "work@example.com")],
+                "google",
+                "personal@example.com",
+            ),
+            None
         );
     }
 
@@ -2105,10 +2091,10 @@ mod tests {
         assert_eq!(
             conflicting_existing_account(
                 [("linear", "workspace-1"), ("google", "a@example.com")],
-                "google",
-                "b@example.com"
+                "linear",
+                "workspace-2"
             ),
-            Some("a@example.com".to_string())
+            Some("workspace-1".to_string())
         );
     }
 

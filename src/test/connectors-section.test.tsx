@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  clipboardWrite: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -127,6 +128,11 @@ beforeEach(() => {
   connectorsChangedListener = null;
   eventHandlers.clear();
   mocks.connectorsList.mockResolvedValue([]);
+  mocks.clipboardWrite.mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: mocks.clipboardWrite },
+  });
   mocks.invoke.mockImplementation(async (command: string) =>
     command === "connectors_policy" ? representativeConnectorPolicy() : undefined,
   );
@@ -562,21 +568,46 @@ describe("ConnectorsSection", () => {
 
     expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText(/read mail, manage calendar/i)).toBeInTheDocument();
+    expect(screen.getByText("Read mail")).toBeInTheDocument();
+    expect(screen.getByText("Manage calendar")).toBeInTheDocument();
     // Subscribed to the connectors-changed Tauri event to stay fresh.
     expect(mocks.listen).toHaveBeenCalledWith("june://connectors-changed", expect.any(Function));
   });
 
-  it("keeps local mode to one account: a connected provider offers no second connect", async () => {
-    mocks.connectorsList.mockResolvedValue([account()]);
+  it("renders independent Google account rows and keeps add account unhinted", async () => {
+    mocks.connectorsList.mockResolvedValue([
+      account({
+        accountId: "work@example.com",
+        email: "work@example.com",
+        scopes: [GMAIL_READONLY],
+      }),
+      account({
+        accountId: "personal@example.com",
+        email: "personal@example.com",
+        scopes: [CALENDAR_EVENTS],
+      }),
+    ]);
     render(<ConnectorsSection />);
-    await screen.findByText(/alex@example\.com/);
+    const workEmail = await screen.findByText("work@example.com");
+    const personalEmail = screen.getByText("personal@example.com");
 
-    // No "add another account" affordance while one is connected; the base
-    // connector servers, triggers, and grants all bind to that single account.
-    expect(screen.queryByRole("button", { name: "Connect Google" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Add access" })).toBeInTheDocument();
-    expect(screen.getByText(/Connect apps and services in local mode/i)).toBeInTheDocument();
+    expect(within(workEmail.closest("li") as HTMLElement).getByText("Read mail")).toBeVisible();
+    expect(
+      within(personalEmail.closest("li") as HTMLElement).getByText("Manage calendar"),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Add access for work@example.com" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Disconnect personal@example.com" })).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Google account" }));
+    const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["gmail_read", "calendar_read"],
+        loginHint: undefined,
+        provider: "google",
+      }),
+    );
   });
 
   it("connects an account from the feature-bundle dialog and applies the runtime", async () => {
@@ -639,6 +670,39 @@ describe("ConnectorsSection", () => {
     expect(screen.queryByText(/canceled/i)).toBeNull();
   });
 
+  it("reveals, copies, and reopens the local OAuth authorization link", async () => {
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+    await userEvent.click(await findEnabledConnect("Connect Google"));
+    const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    const authorizationUrl =
+      "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http://127.0.0.1:43123/callback";
+    act(() => {
+      eventHandlers.get("june://connector-authorization-url")?.({
+        payload: { url: authorizationUrl },
+      });
+    });
+
+    const disclosure = await within(dialog).findByText("Trouble opening your browser?");
+    await userEvent.click(disclosure);
+    const input = within(dialog).getByLabelText("Authorization link");
+    expect(input).toHaveValue(authorizationUrl);
+    expect(input).toHaveAttribute("readonly");
+    expect(
+      within(dialog).getByText("This link works only in a browser on this Mac."),
+    ).toBeVisible();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+    expect(await within(dialog).findByRole("button", { name: "Copied" })).toBeVisible();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Open again" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("june_open_external_url", {
+      url: authorizationUrl,
+    });
+  });
+
   it("shows an inline notice when the connector is not configured in this build", async () => {
     mocks.connectorsConnect.mockRejectedValue({
       code: "connector_not_configured",
@@ -659,7 +723,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
     await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Reconnect Google" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect alex@example.com" }));
 
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({
@@ -676,7 +740,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
     await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect alex@example.com" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
     // Checked on open: a disconnect that leaves the grant alive also drops
     // June's tokens, so the user could never revoke it from June afterward.
@@ -701,7 +765,7 @@ describe("ConnectorsSection", () => {
     render(<ConnectorsSection />);
     await screen.findByText(/alex@example\.com/);
 
-    await userEvent.click(screen.getByRole("button", { name: "Disconnect Google" }));
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect alex@example.com" }));
     const dialog = await screen.findByRole("dialog", { name: /Disconnect alex@example.com/ });
     // Unchecking is a deliberate "I'll reconnect shortly" choice.
     await userEvent.click(

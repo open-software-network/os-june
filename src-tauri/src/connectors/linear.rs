@@ -143,6 +143,7 @@ pub enum LinearRefreshOutcome {
 /// fresh access token. A thin Linear-specific wrapper over
 /// [`oauth::loopback_authorize`], parallel to the Google `oauth::authorize`.
 pub async fn authorize(
+    app: &tauri::AppHandle,
     flow: &ConnectFlow,
     client_id: &str,
     scopes: &[&str],
@@ -152,6 +153,7 @@ pub async fn authorize(
     // registered callback URL exactly (port included), so the redirect URI
     // must be one whose URL is registered on the OAuth application.
     let authorization = oauth::loopback_authorize(
+        app,
         flow,
         "Linear",
         oauth::LoopbackPort::Candidates(loopback_ports.to_vec()),

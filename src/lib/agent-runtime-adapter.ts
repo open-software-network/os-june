@@ -469,6 +469,7 @@ function interruptionToPart(
     sessionId: interruption.sessionId,
     command: interruption.command ?? interruption.toolName,
     description: interruption.description || interruption.title,
+    accountEmail: interruption.accountEmail ?? undefined,
     allowPermanent: interruption.allowAlways,
     choice: interruption.resolution,
     status: interruption.status,

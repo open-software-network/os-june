@@ -16,6 +16,7 @@ import {
 import { useConnectorPolicy } from "../../lib/connector-policy";
 import { errorCode, messageFromError } from "../../lib/errors";
 import {
+  CONNECTOR_AUTHORIZATION_URL_EVENT,
   CONNECTORS_CHANGED_EVENT,
   GITHUB_DEVICE_CODE_EVENT,
   connectorsApplyRuntime,
@@ -30,6 +31,8 @@ import {
   obsidianConfigure,
   obsidianDisconnect,
   obsidianStatus,
+  openExternalUrl,
+  type ConnectorAuthorizationUrlPayload,
   type ConnectorAccount,
   type ConnectorProvider,
   type ConnectorScopeBundle,
@@ -401,10 +404,9 @@ export function ConnectorsSection({
   const [connectProvider, setConnectProvider] = useState<OAuthConnectorProvider>("google");
   const [connectOpen, setConnectOpen] = useState(false);
   const [bundles, setBundles] = useState<ConnectorScopeBundle[]>([]);
-  // The account we are adding scope to (single-account-per-provider
-  // incremental auth), or null for a first-time connect. Its login hint
-  // preselects that account/workspace so the backend's single-account guard
-  // passes.
+  // The account we are adding scope to, or null for a new account connect.
+  // Its login hint preselects that account/workspace so incremental auth
+  // cannot silently land on a different identity.
   const [connectTarget, setConnectTarget] = useState<ConnectorAccount | null>(null);
   // When true, the connect dialog was opened by a GitHub reconnect click. This
   // changes the dialog title and suppresses the bundle picker (the user already
@@ -416,6 +418,9 @@ export function ConnectorsSection({
   const [githubDeviceCode, setGithubDeviceCode] = useState<GitHubDeviceCodePayload | null>(null);
   const [codeCopied, setCodeCopied] = useState(false);
   const codeCopiedTimerRef = useRef<number>();
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [authorizationUrlCopied, setAuthorizationUrlCopied] = useState(false);
+  const authorizationUrlCopiedTimerRef = useRef<number>();
   // An inline error inside the connect dialog (device-flow specific errors
   // that keep the dialog open so the user can retry).
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -530,6 +535,24 @@ export function ConnectorsSection({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen(
+      CONNECTOR_AUTHORIZATION_URL_EVENT,
+      (event: { payload: ConnectorAuthorizationUrlPayload }) => {
+        if (!cancelled) setAuthorizationUrl(event.payload.url);
+      },
+    ).then((cleanup) => {
+      if (cancelled) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
   const loadTeams = useCallback(async (accountId: string) => {
     setTeamsLoading(true);
     setTeamsError(null);
@@ -582,6 +605,8 @@ export function ConnectorsSection({
     setConnectProvider(provider);
     setBundles(defaultBundlesForProvider(policy, provider));
     setConnectTarget(null);
+    setAuthorizationUrl(null);
+    setAuthorizationUrlCopied(false);
     setConnectOpen(true);
   }
 
@@ -592,6 +617,8 @@ export function ConnectorsSection({
     setConnectProvider(account.provider);
     setBundles(bundlesFromScopes(policy, account.scopes, account.provider));
     setConnectTarget(account);
+    setAuthorizationUrl(null);
+    setAuthorizationUrlCopied(false);
     setConnectOpen(true);
   }
 
@@ -600,6 +627,8 @@ export function ConnectorsSection({
     setNotConfigured(null);
     setConnectError(null);
     setGithubDeviceCode(null);
+    setAuthorizationUrl(null);
+    setAuthorizationUrlCopied(false);
     setConnecting(true);
     try {
       const account = await runConnect({
@@ -610,6 +639,7 @@ export function ConnectorsSection({
       setConnectOpen(false);
       setConnectIsReconnect(false);
       setGithubDeviceCode(null);
+      setAuthorizationUrl(null);
       const toasts = CONNECT_TOASTS[connectProvider];
       toast.success(
         connectIsReconnect ? toasts.reconnect : connectTarget ? toasts.add : toasts.connect,
@@ -656,6 +686,20 @@ export function ConnectorsSection({
       codeCopiedTimerRef.current = window.setTimeout(() => {
         setCodeCopied(false);
         codeCopiedTimerRef.current = undefined;
+      }, 2000);
+    });
+  }
+
+  function copyAuthorizationUrl() {
+    if (!authorizationUrl) return;
+    void navigator.clipboard.writeText(authorizationUrl).then(() => {
+      setAuthorizationUrlCopied(true);
+      if (authorizationUrlCopiedTimerRef.current !== undefined) {
+        window.clearTimeout(authorizationUrlCopiedTimerRef.current);
+      }
+      authorizationUrlCopiedTimerRef.current = window.setTimeout(() => {
+        setAuthorizationUrlCopied(false);
+        authorizationUrlCopiedTimerRef.current = undefined;
       }, 2000);
     });
   }
@@ -716,6 +760,8 @@ export function ConnectorsSection({
     if (connecting) void connectorsCancelConnect();
     setConnectOpen(false);
     setGithubDeviceCode(null);
+    setAuthorizationUrl(null);
+    setAuthorizationUrlCopied(false);
     setConnectError(null);
     setConnectIsReconnect(false);
   }
@@ -989,6 +1035,111 @@ export function ConnectorsSection({
           </li>
           {policy
             ? oauthProviders.map((provider) => {
+                if (provider === "google") {
+                  const googleAccounts = (accounts ?? []).filter(
+                    (entry) => entry.provider === "google",
+                  );
+                  return (
+                    <Fragment key="google">
+                      <li
+                        className={`connector-row connector-provider-row${
+                          googleAccounts.length > 0 ? " connector-provider-row-has-accounts" : ""
+                        }`}
+                      >
+                        <span className="connector-logo" aria-hidden>
+                          <ConnectorProviderIcon provider="google" />
+                        </span>
+                        <div className="connector-main">
+                          <span className="connector-name">Google</span>
+                          <p className="connector-subtitle">{PROVIDER_BLURBS.google}</p>
+                        </div>
+                        <div className="connector-actions">
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            aria-label={
+                              googleAccounts.length > 0 ? "Add Google account" : "Connect Google"
+                            }
+                            disabled={accounts === null}
+                            onClick={() => openConnectNew("google")}
+                          >
+                            Add account
+                          </button>
+                        </div>
+                      </li>
+                      {googleAccounts.map((account) => {
+                        const status = accountStatusMeta(account.status, "google");
+                        const reconnecting = reconnectingId === account.accountId;
+                        const featureLabels = grantedFeatureLabels(
+                          policy,
+                          account.scopes,
+                          "google",
+                        );
+                        return (
+                          <li
+                            key={account.accountId}
+                            className="connector-row connector-account-row"
+                          >
+                            <span className="connector-account-guide" aria-hidden />
+                            <div className="connector-main">
+                              <span className="connector-account-email">{account.email}</span>
+                              {featureLabels.length > 0 ? (
+                                <span className="connector-account-scopes">
+                                  {featureLabels.map((feature) => (
+                                    <span key={feature} className="connector-scope-chip">
+                                      {feature}
+                                    </span>
+                                  ))}
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="connector-actions">
+                              <span
+                                className="status-pill"
+                                data-tone={status.tone === "ok" ? "ok" : "warning"}
+                                title={status.blurb}
+                              >
+                                {status.label}
+                              </span>
+                              {account.status === "reconnect_required" ? (
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  aria-label={`Reconnect ${account.email}`}
+                                  disabled={reconnectingId !== null}
+                                  aria-busy={reconnecting || undefined}
+                                  onClick={() => void reconnect(account)}
+                                >
+                                  {reconnecting ? "Reconnecting…" : "Reconnect"}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="btn btn-secondary"
+                                  aria-label={`Add access for ${account.email}`}
+                                  onClick={() => openAddAccess(account)}
+                                >
+                                  Add access
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className="btn btn-ghost"
+                                aria-label={`Disconnect ${account.email}`}
+                                onClick={() => {
+                                  setRevoke(true);
+                                  setDisconnectTarget(account);
+                                }}
+                              >
+                                Disconnect
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </Fragment>
+                  );
+                }
                 const account = accounts?.find((entry) => entry.provider === provider) ?? null;
                 const name = PROVIDER_NAMES[provider];
                 const status = account ? accountStatusMeta(account.status, provider) : null;
@@ -1006,12 +1157,7 @@ export function ConnectorsSection({
                   account !== null && provider === "linear" && account.selectedTeams.length === 0;
                 const showTeamsHint =
                   needsTeams && account !== null && account.status === "connected";
-                // Google's "Add access" stays unconditional (preserves existing
-                // Google behavior); Linear hides it once both bundles are
-                // granted, since there is nothing left to add.
-                const showAddAccess =
-                  account !== null &&
-                  (provider === "google" || !allBundlesGranted(policy, account));
+                const showAddAccess = account !== null && !allBundlesGranted(policy, account);
                 return (
                   <li key={provider} className="connector-row">
                     <span className="connector-logo" aria-hidden>
@@ -1230,6 +1376,43 @@ export function ConnectorsSection({
                 );
               })}
             </div>
+            {connecting && connectProvider !== "github" && authorizationUrl ? (
+              <details className="connector-authorization-fallback">
+                <summary>Trouble opening your browser?</summary>
+                <div className="connector-authorization-fallback-body">
+                  <label htmlFor="connector-authorization-url">Authorization link</label>
+                  <div className="connector-authorization-url-row">
+                    <input
+                      id="connector-authorization-url"
+                      className="text-input"
+                      value={authorizationUrl}
+                      readOnly
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      aria-live="polite"
+                      onClick={copyAuthorizationUrl}
+                    >
+                      <CopyStateIcon copied={authorizationUrlCopied} />
+                      {authorizationUrlCopied ? "Copied" : "Copy link"}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary connector-authorization-open"
+                    onClick={() => {
+                      void openExternalUrl(authorizationUrl).catch((err) =>
+                        toast.error(messageFromError(err)),
+                      );
+                    }}
+                  >
+                    Open again
+                  </button>
+                  <p>This link works only in a browser on this Mac.</p>
+                </div>
+              </details>
+            ) : null}
           </>
         )}
       </Dialog>

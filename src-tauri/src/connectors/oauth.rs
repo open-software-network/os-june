@@ -23,7 +23,7 @@ use base64::{
     Engine,
 };
 use rand::RngCore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     sync::{LazyLock, OnceLock},
@@ -43,6 +43,7 @@ const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinf
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const AUTHORIZATION_URL_EVENT: &str = "june://connector-authorization-url";
 /// Total refresh attempts (1 initial + retries) on transient upstream
 /// failures; definitive rejections (invalid_grant) never retry.
 pub(crate) const REFRESH_MAX_ATTEMPTS: usize = 3;
@@ -158,6 +159,29 @@ pub(crate) enum LoopbackPort {
     Candidates(Vec<u16>),
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuthorizationUrlPayload {
+    pub url: String,
+}
+
+fn emit_authorization_url_with<E>(
+    auth_url: &str,
+    emit: impl FnOnce(&str, AuthorizationUrlPayload) -> Result<(), E>,
+) -> Result<(), E> {
+    emit(
+        AUTHORIZATION_URL_EVENT,
+        AuthorizationUrlPayload {
+            url: auth_url.to_string(),
+        },
+    )
+}
+
+fn emit_authorization_url(app: &tauri::AppHandle, auth_url: &str) {
+    use tauri::Emitter;
+    let _ = emit_authorization_url_with(auth_url, |event, payload| app.emit(event, payload));
+}
+
 /// Bind the loopback listener per the port strategy. For candidates, the
 /// first free port wins; every candidate being taken is reported with the
 /// full list so the user can see which local ports the connect needs.
@@ -199,6 +223,7 @@ pub(crate) async fn bind_loopback(port: &LoopbackPort) -> Result<TcpListener, Ap
 /// timeout/cancel/denial copy shown to the user (e.g. "Google"), so each
 /// provider's wrapper keeps producing its own exact error text.
 pub(crate) async fn loopback_authorize(
+    app: &tauri::AppHandle,
     flow: &ConnectFlow,
     provider_label: &str,
     port: LoopbackPort,
@@ -215,6 +240,7 @@ pub(crate) async fn loopback_authorize(
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
     let auth_url = build_auth_url(&redirect_uri, &challenge, &csrf);
 
+    emit_authorization_url(app, &auth_url);
     crate::os_accounts::open_in_browser(&auth_url)?;
 
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
@@ -254,6 +280,7 @@ pub(crate) async fn loopback_authorize(
 /// token exchange + email resolution the shared primitive knows nothing
 /// about.
 pub async fn authorize(
+    app: &tauri::AppHandle,
     flow: &ConnectFlow,
     client_id: &str,
     client_secret: &str,
@@ -261,6 +288,7 @@ pub async fn authorize(
     login_hint: Option<&str>,
 ) -> Result<AuthorizedGrant, AppError> {
     let authorization = loopback_authorize(
+        app,
         flow,
         "Google",
         LoopbackPort::Ephemeral,
@@ -707,6 +735,30 @@ pub(crate) fn random_b64url(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn authorization_url_is_emitted_for_the_waiting_dialog() {
+        let emitted = RefCell::new(None);
+        emit_authorization_url_with(
+            "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+            |event, payload| {
+                emitted.replace(Some((event.to_string(), payload)));
+                Ok::<(), ()>(())
+            },
+        )
+        .expect("emit");
+
+        assert_eq!(
+            emitted.into_inner(),
+            Some((
+                AUTHORIZATION_URL_EVENT.to_string(),
+                AuthorizationUrlPayload {
+                    url: "https://accounts.google.com/o/oauth2/v2/auth?state=test".to_string(),
+                },
+            ))
+        );
+    }
 
     #[test]
     fn auth_url_carries_native_app_flow_params() {

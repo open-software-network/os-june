@@ -351,6 +351,7 @@ export function RoutinesView({
             jobId: created.job_id,
             trustMode: input.trustMode,
             autonomousTools: input.trustMode === "autonomous" ? input.autonomousTools : undefined,
+            accountId: input.triggerAccountId,
           });
           if (eventTrigger && input.triggerAccountId) {
             // Subscribing is required setup, not best-effort. If it fails,

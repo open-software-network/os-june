@@ -142,6 +142,8 @@ export type AgentApprovalInterruptionDto = AgentInterruptionBase & {
   title: string;
   description: string;
   command?: string;
+  /** Acting Google identity for a mutating connector request. */
+  accountEmail?: string | null;
   allowAlways: boolean;
   resolution?: "once" | "session" | "always" | "deny";
 };
