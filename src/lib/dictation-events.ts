@@ -36,7 +36,12 @@ const DICTATION_FINISHED_EVENTS = new Set([
   "shutdown_ack",
 ]);
 
-export function nextDictationWorkflowActive(current: boolean, eventType: string) {
+export function nextDictationWorkflowActive(
+  current: boolean,
+  eventType: string,
+  preserveActiveTake = false,
+) {
+  if (preserveActiveTake) return current;
   if (DICTATION_ACTIVE_EVENTS.has(eventType)) return true;
   if (DICTATION_FINISHED_EVENTS.has(eventType)) return false;
   return current;

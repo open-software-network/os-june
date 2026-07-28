@@ -148,6 +148,7 @@ import {
   resolveJuneHomeThreadSessionId,
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
+  withJuneHomeLatestTaskIntent,
   type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
@@ -157,7 +158,9 @@ import {
   compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   homeConversationContextFromTurns,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
@@ -432,6 +435,7 @@ export function AgentWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(0);
+  const [submittedScrollRevision, setSubmittedScrollRevision] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const projectContextRef = useRef(projectContext);
@@ -447,6 +451,9 @@ export function AgentWorkspace({
       targetProjectContext,
       projectContextSignaturesBySessionId.get(storedSessionId),
     );
+  }, []);
+  const requestSubmittedMessageScroll = useCallback(() => {
+    setSubmittedScrollRevision((revision) => revision + 1);
   }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
@@ -532,6 +539,7 @@ export function AgentWorkspace({
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
+  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
   const waiting = projection.run?.status === "waiting_for_user";
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
@@ -979,6 +987,13 @@ export function AgentWorkspace({
     }
   }, [projection.items]);
 
+  useLayoutEffect(() => {
+    if (submittedScrollRevision === 0) return;
+    const scroller = scrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [submittedScrollRevision]);
+
   useEffect(() => {
     if (
       running ||
@@ -1031,7 +1046,7 @@ export function AgentWorkspace({
     // state lets the greeting and suggestions settle underneath the input.
     // The focused new-session hero is inline and remains the only mode that
     // intentionally needs no fixed-composer clearance.
-    if ((!homeMode && (newSessionMode || !selectedSession)) || !scroller || !composer) {
+    if (heroMode || !scroller || !composer) {
       setComposerClearance(0);
       return;
     }
@@ -1051,7 +1066,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [homeMode, newSessionMode, selectedSession]);
+  }, [heroMode]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
@@ -1115,6 +1130,7 @@ export function AgentWorkspace({
       }));
       setComposerDraft("");
       setAttachments([]);
+      requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
         void agentRuntimeBindings
@@ -1256,6 +1272,7 @@ export function AgentWorkspace({
           session: activeSession,
           items: [...current.items, optimistic],
         }));
+        requestSubmittedMessageScroll();
       }
       if (
         !queuedSnapshot &&
@@ -1568,15 +1585,18 @@ export function AgentWorkspace({
         priorDirectTurns,
         readHomeTaskHandoffs(storedSessionId),
       );
+      const greetingReply = homeConversationGreetingReply(message);
+      const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      requestSubmittedMessageScroll();
 
-      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+      if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {
           id: `home:direct:assistant:${suffix}`,
           role: "assistant",
           createdAt: new Date().toISOString(),
           status: "complete",
-          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+          parts: [{ type: "text", text: directConversationReply, status: "complete" }],
         };
         const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
         homeDirectTurnsRef.current = nextTurns;
@@ -1656,9 +1676,20 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
-        const toolCallId = response.task ? `direct:${suffix}` : undefined;
+        const latestHandoffs = readHomeTaskHandoffs(storedSessionId as string);
+        const rejectedStaleTask = Boolean(
+          response.task && isHomeTaskReplayWithoutNewIntent(response.task, message, latestHandoffs),
+        );
+        const responseTask =
+          rejectedStaleTask || !response.task
+            ? undefined
+            : {
+                ...response.task,
+                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+              };
+        const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
-          response.task && toolCallId
+          responseTask && toolCallId
             ? {
                 id: streamingTurnId,
                 role: "assistant",
@@ -1682,7 +1713,9 @@ export function AgentWorkspace({
                 parts: [
                   {
                     type: "text",
-                    text: response.content?.trim() || streamedContent.trim() || "I'm here.",
+                    text: rejectedStaleTask
+                      ? "I'm here. What can I help with?"
+                      : response.content?.trim() || streamedContent.trim() || "I'm here.",
                     status: "complete",
                   },
                 ],
@@ -1695,9 +1728,9 @@ export function AgentWorkspace({
         homeDirectTurnsRef.current = nextTurns;
         setHomeDirectTurns(nextTurns);
         setHomeStreamingReply(null);
-        if (response.task && toolCallId) {
+        if (responseTask && toolCallId) {
           void startHomeTask(
-            response.task,
+            responseTask,
             toolCallId,
             conversation,
             storedSessionId as string,
@@ -1866,7 +1899,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (cause) {
       setError(messageFromError(cause));
     }
@@ -1901,7 +1934,6 @@ export function AgentWorkspace({
     await refreshSessions();
   }
 
-  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const sessionActionsAvailable = Boolean(selectedId && selectedSession);
   const homeConversationTurns = useMemo(
     () =>
@@ -2088,6 +2120,7 @@ export function AgentWorkspace({
       running={running}
       submitting={submitting}
       disabledReason={textActionsDisabledReason}
+      notice={!heroMode ? error : undefined}
       hero={heroMode}
       showModelPicker={!homeMode}
     />
@@ -2151,11 +2184,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Home conversation">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline" data-home="true">
                 {homeConversationTurns.map((turn, index) => {
                   const previous = index > 0 ? homeConversationTurns[index - 1] : undefined;
@@ -2270,11 +2298,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Agent task details">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline">
                 {visibleTurns.map((turn) => (
                   <AgentChatTurnRow
@@ -2613,6 +2636,7 @@ function AgentComposer({
   running,
   submitting,
   disabledReason,
+  notice,
   hero = false,
   showModelPicker = true,
 }: {
@@ -2640,6 +2664,7 @@ function AgentComposer({
   running: boolean;
   submitting: boolean;
   disabledReason?: string;
+  notice?: string;
   hero?: boolean;
   showModelPicker?: boolean;
 }) {
@@ -2762,6 +2787,11 @@ function AgentComposer({
           }
         />
       )}
+      {notice ? (
+        <div className="agent-composer-notice" role="alert">
+          {notice}
+        </div>
+      ) : null}
       <div className="agent-composer-box">
         {attachments.length ? (
           <div className="agent-composer-attachments">

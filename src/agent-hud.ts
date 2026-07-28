@@ -18,19 +18,31 @@ import {
 } from "./lib/agent-events";
 import {
   AGENT_HUD_ENABLED_KEY,
+  AGENT_HUD_PLACEMENT_CHANGED_EVENT,
+  AGENT_HUD_PLACEMENT_KEY,
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   getAgentHudEnabled,
+  getAgentHudPlacement,
+  parseAgentHudPlacement,
   setAgentHudEnabled,
+  type AgentHudPlacement,
+  type AgentHudPlacementChangedDetail,
   type AgentHudVisibilityChangedDetail,
 } from "./lib/agent-hud-settings";
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
+import type { AgentSessionDto } from "./lib/agent-runtime-contract";
+import { subscribeBrand } from "./lib/brand";
 import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
 import { createHudLifecycle } from "./lib/hud-lifecycle";
 import { titleFromPrompt } from "./lib/session-title";
-import { agentHudHide, agentHudOpenAgent, agentHudSetLayout, agentHudShow } from "./lib/tauri";
+import {
+  agentHudHide,
+  agentHudMainFocused,
+  agentHudOpenAgent,
+  agentHudSetLayout,
+  agentHudShow,
+} from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
-import type { AgentSessionDto } from "./lib/agent-runtime-contract";
-import { subscribeBrand } from "./lib/brand";
 import "./styles/agent-hud.css";
 
 const lifecycle = createHudLifecycle();
@@ -51,6 +63,10 @@ type HudEntry = {
   status: HudSessionStatus;
   updatedAt: string;
   session?: AgentSessionDto;
+  // Deep-link target for rows without a full session object (a status that
+  // reported before, or without, a sessions-changed listing). The main
+  // window resolves it against June's stored session history.
+  storedSessionId?: string;
 };
 
 const EXPANDED_KEY = "june:agent-hud:expanded";
@@ -58,6 +74,9 @@ const EXPANDED_KEY = "june:agent-hud:expanded";
 // ctrl-click so the WKWebView never raises its own context menu. Keep this in
 // sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.
 const AGENT_HUD_CONTEXT_MENU_EVENT = "june:agent-hud:context-menu";
+// Emitted by agent_hud.rs whenever the main window gains or loses focus.
+// Keep in sync with AGENT_HUD_MAIN_FOCUS_EVENT there.
+const AGENT_HUD_MAIN_FOCUS_EVENT = "june:agent-hud:main-focus";
 const MAX_VISIBLE_ROWS = 3;
 // Keep a finished session on screen long enough to actually read the "Done"
 // row before it fades out, rather than blinking away the instant it lands.
@@ -86,6 +105,12 @@ lifecycle.addCleanup(installNativeContextMenuGuard());
 const state = {
   enabled: getAgentHudEnabled(),
   expanded: localStorage.getItem(EXPANDED_KEY) === "true",
+  placement: getAgentHudPlacement(),
+  // While the user is in June itself the HUD stays down — the sidebar and
+  // inline prompts already carry session state there. Rust streams focus
+  // changes; the initial value is fetched below and defaults to "away" so
+  // the standalone demo page still renders.
+  mainFocused: false,
   focused: false,
   hovered: false,
   menuOpen: false,
@@ -107,16 +132,25 @@ const state = {
 let lastWaitingEntryIds = new Set<string>();
 
 let lastLayoutKey = "";
+let lastAppliedLayoutKey = "";
 let lastStackKey = "";
 let lastRenderedExpanded = false;
 let lastWindowHeight = 0;
+let cachedExpandedSurfaceWidth = 0;
+let cachedExpandedPillHeight = 0;
 let pruneTimer: number | undefined;
 let hideTimer: number | undefined;
 let resizeTimer: number | undefined;
 let widthFlipTimer: number | undefined;
 let windowShown = false;
+let nativeVisibilityKnown = false;
+let desiredWindowVisible = false;
+let visibilityQueue: Promise<void> = Promise.resolve();
+let layoutRequestId = 0;
+let mainFocusEventRevision = 0;
 
 lifecycle.addCleanup(() => {
+  layoutRequestId += 1;
   window.clearTimeout(pruneTimer);
   window.clearTimeout(hideTimer);
   window.clearTimeout(resizeTimer);
@@ -229,6 +263,29 @@ function applyVisibility(enabled: boolean) {
   render();
 }
 
+function applyPlacement(placement: AgentHudPlacement) {
+  if (state.placement === placement) return;
+  state.placement = placement;
+  if (hud) hud.dataset.placement = placement;
+  // Same content, new corner: force the layout call through so the native
+  // window re-anchors even though nothing else in the key changed.
+  lastLayoutKey = "";
+  render();
+}
+
+function applyMainFocus(focused: boolean) {
+  if (state.mainFocused === focused) return;
+  state.mainFocused = focused;
+  render();
+}
+
+/* The HUD has something to say AND the user is not already in June looking
+ * at the same state in richer form. Used by render() and syncWindowLayout(),
+ * which must agree on what "visible" means. */
+function hudVisible(hasEntries: boolean) {
+  return state.enabled && hasEntries && !state.mainFocused;
+}
+
 function render() {
   if (!hud || !stack || !pill) return;
 
@@ -252,8 +309,7 @@ function render() {
   lastWaitingEntryIds = waitingEntryIds;
 
   const expanded =
-    state.enabled &&
-    hasEntries &&
+    hudVisible(hasEntries) &&
     (state.attentionExpanded ||
       state.expanded ||
       state.focused ||
@@ -262,7 +318,7 @@ function render() {
       (state.hovered && lastRenderedExpanded));
   lastRenderedExpanded = expanded;
 
-  const visible = state.enabled && hasEntries;
+  const visible = hudVisible(hasEntries);
   hud.dataset.hasEntries = hasEntries ? "true" : "false";
   hud.dataset.visible = visible ? "true" : "false";
 
@@ -311,19 +367,26 @@ function render() {
     menu.setAttribute("aria-hidden", state.menuOpen ? "false" : "true");
   }
 
-  if (willFlipWidth && surface) flipSurfaceWidth(surface, widthBefore);
+  if (willFlipWidth && surface) flipSurfaceWidth(surface, widthBefore, expanded);
 
   void syncWindowLayout(expanded, expanded ? entries.length : 0, hasEntries);
   scheduleStatusPrune();
 }
 
-function flipSurfaceWidth(target: HTMLElement, fromWidth: number) {
+function flipSurfaceWidth(target: HTMLElement, fromWidth: number, expanded: boolean) {
   if (widthFlipTimer !== undefined) {
     window.clearTimeout(widthFlipTimer);
     widthFlipTimer = undefined;
   }
   target.style.width = "";
-  const toWidth = target.getBoundingClientRect().width;
+  // Reversing a collapse while its width transition is still running makes
+  // getBoundingClientRect() report an in-between width. The native window
+  // would then be parked at that transient width even after the CSS surface
+  // finished expanding, clipping the left side of this right-anchored HUD.
+  // Expanded width is a fixed CSS endpoint, so read that endpoint directly.
+  const toWidth = expanded
+    ? expandedSurfaceTargetWidth(target)
+    : target.getBoundingClientRect().width;
   if (!fromWidth || !toWidth || Math.abs(toWidth - fromWidth) < 1) return;
   target.style.width = `${fromWidth}px`;
   // Force a layout so the starting width commits; the next assignment
@@ -335,6 +398,39 @@ function flipSurfaceWidth(target: HTMLElement, fromWidth: number) {
     // Hand the width back to the stylesheet (same computed value).
     target.style.width = "";
   }, 220);
+}
+
+function expandedSurfaceTargetWidth(target: HTMLElement) {
+  if (cachedExpandedSurfaceWidth > 0) return cachedExpandedSurfaceWidth;
+  const width = Number.parseFloat(
+    window.getComputedStyle(target).getPropertyValue("--hud-expanded-w"),
+  );
+  if (Number.isFinite(width) && width > 0) {
+    cachedExpandedSurfaceWidth = width;
+  }
+  return cachedExpandedSurfaceWidth;
+}
+
+function cssPixelToken(target: HTMLElement, token: string) {
+  const value = Number.parseFloat(window.getComputedStyle(target).getPropertyValue(token));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function expandedPillTargetHeight(target: HTMLElement) {
+  if (cachedExpandedPillHeight > 0) return cachedExpandedPillHeight;
+  const height = cssPixelToken(target, "--control-xl");
+  if (height > 0) {
+    cachedExpandedPillHeight = height;
+  }
+  return cachedExpandedPillHeight;
+}
+
+function menuEdgeOffset(target: HTMLElement) {
+  const tokenOffset = expandedPillTargetHeight(target) + cssPixelToken(target, "--sp-3");
+  // CSS is absent in the unit-test DOM. offsetTop is safe for top placements
+  // and lets geometry-focused tests supply the rendered inset; production
+  // reads tokens so bottom placement never enters the circular measurement.
+  return tokenOffset > 0 ? tokenOffset : (menu?.offsetTop ?? 0);
 }
 
 function renderPill(entries: HudEntry[], expanded: boolean) {
@@ -412,7 +508,7 @@ function renderRow(entry: HudEntry, index: number) {
   body.type = "button";
   body.className = "agent-hud-row-body";
   body.addEventListener("click", () => {
-    void openAgent(entry.session);
+    void openAgent(entry.session, entry.storedSessionId);
   });
 
   const status = document.createElement("span");
@@ -474,7 +570,7 @@ function entryFromSession(session: AgentSessionDto, record?: StatusRecord): HudE
   return {
     id: session.id,
     title: sessionTitle(session, record),
-    summary: sessionSummary(session, status, record),
+    summary: sessionSummary(status, record),
     status,
     updatedAt: sessionTimestamp(session, record),
     session,
@@ -488,6 +584,7 @@ function entryFromPending(record: StatusRecord): HudEntry {
     summary: statusSummary(record),
     status: record.status,
     updatedAt: new Date(record.receivedAt).toISOString(),
+    storedSessionId: record.sessionId,
   };
 }
 
@@ -537,7 +634,7 @@ function sessionTitle(session: AgentSessionDto, record?: StatusRecord) {
   return record?.prompt?.trim() || "Agent session";
 }
 
-function sessionSummary(session: AgentSessionDto, status: HudSessionStatus, record?: StatusRecord) {
+function sessionSummary(status: HudSessionStatus, record?: StatusRecord) {
   const summary = record?.summary?.trim();
   if (summary) return summary;
   if (status !== "idle") return statusLabel(status);
@@ -771,11 +868,12 @@ function statusSubject(record: StatusRecord) {
 
 async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries: boolean) {
   const menuOpen = state.menuOpen;
-  const visible = state.enabled && hasEntries;
+  const visible = hudVisible(hasEntries);
   const bounds = visibleHudBounds();
-  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}:${bounds.width ?? 0}:${bounds.height ?? 0}`;
+  const key = `${visible}:${expanded}:${rowCount}:${menuOpen}:${state.placement}:${bounds.width ?? 0}:${bounds.height ?? 0}`;
   if (key === lastLayoutKey) return;
   lastLayoutKey = key;
+  const requestId = ++layoutRequestId;
   if (!visible) {
     cancelPendingResize();
     scheduleWindowHide(!state.enabled);
@@ -784,19 +882,33 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   cancelWindowHide();
   cancelPendingResize();
   const height = bounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
-  const apply = async () => {
-    const latestBounds = visibleHudBounds();
-    await agentHudSetLayout({
-      expanded,
-      cardCount: rowCount,
-      ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
-      ...latestBounds,
-    }).catch(() => {});
-    if (!windowShown) {
-      await agentHudShow().catch(() => {});
-      windowShown = true;
+  const apply = async (latestBounds: { width?: number; height?: number }) => {
+    if (lifecycle.signal.aborted || requestId !== layoutRequestId || !hudVisible(hasEntries)) {
+      return;
     }
-    lastWindowHeight = latestBounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
+    const appliedKey = `${expanded}:${rowCount}:${menuOpen}:${state.placement}:${latestBounds.width ?? 0}:${latestBounds.height ?? 0}`;
+    const appliedHeight = latestBounds.height ?? nativeWindowHeight(expanded, rowCount, menuOpen);
+    if (appliedKey !== lastAppliedLayoutKey) {
+      // Record the request before awaiting IPC. Rapid event bursts can render
+      // again while Tauri is still resolving the first call; treating the
+      // requested layout as current prevents redundant native resize and
+      // re-position work for the same endpoint.
+      lastAppliedLayoutKey = appliedKey;
+      lastWindowHeight = appliedHeight;
+      await agentHudSetLayout({
+        expanded,
+        cardCount: rowCount,
+        placement: state.placement,
+        ...(menuOpen ? { contextMenuOpen: menuOpen } : {}),
+        ...latestBounds,
+      }).catch(() => {
+        if (lastAppliedLayoutKey === appliedKey) lastAppliedLayoutKey = "";
+      });
+    }
+    if (lifecycle.signal.aborted || requestId !== layoutRequestId || !hudVisible(hasEntries)) {
+      return;
+    }
+    await setNativeWindowVisible(true);
   };
   // Growing: the window must be at full size before the CSS reveal plays.
   // Shrinking: the reveal collapses first, then the window snaps down under
@@ -805,19 +917,30 @@ async function syncWindowLayout(expanded: boolean, rowCount: number, hasEntries:
   if (windowShown && height < lastWindowHeight) {
     resizeTimer = window.setTimeout(() => {
       resizeTimer = undefined;
-      void apply();
+      void apply(visibleHudBounds());
     }, COLLAPSE_RESIZE_DELAY_MS);
   } else {
-    await apply();
+    // Immediate growth has no intervening animation frame, so the bounds
+    // already measured for the key are still current. Reuse them instead of
+    // forcing a second style/layout pass on every render.
+    await apply(bounds);
   }
 }
 
 function visibleHudBounds(): { width?: number; height?: number } {
   if (!surface) return {};
   if (state.menuOpen && (!menu || menu.offsetWidth <= 0 || menu.offsetHeight <= 0)) return {};
+  // The last row's tokenized bottom margin lives inside scrollable overflow
+  // that scrollHeight does not reliably include. Add it explicitly so the
+  // panel's bottom corner cannot paint clipped during the first reveal.
+  const stackBottomGap = cssPixelToken(surface, "--sp-1");
+  const measuredSurfaceWidth = surface.offsetWidth;
+  const expandedStackHeight = hud?.dataset.expanded === "true" && stack ? stack.scrollHeight : 0;
   const expandedSurfaceHeight =
-    hud?.dataset.expanded === "true" && pill && stack
-      ? pill.offsetHeight + stack.scrollHeight
+    expandedStackHeight > 0 && pill
+      ? Math.max(expandedPillTargetHeight(surface), pill.offsetHeight) +
+        expandedStackHeight +
+        stackBottomGap
       : surface.offsetHeight;
   // grid-template-rows animates the reveal from 0fr to 1fr. scrollHeight
   // exposes the final row height even while offsetHeight is still mid-
@@ -828,16 +951,25 @@ function visibleHudBounds(): { width?: number; height?: number } {
   // the known target to keep the native window from clipping the reveal.
   const animatedExpandedWidth =
     hud?.dataset.expanded === "true" ? Number.parseFloat(surface.style.width) : 0;
+  const expandedTargetWidth =
+    hud?.dataset.expanded === "true" ? expandedSurfaceTargetWidth(surface) : 0;
   const surfaceWidth = Math.max(
-    surface.offsetWidth,
+    measuredSurfaceWidth,
     Number.isFinite(animatedExpandedWidth) ? animatedExpandedWidth : 0,
+    expandedTargetWidth,
   );
   const width = Math.max(surfaceWidth, state.menuOpen && menu ? menu.offsetWidth : 0);
+  // Intrinsic extents, not offsetTop-based ones: with a bottom-anchored
+  // placement the surface's offsetTop tracks the current window height, and
+  // sizing the window from it can never shrink (the measurement is circular).
   const height = Math.max(
-    surface.offsetTop + surfaceHeight,
-    state.menuOpen && menu ? menu.offsetTop + menu.offsetHeight : 0,
+    surfaceHeight,
+    state.menuOpen && menu ? menuEdgeOffset(surface) + menu.offsetHeight : 0,
   );
-  if (width <= 0 || height <= 0) return {};
+  // A CSS endpoint alone is not a rendered bound. During jsdom/startup the
+  // custom property is readable before the surface itself has dimensions;
+  // fall back to Rust's startup geometry until layout has actually happened.
+  if (measuredSurfaceWidth <= 0 || width <= 0 || height <= stackBottomGap) return {};
   return { width: Math.ceil(width), height: Math.ceil(height) };
 }
 
@@ -857,12 +989,12 @@ function cancelPendingResize() {
 function scheduleWindowHide(immediate = false) {
   cancelWindowHide();
   if (!windowShown || immediate) {
-    void hideWindow();
+    void setNativeWindowVisible(false);
     return;
   }
   hideTimer = window.setTimeout(() => {
     hideTimer = undefined;
-    void hideWindow();
+    void setNativeWindowVisible(false);
   }, WINDOW_FADE_MS);
 }
 
@@ -872,9 +1004,36 @@ function cancelWindowHide() {
   hideTimer = undefined;
 }
 
-async function hideWindow() {
-  await agentHudHide().catch(() => {});
-  windowShown = false;
+function setNativeWindowVisible(visible: boolean) {
+  desiredWindowVisible = visible;
+  const reconcile = visibilityQueue.then(async () => {
+    if (
+      lifecycle.signal.aborted ||
+      (nativeVisibilityKnown && desiredWindowVisible === windowShown)
+    ) {
+      return;
+    }
+    const showing = desiredWindowVisible;
+    try {
+      if (showing) {
+        await agentHudShow();
+      } else {
+        await agentHudHide();
+      }
+    } catch {
+      return;
+    }
+    if (lifecycle.signal.aborted) return;
+    windowShown = showing;
+    nativeVisibilityKnown = true;
+    if (!showing) {
+      // A later show should re-fit and re-anchor in case fonts, placement, or
+      // monitor geometry changed while the panel was hidden.
+      lastAppliedLayoutKey = "";
+    }
+  });
+  visibilityQueue = reconcile.catch(() => {});
+  return reconcile;
 }
 
 function setExpanded(expanded: boolean) {
@@ -960,11 +1119,11 @@ function appendDotSpinner(parent: HTMLElement) {
   parent.appendChild(spinner);
 }
 
-async function openAgent(session?: AgentSessionDto) {
-  await agentHudOpenAgent(session).catch(() => {
+async function openAgent(session?: AgentSessionDto, storedSessionId?: string) {
+  await agentHudOpenAgent(session, storedSessionId).catch(() => {
     window.dispatchEvent(
       new CustomEvent(AGENT_OPEN_EVENT, {
-        detail: { session },
+        detail: { session, storedSessionId },
       }),
     );
   });
@@ -1053,8 +1212,8 @@ pill?.addEventListener("keydown", (event) => {
   toggleExpanded();
 });
 
-// The HUD is an overlay with no text-selection use case, so suppress the
-// native WKWebView context menu everywhere in this window and surface our
+// The Agent HUD has no text-selection use case, so suppress the native
+// WKWebView context menu everywhere in this window and surface our
 // own menu instead. In the real app the native panel swallows right- and
 // ctrl-clicks before WKWebView sees them (see the Tauri listener below);
 // this DOM listener is the fallback for the standalone browser/demo page,
@@ -1132,10 +1291,22 @@ window.addEventListener(
 );
 
 window.addEventListener(
+  AGENT_HUD_PLACEMENT_CHANGED_EVENT,
+  (event) => {
+    const detail = (event as CustomEvent<AgentHudPlacementChangedDetail>).detail;
+    if (detail) applyPlacement(detail.placement);
+  },
+  { signal: lifecycle.signal },
+);
+
+window.addEventListener(
   "storage",
   (event) => {
     if (event.key === AGENT_HUD_ENABLED_KEY) {
       applyVisibility(event.newValue !== "false");
+    }
+    if (event.key === AGENT_HUD_PLACEMENT_KEY) {
+      applyPlacement(parseAgentHudPlacement(event.newValue));
     }
   },
   { signal: lifecycle.signal },
@@ -1163,19 +1334,58 @@ lifecycle.trackUnlisten(
   ),
 );
 
+lifecycle.trackUnlisten(
+  listen<AgentHudPlacementChangedDetail>(AGENT_HUD_PLACEMENT_CHANGED_EVENT, (event) =>
+    applyPlacement(event.payload.placement),
+  ),
+);
+
+const mainFocusListenerRegistration = listen<boolean>(AGENT_HUD_MAIN_FOCUS_EVENT, (event) => {
+  mainFocusEventRevision += 1;
+  applyMainFocus(Boolean(event.payload));
+});
+lifecycle.trackUnlisten(mainFocusListenerRegistration);
+
+// Subscribe before sampling so a focus transition during listener setup is
+// reflected by the later snapshot. Events received while that snapshot is in
+// flight advance the revision and take precedence over its result.
+void mainFocusListenerRegistration
+  .then(async () => {
+    if (lifecycle.signal.aborted) return;
+    const initialFocusEventRevision = mainFocusEventRevision;
+    const focused = await agentHudMainFocused();
+    if (!lifecycle.signal.aborted && mainFocusEventRevision === initialFocusEventRevision) {
+      applyMainFocus(Boolean(focused));
+    }
+  })
+  .catch(() => {});
+
 // The native panel intercepts the right-/ctrl-click and asks us to open the
 // menu. The click never reaches the DOM, so there is no competing
 // pointerdown to close it again (the window pointerdown handler only fires
 // for clicks the webview actually receives).
 lifecycle.trackUnlisten(listen(AGENT_HUD_CONTEXT_MENU_EVENT, () => openMenu()));
 
+// First-load metrics race: the window can be sized while ABC Diatype is
+// still loading, and the reflow when the faces land grows the rows past the
+// measured frame. Re-fit once fonts settle (same companion the dictation
+// HUD keeps in hud.ts).
+if (typeof document.fonts?.ready?.then === "function") {
+  void document.fonts.ready.then(() => {
+    if (lifecycle.signal.aborted) return;
+    lastLayoutKey = "";
+    render();
+  });
+}
+
+if (hud) hud.dataset.placement = state.placement;
 setIcon(pillChevron, IconChevronDownSmall, 14);
 render();
 
 // Console driver for this page when served standalone in a browser:
 // __agentHud("waiting") etc. See lib/agent-hud-demo.ts.
 if (import.meta.env.DEV) {
-  void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) =>
-    registerAgentHudDemo({ local: true }),
-  );
+  void import("./lib/agent-hud-demo").then(({ registerAgentHudDemo }) => {
+    if (!lifecycle.signal.aborted) registerAgentHudDemo({ local: true });
+  });
 }

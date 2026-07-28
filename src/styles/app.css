@@ -10186,7 +10186,7 @@ button.agent-user-attachment:hover {
 
 .agent-sidebar-row .note-row-main {
   grid-template-columns: minmax(0, 1fr);
-  min-height: 26px;
+  min-height: var(--control-sm);
   padding: var(--sp-1) var(--sp-3);
 }
 
@@ -10298,6 +10298,18 @@ button.agent-user-attachment:hover {
   background: var(--popover);
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
+}
+
+.sidebar-context-menu {
+  --scroll-fade-size: var(--sp-6);
+
+  max-height: calc(100vh - var(--sp-6));
+  overflow: hidden;
+}
+
+.sidebar-context-menu-scroll {
+  max-height: calc(100vh - var(--sp-6) - 2 * var(--sp-1) - 2 * var(--border-width));
+  overflow-y: auto;
 }
 
 .context-menu button {
@@ -12229,6 +12241,50 @@ button.agent-user-attachment:hover {
   color: var(--foreground);
 }
 
+/* Meeting-end countdown: the Stop now button's own background is the timer —
+ * a subtle currentColor wash that drains left to right over the grace period
+ * and fires when empty (the undo-toast pattern), so the notice body stays
+ * static prose. `--meeting-end-remaining` is the remaining fraction (1 → 0),
+ * stepped once a second by NoteEditor; the 1s linear transform transition
+ * sweeps the drain smoothly between ticks. Keep in sync with #mhud-end-stop
+ * in meeting-hud.css. */
+.record-dock .meeting-end-notice .meeting-end-stop {
+  position: relative;
+  overflow: hidden;
+}
+
+/* A composited clip-path drain, not a width tween (the css-stabilization
+ * guard bans height/width transitions): the full-size wash is clipped from
+ * the right, and the inset's rounding keeps the moving edge on the button's
+ * own radius. */
+.record-dock .meeting-end-notice .meeting-end-stop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, currentColor 12%, transparent);
+  clip-path: inset(0 calc((1 - var(--meeting-end-remaining, 1)) * 100%) 0 0 round var(--r-md));
+  transition: clip-path 1s linear;
+  pointer-events: none;
+}
+
+/* The precise seconds, riding the drain: number for precision, drain for
+ * shape (the drain also keeps the ticking value reading as a timer rather
+ * than a click delay). A live-ticking value — the sanctioned tabular-nums
+ * exception (spec/no-tabular-numerals.md). min-width holds the button's
+ * frame through the two-to-one digit drop so the drain doesn't jump. */
+.record-dock .meeting-end-notice .meeting-end-seconds {
+  min-width: 3ch;
+  color: color-mix(in oklch, currentColor 62%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .record-dock .meeting-end-notice .meeting-end-stop::before {
+    transition: none;
+  }
+}
+
 .record-options-trigger {
   display: inline-grid;
   place-items: center;
@@ -12660,10 +12716,19 @@ button.agent-user-attachment:hover {
    * meter drives --level per frame; the 24ms transition smooths sub-frame steps
    * (sharpened from 40ms to match the HUD so the carrier shimmer reads crisp). */
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--foreground);
   transform: translateY(50%) scaleY(calc(0.1 + var(--level, 0) * 0.8));
   transition: transform 18ms linear;
+}
+
+/* Scaling the whole pill also flattens its corner radius, so the in-note bars
+ * read nearly square. A rounded inset clip changes the visible height while
+ * preserving the 3px capsule caps and the same 10%-to-90% level range. */
+.recorder-bar .waveform span::before {
+  clip-path: inset(calc(45% - var(--level, 0) * 40%) 0 round var(--r-pill));
+  transform: translateY(50%);
+  transition: clip-path 18ms linear;
 }
 
 .recorder-bar[data-state="paused"] .waveform span {

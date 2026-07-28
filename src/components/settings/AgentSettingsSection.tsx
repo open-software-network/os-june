@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AgentSkillDto } from "../../lib/agent-runtime-contract";
 import {
-  agentHudHide,
-  agentHudShow,
   listAgentSkills,
   readAgentSkill,
   setAgentSkillEnabled,
@@ -12,7 +10,10 @@ import {
 import {
   AGENT_HUD_VISIBILITY_CHANGED_EVENT,
   getAgentHudEnabled,
+  getAgentHudPlacement,
   setAgentHudEnabled,
+  setAgentHudPlacement,
+  type AgentHudPlacement,
   type AgentHudVisibilityChangedDetail,
 } from "../../lib/agent-hud-settings";
 import {
@@ -21,8 +22,9 @@ import {
   setAgentSoundsEnabled,
   type AgentSoundsChangedDetail,
 } from "../../lib/agent-sound-settings";
-import { Switch } from "../ui/Switch";
 import { Dialog } from "../ui/Dialog";
+import { Select } from "../ui/Select";
+import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
 
 /** Settings owned by June's local agent harness. Messaging compatibility,
@@ -39,6 +41,7 @@ export function AgentSettingsSection({
   onFoldersImported?: (folders: FolderDto[]) => void;
 } = {}) {
   const [hudEnabled, setHudEnabledState] = useState(getAgentHudEnabled);
+  const [hudPlacement, setHudPlacementState] = useState(getAgentHudPlacement);
   const [soundsEnabled, setSoundsEnabledState] = useState(getAgentSoundsEnabled);
   const [skills, setSkills] = useState<AgentSkillDto[]>();
   const [savingSkillId, setSavingSkillId] = useState<string>();
@@ -70,17 +73,14 @@ export function AgentSettingsSection({
     };
   }, []);
 
-  async function changeHud(enabled: boolean) {
+  function changeHud(enabled: boolean) {
     setHudEnabledState(enabled);
     setAgentHudEnabled(enabled);
-    try {
-      if (enabled) await agentHudShow();
-      else await agentHudHide();
-    } catch (cause) {
-      setHudEnabledState(!enabled);
-      setAgentHudEnabled(!enabled);
-      setError(messageFromError(cause));
-    }
+  }
+
+  function changeHudPlacement(placement: AgentHudPlacement) {
+    setHudPlacementState(placement);
+    setAgentHudPlacement(placement);
   }
 
   async function changeSkill(skill: AgentSkillDto, enabled: boolean) {
@@ -133,17 +133,41 @@ export function AgentSettingsSection({
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Sessions HUD</h3>
                 <p className="settings-row-description">
-                  Show live session status at the top right of your screen.
+                  Show a small pill with live session status while you are in other apps.
                 </p>
               </div>
               <div className="settings-row-control">
                 <Switch
                   checked={hudEnabled}
-                  onCheckedChange={(enabled) => void changeHud(enabled)}
+                  onCheckedChange={changeHud}
                   aria-label="Show sessions HUD"
                 />
               </div>
             </div>
+            {hudEnabled ? (
+              <div className="settings-row">
+                <div className="settings-row-info">
+                  <h3 className="settings-row-title">HUD position</h3>
+                  <p className="settings-row-description">
+                    The screen corner where the pill parks.
+                  </p>
+                </div>
+                <div className="settings-row-control">
+                  <Select
+                    value={hudPlacement}
+                    options={[
+                      { value: "top-left", label: "Top left" },
+                      { value: "top-right", label: "Top right" },
+                      { value: "bottom-left", label: "Bottom left" },
+                      { value: "bottom-right", label: "Bottom right" },
+                    ]}
+                    placeholder="Top right"
+                    ariaLabel="Sessions HUD position"
+                    onChange={(value) => changeHudPlacement(value as AgentHudPlacement)}
+                  />
+                </div>
+              </div>
+            ) : null}
             <div className="settings-row">
               <div className="settings-row-info">
                 <h3 className="settings-row-title">Agent sounds</h3>

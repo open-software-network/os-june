@@ -7,22 +7,12 @@
   </head>
   <body>
     <div id="hud" class="hud" data-state="idle">
-      <span id="hud-handle" class="hud-handle" aria-label="Drag dictation HUD">
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <circle cx="9" cy="5" r="2" />
-          <circle cx="15" cy="5" r="2" />
-          <circle cx="9" cy="12" r="2" />
-          <circle cx="15" cy="12" r="2" />
-          <circle cx="9" cy="19" r="2" />
-          <circle cx="15" cy="19" r="2" />
-        </svg>
-      </span>
+      <button
+        id="hud-cancel"
+        class="hud-cancel"
+        type="button"
+        aria-label="Cancel dictation"
+      ></button>
       <div class="hud-viz">
         <div class="hud-bars" aria-hidden="true">
           <span class="hud-bar"></span>
@@ -33,8 +23,9 @@
           <span class="hud-bar"></span>
           <span class="hud-bar"></span>
         </div>
-        <span id="hud-braille" class="hud-braille" aria-hidden="true"></span>
       </div>
+      <span id="hud-esc-tip" class="hud-esc-tip" aria-hidden="true">Esc</span>
+      <span id="hud-spinner" class="hud-spinner" aria-hidden="true"></span>
       <span class="hud-error-icon" aria-hidden="true"></span>
       <span class="hud-error-layer" aria-hidden="true">
         <span id="hud-error-text" class="hud-error-message"></span>

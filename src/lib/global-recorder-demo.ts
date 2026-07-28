@@ -23,9 +23,9 @@ export type GlobalRecorderDemoApi = {
   stop: () => void;
 };
 
-// Push cadence: a fresh synthetic level a touch faster than the real 50ms-ish
-// poll, enough to keep the coalescing waveform alive without pinning a core.
-const TICK_MS = 90;
+// Match the real active telemetry cadence so visual review reflects the
+// production waveform's peak window and ballistics.
+const TICK_MS = 50;
 
 const HELP = [
   "Global recorder presence demo (sidebar header or floating fallback):",

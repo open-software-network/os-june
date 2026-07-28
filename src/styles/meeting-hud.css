@@ -5,7 +5,8 @@
  * dictation HUD, hud.css). When June is backgrounded, minimized, or hidden
  * mid-meeting this floats as the June mark + live waveform: a calm "still
  * recording" signal. Click it to bring June back to the meeting; drag to move.
- * No controls — all recording controls live in-app, one click away.
+ * When meeting ownership clears, it temporarily becomes a countdown card with
+ * Keep recording and Stop now actions.
  *
  * The window is a fixed square that fits the pill in both orientations: the
  * frosted surface is a native NSVisualEffectView framed to the pill behind the
@@ -15,7 +16,7 @@
  * path is macOS-only by design (the app ships macOS-only); other platforms
  * would need a backdrop-filter fallback reintroduced.
  *
- * Orientation triad: parked in the left/right screen thirds the pill stands
+ * Orientation triad: while compact, parked in the left/right screen thirds the pill stands
  * upright; the middle third lies flat. The quarter turn happens in Rust
  * (meeting_hud.rs) as ONE Core Animation transform on the native contentView,
  * carrying frost, tint, dot, and waveform together — so this stylesheet lays
@@ -110,12 +111,198 @@ body:active {
   width: 62px;
 }
 
+/* End-of-meeting card --------------------------------------------------- */
+
+/* The auto-stop grace period grows the pill into a card, shown top-center,
+ * notification-style, and only while June is inactive (the record dock's
+ * inline notice owns the frontmost case; top-center keeps clear of the agent
+ * HUD's top-right home). Surface discipline matches the
+ * compact pill: the frost is a native NSVisualEffectView that meeting_hud.rs
+ * reframes to the card, and depth is the native NSWindow shadow — no CSS
+ * border or shadow. The shimmering June mark stays (recording is still live
+ * through the countdown), the countdown is the Stop now button's draining
+ * background, and the warm capsule sits on the safety action, echoing the
+ * inactivity dialog's quiet-pause / solid-keep pairing. Size and 14px radius
+ * must match resize_frost_for_end_prompt in meeting_hud.rs. */
+.mhud[data-mode="meeting-end"] {
+  width: 380px;
+  height: 48px;
+  padding: 0 var(--sp-5);
+  border-radius: var(--r-xl);
+  /* The native window resize is instant, so a width tween here would slide
+   * the tint out from under the already-reframed frost. Snap instead; the
+   * card contents carry the entrance. */
+  transition: none;
+}
+
+/* The card is not a click-to-reopen target; only its buttons are. */
+body:has(.mhud[data-mode="meeting-end"]),
+body:has(.mhud[data-mode="meeting-end"]):active {
+  cursor: default;
+}
+
 /* Wrapper keeps the mark + waveform together as one considered group. */
 .mhud-content {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
+}
+
+.mhud-end {
+  display: none;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: var(--sp-4);
+}
+
+.mhud[data-mode="meeting-end"] .mhud-content {
+  display: none;
+}
+
+.mhud[data-mode="meeting-end"] .mhud-end {
+  display: flex;
+  animation: mhud-end-in var(--t-slow) var(--ease-out);
+}
+
+@keyframes mhud-end-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Mark + title as one row, the mark at the meeting prompt's 14px size
+ * (hud.css .hud-meeting-mark). */
+.mhud-end-body {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Base color, shimmer, and paused dimming come from .mhud-mark. Compound
+ * selector: the .mhud-mark rule sits later in this sheet, so a lone class
+ * here would lose the equal-specificity cascade. */
+.mhud-mark.mhud-end-mark {
+  width: 14px;
+  height: 14px;
+  mask: var(--mark) center / 10px 12px no-repeat;
+  -webkit-mask: var(--mark) center / 10px 12px no-repeat;
+}
+
+.mhud-end-title {
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+/* Applied for one frame when a countdown (re)arms, so the drain jumps to
+ * the fresh fraction instead of sweeping from a stale one. */
+.mhud-end-drain-snap::before {
+  transition: none;
+}
+
+.mhud-end-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.mhud-end-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--control-md);
+  padding: 0 var(--sp-4);
+  border: 0;
+  /* Capsules, like the meeting prompt's Record button — the 28px controls
+   * sit too deep inside the 14px card corner for a concentric radius. */
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.mhud-end-actions button:active {
+  transform: translateY(0.5px);
+}
+
+.mhud-end-actions button:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
+  outline-offset: 1px;
+}
+
+.mhud-end-actions button:disabled {
+  cursor: default;
+  opacity: 0.72;
+  transform: none;
+}
+
+/* Quiet acceptance of the default outcome — the countdown stops the
+ * recording on its own; this only skips the wait. The button's own
+ * background is the timer: a subtle currentColor wash that drains left to
+ * right over the grace period and fires when empty (the undo-toast
+ * pattern). `--meeting-end-remaining` is the remaining fraction (1 → 0),
+ * stepped once a second by meeting-hud.ts; the 1s linear transform
+ * transition sweeps the drain smoothly between ticks. Keep in sync with
+ * .meeting-end-stop in app.css. */
+#mhud-end-stop {
+  position: relative;
+  overflow: hidden;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+/* A composited clip-path drain, not a width tween (matching app.css's
+ * css-stabilization discipline): the full-size wash is clipped from the
+ * right, and the inset's rounding keeps the moving edge on the capsule's
+ * radius. */
+#mhud-end-stop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, currentColor 12%, transparent);
+  clip-path: inset(0 calc((1 - var(--meeting-end-remaining, 1)) * 100%) 0 0 round var(--r-pill));
+  transition: clip-path 1s linear;
+  pointer-events: none;
+}
+
+/* The precise seconds, riding the drain: number for precision, drain for
+ * shape (the drain also keeps the ticking value reading as a timer rather
+ * than a click delay). A live-ticking value — the sanctioned tabular-nums
+ * exception. min-width holds the button's frame through the two-to-one digit
+ * drop so the drain doesn't jump. */
+.mhud-end-seconds {
+  min-width: 3ch;
+  color: color-mix(in oklch, currentColor 62%, transparent);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#mhud-end-stop:hover {
+  background: color-mix(in oklch, var(--foreground) 10%, transparent);
+  color: var(--foreground);
+}
+
+/* The safety action carries the warm record affordance (hud.css
+ * .hud-meeting-start): keeping the recording alive is the record-colored
+ * choice, and the one worth reaching for. */
+#mhud-end-keep {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+#mhud-end-keep:hover {
+  background: color-mix(in oklch, var(--warm-soft) 84%, var(--warm-strong));
 }
 
 .mhud:focus-visible {
@@ -284,7 +471,12 @@ body:active {
   .mhud-mark {
     transition: none;
   }
-  .mhud-mark::before {
+  .mhud-mark::before,
+  .mhud[data-mode="meeting-end"] .mhud-end {
     animation: none;
+  }
+  /* The drain steps once a second instead of sweeping. */
+  #mhud-end-stop::before {
+    transition: none;
   }
 }

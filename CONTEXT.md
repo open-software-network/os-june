@@ -197,6 +197,17 @@ non-focusable dictation HUD.
 On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
+**Dictation take**:
+One helper-owned dictation capture from `listening_started` until its text is
+delivered or the capture is discarded. June gives each take an opaque
+identity before asking the helper to start; a helper paired with an older
+coordinator mints the identity itself. The identity lets June cancel pending
+dictation transcription, cleanup, history, and delivery without affecting a
+newer take. Cancellation is terminal; a late result never regains delivery
+authority.
+_Avoid_: recording session (that is note-backed), utterance (that identifies a
+metered June API request, not the user-visible capture lifecycle).
+
 **Paste target**:
 The destination where a finished dictation transcript is delivered. For native
 paste, it is the exact app window pinned when recording stops and never

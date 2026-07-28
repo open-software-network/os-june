@@ -16,12 +16,15 @@ import {
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
   withJuneHomeContext,
+  withJuneHomeLatestTaskIntent,
   writeJuneHomeStoredSessionId,
 } from "../lib/june-home";
 import {
   clearHomeTaskHandoffActive,
   compareHomeTurnOrder,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   insertHomeDirectReply,
   markHomeTaskHandoffActive,
@@ -235,6 +238,334 @@ describe("June Home", () => {
     expect(isHomeTaskHandoffAcknowledgement("ok", [handoffTurn], [])).toBe(false);
   });
 
+  it("keeps bare greetings in the Home conversation", () => {
+    for (const greeting of [
+      "Hey June",
+      "Hey, June!",
+      "Hey there, June",
+      "Hey June 👋",
+      "hello",
+      "Greetings, June",
+      "Good to see you, June",
+      "Hello from Stockholm",
+      "Hello from Paris 👋",
+      "hello from New York",
+      "Morning June",
+      "Good morning, June.",
+    ]) {
+      expect(homeConversationGreetingReply(greeting)).toBe("Hey! What can I help with?");
+    }
+
+    expect(homeConversationGreetingReply("Hey June, research apples in Mexico")).toBeUndefined();
+    expect(
+      homeConversationGreetingReply("Hello from Stockholm, research the market"),
+    ).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from London, plan dinner")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from Paris plan dinner")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hello from Stockholm research apples")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hey there, research apples in Mexico")).toBeUndefined();
+    expect(homeConversationGreetingReply("Good morning, plan my day")).toBeUndefined();
+  });
+
+  it("rejects a prior handoff replay that is not grounded in the latest message", () => {
+    const prior = {
+      id: "home-task-wine",
+      title: "Wine research",
+      prompt: "Research good wines near southern France.",
+      status: "running" as const,
+    };
+    const replay = {
+      title: "Research French wines",
+      prompt: "Research good wines near southern France.",
+    };
+
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [prior])).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [{ ...prior, status: "failed" }]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [
+        { ...prior, status: "failed" },
+      ]),
+    ).toBe(false);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Good to see you, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Please do not repeat that", [prior])).toBe(
+      true,
+    );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "I don't want you to repeat that", [prior]),
+    ).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Do not research those wines", [prior])).toBe(
+      true,
+    );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Please do not research those wines again", [prior]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "I don’t want you to research those wines again", [
+        prior,
+      ]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Don't, please, research those wines again", [
+        prior,
+      ]),
+    ).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, June", [prior])).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Help me draft a customer reply", [prior]),
+    ).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't look into those wines", [prior])).toBe(
+      true,
+    );
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Don't do that", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "How about a Japan itinerary?", [prior])).toBe(
+      true,
+    );
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "How are you?", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [prior])).toBe(
+      false,
+    );
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Research those apples in France again", [prior]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Can we continue chatting about something else?", [
+        prior,
+      ]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(replay, "Compare prices for those wines", [prior]),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Compare wine prices", prompt: "Compare prices for those wines." },
+        "Compare prices for those wines",
+        [prior],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "French wine research", prompt: "Research wines in France." },
+        "Research apples in France",
+        [
+          {
+            id: "home-task-france-wines",
+            title: "French wine research",
+            prompt: "Research wines in France.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        {
+          title: "Denver weather",
+          prompt: "What is the weather in Denver?",
+          requiresCurrentResearch: true,
+        },
+        "What is the weather in Denver?",
+        [
+          {
+            id: "home-task-denver-weather",
+            title: "Denver weather",
+            prompt: "What is the weather in Denver?",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Apple research Mexico", prompt: "Look into Mexican apple farming." },
+        "Hey June, look into Mexican apple farming",
+        [
+          {
+            id: "home-task-apples",
+            title: "Apple research Mexico",
+            prompt: "Research apples in Mexico.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Project update", prompt: "Email the team the project update." },
+        "Email the team the project update",
+        [
+          {
+            id: "home-task-project",
+            title: "Project update",
+            prompt: "Draft the project update.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Flight booking", prompt: "Reserve a flight from NYC to Paris on August 5." },
+        "Book a flight from NYC to Paris on August 5",
+        [
+          {
+            id: "home-task-rome-flight",
+            title: "Flight booking",
+            prompt: "Book a flight to Rome.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Flight booking", prompt: "Book that flight." },
+        "Don't book that flight",
+        [
+          {
+            id: "home-task-flight",
+            title: "Flight booking",
+            prompt: "Book that flight.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Flight booking", prompt: "Book that flight." },
+        "Don't forget to book that flight again",
+        [
+          {
+            id: "home-task-flight",
+            title: "Flight booking",
+            prompt: "Book that flight.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Paris plans", prompt: "Plan a birthday dinner in Paris." },
+        "Don't research Paris restaurants, plan a birthday dinner in Paris",
+        [
+          {
+            id: "home-task-paris-plans",
+            title: "Paris plans",
+            prompt: "Research Paris restaurants.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(false);
+    const priorWineTask = {
+      id: "home-task-wine-replacement",
+      title: "Wine task",
+      prompt: "Research those wines.",
+      status: "running" as const,
+    };
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine task", prompt: "Summarize those wines." },
+        "Don't research those wines; summarize them",
+        [priorWineTask],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine task", prompt: "Summarize those wines." },
+        "Don't research those wines; those wines are expensive",
+        [priorWineTask],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Wine research", prompt: "Research wines in Italy." },
+        "Don't research France; Italy instead",
+        [prior],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Product review summary", prompt: "Summarize the product review." },
+        "Greetings, June",
+        [
+          {
+            id: "home-task-reviews",
+            title: "Product reviews summary",
+            prompt: "Summarize the product reviews.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Stock research", prompt: "Research the stock market." },
+        "Hello from Stockholm",
+        [
+          {
+            id: "home-task-stock",
+            title: "Stock research",
+            prompt: "Research the stock market.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Italian wine research", prompt: "Research wines in northern Italy." },
+        "Do the same for the second one",
+        [prior],
+      ),
+    ).toBe(false);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Paris planning", prompt: "Plan a trip to Paris." },
+        "Plan the quarterly budget",
+        [
+          {
+            id: "home-task-paris",
+            title: "Paris planning",
+            prompt: "Plan a trip to Paris.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "AI research", prompt: "Research AI." },
+        "Greetings, June",
+        [
+          {
+            id: "home-task-ai",
+            title: "AI research",
+            prompt: "Research AI.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+    expect(
+      isHomeTaskReplayWithoutNewIntent(
+        { title: "Cat research", prompt: "Research cats." },
+        "Greetings, June",
+        [
+          {
+            id: "home-task-cat",
+            title: "Cat research",
+            prompt: "Research cat behavior.",
+            status: "running",
+          },
+        ],
+      ),
+    ).toBe(true);
+  });
+
   it("reuses a successful handoff when the same Home turn is replayed", () => {
     const handoffs = [
       {
@@ -290,6 +621,20 @@ describe("June Home", () => {
     expect(stripJuneHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
     expect(stripJuneHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
     expect(stripJuneHomeContextFromPreview("[June home context]\nThis is Ju")).toBe("Home message");
+  });
+
+  it("keeps resolved Home task context while making the latest request authoritative", () => {
+    const prompt = withJuneHomeLatestTaskIntent(
+      "Research wines in France for the second region.",
+      "Do the same for Japan",
+    );
+
+    expect(prompt).toMatch(/^Do the same for Japan/);
+    expect(prompt).toContain("Research wines in France for the second region.");
+    expect(prompt).toContain("latest Home request above is authoritative");
+    expect(withJuneHomeLatestTaskIntent("Plan a trip to Rome.", "Plan a trip to Rome")).toBe(
+      "Plan a trip to Rome.",
+    );
   });
 
   it("requires retrieved sources for a current-information handoff", () => {

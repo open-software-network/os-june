@@ -27,6 +27,7 @@ import {
   dictationHelperCommand,
   downloadNoteAudio,
   getNote,
+  keepMeetingRecording,
   LIVE_TRANSCRIPT_EVENT,
   listSessionPartitions,
   listAgentSessions,
@@ -41,7 +42,9 @@ import {
   completeNoteSaveFlush,
   NOTE_SAVE_FLUSH_REQUESTED_EVENT,
   patchNote,
+  queueMeetingEndFinishRequest,
   type LiveTranscriptEventDto,
+  type MeetingEndStatus,
 } from "../lib/tauri";
 import { preloadRecordingSounds } from "../lib/recording-sounds";
 import { preloadAgentSounds } from "../lib/agent-sounds";
@@ -150,6 +153,7 @@ import { useDataPartitionRefresh } from "./use-data-partition-refresh";
 import { useRecordingStartActions } from "./use-recording-start-actions";
 
 import { useRecordingEvents } from "./use-recording-events";
+import { useMeetingEndEvents } from "./use-meeting-end-events";
 
 import { useRecordingControls } from "./use-recording-controls";
 
@@ -320,6 +324,14 @@ export function App() {
     setLiveTranscriptEvents,
     setRecordingNote,
   } = useAppState();
+  const [meetingEndStatus, setMeetingEndStatus] = useState<MeetingEndStatus | null>(null);
+  const [meetingEndNow, setMeetingEndNow] = useState(() => Date.now());
+  const meetingEndReadyRef = useRef(false);
+  const meetingEndListenerRegisteredRef = useRef(false);
+  const drainPendingMeetingEndFinishRef = useRef<() => void>(() => {});
+  const meetingEndFinishHandlerRef = useRef<(sessionId: string) => Promise<boolean>>(
+    async () => false,
+  );
   const [homeStoredSessionId, setHomeStoredSessionId] = useState(() =>
     readJuneHomeStoredSessionId(currentDataPartitionName),
   );
@@ -498,6 +510,7 @@ export function App() {
   // holds bootstrap, update checks, and eager permission probes because the
   // wizard owns the permission prompts while it is on screen.
   const appBlocked = accountLoading || signInRequired || onboardingRequired;
+  meetingEndReadyRef.current = !appBlocked && bootstrapped;
   // The referral delight nudge's trigger layer: counts the moments (5th note,
   // first agent completion, 25th dictation) and surfaces the card when the
   // caps and gates allow. T4 (positive feedback) records from the report flow
@@ -2005,10 +2018,56 @@ export function App() {
     tabsRef,
   });
 
+  meetingEndFinishHandlerRef.current = async (sessionId) => {
+    if (!meetingEndReadyRef.current || !meetingEndListenerRegisteredRef.current) {
+      return false;
+    }
+    const active = recordingStatusRef.current;
+    if (!active || active.sessionId !== sessionId) {
+      return true;
+    }
+    try {
+      await handleFinishRecording(sessionId, { rethrow: true });
+    } catch {
+      // The normal finish handler has already surfaced the failure and the
+      // saved-audio recovery path owns the artifact. A retained native request
+      // is one-shot: retrying it could race recovery or another terminal path.
+    }
+    return true;
+  };
+
+  useMeetingEndEvents({
+    drainPendingFinishRef: drainPendingMeetingEndFinishRef,
+    finishHandlerRef: meetingEndFinishHandlerRef,
+    listenerRegisteredRef: meetingEndListenerRegisteredRef,
+    readyRef: meetingEndReadyRef,
+    setStatus: setMeetingEndStatus,
+  });
+
+  useEffect(() => {
+    if (!meetingEndReadyRef.current) return;
+    drainPendingMeetingEndFinishRef.current();
+  }, [appBlocked, bootstrapped]);
+
+  useEffect(() => {
+    if (meetingEndStatus?.phase !== "countdown") return;
+    setMeetingEndNow(Date.now());
+    const tick = window.setInterval(() => setMeetingEndNow(Date.now()), 1_000);
+    return () => window.clearInterval(tick);
+  }, [meetingEndStatus]);
+
   useEffect(() => {
     const evaluateLatestStatus = () => {
       const status = recordingTelemetryStore.getStatus();
       const now = Date.now();
+      const meetingEndEligible = !!status && meetingEndStatus?.sessionId === status.sessionId;
+      if (meetingEndEligible) {
+        recordingInactivityTrackerRef.current = { sessionId: status.sessionId };
+        if (recordingInactivityPrompt?.sessionId === status.sessionId) {
+          setRecordingInactivityPrompt(null);
+        }
+        return;
+      }
       const decision = nextRecordingInactivityDecision(
         recordingInactivityTrackerRef.current,
         status,
@@ -2050,6 +2109,7 @@ export function App() {
     recordingInactivityPrompt,
     recordingInactivityTrackerRef,
     recordingTelemetryStore,
+    meetingEndStatus,
     setRecordingInactivityNow,
     setRecordingInactivityPrompt,
   ]);
@@ -2105,6 +2165,30 @@ export function App() {
   const recordingInactivitySecondsRemaining = recordingInactivityPrompt
     ? Math.max(0, Math.ceil((recordingInactivityPrompt.expiresAt - recordingInactivityNow) / 1000))
     : 0;
+  const meetingEndCountdown =
+    meetingEndStatus?.phase === "countdown" &&
+    meetingEndStatus.expiresAtMs !== undefined &&
+    recordingStatusRef.current?.sessionId === meetingEndStatus.sessionId
+      ? {
+          sessionId: meetingEndStatus.sessionId,
+          secondsRemaining: Math.max(
+            0,
+            Math.ceil((meetingEndStatus.expiresAtMs - meetingEndNow) / 1_000),
+          ),
+        }
+      : null;
+
+  function handleStopNowAfterMeetingEnd(sessionId: string) {
+    void queueMeetingEndFinishRequest(sessionId).catch((err) => {
+      setError(messageFromError(err));
+    });
+  }
+
+  function handleKeepRecordingAfterMeetingEnd(sessionId: string) {
+    void keepMeetingRecording(sessionId).catch((err) => {
+      setError(messageFromError(err));
+    });
+  }
 
   const accountGate = renderAppAccountGate({
     account,
@@ -2175,6 +2259,7 @@ export function App() {
     handleEnableMicrophone,
     handleEnableSystemAudio,
     handleFinishRecording,
+    handleKeepRecordingAfterMeetingEnd,
     handleFlushNote,
     handleFoldersImported,
     handleNewAgentSession,
@@ -2204,11 +2289,13 @@ export function App() {
     handleSourceModeChange,
     handleStartBundleChat,
     handleStartRecording,
+    handleStopNowAfterMeetingEnd,
     handleToggleSessionCompleted,
     handleTopUp,
     handleUpdateNote,
     homeStoredSessionId,
     memoryFolderFilter,
+    meetingEndCountdown,
     microphoneBlocked,
     microphoneStatus,
     noteDetailScrollRef,

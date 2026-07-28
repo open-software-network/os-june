@@ -2277,20 +2277,23 @@ describe("App shortcuts", () => {
     );
   });
 
-  it("opens the chat for a notification click carrying a session id", async () => {
+  it("opens the chat for an Agent HUD click carrying a stored session id", async () => {
     mocks.listAgentSessions.mockResolvedValue([agentSession("session-9", "Notified session")]);
 
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() => expect(mocks.agentOpenReady).toHaveBeenCalledOnce());
+    mocks.agentOpenReady.mockClear();
 
     act(() => {
       window.dispatchEvent(
-        new CustomEvent(AGENT_OPEN_EVENT, { detail: { sessionId: "session-9" } }),
+        new CustomEvent(AGENT_OPEN_EVENT, { detail: { storedSessionId: "session-9" } }),
       );
     });
 
     expect(await screen.findByRole("button", { name: "Send message" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: HERO_GREETING })).not.toBeInTheDocument();
+    expect(mocks.agentOpenReady).not.toHaveBeenCalled();
   });
 
   it("falls back to the agent view when the notified chat is missing", async () => {
@@ -2306,6 +2309,28 @@ describe("App shortcuts", () => {
     });
 
     expect(await screen.findByRole("heading", { name: HERO_GREETING })).toBeInTheDocument();
+  });
+
+  it("preserves a newer notification click while acknowledging the delivered one", async () => {
+    mocks.listAgentSessions.mockResolvedValue([
+      agentSession("session-old", "Older notification"),
+      agentSession("session-new", "Newer notification"),
+    ]);
+
+    render(<App />);
+    await screen.findByRole("button", { name: "Older notification" });
+    await waitFor(() => expect(mocks.agentOpenReady).toHaveBeenCalledOnce());
+    mocks.agentOpenReady.mockClear();
+    mocks.agentOpenReady.mockResolvedValueOnce("session-new");
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_OPEN_EVENT, { detail: { sessionId: "session-old" } }),
+      );
+    });
+
+    await waitFor(() => expect(mocks.agentOpenReady).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.getAgentSession).toHaveBeenCalledWith("session-new"));
   });
 
   it("navigates to the chat of a notification clicked before the webview was ready", async () => {

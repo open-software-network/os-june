@@ -59,6 +59,26 @@ const newSession: AgentSessionDto = {
   workspacePath: "/tmp/session-2",
 };
 
+function mockAgentLayoutBounds() {
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement,
+  ) {
+    const top = this.classList.contains("agent-composer") ? 520 : 0;
+    const bottom = this.classList.contains("agent-scroll") ? 640 : top;
+    return {
+      x: 0,
+      y: top,
+      top,
+      right: 0,
+      bottom,
+      left: 0,
+      width: 0,
+      height: Math.max(0, bottom - top),
+      toJSON: () => ({}),
+    } as DOMRect;
+  });
+}
+
 describe("AgentWorkspace runtime wiring", () => {
   beforeEach(() => {
     resetCurrentDataPartitionForTests();
@@ -177,23 +197,7 @@ describe("AgentWorkspace runtime wiring", () => {
       }
       return Promise.resolve(undefined);
     });
-    const bounds = vi
-      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
-      .mockImplementation(function (this: HTMLElement) {
-        const top = this.classList.contains("agent-composer") ? 520 : 0;
-        const bottom = this.classList.contains("agent-scroll") ? 640 : top;
-        return {
-          x: 0,
-          y: top,
-          top,
-          right: 0,
-          bottom,
-          left: 0,
-          width: 0,
-          height: Math.max(0, bottom - top),
-          toJSON: () => ({}),
-        } as DOMRect;
-      });
+    const bounds = mockAgentLayoutBounds();
 
     try {
       const { container } = render(<AgentWorkspace homeMode />);
@@ -201,6 +205,42 @@ describe("AgentWorkspace runtime wiring", () => {
 
       await waitFor(() =>
         expect(scroller?.style.getPropertyValue("--agent-composer-clearance")).toBe("120px"),
+      );
+    } finally {
+      bounds.mockRestore();
+    }
+  });
+
+  it("reserves the fixed composer while a focused session is being created", async () => {
+    const user = userEvent.setup();
+    const pendingSession = new Promise<AgentSessionDto>(() => {});
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "list_venice_models") {
+        return Promise.resolve({
+          mode: "generation",
+          selectedModel: "open-software/auto",
+          modelType: "text",
+          models: [],
+        });
+      }
+      if (command === "create_agent_session") return pendingSession;
+      return Promise.resolve(undefined);
+    });
+    const bounds = mockAgentLayoutBounds();
+
+    try {
+      const { container } = render(<AgentWorkspace />);
+      await user.type(await screen.findByRole("textbox", { name: "Message June" }), "New task");
+      await user.click(screen.getByRole("button", { name: "Send message" }));
+      const scroller = await waitFor(() => {
+        const element = container.querySelector<HTMLElement>(".agent-scroll");
+        expect(element).not.toBeNull();
+        return element as HTMLElement;
+      });
+
+      await waitFor(() =>
+        expect(scroller.style.getPropertyValue("--agent-composer-clearance")).toBe("120px"),
       );
     } finally {
       bounds.mockRestore();
@@ -288,7 +328,7 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(await screen.findByRole("button", { name: "Open session" })).toBeVisible();
   });
 
-  it("does not create another Home task when the user acknowledges a handoff", async () => {
+  it("does not create another Home task for conversation after a handoff", async () => {
     const user = userEvent.setup();
     const homeSession: AgentSessionDto = {
       ...session,
@@ -365,6 +405,44 @@ describe("AgentWorkspace runtime wiring", () => {
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
     ).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Hey there, June 👋");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Hey! What can I help with?")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Greetings, June");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => expect(screen.getAllByText("Hey! What can I help with?")).toHaveLength(2));
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Open session" })).toHaveLength(1);
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Plan a trip to Rome");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("I'm here. What can I help with?")).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
+    ).toHaveLength(1);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+    ).toHaveLength(2);
   });
 
   it("repairs a stale Home mapping when its June-owned session is missing", async () => {
@@ -428,6 +506,9 @@ describe("AgentWorkspace runtime wiring", () => {
     rejectHome?.(new Error("Home is temporarily unavailable"));
 
     expect(await screen.findByText("First message")).toBeVisible();
+    const errorNotice = await screen.findByRole("alert");
+    expect(errorNotice).toHaveTextContent("Home is temporarily unavailable");
+    expect(errorNotice.closest(".agent-composer")).not.toBeNull();
     await waitFor(() =>
       expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent("New draft"),
     );
@@ -950,10 +1031,22 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Stop June" })).toBeVisible());
 
+    const scroller = document.querySelector<HTMLElement>(".agent-scroll");
+    expect(scroller).not.toBeNull();
+    const scrollTo = vi.fn();
+    Object.defineProperties(scroller as HTMLElement, {
+      scrollHeight: { configurable: true, get: () => 1000 },
+      clientHeight: { configurable: true, get: () => 400 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+      scrollTo: { configurable: true, value: scrollTo },
+    });
+
     const activeComposer = screen.getByRole("textbox", { name: "Message June" });
     activeComposer.textContent = "Use the launch plan";
     fireEvent.input(activeComposer);
     await user.click(await screen.findByRole("button", { name: "Steer active run" }));
+
+    await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" }));
 
     const steerCall = mocks.invoke.mock.calls.find(([command]) => command === "steer_agent_run");
     expect(steerCall?.[1]).toMatchObject({

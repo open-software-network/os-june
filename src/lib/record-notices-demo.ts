@@ -38,9 +38,9 @@ const DEMO_NOTE_ID = "dev-record-notices-demo-note";
 const DEFAULT_WARNING_MESSAGE =
   "Microphone input stopped unexpectedly. Audio after this point may be missing.";
 
-// Push cadence for the waveform + elapsed clock, matching global-recorder-demo:
-// fast enough to keep the recorder bar looking alive without pinning a core.
-const TICK_MS = 90;
+// Match the real active telemetry cadence so the parked in-note recorder has
+// production waveform timing during visual review.
+const TICK_MS = 50;
 
 type Variant = "consent" | "warning";
 
