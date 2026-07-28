@@ -61,6 +61,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0049](adr/0049-cancelled-dictation-takes-never-deliver.md) - each helper-owned dictation take has one cancellation token, and cancelled takes cannot start later cleanup, history, or text delivery
 - [adr/0050](adr/0050-companion-attachments-use-bounded-staging-and-opaque-mac-references.md) - companion attachments use bounded app-data staging and opaque, user-granted Mac file references
 - [adr/0051](adr/0051-companion-media-results-use-canonical-artifacts.md) - companion image/video results reuse canonical agent artifacts and cross E2EE only as bounded references plus verified full-file chunks
+- [adr/0052](adr/0052-companion-computer-use-approvals-are-one-shot.md) - linked companions may approve one exact Computer use interruption under the desktop policy ceiling, with a short-lived one-shot permit
 
 ## Enforceable rules (spec/)
 
