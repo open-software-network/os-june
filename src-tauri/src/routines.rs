@@ -1381,12 +1381,11 @@ fn routine_mcp_server_enabled(
 ) -> bool {
     if server_id == crate::agent_mcp::MANAGED_LINEAR_SERVER_ID {
         let has = |expected: &str| enabled_toolsets.iter().any(|toolset| toolset == expected);
-        return has(crate::agent_mcp::MANAGED_LINEAR_SERVER_NAME)
-            || if requires_approval {
-                has("june_linear_actions")
-            } else {
-                has("june_linear")
-            };
+        return if requires_approval {
+            has("june_linear_actions")
+        } else {
+            has("june_linear")
+        };
     }
     enabled_toolsets
         .iter()
@@ -1771,7 +1770,7 @@ mod tests {
             &["june_linear_actions".into()],
         ));
         for requires_approval in [false, true] {
-            assert!(routine_mcp_server_enabled(
+            assert!(!routine_mcp_server_enabled(
                 managed_id,
                 managed_name,
                 requires_approval,

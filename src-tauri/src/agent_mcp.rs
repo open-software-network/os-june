@@ -65,6 +65,7 @@ pub const MANAGED_LINEAR_SERVER_NAME: &str = "linear";
 pub const MANAGED_LINEAR_MCP_URL: &str = "https://mcp.linear.app/mcp";
 const MANAGED_LINEAR_POLICY_REVISION: &str = "linear-official-mcp-v1";
 const MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES: usize = 64 * 1024;
+const MANAGED_MCP_TOOL_ANNOTATIONS_MAX_BYTES: usize = 64 * 1024;
 const MANAGED_MCP_DESCRIPTION_MAX_CHARS: usize = 240;
 const MANAGED_MCP_TOOL_NAME_MAX_CHARS: usize = 128;
 const MANAGED_MCP_DISCOVERY_MAX_PAGES: usize = 20;
@@ -1162,13 +1163,46 @@ pub struct McpDiscoveredTool {
     pub annotations: McpToolAnnotations,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct McpToolAnnotations {
-    #[serde(default)]
-    pub read_only_hint: Option<bool>,
-    #[serde(default)]
-    pub destructive_hint: Option<bool>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct McpToolAnnotations(Value);
+
+impl Default for McpToolAnnotations {
+    fn default() -> Self {
+        Self(json!({}))
+    }
+}
+
+impl McpToolAnnotations {
+    #[cfg(test)]
+    fn from_hints(read_only_hint: Option<bool>, destructive_hint: Option<bool>) -> Self {
+        let mut annotations = Map::new();
+        if let Some(value) = read_only_hint {
+            annotations.insert("readOnlyHint".into(), Value::Bool(value));
+        }
+        if let Some(value) = destructive_hint {
+            annotations.insert("destructiveHint".into(), Value::Bool(value));
+        }
+        Self(Value::Object(annotations))
+    }
+
+    fn read_only_hint(&self) -> Option<bool> {
+        self.0.get("readOnlyHint").and_then(Value::as_bool)
+    }
+
+    fn destructive_hint(&self) -> Option<bool> {
+        self.0.get("destructiveHint").and_then(Value::as_bool)
+    }
+
+    #[cfg(test)]
+    fn raw(&self) -> &Value {
+        &self.0
+    }
+
+    #[cfg(test)]
+    fn from_raw(value: Value) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1259,8 +1293,8 @@ impl McpToolRegistry {
                     continue;
                 }
             };
-            let requires_approval = tool.annotations.read_only_hint != Some(true)
-                || tool.annotations.destructive_hint == Some(true);
+            let requires_approval = tool.annotations.read_only_hint() != Some(true)
+                || tool.annotations.destructive_hint() == Some(true);
             let policy_fingerprint = managed_linear_policy_fingerprint(&tool)?;
             let descriptor = RuntimeToolDescriptorJson {
                 id: format!("mcp:{}/{}", server.id, tool.name),
@@ -1400,6 +1434,9 @@ fn normalize_managed_mcp_tool(mut tool: McpDiscoveredTool) -> Option<McpDiscover
     if serde_json::to_vec(schema)
         .map(|encoded| encoded.len() > MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES)
         .unwrap_or(true)
+        || serde_json::to_vec(&tool.annotations)
+            .map(|encoded| encoded.len() > MANAGED_MCP_TOOL_ANNOTATIONS_MAX_BYTES)
+            .unwrap_or(true)
     {
         return None;
     }
@@ -3916,10 +3953,7 @@ mod tests {
             .execute(&repo.pool)
             .await
             .unwrap();
-        let annotations = McpToolAnnotations {
-            read_only_hint: None,
-            destructive_hint: Some(false),
-        };
+        let annotations = McpToolAnnotations::from_hints(None, Some(false));
         let input_schema = json!({
             "type":"object",
             "properties":{"title":{"type":"string"}}
@@ -3989,10 +4023,16 @@ mod tests {
                 name: "save-issue".into(),
                 description: "Save an issue".into(),
                 input_schema: input_schema.clone(),
-                annotations: McpToolAnnotations {
-                    read_only_hint: Some(false),
-                    destructive_hint: Some(false),
-                },
+                annotations: McpToolAnnotations::from_hints(Some(false), Some(false)),
+            },
+            McpDiscoveredTool {
+                name: "save-issue".into(),
+                description: "Save an issue".into(),
+                input_schema: input_schema.clone(),
+                annotations: McpToolAnnotations::from_raw(json!({
+                    "destructiveHint": false,
+                    "idempotentHint": true
+                })),
             },
         ] {
             assert!(!run_policy_matches(
@@ -4839,7 +4879,8 @@ done
                         "inputSchema": {"type": "object"},
                         "annotations": {
                             "readOnlyHint": true,
-                            "destructiveHint": false
+                            "destructiveHint": false,
+                            "idempotentHint": true
                         }
                     },
                     {
@@ -4853,13 +4894,17 @@ done
         .unwrap();
 
         assert_eq!(
-            tools[0].annotations,
-            McpToolAnnotations {
-                read_only_hint: Some(true),
-                destructive_hint: Some(false),
-            }
+            tools[0].annotations.raw(),
+            &json!({
+                "readOnlyHint": true,
+                "destructiveHint": false,
+                "idempotentHint": true
+            })
         );
-        assert_eq!(tools[1].annotations, McpToolAnnotations::default());
+        assert_eq!(
+            tools[1].annotations.raw(),
+            &json!({"readOnlyHint": "not-a-boolean"})
+        );
     }
 
     #[test]
@@ -5216,10 +5261,7 @@ done
             name: name.to_string(),
             description: String::new(),
             input_schema: json!({"type":"object"}),
-            annotations: McpToolAnnotations {
-                read_only_hint,
-                destructive_hint,
-            },
+            annotations: McpToolAnnotations::from_hints(read_only_hint, destructive_hint),
         };
         let mut registry = McpToolRegistry::default();
         registry
@@ -5231,6 +5273,15 @@ done
                     tool("missing_destructive", Some(true), None),
                     tool("conflicting", Some(true), Some(true)),
                     tool("write", Some(false), Some(false)),
+                    McpDiscoveredTool {
+                        name: "malformed".into(),
+                        description: String::new(),
+                        input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations::from_raw(json!({
+                            "readOnlyHint": "not-a-boolean",
+                            "destructiveHint": false
+                        })),
+                    },
                 ],
             )
             .unwrap();
@@ -5245,7 +5296,7 @@ done
                 None
             );
         }
-        for name in ["ambiguous", "conflicting", "write"] {
+        for name in ["ambiguous", "conflicting", "write", "malformed"] {
             assert_eq!(
                 registry
                     .resolve(&format!("mcp_linear_{name}"))
@@ -5292,10 +5343,7 @@ done
                         name: "search".into(),
                         description: "official".into(),
                         input_schema: json!({"type":"object"}),
-                        annotations: McpToolAnnotations {
-                            read_only_hint: Some(true),
-                            destructive_hint: Some(false),
-                        },
+                        annotations: McpToolAnnotations::from_hints(Some(true), Some(false)),
                     },
                 ],
             )
@@ -5319,6 +5367,7 @@ done
     fn managed_linear_bounds_each_hosted_descriptor_independently() {
         let server = managed_linear_definition();
         let oversized = "x".repeat(MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES + 1);
+        let oversized_annotations = "x".repeat(MANAGED_MCP_TOOL_ANNOTATIONS_MAX_BYTES + 1);
         let long_description = "d".repeat(MANAGED_MCP_DESCRIPTION_MAX_CHARS + 10);
         let mut registry = McpToolRegistry::default();
         registry
@@ -5359,13 +5408,18 @@ done
                         annotations: McpToolAnnotations::default(),
                     },
                     McpDiscoveredTool {
+                        name: "oversized-annotations".into(),
+                        description: "invalid".into(),
+                        input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations::from_raw(json!({
+                            "futureHint": oversized_annotations
+                        })),
+                    },
+                    McpDiscoveredTool {
                         name: "valid".into(),
                         description: long_description,
                         input_schema: json!({"type":"object"}),
-                        annotations: McpToolAnnotations {
-                            read_only_hint: Some(true),
-                            destructive_hint: Some(false),
-                        },
+                        annotations: McpToolAnnotations::from_hints(Some(true), Some(false)),
                     },
                 ],
             )
