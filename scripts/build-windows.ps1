@@ -57,6 +57,8 @@ try {
   if (Test-Path -LiteralPath $nsisDirectory -PathType Container) {
     Get-ChildItem -LiteralPath $nsisDirectory -File -Filter "*-setup.exe" | Remove-Item -Force
   }
+  $appExecutable = Join-Path $repoRoot "src-tauri\target\release\os-june.exe"
+  Remove-Item -LiteralPath $appExecutable -Force -ErrorAction SilentlyContinue
   $env:JUNE_AGENT_RUNTIME_PREBUILT = "1"
   & node scripts/tauri-build.mjs --no-sign
   if ($LASTEXITCODE -ne 0) { throw "Unsigned Tauri release build failed." }

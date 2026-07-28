@@ -66,7 +66,7 @@ try {
     return $matches[0]
   }
 
-  $null = Require-One "os-june.exe"
+  $app = Require-One "os-june.exe"
   $null = Require-One "WebView2Loader.dll"
   $runtime = Require-One "june-agent-runtime.exe"
   $checksum = Require-One "june-agent-runtime.exe.sha256"
@@ -84,6 +84,19 @@ try {
         $relative.Contains('hermes-agent')) {
       throw "Legacy Hermes or Python payload found: $($item.FullName)"
     }
+  }
+
+  foreach ($unsignedFile in @($installer, $app, $helper)) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $unsignedFile.FullName
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned) {
+      throw "Expected an unsigned file, but Authenticode status is $($signature.Status): $($unsignedFile.FullName)"
+    }
+  }
+  # postject can retain invalid signature metadata from the Node executable.
+  # It must never retain a valid publisher signature after SEA injection.
+  $runtimeSignature = Get-AuthenticodeSignature -LiteralPath $runtime.FullName
+  if ($runtimeSignature.Status -eq [System.Management.Automation.SignatureStatus]::Valid) {
+    throw "Expected an unsigned agent runtime, but its Authenticode signature is valid: $($runtime.FullName)"
   }
 
   $repoRoot = Split-Path -Parent $PSScriptRoot
