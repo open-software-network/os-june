@@ -341,7 +341,7 @@ describe("meeting start transcription event", () => {
     }));
   });
 
-  async function fireMeetingStart(expired = false) {
+  async function fireMeetingStart(expired = false, waitForAcknowledgement = false) {
     mocks.pendingMeetingStartRequest = {
       requestId: "meeting-request-1",
       noteId: "note-2",
@@ -352,6 +352,11 @@ describe("meeting start transcription event", () => {
       await mocks.listeners.get(MEETING_START_TRANSCRIPTION_EVENT)?.({
         payload: undefined,
       });
+      if (waitForAcknowledgement) {
+        await vi.waitFor(() =>
+          expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1"),
+        );
+      }
     });
   }
 
@@ -373,14 +378,11 @@ describe("meeting start transcription event", () => {
     await waitFor(() => expect(mocks.listeners.has(MEETING_START_TRANSCRIPTION_EVENT)).toBe(true));
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
 
-    await fireMeetingStart();
-    await waitFor(() => {
-      expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
-        "meeting-request-1",
-        "microphonePlusSystem",
-      );
-      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
-    });
+    await fireMeetingStart(false, true);
+    expect(mocks.startMeetingRecording).toHaveBeenCalledWith(
+      "meeting-request-1",
+      "microphonePlusSystem",
+    );
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
