@@ -550,9 +550,14 @@ function AgentSessionListRow({
     }
     window.addEventListener("click", close);
     window.addEventListener("keydown", onKey);
+    // The menu is position: fixed and doesn't follow the row as the list
+    // scrolls, so close it on any scroll (standard context-menu behavior).
+    // Capture is required because the scroller is a nested element, not window.
+    window.addEventListener("scroll", close, { capture: true });
     return () => {
       window.removeEventListener("click", close);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", close, { capture: true });
     };
   }, [menu]);
 
