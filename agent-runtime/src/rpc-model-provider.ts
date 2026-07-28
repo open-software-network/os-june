@@ -95,7 +95,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
         if (autoRequested) {
-          const chunkModel = autoResponseModel(stringValue(chunk.model));
+          const chunkModel = autoResponseModel(chunk.model);
           if (chunkModel && this.resolvedModel && chunkModel !== this.resolvedModel) {
             throw new Error("June's Auto model response identified conflicting selected models");
           }
@@ -223,9 +223,13 @@ function concreteModel(model: string | undefined): string | undefined {
   return normalized;
 }
 
-function autoResponseModel(model: string | undefined): string | undefined {
-  const normalized = model?.trim();
-  if (!normalized || normalized === "auto" || isAutoModel(normalized)) return undefined;
+function autoResponseModel(model: JsonValue | undefined): string | undefined {
+  if (model === undefined) return undefined;
+  if (typeof model !== "string") {
+    throw new Error("June's Auto model response identified an invalid selected model");
+  }
+  const normalized = model.trim();
+  if (normalized === "auto" || isAutoModel(normalized)) return undefined;
   const concrete = concreteModel(normalized);
   if (!concrete) throw new Error("June's Auto model response identified an invalid selected model");
   return concrete;

@@ -180,6 +180,24 @@ test("rejects reserved internal tags as Auto's canonical model", async () => {
   }, /invalid selected model/);
 });
 
+test("rejects non-string Auto model metadata before a later canonical model", async () => {
+  const provider = new RpcChatCompletionsModelProvider(async () => ({
+    streamId: "stream-auto-non-string",
+    chunks: [
+      { ...finalChunk, model: 42 },
+      { ...finalChunk, model: "z-ai/glm-5.2" },
+    ],
+    done: true,
+  }));
+  await assert.rejects(async () => {
+    for await (const _event of provider
+      .getModel("__june_auto_generation__:73")
+      .getStreamedResponse(modelRequest())) {
+      // Drain the model response.
+    }
+  }, /invalid selected model/);
+});
+
 test("injects queued steering at the next model boundary and acknowledges consumption", async () => {
   const requests: JsonObject[] = [];
   const consumed: string[] = [];
