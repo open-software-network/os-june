@@ -72,7 +72,6 @@ describe("list render hygiene helpers", () => {
 
     expect(lists.pinned.map(({ id }) => id)).toEqual(["pinned-1", "pinned-2"]);
     expect(lists.visible.map(({ id }) => id)).toEqual(["active-1", "active-2"]);
-    expect(lists.completed.map(({ id }) => id)).toEqual(["completed-new", "completed-old"]);
     expect(lists).toMatchObject({ pinnedTotal: 2, visibleTotal: 3, completedTotal: 2 });
   });
 

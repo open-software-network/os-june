@@ -57,3 +57,18 @@ persistence pattern.
   so no backend deploy is required and the pinned-runtime boundary is respected.
 - If Hermes ever gains a first-class completion concept, this table becomes the
   migration source; superseding this ADR (not rewriting it) is the path.
+
+## Addendum (2026-07-27): user-facing term renamed to "archive"
+
+The product verb for this mark is now **archive** ("Archive" / "Unarchive" in
+session row menus). Archived sessions leave the sidebar entirely; an
+"Archived" option in the sessions page's status filter (Active / Archived /
+All) replaced both the sidebar's Completed section and the page's collapsible
+Completed group. The rename reflects what the mark does (remove finished work
+from the live lists) and frees "completed" for the runtime session status of
+the same name.
+
+Nothing in the decision changes: the state stays June-owned in
+`completed_sessions(session_id, completed_at)` with the same command pair,
+and remains orthogonal to Hermes' `archived` flag, which June still never
+writes. See CONTEXT.md "Archived session".

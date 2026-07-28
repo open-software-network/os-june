@@ -617,6 +617,8 @@ export type NoteCalendarEventDto = {
   startAt: string;
   endAt: string;
   accountEmail: string;
+  /** Google's own event URL, absent on events matched before it was persisted. */
+  htmlLink?: string | null;
 };
 
 export type TranscriptCoverageDto = {

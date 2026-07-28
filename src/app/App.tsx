@@ -67,6 +67,11 @@ import {
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
+  COMPLETED_DEMO_SESSION_PREFIX,
+  SIDEBAR_DEMO_SESSIONS_EVENT,
+  type SidebarDemoSessionsDetail,
+} from "../lib/completed-sessions-demo-ids";
+import {
   getCurrentDataPartitionName,
   DATA_PARTITION_CHANGED_EVENT,
   type DataPartitionChangedDetail,
@@ -409,7 +414,9 @@ export function App() {
     getSelectedNoteId,
     recordingStatusRef,
     setActiveView,
+    setAgentSessions,
     setCheckingUpdate,
+    setCompletedSessions,
     setLiveTranscriptEvents,
     setPreparingUpdate,
     setRecordingNote,
@@ -568,6 +575,16 @@ export function App() {
       const scopedSessions = dataPartitionScopedAgentSessions(sessions, partitions);
       agentMenuBarSessionsRef.current = scopedSessions;
       setAgentSessions(scopedSessions);
+      // A real refresh replaces the app-level list wholesale, dropping any
+      // __completedDemo rows; purge the sidebar's copy too so the two demo
+      // surfaces never diverge (Greptile, PR #991).
+      if (import.meta.env.DEV) {
+        window.dispatchEvent(
+          new CustomEvent<SidebarDemoSessionsDetail>(SIDEBAR_DEMO_SESSIONS_EVENT, {
+            detail: { clearPrefix: COMPLETED_DEMO_SESSION_PREFIX },
+          }),
+        );
+      }
       publishAgentMenuBarState();
     },
     [dataPartitionScopedAgentSessions, publishAgentMenuBarState],

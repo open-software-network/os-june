@@ -13,6 +13,7 @@ import {
   setSessionCompleted,
 } from "../lib/tauri";
 import { messageFromError } from "../lib/errors";
+import { COMPLETED_DEMO_SESSION_PREFIX } from "../lib/completed-sessions-demo-ids";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { CreateAppDomainActionsDependencies } from "./app-domain-actions-types";
 
@@ -136,6 +137,10 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
       else delete next[sessionId];
       return next;
     });
+    // __completedDemo sessions are in-memory only: skip persistence so the
+    // archive toggle stays interactive in a plain browser (no Tauri), the way
+    // RECORD_NOTICES_DEMO_SESSION_ID skips the recorder backend.
+    if (import.meta.env.DEV && sessionId.startsWith(COMPLETED_DEMO_SESSION_PREFIX)) return;
     // Serialize writes per session. Toggling complete -> active faster than the
     // first write resolves would otherwise let two commands reach the SQLite
     // pool concurrently and land out of order (the DELETE before the INSERT),

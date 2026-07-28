@@ -205,6 +205,12 @@ pub struct NoteCalendarEventDto {
     pub start_at: String,
     pub end_at: String,
     pub account_email: String,
+    /// Google's own event URL (htmlLink), persisted so the frontend's
+    /// open-in-Google-Calendar link doesn't depend on reconstructing Google's
+    /// undocumented eid scheme. Absent on events matched before this field
+    /// shipped; the frontend then falls back to the constructed link.
+    #[serde(default)]
+    pub html_link: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

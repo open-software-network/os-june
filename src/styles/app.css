@@ -9853,41 +9853,14 @@ button.agent-user-attachment:hover {
   flex: 0 0 auto;
 }
 
-/* The account footer always owns its space. Completed sessions can give up
- * height in a short window, with their rows scrolling inside the remaining
- * room instead of pushing the identity below the viewport. */
-.sidebar-completed-section {
-  flex: 0 1 auto;
-  min-height: var(--sidebar-section-title-h);
-  overflow: hidden;
-}
-
-.sidebar-completed-section > .section-title {
-  flex: 0 0 auto;
-}
-
-/* Keep the active list's title and first row available before Completed claims
- * space. Clip any remaining internal overflow so it cannot paint through the
- * lower sections or footer. */
-.sidebar-agent-section {
-  flex: 1 0 var(--sidebar-active-section-min-h);
-  min-height: var(--sidebar-active-section-min-h);
-  overflow: hidden;
-}
-
-/* Doubled class so these beat the later .notes-nav rule, whose height: 100%
+/* Doubled class so this beats the later .notes-nav rule, whose height: 100%
  * and 16px fade padding are meant for the open-ended agent list — the pinned
  * list hugs its rows instead. */
-.notes-nav.sidebar-pinned-list,
-.notes-nav.sidebar-completed-list {
+.notes-nav.sidebar-pinned-list {
   height: auto;
   max-height: var(--sidebar-pinned-list-max-h);
   overflow-y: auto;
   padding-bottom: 0;
-}
-
-.sidebar-completed-section .notes-nav.sidebar-completed-list {
-  min-height: 0;
 }
 
 /* Section headers share one height so the Pinned and Agent groups sit on the
@@ -9963,12 +9936,6 @@ button.agent-user-attachment:hover {
 .section-count {
   color: var(--muted-foreground);
   font-weight: 400;
-}
-
-.sidebar-section-title-meta {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
 }
 
 .sidebar[data-collapsed="true"] .section-title-label,
@@ -10169,7 +10136,9 @@ button.agent-user-attachment:hover {
   height: var(--control-xs);
   padding: 0;
   border: 0;
-  border-radius: var(--r-xs);
+  /* Clickable icon square: --r-sm per the radius tiers in
+   * docs/design/conventions.md, even at 22px (--r-xs reads as a badge). */
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
   opacity: 0;
@@ -10190,9 +10159,16 @@ button.agent-user-attachment:hover {
   opacity: 1;
 }
 
+/* The button sits on an already-hovered row (--sidebar-accent, which --muted
+ * nearly matches), so the nested hover is an overlay wash - stepped darker in
+ * light, lighter in dark (a black wash is invisible on near-black). */
 .note-row-menu:hover {
   background: oklch(0% 0 none / 6%);
   color: var(--foreground);
+}
+
+[data-theme="dark"] .note-row-menu:hover {
+  background: oklch(100% 0 none / 8%);
 }
 
 .note-row-menu:disabled {
@@ -11158,30 +11134,125 @@ button.agent-user-attachment:hover {
   opacity: 0.45;
 }
 
-.note-calendar-context {
-  display: flex;
+/* Matched Google Calendar event, folded into the overline as a quiet badge on
+ * the house recipe (.status-pill's soft muted wash). The Google mark carries
+ * the source, the label carries the event title; hovering (or focusing)
+ * reveals the interactive event-snapshot card. */
+.note-calendar-chip {
+  display: inline-flex;
   align-items: center;
+  flex: 0 1 auto;
+  gap: var(--sp-2);
+  height: var(--control-xs);
   min-width: 0;
-  max-width: 100%;
+  padding: 0 var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
+  /* The label is the event title inline with the fs-sm date and project chip,
+   * so it matches their size (and the folder trigger's control-xs height)
+   * rather than the fs-xs badge recipe it grew from. */
   font-size: var(--fs-sm);
-  line-height: var(--lh-sm);
+  line-height: 1.4;
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.note-calendar-context > svg {
+.note-calendar-chip:hover {
+  background: var(--muted);
+}
+
+.note-calendar-chip > svg {
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  margin-right: var(--sp-2);
-  color: var(--foreground);
 }
 
-.note-calendar-source {
-  color: var(--foreground);
+.note-calendar-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chip's hover card: a read-only snapshot of the matched event in the
+ * Amie sectioned-card structure — header (title + open-in-Google-Calendar
+ * link), then icon-led rows split by full-bleed hairlines. The negative
+ * margins bleed the section rows to the .hover-tip surface's edges so the
+ * dividers span the card. */
+.note-calendar-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 300px;
+  margin: calc(-1 * var(--sp-3)) calc(-1 * var(--sp-4));
+}
+
+.note-calendar-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+}
+
+.note-calendar-card-title {
+  min-width: 0;
   font-weight: var(--fw-medium);
 }
 
-.note-calendar-account {
+/* The external link beside the title: an icon-only affordance that stays
+ * muted until hovered (background change only, per the house hover rule). */
+.note-calendar-card-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin: calc(-1 * var(--sp-px)) 0 0 auto;
+  padding: var(--sp-px);
+  border-radius: var(--r-sm);
+  color: var(--muted-foreground);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.note-calendar-card-open:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.note-calendar-card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--muted-foreground);
+}
+
+.note-calendar-card-row > svg {
+  flex: 0 0 auto;
+}
+
+/* The schedule row stacks the time range over its date; the clock rides the
+ * range line (Amie's alignment), not the row's vertical center. */
+.note-calendar-card-schedule {
+  align-items: flex-start;
+}
+
+.note-calendar-card-schedule > svg {
+  margin-top: 3px;
+}
+
+.note-calendar-card-when {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.note-calendar-card-range {
+  color: var(--foreground);
+}
+
+.note-calendar-card-date {
+  font-size: var(--fs-xs);
+}
+
+.note-calendar-card-account {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -13169,10 +13240,21 @@ button.agent-user-attachment:hover {
   flex-shrink: 0;
 }
 
-/* Layout slot for the recovery prompt — sits in editor-content with
- * spacing below it before the editor body begins. */
+/* Layout slot for the recovery prompt — sits in editor-content with spacing
+ * below it before the editor body begins. */
 .note-recovery-prompt {
   margin: 0 0 var(--sp-5);
+}
+
+/* NoteRecoveryPrompt adds this class only after measuring one rendered body
+ * line. Wrapped and funding-blocked prompts retain the shared first-line and
+ * top alignment above. */
+.inline-notice.note-recovery-prompt-single-line {
+  align-items: center;
+}
+
+.note-recovery-prompt-single-line .inline-notice-icon {
+  align-self: center;
 }
 
 .note-transcription-warning {
@@ -22300,30 +22382,42 @@ button.memory-project:hover {
   gap: 2px;
 }
 
-.agent-sessions-completed {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-
-.agent-sessions-completed-toggle {
-  display: inline-flex;
-  align-items: baseline;
-  align-self: flex-start;
-  gap: var(--sp-2);
-  padding: 0;
-  border: 0;
+/* The status lens on the sessions page: a ghost select balanced against the
+ * search field on the controls row - no border, content-hugging, chevron snug
+ * against the label instead of the shared trigger's reserved chevron slot.
+ * Archived is the user-facing term for the persisted completed_at mark
+ * (JUN-203). */
+.agent-sessions-filter .select-trigger {
+  min-width: 0;
+  gap: var(--sp-1);
+  padding: 0 var(--sp-2);
+  border-color: transparent;
   background: transparent;
   color: var(--muted-foreground);
-  font: inherit;
-  font-size: var(--fs-md);
-  font-weight: 400;
-  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.agent-sessions-completed-toggle:hover,
-.agent-sessions-completed-toggle:focus-visible {
+.agent-sessions-filter .select-trigger:hover,
+.agent-sessions-filter .select-trigger[aria-expanded="true"] {
+  background: var(--sidebar-accent);
   color: var(--foreground);
+}
+
+.agent-sessions-filter .select-trigger > span:first-child {
+  flex: none;
+}
+
+.agent-sessions-filter .select-trigger svg {
+  position: static;
+  transform: none;
+}
+
+/* Archived rows recede when listed (the Archived and All lenses): the title
+ * drops to the muted voice so live work reads first. */
+.agent-session-row[data-archived] .folder-note-title {
+  color: var(--muted-foreground);
 }
 
 /* Flush edges, Granola-style: the row's hover/selected background box sits

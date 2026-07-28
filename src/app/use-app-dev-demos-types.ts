@@ -1,4 +1,5 @@
 import type { SidebarView } from "../components/sidebar/Sidebar";
+import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { LiveTranscriptEventDto } from "../lib/tauri";
 import type { RecordingStatusDto } from "../lib/tauri";
 import type { UpdateInstallProgress } from "./update-decision";
@@ -12,7 +13,9 @@ export type UseAppDevDemosDependencies = {
   getSelectedNoteId: () => string | undefined;
   recordingStatusRef: React.MutableRefObject<RecordingStatusDto | undefined>;
   setActiveView: React.Dispatch<React.SetStateAction<SidebarView>>;
+  setAgentSessions: React.Dispatch<React.SetStateAction<AgentSessionDto[]>>;
   setCheckingUpdate: React.Dispatch<React.SetStateAction<boolean>>;
+  setCompletedSessions: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   setLiveTranscriptEvents: React.Dispatch<React.SetStateAction<LiveTranscriptEventDto[]>>;
   setPreparingUpdate: React.Dispatch<React.SetStateAction<boolean>>;
   setRecordingNote: (noteId: string | undefined) => void;

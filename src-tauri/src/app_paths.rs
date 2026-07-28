@@ -71,7 +71,10 @@ pub fn app_config_dir(app: &AppHandle) -> Result<PathBuf, tauri::Error> {
     })
 }
 
-fn use_prod_data_dir() -> bool {
+/// Public because migration validation (`db::migrations`) relaxes its
+/// newer-schema guard only for dev builds on the isolated dev data dir, and
+/// must not relax it when a dev build is pointed at production data.
+pub fn use_prod_data_dir() -> bool {
     let value = std::env::var_os(USE_PROD_DATA_DIR_ENV);
     env_value_truthy(value.as_deref())
 }
