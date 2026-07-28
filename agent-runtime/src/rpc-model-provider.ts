@@ -3,7 +3,7 @@ import {
   type Model,
   type ModelProvider,
 } from "@openai/agents";
-import type { JsonObject, JsonValue } from "./types.js";
+import type { JsonObject, JsonValue, ModelRoute } from "./types.js";
 import type { SteeringMessage } from "./types.js";
 
 export const MODEL_CHAT_COMPLETIONS_TOOL = "__june_model_chat_completions";
@@ -27,10 +27,12 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    initialRoute?: ModelRoute,
   ) {
     this.invoke = invoke;
     this.takeSteering = steering?.takeSteering;
     this.onSteeringConsumed = steering?.onSteeringConsumed;
+    this.latestRoute = initialRoute;
   }
 
   getModel(modelName?: string): Model {
@@ -70,6 +72,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       ];
       for (const message of steering) this.onSteeringConsumed?.(message);
     }
+    normalizeOutgoingReasoning(request, this.latestRoute);
     const toolArgumentState = new Map<string, boolean>();
     let page = requireStreamPage(
       await this.invoke({
@@ -82,7 +85,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
     while (true) {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
-        yield normalizeEmptyToolArguments(chunk, toolArgumentState);
+        yield normalizeEmptyToolArguments(normalizeReasoningContent(chunk), toolArgumentState);
       }
       if (page.done) return;
       page = requireStreamPage(
@@ -152,11 +155,64 @@ function normalizeEmptyToolArguments(
   return changed ? { ...chunk, choices } : chunk;
 }
 
-export type ModelRoute = {
-  provider?: string;
-  privacyLevel?: string;
-  endpoint?: string;
-};
+// Maps `delta.reasoning_content` → `delta.reasoning` so the OpenAI Agents SDK
+// (which only reads `reasoning`) captures reasoning that GLM/Z.AI streams
+// under the provider-native `reasoning_content` field. When both fields are
+// present, `reasoning_content` wins (it is the provider-native field) and
+// `reasoning` is replaced. Safe for all models: a model that does not emit
+// `reasoning_content` is untouched.
+function normalizeReasoningContent(chunk: JsonObject): JsonObject {
+  if (!Array.isArray(chunk.choices)) return chunk;
+  let changed = false;
+  const choices = chunk.choices.map((choiceValue) => {
+    if (!isRecord(choiceValue)) return choiceValue;
+    const delta = asRecord(choiceValue.delta);
+    if (typeof delta.reasoning_content !== "string") return choiceValue;
+    changed = true;
+    const rest: Record<string, unknown> = { ...delta };
+    delete rest.reasoning_content;
+    return { ...choiceValue, delta: { ...rest, reasoning: delta.reasoning_content } };
+  });
+  return changed ? { ...chunk, choices } : chunk;
+}
+
+// Known GLM model IDs that require `reasoning_content` (not `reasoning`) on
+// assistant tool-call replay. Auto (`open-software/auto`) is not included
+// because it dynamically resolves to GLM only at the routing layer; the
+// route-endpoint check below covers that case for live tool loops.
+const GLM_MODEL_IDS = new Set([
+  "zai-org-glm-5-2",
+  "zai-org-glm-5-1",
+  "zai-org-glm-5",
+  "z-ai/glm-5.2",
+]);
+
+// Route endpoint pattern for GLM upstreams (e.g. `phala-glm-5.2`).
+const GLM_ENDPOINT_PATTERN = /-glm-\d/i;
+
+// Renames `assistant.reasoning` → `assistant.reasoning_content` on outgoing
+// requests to GLM/Z.AI models. The SDK replays reasoning as `reasoning`, but
+// GLM expects its native `reasoning_content` field. Idempotent: messages that
+// already carry `reasoning_content` are left alone. Only applies when the
+// route endpoint or model ID is a known GLM identifier.
+function normalizeOutgoingReasoning(request: JsonObject, route: ModelRoute | undefined): void {
+  if (!isGlmRoute(route, request.model)) return;
+  const messages = Array.isArray(request.messages) ? request.messages : [];
+  for (const message of messages) {
+    if (!isRecord(message) || message.role !== "assistant") continue;
+    if (message.reasoning_content !== undefined) continue;
+    if (typeof message.reasoning === "string" && message.reasoning !== "") {
+      message.reasoning_content = message.reasoning;
+      delete message.reasoning;
+    }
+  }
+}
+
+function isGlmRoute(route: ModelRoute | undefined, model: unknown): boolean {
+  if (typeof route?.endpoint === "string" && GLM_ENDPOINT_PATTERN.test(route.endpoint)) return true;
+  if (typeof model === "string" && GLM_MODEL_IDS.has(model)) return true;
+  return false;
+}
 
 type StreamPage = { streamId: string; chunks: JsonObject[]; done: boolean; route?: ModelRoute };
 
@@ -212,6 +268,7 @@ async function collectChatCompletion(chunks: AsyncIterable<JsonObject>): Promise
       const delta = asRecord(choice.delta);
       if (typeof delta.content === "string") current.content += delta.content;
       if (typeof delta.reasoning === "string") current.reasoning += delta.reasoning;
+      else if (typeof delta.reasoning_content === "string") current.reasoning += delta.reasoning_content;
       if (typeof delta.refusal === "string") current.refusal += delta.refusal;
       if (typeof choice.finish_reason === "string") current.finishReason = choice.finish_reason;
       for (const toolValue of Array.isArray(delta.tool_calls) ? delta.tool_calls : []) {

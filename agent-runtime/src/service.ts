@@ -266,13 +266,17 @@ export class RuntimeService {
         return;
       }
       if (result.interruptions.length > 0) {
+        // Emit usage before interruptions so the route (endpoint) is
+        // persisted before the interruption becomes resolvable. This
+        // matters for Auto-routed GLM approval resumes: the Rust side
+        // reads usage to seed RunResumeParams.route.
+        this.emitUsage(result.usage, sessionId, runId);
         for (const interruption of result.interruptions) {
           this.emit("interruption.requested", {
             ...interruption,
             serializedState: result.serializedState ?? "",
           }, sessionId, runId);
         }
-        this.emitUsage(result.usage, sessionId, runId);
         return;
       }
       if (result.finalOutput !== undefined) {

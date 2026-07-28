@@ -2,6 +2,12 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+export type ModelRoute = {
+  provider?: string;
+  privacyLevel?: string;
+  endpoint?: string;
+};
+
 export type SafetyMode = "sandboxed" | "unrestricted";
 
 export type RuntimeHistoryItem = {
@@ -77,6 +83,13 @@ export type InterruptionResolution =
 export type RunResumeParams = Omit<RunStartParams, "input" | "history"> & {
   serializedState: string;
   resolutions: InterruptionResolution[];
+  /**
+   * Carries the resolved model route from the interrupted run so a fresh
+   * model provider can detect GLM on Auto-routed approval resumes. Optional
+   * and backward-compatible: older callers that omit it simply lose the
+   * Auto-resume reasoning normalization.
+   */
+  route?: ModelRoute;
 };
 
 export type RuntimeUsage = {
