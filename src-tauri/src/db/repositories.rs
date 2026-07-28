@@ -135,9 +135,15 @@ pub struct RoutineTrustRecord {
     /// Durable Google account binding for every connector-aware routine,
     /// including read-only and approval modes that have no autonomy grant.
     pub account_id: Option<String>,
+    /// The previous binding was explicitly cleared by an account disconnect.
+    /// Unlike a legacy never-bound NULL, this state must not auto-default.
+    pub account_binding_cleared: bool,
     /// The autonomous grant/account move has not yet been applied to the live
     /// runtime and followed by a successful routine resume.
     pub rebind_pending: bool,
+    /// June paused the routine for the pending rebind and therefore owns the
+    /// matching resume. False for routines the user had already paused.
+    pub rebind_resume_pending: bool,
     /// When the routine most recently entered approval mode (RFC 3339), or
     /// `None` if it has never been in approval mode. Approval-run crediting
     /// only counts runs that finished at or after this instant.
@@ -1070,10 +1076,17 @@ impl Repositories {
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
-        query("UPDATE routine_trust SET account_id = NULL WHERE account_id = ?")
-            .bind(account_id)
-            .execute(&mut *tx)
-            .await?;
+        query(
+            "UPDATE routine_trust
+             SET account_id = NULL,
+                 account_binding_cleared = 1,
+                 rebind_pending = 0,
+                 rebind_resume_pending = 0
+             WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?;
         query("DELETE FROM connector_accounts WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
@@ -1086,7 +1099,9 @@ impl Repositories {
         job_id: &str,
     ) -> Result<Option<RoutineTrustRecord>, sqlx::error::Error> {
         let row = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools,
+                    account_id, account_binding_cleared, rebind_pending,
+                    rebind_resume_pending, approval_since, updated_at
              FROM routine_trust WHERE job_id = ?",
         )
         .bind(job_id)
@@ -1099,14 +1114,17 @@ impl Repositories {
     /// autonomous grants after an account (re)connects: a disconnect deletes the
     /// account's grants but keeps the `routine_trust` rows and the jobs' auto
     /// toolsets, so without this the routines stay autonomous in name only (their
-    /// action servers never render again). Single-account mode makes "the
-    /// connected account" the unambiguous target for the re-mint.
+    /// action servers never render again). A never-bound legacy row may use
+    /// the sole connected account; a disconnect tombstone requires an explicit
+    /// user choice instead.
     pub async fn list_routine_trust_by_mode(
         &self,
         trust_mode: &str,
     ) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools,
+                    account_id, account_binding_cleared, rebind_pending,
+                    rebind_resume_pending, approval_since, updated_at
              FROM routine_trust WHERE trust_mode = ?",
         )
         .bind(trust_mode)
@@ -1120,7 +1138,9 @@ impl Repositories {
     /// autonomous grants.
     pub async fn list_routine_trust(&self) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools,
+                    account_id, account_binding_cleared, rebind_pending,
+                    rebind_resume_pending, approval_since, updated_at
              FROM routine_trust",
         )
         .fetch_all(&self.pool)
@@ -1153,14 +1173,15 @@ impl Repositories {
     }
 
     /// Set the trust mode (and autonomous tool grants) for a routine,
-    /// preserving its earned approval-run count.
+    /// preserving its earned approval-run count. This three-argument wrapper
+    /// can never clear an existing account binding.
     pub async fn routine_trust_set(
         &self,
         job_id: &str,
         trust_mode: &str,
         autonomous_tools: &[String],
     ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
-        self.routine_trust_set_with_account(job_id, trust_mode, autonomous_tools, None)
+        self.routine_trust_set_internal(job_id, trust_mode, autonomous_tools, None, None)
             .await
     }
 
@@ -1173,6 +1194,38 @@ impl Repositories {
         trust_mode: &str,
         autonomous_tools: &[String],
         account_id: Option<&str>,
+    ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
+        self.routine_trust_set_internal(job_id, trust_mode, autonomous_tools, account_id, None)
+            .await
+    }
+
+    /// Atomically moves an account binding and starts its durable runtime
+    /// rebind. The ownership bit records whether June paused the routine.
+    pub async fn routine_trust_set_for_rebind(
+        &self,
+        job_id: &str,
+        trust_mode: &str,
+        autonomous_tools: &[String],
+        account_id: &str,
+        resume_pending: bool,
+    ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
+        self.routine_trust_set_internal(
+            job_id,
+            trust_mode,
+            autonomous_tools,
+            Some(account_id),
+            Some((true, resume_pending)),
+        )
+        .await
+    }
+
+    async fn routine_trust_set_internal(
+        &self,
+        job_id: &str,
+        trust_mode: &str,
+        autonomous_tools: &[String],
+        account_id: Option<&str>,
+        rebind_state: Option<(bool, bool)>,
     ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
         let now = timestamp();
         let tools_json = string_vec_to_json(autonomous_tools);
@@ -1195,16 +1248,33 @@ impl Repositories {
                 .as_ref()
                 .and_then(|record| record.approval_since.clone())
         };
+        let (replace_rebind_state, rebind_pending, rebind_resume_pending) = match rebind_state {
+            Some((pending, resume_pending)) => (true, pending, pending && resume_pending),
+            None => (false, false, false),
+        };
         query(
             "INSERT INTO routine_trust (
                 job_id, trust_mode, approval_run_count, autonomous_tools,
-                account_id, approval_since, updated_at
+                account_id, account_binding_cleared, rebind_pending,
+                rebind_resume_pending, approval_since, updated_at
              )
-             VALUES (?, ?, 0, ?, ?, ?, ?)
+             VALUES (?, ?, 0, ?, ?, 0, ?, ?, ?, ?)
              ON CONFLICT(job_id) DO UPDATE SET
                trust_mode = excluded.trust_mode,
                autonomous_tools = excluded.autonomous_tools,
                account_id = COALESCE(excluded.account_id, routine_trust.account_id),
+               account_binding_cleared = CASE
+                 WHEN excluded.account_id IS NOT NULL THEN 0
+                 ELSE routine_trust.account_binding_cleared
+               END,
+               rebind_pending = CASE
+                 WHEN ? THEN excluded.rebind_pending
+                 ELSE routine_trust.rebind_pending
+               END,
+               rebind_resume_pending = CASE
+                 WHEN ? THEN excluded.rebind_resume_pending
+                 ELSE routine_trust.rebind_resume_pending
+               END,
                approval_since = excluded.approval_since,
                updated_at = excluded.updated_at",
         )
@@ -1212,8 +1282,12 @@ impl Repositories {
         .bind(trust_mode)
         .bind(&tools_json)
         .bind(account_id)
+        .bind(rebind_pending)
+        .bind(rebind_resume_pending)
         .bind(&approval_since)
         .bind(&now)
+        .bind(replace_rebind_state)
+        .bind(replace_rebind_state)
         .execute(&self.pool)
         .await?;
         self.routine_trust_get(job_id)
@@ -1226,12 +1300,22 @@ impl Repositories {
         job_id: &str,
         account_id: Option<&str>,
     ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
-        query("UPDATE routine_trust SET account_id = ?, updated_at = ? WHERE job_id = ?")
-            .bind(account_id)
-            .bind(timestamp())
-            .bind(job_id)
-            .execute(&self.pool)
-            .await?;
+        query(
+            "UPDATE routine_trust
+             SET account_id = ?,
+                 account_binding_cleared = CASE
+                   WHEN ? IS NOT NULL THEN 0
+                   ELSE account_binding_cleared
+                 END,
+                 updated_at = ?
+             WHERE job_id = ?",
+        )
+        .bind(account_id)
+        .bind(account_id)
+        .bind(timestamp())
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
         self.routine_trust_get(job_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
@@ -1242,13 +1326,22 @@ impl Repositories {
         job_id: &str,
         pending: bool,
     ) -> Result<(), sqlx::error::Error> {
-        let result =
-            query("UPDATE routine_trust SET rebind_pending = ?, updated_at = ? WHERE job_id = ?")
-                .bind(pending)
-                .bind(timestamp())
-                .bind(job_id)
-                .execute(&self.pool)
-                .await?;
+        let result = query(
+            "UPDATE routine_trust
+             SET rebind_pending = ?,
+                 rebind_resume_pending = CASE
+                   WHEN ? THEN rebind_resume_pending
+                   ELSE 0
+                 END,
+                 updated_at = ?
+             WHERE job_id = ?",
+        )
+        .bind(pending)
+        .bind(pending)
+        .bind(timestamp())
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
         if result.rows_affected() == 0 {
             return Err(sqlx::Error::RowNotFound);
         }
@@ -6417,7 +6510,9 @@ fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
         approval_run_count: row.get("approval_run_count"),
         autonomous_tools: string_vec_from_json(&row.get::<String, _>("autonomous_tools")),
         account_id: row.get::<Option<String>, _>("account_id"),
+        account_binding_cleared: row.get::<i64, _>("account_binding_cleared") != 0,
         rebind_pending: row.get::<i64, _>("rebind_pending") != 0,
+        rebind_resume_pending: row.get::<i64, _>("rebind_resume_pending") != 0,
         approval_since: row.get::<Option<String>, _>("approval_since"),
         updated_at: row.get("updated_at"),
     }
@@ -9071,6 +9166,10 @@ mod tests {
             .await
             .expect("bind routine");
         repos
+            .routine_trust_set_rebind_pending("job-1", true)
+            .await
+            .expect("mark rebind pending");
+        repos
             .set_selected_teams(
                 "user@example.com",
                 &[super::SelectedTeamRecord {
@@ -9118,15 +9217,15 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
-        assert_eq!(
-            repos
-                .routine_trust_get("job-1")
-                .await
-                .expect("routine trust")
-                .expect("trust row")
-                .account_id,
-            None
-        );
+        let trust = repos
+            .routine_trust_get("job-1")
+            .await
+            .expect("routine trust")
+            .expect("trust row");
+        assert_eq!(trust.account_id, None);
+        assert!(trust.account_binding_cleared);
+        assert!(!trust.rebind_pending);
+        assert!(!trust.rebind_resume_pending);
         // Selected teams must not survive either: reconnecting the same
         // workspace should require re-picking teams, not silently inherit the
         // old scope.
@@ -9141,6 +9240,13 @@ mod tests {
             .await
             .expect("action")
             .is_none());
+
+        let rebound = repos
+            .routine_trust_set_account("job-1", Some("chosen@example.com"))
+            .await
+            .expect("explicitly rebind routine");
+        assert_eq!(rebound.account_id.as_deref(), Some("chosen@example.com"));
+        assert!(!rebound.account_binding_cleared);
     }
 
     #[tokio::test]
@@ -9386,6 +9492,24 @@ mod tests {
     #[tokio::test]
     async fn routine_trust_and_account_update_is_atomic_and_preserves_binding_on_omission() {
         let repos = test_repositories().await;
+        let pending_first = repos
+            .routine_trust_set_for_rebind(
+                "job-pending-first",
+                "approval",
+                &[],
+                "pending@example.test",
+                false,
+            )
+            .await
+            .expect("trust and pending marker are created atomically");
+        assert_eq!(pending_first.trust_mode, "approval");
+        assert_eq!(
+            pending_first.account_id.as_deref(),
+            Some("pending@example.test")
+        );
+        assert!(pending_first.rebind_pending);
+        assert!(!pending_first.rebind_resume_pending);
+
         let bound = repos
             .routine_trust_set_with_account(
                 "job-atomic",
@@ -9396,6 +9520,7 @@ mod tests {
             .await
             .expect("insert trust and binding");
         assert_eq!(bound.account_id.as_deref(), Some("bound@example.test"));
+        assert!(!bound.account_binding_cleared);
 
         let updated = repos
             .routine_trust_set_with_account("job-atomic", "approval", &[], None)
@@ -9404,28 +9529,30 @@ mod tests {
         assert_eq!(updated.trust_mode, "approval");
         assert_eq!(updated.account_id.as_deref(), Some("bound@example.test"));
 
-        repos
-            .routine_trust_set_rebind_pending("job-atomic", true)
+        let owned_rebind = repos
+            .routine_trust_set_for_rebind("job-atomic", "approval", &[], "bound@example.test", true)
             .await
-            .expect("mark pending");
+            .expect("mark owned rebind atomically");
+        assert!(owned_rebind.rebind_pending);
+        assert!(owned_rebind.rebind_resume_pending);
         let pending = repos
             .routine_trust_set_with_account("job-atomic", "approval", &[], None)
             .await
             .expect("ordinary trust update preserves pending marker");
         assert!(pending.rebind_pending);
+        assert!(pending.rebind_resume_pending);
 
         repos
             .routine_trust_set_rebind_pending("job-atomic", false)
             .await
             .expect("clear pending");
-        assert!(
-            !repos
-                .routine_trust_get("job-atomic")
-                .await
-                .expect("read trust")
-                .expect("trust row")
-                .rebind_pending
-        );
+        let cleared = repos
+            .routine_trust_get("job-atomic")
+            .await
+            .expect("read trust")
+            .expect("trust row");
+        assert!(!cleared.rebind_pending);
+        assert!(!cleared.rebind_resume_pending);
     }
 
     #[tokio::test]

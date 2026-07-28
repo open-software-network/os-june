@@ -112,10 +112,10 @@ pub async fn connectors_connect(
 
     // Repair bindings for every routine whose durable tool catalog uses
     // Google, then re-mint grants for the autonomous subset. Preserve a
-    // healthy stored binding. A legacy or disconnected binding defaults only
-    // when exactly one connected Google account exists; otherwise it remains
-    // visibly unresolved in the routine UI. Best-effort and per routine: a
-    // repair failure must not fail the connect.
+    // healthy stored binding. A legacy never-bound row defaults only when
+    // exactly one connected Google account exists; a disconnect-cleared row
+    // stays unresolved until the user explicitly binds it. Best-effort and per
+    // routine: a repair failure must not fail the connect.
     let repos = crate::commands::repositories(&app).await?;
     match repos.list_routine_trust().await {
         Ok(records) => {
@@ -128,6 +128,13 @@ pub async fn connectors_connect(
                     }
                 };
                 if !policy::routine_uses_google_toolsets(&toolsets) {
+                    continue;
+                }
+                if record.account_binding_cleared {
+                    tracing::warn!(
+                        job_id = %record.job_id,
+                        "Google routine awaits an explicit account after disconnect"
+                    );
                     continue;
                 }
                 let stored_account = match stored_routine_account_id(&repos, &record.job_id).await {
@@ -366,11 +373,16 @@ pub struct RoutineTrustDto {
     /// Google account already bound to this routine's connector access.
     /// Absent for plain/legacy routines with no stored account choice.
     pub account_id: Option<String>,
+    /// True when a disconnect cleared the previous binding. The frontend must
+    /// not seed a sole-account default for this state.
+    pub account_binding_cleared: bool,
     /// Names of the per-job auto MCP servers minted for the current
     /// autonomous grants (`june_<provider>_auto_<jobid8>`), sorted. Empty
     /// unless the routine is autonomous with granted mutating tools.
     pub autonomous_servers: Vec<String>,
     pub rebind_pending: bool,
+    /// June owns the pause paired with this rebind and may resume on success.
+    pub rebind_resume_pending: bool,
 }
 
 #[tauri::command]
@@ -404,6 +416,13 @@ pub struct RoutineTrustSetRequest {
     /// defaults only when exactly one connected account exists.
     #[serde(default)]
     pub account_id: Option<String>,
+    /// Starts the account/grant rebind marker in the same upsert that moves
+    /// the persisted binding.
+    #[serde(default)]
+    pub rebind_pending: bool,
+    /// True only when June paused the routine for this rebind.
+    #[serde(default)]
+    pub rebind_resume_pending: bool,
 }
 
 #[tauri::command]
@@ -414,7 +433,14 @@ pub async fn routine_trust_set(
     validate_trust_mode(&request.trust_mode)?;
     let repos = crate::commands::repositories(&app).await?;
     let existing = repos.routine_trust_get(&request.job_id).await?;
-    let existing_account_id = stored_routine_account_id(&repos, &request.job_id).await?;
+    let automatic_binding_allowed = existing
+        .as_ref()
+        .map_or(true, |record| !record.account_binding_cleared);
+    let existing_account_id = if automatic_binding_allowed {
+        stored_routine_account_id(&repos, &request.job_id).await?
+    } else {
+        None
+    };
     let requested_account_id = request
         .account_id
         .as_deref()
@@ -422,9 +448,11 @@ pub async fn routine_trust_set(
         .filter(|account_id| !account_id.is_empty())
         .map(str::to_string);
     let sole_account_id = sole_connected_google_account_id(&app).await;
-    let account_id = requested_account_id
-        .or(existing_account_id)
-        .or(sole_account_id);
+    let account_id = requested_account_id.or(existing_account_id).or_else(|| {
+        automatic_binding_allowed
+            .then_some(sole_account_id)
+            .flatten()
+    });
     if let Some(account_id) = account_id.as_deref() {
         require_google_routine_account(&repos, account_id).await?;
     }
@@ -448,19 +476,37 @@ pub async fn routine_trust_set(
             .map(|record| record.autonomous_tools)
             .unwrap_or_default()
     });
-    let record = repos
-        .routine_trust_set_with_account(
-            &request.job_id,
-            &request.trust_mode,
-            &autonomous_tools,
-            account_id.as_deref(),
-        )
-        .await?;
+    let record = if request.rebind_pending {
+        let account_id = account_id.as_deref().ok_or_else(|| {
+            AppError::new(
+                "routine_account_required",
+                "Choose a connected Google account for this routine.",
+            )
+        })?;
+        repos
+            .routine_trust_set_for_rebind(
+                &request.job_id,
+                &request.trust_mode,
+                &autonomous_tools,
+                account_id,
+                request.rebind_resume_pending,
+            )
+            .await?
+    } else {
+        repos
+            .routine_trust_set_with_account(
+                &request.job_id,
+                &request.trust_mode,
+                &autonomous_tools,
+                account_id.as_deref(),
+            )
+            .await?
+    };
     // Autonomy grant minting is the choke point for session-blind
     // attribution: an autonomous routine gets a per-provider grant (token +
     // tool names) that the bridge carries into a per-job auto MCP server.
     let servers = if record.trust_mode == "autonomous" {
-        let account_id = account_id.as_deref().ok_or_else(|| {
+        let account_id = record.account_id.as_deref().ok_or_else(|| {
             AppError::new(
                 "routine_account_required",
                 "Choose a connected Google account for this routine.",
@@ -532,13 +578,16 @@ fn trust_dto(
     autonomous_servers: Vec<String>,
     account_id: Option<String>,
 ) -> RoutineTrustDto {
+    let account_id = record.account_id.clone().or(account_id);
     RoutineTrustDto {
         trust_mode: record.trust_mode,
         approval_run_count: record.approval_run_count,
         autonomous_tools: record.autonomous_tools,
         account_id,
+        account_binding_cleared: record.account_binding_cleared,
         autonomous_servers,
         rebind_pending: record.rebind_pending,
+        rebind_resume_pending: record.rebind_resume_pending,
     }
 }
 
@@ -1137,6 +1186,30 @@ mod tests {
     }
 
     #[test]
+    fn trust_dto_prefers_the_persisted_account_binding() {
+        let record = RoutineTrustRecord {
+            job_id: "routine-1".to_string(),
+            trust_mode: "approval".to_string(),
+            approval_run_count: 1,
+            autonomous_tools: Vec::new(),
+            account_id: Some("persisted@example.com".to_string()),
+            account_binding_cleared: false,
+            rebind_pending: false,
+            rebind_resume_pending: false,
+            approval_since: None,
+            updated_at: "2026-07-28T00:00:00Z".to_string(),
+        };
+
+        let dto = trust_dto(
+            record,
+            Vec::new(),
+            Some("request-value@example.com".to_string()),
+        );
+
+        assert_eq!(dto.account_id.as_deref(), Some("persisted@example.com"));
+    }
+
+    #[test]
     fn autonomy_grants_bind_and_remint_for_the_explicit_account() {
         let record = RoutineTrustRecord {
             job_id: "routine-1".to_string(),
@@ -1144,7 +1217,9 @@ mod tests {
             approval_run_count: 3,
             autonomous_tools: vec!["send_email".to_string()],
             account_id: Some("first@example.com".to_string()),
+            account_binding_cleared: false,
             rebind_pending: false,
+            rebind_resume_pending: false,
             approval_since: None,
             updated_at: "2026-07-28T00:00:00Z".to_string(),
         };

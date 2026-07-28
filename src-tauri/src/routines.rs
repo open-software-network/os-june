@@ -1123,12 +1123,24 @@ async fn unattended_tools(
 ) -> Value {
     let autonomous_tools = routine_autonomous_tools(&repository.pool, routine_id).await;
     let repos = crate::db::repositories::Repositories::new(repository.pool.clone());
+    let automatic_binding_allowed = match repos.routine_trust_get(routine_id).await {
+        Ok(Some(record)) => !record.account_binding_cleared,
+        Ok(None) => true,
+        Err(error) => {
+            tracing::warn!(
+                error_code = %AppError::from(error).code,
+                "Google routine binding state lookup failed"
+            );
+            false
+        }
+    };
     let mut bound_google_account =
         crate::connectors::commands::stored_routine_account_id(&repos, routine_id)
             .await
             .ok()
             .flatten();
     if bound_google_account.is_none()
+        && automatic_binding_allowed
         && crate::connectors::policy::routine_uses_google_toolsets(enabled_toolsets)
     {
         if let Some(account_id) =
@@ -1487,7 +1499,9 @@ mod tests {
                 approval_run_count INTEGER NOT NULL DEFAULT 0,
                 autonomous_tools TEXT NOT NULL DEFAULT '[]',
                 account_id TEXT,
+                account_binding_cleared INTEGER NOT NULL DEFAULT 0,
                 rebind_pending INTEGER NOT NULL DEFAULT 0,
+                rebind_resume_pending INTEGER NOT NULL DEFAULT 0,
                 approval_since TEXT,
                 updated_at TEXT NOT NULL
             )",

@@ -148,7 +148,7 @@ export function RoutineDetail({
   const [menuOpen, setMenuOpen] = useState(false);
   const [tabIndicator, setTabIndicator] = useState({ x: 0, width: 0 });
   const queueTimer = useRef<number>();
-  const accountRebindPausedRef = useRef(false);
+  const didPauseForRebindRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
   const detailsTabRef = useRef<HTMLButtonElement>(null);
@@ -187,8 +187,8 @@ export function RoutineDetail({
         setTrustMode(trust.trustMode);
         setAutonomousTools(trust.autonomousTools);
         setRebindPending(Boolean(trust.rebindPending));
+        didPauseForRebindRef.current = Boolean(trust.rebindResumePending);
         if (trust.rebindPending) {
-          accountRebindPausedRef.current = true;
           setRuntimeApplyError("The Google account update has not reached the runtime yet.");
         }
       }
@@ -201,7 +201,13 @@ export function RoutineDetail({
         (account) => account.provider === "google" && account.status === "connected",
       );
       const defaultAccountId =
-        accountId ?? (connectedGoogle.length === 1 ? connectedGoogle[0].accountId : null);
+        accountId ??
+        (!trust?.accountBindingCleared && connectedGoogle.length === 1
+          ? connectedGoogle[0].accountId
+          : null);
+      // Keep the durable binding separate from the sole-account UI default.
+      // Marking the default as stored would hide the dirty first-save needed
+      // for legacy rows and would silently undo a disconnect tombstone.
       setStoredAccountId(accountId);
       setSelectedAccountId(defaultAccountId);
     });
@@ -260,6 +266,7 @@ export function RoutineDetail({
   const accountPickerRequired =
     trigger.source !== "schedule" ||
     storedTrigger !== null ||
+    trustMode === "autonomous" ||
     (policy !== null && routineUsesGoogle(policy, routine.enabled_toolsets));
   const accountChanged = accountPickerRequired && selectedAccountId !== storedAccountId;
   const storedTriggerDraft: TriggerDraft = storedTrigger
@@ -350,18 +357,21 @@ export function RoutineDetail({
     const bindingChanged = accountChanged && accountPickerRequired;
     const autonomousAccountChanged = bindingChanged && trustMode === "autonomous";
     const rebindWasPending = rebindPending || autonomousAccountChanged;
+    let rebindMarkerPersisted = rebindPending;
 
     // An autonomous connector-aware routine may have two account-bearing
     // records: its trigger and its grant. Keep it ineligible while those
     // records move so no run can use the wrong account between the writes.
-    let pausedForAccountRebind = accountRebindPausedRef.current || rebindPending;
+    // Pending work and pause ownership are deliberately separate: a user may
+    // already have paused the routine before starting an account rebind.
+    let didPauseForRebind = didPauseForRebindRef.current;
     let savedWhilePausedForAccountRebind = false;
     async function restoreAccountRebindActivity() {
-      if (!pausedForAccountRebind) return true;
+      if (!didPauseForRebind) return true;
       try {
         await resumeRoutine(routine.job_id);
-        pausedForAccountRebind = false;
-        accountRebindPausedRef.current = false;
+        didPauseForRebind = false;
+        didPauseForRebindRef.current = false;
         if (savedWhilePausedForAccountRebind) {
           await onReload();
           savedWhilePausedForAccountRebind = false;
@@ -375,11 +385,14 @@ export function RoutineDetail({
       }
     }
     async function clearAccountRebindPending() {
-      if (!rebindWasPending) return true;
+      if (!rebindMarkerPersisted) return true;
       try {
         await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: false });
+        rebindMarkerPersisted = false;
         setRebindPending(false);
-        setStoredTrust((current) => (current ? { ...current, rebindPending: false } : current));
+        setStoredTrust((current) =>
+          current ? { ...current, rebindPending: false, rebindResumePending: false } : current,
+        );
         return true;
       } catch (err) {
         const message = messageFromError(err);
@@ -388,27 +401,12 @@ export function RoutineDetail({
         return false;
       }
     }
-    if (autonomousAccountChanged && !rebindPending) {
-      try {
-        await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: true });
-        setRebindPending(true);
-      } catch (err) {
-        toast.error(messageFromError(err));
-        return;
-      }
-    }
     if (autonomousAccountChanged && !paused && !completed) {
       try {
         await pauseRoutine(routine.job_id);
-        pausedForAccountRebind = true;
-        accountRebindPausedRef.current = true;
+        didPauseForRebind = true;
+        didPauseForRebindRef.current = true;
       } catch (err) {
-        try {
-          await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: false });
-          setRebindPending(false);
-        } catch (restoreError) {
-          toast.error(messageFromError(restoreError));
-        }
         toast.error(messageFromError(err));
         return;
       }
@@ -447,7 +445,14 @@ export function RoutineDetail({
           trustMode,
           autonomousTools: trustMode === "autonomous" ? autonomousTools : undefined,
           accountId: selectedAccountId ?? undefined,
+          ...(autonomousAccountChanged
+            ? { rebindPending: true, rebindResumePending: didPauseForRebind }
+            : {}),
         });
+        if (autonomousAccountChanged) {
+          rebindMarkerPersisted = true;
+          setRebindPending(true);
+        }
         setStoredTrust(stored);
         updates.enabledToolsets = routineToolsetsFor(policy, trustMode, {
           unrestricted,
@@ -519,7 +524,7 @@ export function RoutineDetail({
 
     try {
       await onSave(updates);
-      savedWhilePausedForAccountRebind = pausedForAccountRebind;
+      savedWhilePausedForAccountRebind = didPauseForRebind;
     } catch {
       // The cron job update failed (onSave rejects and has already surfaced the
       // error) after trust was persisted and grants minted or deleted, so the
@@ -581,7 +586,11 @@ export function RoutineDetail({
           // fallback is removed. An account rebind is already paused, though:
           // delete the old account's trigger first so it cannot fire against
           // the new grant in the gap before deletion.
-          if (!pausedForAccountRebind) await resumeRoutine(routine.job_id);
+          let resumedForScheduleSwitch = false;
+          if (!rebindWasPending) {
+            await resumeRoutine(routine.job_id);
+            resumedForScheduleSwitch = true;
+          }
           try {
             if (storedTrigger) {
               await connectorTriggerDelete(storedTrigger.id);
@@ -589,7 +598,7 @@ export function RoutineDetail({
           } catch (deleteError) {
             // The trigger still exists. Restore the previous inactive state so
             // schedule and event sources cannot both fire this routine.
-            if (!pausedForAccountRebind) {
+            if (resumedForScheduleSwitch) {
               try {
                 await pauseRoutine(routine.job_id);
               } catch (restoreError) {
@@ -652,7 +661,7 @@ export function RoutineDetail({
       try {
         await connectorsApplyRuntime();
       } catch (err) {
-        if (pausedForAccountRebind) {
+        if (rebindWasPending) {
           const message = messageFromError(err);
           setRuntimeApplyError(message);
           toast.error(message);

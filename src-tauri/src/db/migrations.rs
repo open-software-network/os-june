@@ -1288,6 +1288,24 @@ const MIGRATIONS: &[Migration] = &[
             columns: ROUTINE_REBIND_PENDING_COLUMN,
         }],
     },
+    Migration {
+        version: 48,
+        name: "routine_account_rebind_state",
+        requirements: &[
+            SchemaRequirement::Column {
+                table: "routine_trust",
+                column: "account_binding_cleared",
+            },
+            SchemaRequirement::Column {
+                table: "routine_trust",
+                column: "rebind_resume_pending",
+            },
+        ],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "routine_trust",
+            columns: ROUTINE_ACCOUNT_REBIND_STATE_COLUMNS,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1306,6 +1324,16 @@ const ROUTINE_REBIND_PENDING_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "rebind_pending",
     definition: "INTEGER NOT NULL DEFAULT 0",
 }];
+const ROUTINE_ACCOUNT_REBIND_STATE_COLUMNS: &[ColumnDefinition] = &[
+    ColumnDefinition {
+        name: "account_binding_cleared",
+        definition: "INTEGER NOT NULL DEFAULT 0",
+    },
+    ColumnDefinition {
+        name: "rebind_resume_pending",
+        definition: "INTEGER NOT NULL DEFAULT 0",
+    },
+];
 const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "account_user_id",
     definition: "TEXT NOT NULL DEFAULT ''",
@@ -2563,6 +2591,45 @@ mod tests {
                 .expect("preserved trust row")
                 .get("rebind_pending");
         assert_eq!(pending, 0);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn routine_account_rebind_state_migration_preserves_existing_trust_rows() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..47])
+            .await
+            .expect("migration 47 schema");
+        query(
+            "INSERT INTO routine_trust (
+                job_id, trust_mode, approval_run_count, autonomous_tools,
+                account_id, rebind_pending, updated_at
+             ) VALUES (
+                'legacy-routine', 'approval', 2, '[]',
+                NULL, 1, 'now'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy trust row");
+
+        run_migrations(&pool)
+            .await
+            .expect("add account and rebind state");
+
+        let row = query(
+            "SELECT trust_mode, approval_run_count, rebind_pending,
+                    account_binding_cleared, rebind_resume_pending
+             FROM routine_trust WHERE job_id = 'legacy-routine'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("preserved trust row");
+        assert_eq!(row.get::<String, _>("trust_mode"), "approval");
+        assert_eq!(row.get::<i64, _>("approval_run_count"), 2);
+        assert_eq!(row.get::<i64, _>("rebind_pending"), 1);
+        assert_eq!(row.get::<i64, _>("account_binding_cleared"), 0);
+        assert_eq!(row.get::<i64, _>("rebind_resume_pending"), 0);
         assert_latest_stamp(&pool).await;
     }
 

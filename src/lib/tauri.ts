@@ -1,4 +1,6 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
+// Deliberate frontend-to-crate dependency: `build.rs` reads this same text file
+// so the Rust-emitted authorization event and the listener cannot drift.
 import connectorAuthorizationEventName from "../../src-tauri/connector-authorization-event-name.txt?raw";
 import type {
   AgentArtifactDto,
@@ -1773,6 +1775,9 @@ export type RoutineTrust = {
   /** Google account stored for the routine's connector access. Null for
    * routines that do not have an account binding yet. */
   accountId?: string | null;
+  /** A disconnect cleared the previous binding, so a remaining sole account
+   * must not be selected automatically. */
+  accountBindingCleared?: boolean;
   /** Per-job auto MCP server names minted for an autonomous grant (e.g.
    * "june_gmail_auto_ab12cd34"). Returned by routine_trust_set; the job's
    * enabled_toolsets swaps the actions servers for these. */
@@ -1780,6 +1785,8 @@ export type RoutineTrust = {
   /** The binding/grant move is durable but its runtime refresh and routine
    * resume have not both completed yet. */
   rebindPending?: boolean;
+  /** June paused the routine for the pending rebind and owns its resume. */
+  rebindResumePending?: boolean;
 };
 
 export type ConnectorTriggerKind = "email_received" | "event_upcoming";
@@ -2072,6 +2079,8 @@ export async function routineTrustSet(input: {
   trustMode: RoutineTrustMode;
   autonomousTools?: string[];
   accountId?: string;
+  rebindPending?: boolean;
+  rebindResumePending?: boolean;
 }) {
   return invoke<RoutineTrust>("routine_trust_set", {
     request: {
@@ -2079,6 +2088,8 @@ export async function routineTrustSet(input: {
       trustMode: input.trustMode,
       autonomousTools: input.autonomousTools,
       accountId: input.accountId,
+      rebindPending: input.rebindPending,
+      rebindResumePending: input.rebindResumePending,
     },
   });
 }
