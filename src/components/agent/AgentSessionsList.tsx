@@ -340,7 +340,9 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
                 ? `No sessions match “${query.trim()}”.`
                 : statusFilter === "archived"
                   ? "No archived sessions yet."
-                  : "No active sessions."}
+                  : statusFilter === "all"
+                    ? "No sessions yet."
+                    : "No active sessions."}
             </p>
           </div>
         ) : (
