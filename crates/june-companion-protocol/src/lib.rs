@@ -20,6 +20,11 @@ pub const MAX_BROWSE_ROOTS: usize = 16;
 pub const MAX_FILE_NAME_BYTES: usize = 255;
 pub const MAX_MEDIA_TYPE_BYTES: usize = 127;
 pub const MAX_RELATIVE_PATH_BYTES: usize = 2 * 1024;
+pub const MAX_MODEL_OPTIONS: usize = 8;
+pub const MAX_MODEL_NAME_BYTES: usize = 256;
+pub const MAX_MODEL_PROVIDER_BYTES: usize = 64;
+pub const MAX_MODEL_DESCRIPTION_BYTES: usize = 512;
+pub const MAX_MODEL_LABEL_BYTES: usize = 128;
 pub const DEFAULT_CONTROL_TTL_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -30,6 +35,8 @@ pub enum Capability {
     AgentRead,
     AgentChat,
     AgentCancel,
+    ModelRead,
+    ModelEdit,
     SettingsRead,
     SettingsEditSafe,
     RecordingControlExisting,
@@ -122,6 +129,12 @@ pub enum Body {
     AgentCancel {
         stored_session_id: String,
     },
+    ModelsList,
+    SessionModelGet {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
+        stored_session_id: String,
+    },
+    SessionModelSet(SessionModelSetRequest),
     SettingsGet,
     SettingsEditSafe(SafeSettingsPatch),
     RecordingPause {
@@ -153,6 +166,7 @@ impl Body {
                 | Self::UploadChunk(_)
                 | Self::UploadCommit { .. }
                 | Self::AgentCancel { .. }
+                | Self::SessionModelSet(_)
                 | Self::SettingsEditSafe(_)
                 | Self::RecordingPause { .. }
                 | Self::RecordingResume { .. }
@@ -175,6 +189,8 @@ impl Body {
                 Capability::FilesBrowse
             }
             Self::AgentCancel { .. } => Capability::AgentCancel,
+            Self::ModelsList | Self::SessionModelGet { .. } => Capability::ModelRead,
+            Self::SessionModelSet(_) => Capability::ModelEdit,
             Self::SettingsGet => Capability::SettingsRead,
             Self::SettingsEditSafe(_) => Capability::SettingsEditSafe,
             Self::RecordingPause { .. }
@@ -201,6 +217,9 @@ impl Body {
             }
             Self::NoteGet { note_id }
             | Self::AgentCancel {
+                stored_session_id: note_id,
+            }
+            | Self::SessionModelGet {
                 stored_session_id: note_id,
             }
             | Self::RecordingPause {
@@ -240,6 +259,7 @@ impl Body {
                 }
                 validate_relative_path(relative_path, false)
             }
+            Self::SessionModelSet(request) => request.validate(),
             Self::SettingsEditSafe(patch) if patch.is_empty() => Err(ProtocolError::EmptyPatch),
             Self::Event(Event::AgentDelta {
                 stored_session_id,
@@ -251,6 +271,7 @@ impl Body {
             Self::Event(Event::AgentStatus {
                 stored_session_id, ..
             }) => validate_id(stored_session_id),
+            Self::Event(Event::SessionModelChanged { selection }) => selection.validate(),
             Self::Response(response) => {
                 response.validate()?;
                 if let ResultPayload::Device(device) = &response.result {
@@ -395,6 +416,20 @@ impl UploadChunkRequest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelSetRequest {
+    pub stored_session_id: String,
+    pub model_id: String,
+}
+
+impl SessionModelSetRequest {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.stored_session_id)?;
+        validate_id(&self.model_id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SafeSettingsPatch {
@@ -460,6 +495,8 @@ impl Response {
             }
             ResultPayload::BrowseFile(file) => file.validate(),
             ResultPayload::Error(failure) => validate_text(&failure.message, 2 * 1024),
+            ResultPayload::Models(catalog) => catalog.validate(),
+            ResultPayload::SessionModel(selection) => selection.validate(),
             _ => Ok(()),
         }
     }
@@ -478,6 +515,8 @@ pub enum ResultPayload {
     BrowseRoots(Vec<BrowseRoot>),
     BrowseEntries(Page<BrowseEntry>),
     BrowseFile(BrowseFile),
+    Models(ModelCatalog),
+    SessionModel(SessionModelSelection),
     Settings(SafeSettings),
     Recording(ActiveRecordingSnapshot),
     Device(DeviceSelf),
@@ -673,6 +712,87 @@ pub struct AgentMessage {
     pub streaming: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalog {
+    pub models: Vec<ModelOption>,
+}
+
+impl ModelCatalog {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.models.is_empty() || self.models.len() > MAX_MODEL_OPTIONS {
+            return Err(ProtocolError::InvalidModelCatalog);
+        }
+        for model in &self.models {
+            model.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelOption {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub description: String,
+    pub routing: ModelRouting,
+    pub privacy: Option<ModelPrivacy>,
+    pub privacy_label: Option<String>,
+    pub price_label: Option<String>,
+}
+
+impl ModelOption {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.id)?;
+        validate_text(&self.name, MAX_MODEL_NAME_BYTES)?;
+        if self.provider.len() > MAX_MODEL_PROVIDER_BYTES
+            || self.description.len() > MAX_MODEL_DESCRIPTION_BYTES
+        {
+            return Err(ProtocolError::TextTooLarge);
+        }
+        validate_optional_text(self.privacy_label.as_deref(), MAX_MODEL_LABEL_BYTES)?;
+        validate_optional_text(self.price_label.as_deref(), MAX_MODEL_LABEL_BYTES)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelRouting {
+    Automatic,
+    Remote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelPrivacy {
+    EndToEndEncrypted,
+    Private,
+    Anonymous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionModelSelection {
+    pub stored_session_id: String,
+    pub model_id: String,
+    pub model_name: String,
+    pub cost_quality: Option<u8>,
+}
+
+impl SessionModelSelection {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_id(&self.stored_session_id)?;
+        validate_id(&self.model_id)?;
+        validate_text(&self.model_name, MAX_MODEL_NAME_BYTES)?;
+        if self.cost_quality.is_some_and(|value| value > 100) {
+            return Err(ProtocolError::InvalidModelSelection);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MessageRole {
@@ -758,6 +878,9 @@ pub enum Event {
         stored_session_id: String,
         status: AgentStatus,
     },
+    SessionModelChanged {
+        selection: SessionModelSelection,
+    },
     NotesChanged {
         cursor: Option<String>,
     },
@@ -769,6 +892,7 @@ impl Event {
     pub fn capability(&self) -> Capability {
         match self {
             Self::AgentDelta { .. } | Self::AgentStatus { .. } => Capability::AgentRead,
+            Self::SessionModelChanged { .. } => Capability::ModelRead,
             Self::NotesChanged { .. } => Capability::NotesRead,
             Self::DeviceRevoked => Capability::DevicesReadSelf,
             Self::ResyncRequired => Capability::DevicesReadSelf,
@@ -875,6 +999,10 @@ pub enum ProtocolError {
     InvalidRelativePath,
     #[error("patch has no editable fields")]
     EmptyPatch,
+    #[error("model catalog is empty or exceeds its item limit")]
+    InvalidModelCatalog,
+    #[error("model selection is outside the supported range")]
+    InvalidModelSelection,
     #[error("relay route is invalid")]
     InvalidRoute,
     #[error("invalid JSON: {0}")]
@@ -980,6 +1108,19 @@ fn validate_relative_path(value: &str, allow_empty: bool) -> Result<(), Protocol
 mod tests {
     use super::*;
 
+    fn model_option(id: &str) -> ModelOption {
+        ModelOption {
+            id: id.to_string(),
+            name: "Private model".to_string(),
+            provider: "venice".to_string(),
+            description: "A curated model for June agent sessions.".to_string(),
+            routing: ModelRouting::Remote,
+            privacy: Some(ModelPrivacy::Private),
+            privacy_label: Some("Private mode".to_string()),
+            price_label: Some("$1.00 input / $2.00 output per 1M tokens".to_string()),
+        }
+    }
+
     #[test]
     fn frame_round_trip_preserves_the_versioned_contract() {
         let now = 1_000_000;
@@ -1080,6 +1221,13 @@ mod tests {
             .is_mutation()
         );
         assert!(
+            Body::SessionModelSet(SessionModelSetRequest {
+                stored_session_id: "session-1".to_string(),
+                model_id: "private-model".to_string(),
+            })
+            .is_mutation()
+        );
+        assert!(
             Body::AppFocus {
                 target: FocusTarget::Agent {
                     stored_session_id: None,
@@ -1089,6 +1237,141 @@ mod tests {
         );
         assert!(!Body::NotesList(PageRequest::default()).is_mutation());
         assert!(!Body::SettingsGet.is_mutation());
+    }
+
+    #[test]
+    fn model_contract_round_trips_with_exact_capabilities_and_wire_tags() {
+        let now = 1_000_000;
+        let read = Frame::new(Uuid::nil(), 1, now, Capability::ModelRead, Body::ModelsList);
+        let encoded = encode_frame(&read).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["capability"], "modelRead");
+        assert_eq!(json["body"]["type"], "modelsList");
+        assert_eq!(decode_frame(&encoded, now).unwrap(), read);
+
+        let get = Frame::new(
+            Uuid::nil(),
+            2,
+            now,
+            Capability::ModelRead,
+            Body::SessionModelGet {
+                stored_session_id: "session-1".to_string(),
+            },
+        );
+        let encoded = encode_frame(&get).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["body"]["type"], "sessionModelGet");
+        assert_eq!(json["body"]["data"]["storedSessionId"], "session-1");
+        assert_eq!(decode_frame(&encoded, now).unwrap(), get);
+
+        let write = Frame::new(
+            Uuid::nil(),
+            3,
+            now,
+            Capability::ModelEdit,
+            Body::SessionModelSet(SessionModelSetRequest {
+                stored_session_id: "session-1".to_string(),
+                model_id: "private-model".to_string(),
+            }),
+        );
+        let encoded = encode_frame(&write).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["capability"], "modelEdit");
+        assert_eq!(json["body"]["type"], "sessionModelSet");
+        assert_eq!(json["body"]["data"]["storedSessionId"], "session-1");
+        assert_eq!(decode_frame(&encoded, now).unwrap(), write);
+
+        let confused = Frame::new(
+            Uuid::nil(),
+            4,
+            now,
+            Capability::ModelRead,
+            Body::SessionModelSet(SessionModelSetRequest {
+                stored_session_id: "session-1".to_string(),
+                model_id: "private-model".to_string(),
+            }),
+        );
+        assert!(matches!(
+            confused.validate(now),
+            Err(ProtocolError::CapabilityMismatch)
+        ));
+    }
+
+    #[test]
+    fn model_results_and_change_events_round_trip() {
+        let selection = SessionModelSelection {
+            stored_session_id: "session-1".to_string(),
+            model_id: "open-software/auto".to_string(),
+            model_name: "Auto".to_string(),
+            cost_quality: Some(100),
+        };
+        let results = [
+            ResultPayload::Models(ModelCatalog {
+                models: vec![model_option("private-model")],
+            }),
+            ResultPayload::SessionModel(selection.clone()),
+        ];
+        for result in results {
+            let body = Body::Response(Response {
+                capability: Capability::ModelRead,
+                result,
+            });
+            let encoded = serde_json::to_vec(&body).unwrap();
+            assert_eq!(serde_json::from_slice::<Body>(&encoded).unwrap(), body);
+        }
+
+        let event = Body::Event(Event::SessionModelChanged { selection });
+        let encoded = serde_json::to_vec(&event).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(json["type"], "event");
+        assert_eq!(json["data"]["type"], "sessionModelChanged");
+        assert_eq!(
+            json["data"]["data"]["selection"]["modelId"],
+            "open-software/auto"
+        );
+        assert_eq!(serde_json::from_slice::<Body>(&encoded).unwrap(), event);
+    }
+
+    #[test]
+    fn rejects_unbounded_model_catalogs_and_selections() {
+        let now = 1_000_000;
+        let oversized_catalog = Frame::new(
+            Uuid::nil(),
+            1,
+            now,
+            Capability::ModelRead,
+            Body::Response(Response {
+                capability: Capability::ModelRead,
+                result: ResultPayload::Models(ModelCatalog {
+                    models: (0..=MAX_MODEL_OPTIONS)
+                        .map(|index| model_option(&format!("model-{index}")))
+                        .collect(),
+                }),
+            }),
+        );
+        assert!(matches!(
+            oversized_catalog.validate(now),
+            Err(ProtocolError::InvalidModelCatalog)
+        ));
+
+        let invalid_selection = Frame::new(
+            Uuid::nil(),
+            2,
+            now,
+            Capability::ModelRead,
+            Body::Event(Event::SessionModelChanged {
+                selection: SessionModelSelection {
+                    stored_session_id: "session-1".to_string(),
+                    model_id: "open-software/auto".to_string(),
+                    model_name: "Auto".to_string(),
+                    cost_quality: Some(101),
+                },
+            }),
+        );
+        assert!(matches!(
+            invalid_selection.validate(now),
+            Err(ProtocolError::InvalidModelSelection)
+        ));
     }
 
     #[test]
