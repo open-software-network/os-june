@@ -1958,10 +1958,14 @@ export async function notionConnectorListTools() {
   return invoke<NotionToolInventory>("notion_connector_list_tools");
 }
 
-/** Removes a connected account. With `revoke`, also revokes June's grant with
- * the provider before clearing the Keychain item. */
+/** Removes a connected account locally. With `revoke`, June also asks the
+ * provider to revoke its grant and reports whether that was confirmed. */
+export type ConnectorDisconnectResult = {
+  providerRevocationConfirmed: boolean | null;
+};
+
 export async function connectorsDisconnect(input: { accountId: string; revoke: boolean }) {
-  return invoke<void>("connectors_disconnect", {
+  return invoke<ConnectorDisconnectResult>("connectors_disconnect", {
     request: { accountId: input.accountId, revoke: input.revoke },
   });
 }

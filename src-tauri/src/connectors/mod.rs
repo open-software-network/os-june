@@ -1251,6 +1251,10 @@ pub async fn begin_connect_linear(
         // May be empty; informational only. The workspace id keys custody.
         email: identity.user_email.clone(),
     };
+
+    // The old bearer must stop owning a live hosted MCP session before the
+    // replacement credential becomes eligible for discovery or dispatch.
+    crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
     store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
 
     let metadata_json = linear_account_metadata_json(&identity);
@@ -1548,11 +1552,17 @@ pub fn cancel_connect(flow: &ConnectFlow) {
 /// provider is read from the account row; when the row is already gone
 /// (a half-completed earlier disconnect), custody cleanup sweeps BOTH
 /// providers' keychain services so no token is ever stranded.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisconnectOutcome {
+    pub provider_revocation_confirmed: Option<bool>,
+}
+
 pub async fn disconnect(
     app: &tauri::AppHandle,
     account_id: &str,
     revoke_grant: bool,
-) -> Result<(), AppError> {
+) -> Result<DisconnectOutcome, AppError> {
     let repos = crate::commands::repositories(app).await?;
     let providers: &[ConnectorProvider] = match repos.get_connector_account(account_id).await? {
         Some(record) => match ConnectorProvider::from_db(&record.provider) {
@@ -1562,13 +1572,17 @@ pub async fn disconnect(
             ConnectorProvider::Notion => {
                 notion::disconnect(app).await?;
                 emit_connectors_changed(app);
-                return Ok(());
+                return Ok(DisconnectOutcome {
+                    provider_revocation_confirmed: None,
+                });
             }
         },
         None if account_id == notion::notion_account_id() => {
             notion::disconnect(app).await?;
             emit_connectors_changed(app);
-            return Ok(());
+            return Ok(DisconnectOutcome {
+                provider_revocation_confirmed: None,
+            });
         }
         None => &[
             ConnectorProvider::Google,
@@ -1577,71 +1591,103 @@ pub async fn disconnect(
         ],
     };
     let disconnects_linear = providers.contains(&ConnectorProvider::Linear);
-    for &provider in providers {
-        if revoke_grant {
+
+    // Capture any credentials needed for best-effort provider revocation
+    // before making the account locally unavailable. Remote revoke requests
+    // can be slow, and must not leave a window where a new runtime dispatch
+    // can still discover the account and start another hosted MCP session.
+    let mut revoke_tokens = Vec::new();
+    if revoke_grant {
+        for &provider in providers {
             if let Ok(Some(stored)) = store::load_tokens(provider, account_id).await {
-                match provider {
-                    ConnectorProvider::Google => {
-                        // Google: revoking either token of the pair
-                        // invalidates the whole grant; prefer the refresh
-                        // token.
-                        let token = if stored.refresh_token.is_empty() {
-                            stored.access_token.clone()
-                        } else {
-                            stored.refresh_token.clone()
-                        };
-                        if !token.is_empty() {
-                            let _ = oauth::revoke(&token).await;
-                        }
-                    }
-                    ConnectorProvider::Linear => {
-                        // Linear documents no cross-token cascade, so revoke
-                        // BOTH tokens: a lone refresh-token revoke can leave
-                        // the 24-hour access token alive and the app still
-                        // listed under the user's authorized applications.
-                        if !stored.refresh_token.is_empty() {
-                            let _ = linear::revoke(&stored.refresh_token, "refresh_token").await;
-                        }
-                        if !stored.access_token.is_empty() {
-                            let _ = linear::revoke(&stored.access_token, "access_token").await;
-                        }
-                    }
-                    ConnectorProvider::Github => {
-                        // GitHub: revoke the user access token via the
-                        // applications endpoint (DELETE). Best-effort.
-                        // Revocation requires the client secret; a
-                        // secret-less deployment skips revocation (the user
-                        // must revoke manually at GitHub if needed).
-                        if !stored.access_token.is_empty() {
-                            let client = github_oauth_client();
-                            if !client.client_id.is_empty() {
-                                if let Some(secret) = client.client_secret_opt() {
-                                    let _ = github::revoke(
-                                        &client.client_id,
-                                        secret,
-                                        &stored.access_token,
-                                    )
-                                    .await;
-                                } else {
-                                    tracing::warn!(
-                                        "github revoke skipped: no client secret configured; revoke manually at GitHub"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    ConnectorProvider::Notion => {}
-                }
+                revoke_tokens.push((provider, stored));
             }
         }
-        store::delete_tokens(provider, account_id).await?;
     }
+
     repos.delete_connector_account(account_id).await?;
     if disconnects_linear {
         crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
     }
     emit_connectors_changed(app);
-    Ok(())
+
+    // Local custody is part of the availability boundary too, so remove it
+    // before waiting on any provider network call.
+    for &provider in providers {
+        store::delete_tokens(provider, account_id).await?;
+    }
+
+    let mut provider_revocation_confirmed = revoke_grant.then_some(!revoke_tokens.is_empty());
+    if revoke_grant {
+        for (provider, stored) in revoke_tokens {
+            let confirmed = match provider {
+                ConnectorProvider::Google => {
+                    // Google: revoking either token of the pair
+                    // invalidates the whole grant; prefer the refresh
+                    // token.
+                    let token = if stored.refresh_token.is_empty() {
+                        stored.access_token.clone()
+                    } else {
+                        stored.refresh_token.clone()
+                    };
+                    if !token.is_empty() {
+                        oauth::revoke(&token).await
+                    } else {
+                        false
+                    }
+                }
+                ConnectorProvider::Linear => {
+                    // Linear documents no cross-token cascade, so revoke
+                    // BOTH tokens: a lone refresh-token revoke can leave
+                    // the 24-hour access token alive and the app still
+                    // listed under the user's authorized applications.
+                    let mut attempted = false;
+                    let mut confirmed = true;
+                    if !stored.refresh_token.is_empty() {
+                        attempted = true;
+                        confirmed &= linear::revoke(&stored.refresh_token, "refresh_token").await;
+                    }
+                    if !stored.access_token.is_empty() {
+                        attempted = true;
+                        confirmed &= linear::revoke(&stored.access_token, "access_token").await;
+                    }
+                    attempted && confirmed
+                }
+                ConnectorProvider::Github => {
+                    // GitHub: revoke the user access token via the
+                    // applications endpoint (DELETE). Best-effort.
+                    // Revocation requires the client secret; a
+                    // secret-less deployment skips revocation (the user
+                    // must revoke manually at GitHub if needed).
+                    if !stored.access_token.is_empty() {
+                        let client = github_oauth_client();
+                        if !client.client_id.is_empty() {
+                            if let Some(secret) = client.client_secret_opt() {
+                                github::revoke(&client.client_id, secret, &stored.access_token)
+                                    .await
+                            } else {
+                                tracing::warn!(
+                                        "github revoke skipped: no client secret configured; revoke manually at GitHub"
+                                    );
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+                ConnectorProvider::Notion => false,
+            };
+            if !confirmed {
+                provider_revocation_confirmed = Some(false);
+            }
+        }
+    }
+    Ok(DisconnectOutcome {
+        provider_revocation_confirmed,
+    })
 }
 
 // --- Linear team enforcement (agent reads) -----------------------------------------

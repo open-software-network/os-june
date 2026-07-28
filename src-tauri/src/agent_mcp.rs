@@ -63,6 +63,9 @@ pub const MANAGED_LINEAR_SERVER_ID: &str = "builtin:linear";
 pub const MANAGED_LINEAR_SERVER_NAME: &str = "linear";
 pub const MANAGED_LINEAR_MCP_URL: &str = "https://mcp.linear.app/mcp";
 const MANAGED_LINEAR_POLICY_REVISION: &str = "linear-official-mcp-v1";
+const MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES: usize = 64 * 1024;
+const MANAGED_MCP_DESCRIPTION_MAX_CHARS: usize = 240;
+const MANAGED_MCP_TOOL_NAME_MAX_CHARS: usize = 128;
 
 type SharedMcpSession = Arc<AsyncMutex<McpSessionSlot>>;
 static MCP_SESSIONS: OnceLock<AsyncMutex<HashMap<String, SharedMcpSession>>> = OnceLock::new();
@@ -1218,6 +1221,13 @@ impl McpToolRegistry {
         let mut seen_remote = BTreeSet::new();
         let mut seen_runtime = BTreeSet::new();
         for tool in discovered {
+            let Some(tool) = normalize_managed_mcp_tool(tool) else {
+                tracing::warn!(
+                    error_code = "linear_managed_mcp_tool_invalid",
+                    "Skipping an invalid Linear hosted MCP tool"
+                );
+                continue;
+            };
             if tool.name.is_empty()
                 || !seen_remote.insert(tool.name.clone())
                 || !server.tool_visibility.allows(&tool.name)
@@ -1230,15 +1240,14 @@ impl McpToolRegistry {
                 Err(error) => {
                     tracing::warn!(
                         error_code = "linear_managed_mcp_tool_invalid",
-                        remote_tool = %tool.name,
                         error = %error,
                         "Skipping an invalid Linear hosted MCP tool"
                     );
                     continue;
                 }
             };
-            let requires_approval = tool.annotations.read_only_hint != Some(true)
-                || tool.annotations.destructive_hint == Some(true);
+            let requires_approval = !(tool.annotations.read_only_hint == Some(true)
+                && tool.annotations.destructive_hint == Some(false));
             let descriptor = RuntimeToolDescriptorJson {
                 id: format!("mcp:{}/{}", server.id, tool.name),
                 name: name.clone(),
@@ -1348,6 +1357,30 @@ fn object_schema(value: Value) -> Value {
     } else {
         json!({"type":"object","properties":{},"additionalProperties":true})
     }
+}
+
+fn normalize_managed_mcp_tool(mut tool: McpDiscoveredTool) -> Option<McpDiscoveredTool> {
+    let name = tool.name.trim();
+    if name.is_empty() || name.chars().count() > MANAGED_MCP_TOOL_NAME_MAX_CHARS {
+        return None;
+    }
+    let schema = tool.input_schema.as_object()?;
+    if serde_json::to_vec(schema)
+        .map(|encoded| encoded.len() > MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES)
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    tool.name = name.to_string();
+    let description = tool.description.trim().to_string();
+    tool.description = description
+        .chars()
+        .take(MANAGED_MCP_DESCRIPTION_MAX_CHARS)
+        .collect();
+    if description.chars().count() > MANAGED_MCP_DESCRIPTION_MAX_CHARS {
+        tool.description.push_str("...");
+    }
+    Some(tool)
 }
 
 pub struct AgentMcpSubsystem<S: McpSecretStore> {
@@ -4420,6 +4453,7 @@ done
                 vec![
                     tool("safe", Some(true), Some(false)),
                     tool("ambiguous", None, None),
+                    tool("missing_destructive", Some(true), None),
                     tool("conflicting", Some(true), Some(true)),
                     tool("write", Some(false), Some(false)),
                 ],
@@ -4434,7 +4468,7 @@ done
                 .requires_approval,
             None
         );
-        for name in ["ambiguous", "conflicting", "write"] {
+        for name in ["ambiguous", "missing_destructive", "conflicting", "write"] {
             assert_eq!(
                 registry
                     .resolve(&format!("mcp_linear_{name}"))
@@ -4493,6 +4527,53 @@ done
         let search = registry.resolve("mcp_linear_search").unwrap();
         assert_eq!(search.server_id, MANAGED_LINEAR_SERVER_ID);
         assert_eq!(search.descriptor.description, "official");
+        assert_eq!(registry.descriptors().len(), 1);
+    }
+
+    #[test]
+    fn managed_linear_bounds_each_hosted_descriptor_independently() {
+        let server = managed_linear_definition();
+        let oversized = "x".repeat(MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES + 1);
+        let long_description = "d".repeat(MANAGED_MCP_DESCRIPTION_MAX_CHARS + 10);
+        let mut registry = McpToolRegistry::default();
+        registry
+            .register_managed_linear(
+                &server,
+                vec![
+                    McpDiscoveredTool {
+                        name: "bad-schema".into(),
+                        description: "invalid".into(),
+                        input_schema: json!(["not", "an", "object"]),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "oversized".into(),
+                        description: "invalid".into(),
+                        input_schema: json!({
+                            "type": "object",
+                            "description": oversized,
+                        }),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "valid".into(),
+                        description: long_description,
+                        input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations {
+                            read_only_hint: Some(true),
+                            destructive_hint: Some(false),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+        let valid = registry.resolve("mcp_linear_valid").unwrap();
+        assert_eq!(
+            valid.descriptor.description.chars().count(),
+            MANAGED_MCP_DESCRIPTION_MAX_CHARS + 3
+        );
+        assert!(valid.descriptor.description.ends_with("..."));
         assert_eq!(registry.descriptors().len(), 1);
     }
 }

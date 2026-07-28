@@ -1267,7 +1267,17 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 46,
         name: "linear_managed_mcp",
-        requirements: &[SchemaRequirement::Table("linear_mcp_connection")],
+        requirements: &[
+            SchemaRequirement::Table("linear_mcp_connection"),
+            SchemaRequirement::Column {
+                table: "linear_mcp_connection",
+                column: "preset_id",
+            },
+            SchemaRequirement::Column {
+                table: "linear_mcp_connection",
+                column: "state",
+            },
+        ],
         steps: &[MigrationStep::Sql(include_str!(
             "../../migrations/033_linear_managed_mcp.sql"
         ))],
@@ -1275,7 +1285,17 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 47,
         name: "linear_managed_mcp_repair",
-        requirements: &[SchemaRequirement::Table("linear_mcp_connection")],
+        requirements: &[
+            SchemaRequirement::Table("linear_mcp_connection"),
+            SchemaRequirement::Column {
+                table: "linear_mcp_connection",
+                column: "preset_id",
+            },
+            SchemaRequirement::Column {
+                table: "linear_mcp_connection",
+                column: "state",
+            },
+        ],
         // The ledger repair is implemented in
         // repair_prerelease_linear_managed_mcp_stamp. Re-running the
         // compatibility DDL keeps clean and prerelease databases convergent.
@@ -1609,6 +1629,23 @@ async fn repair_prerelease_linear_managed_mcp_stamp(
     let calendar = &migrations[calendar_index];
 
     validate_applied_migrations(&applied[..calendar_index], migrations)?;
+    let managed_mcp = migrations
+        .iter()
+        .find(|migration| migration.name == "linear_managed_mcp")
+        .ok_or_else(|| {
+            sqlx::Error::Protocol(
+                "Linear managed MCP prerelease repair is missing its migration".into(),
+            )
+        })?;
+    let snapshot = SchemaSnapshot::load(transaction).await?;
+    if !managed_mcp
+        .requirements
+        .iter()
+        .copied()
+        .all(|requirement| snapshot.satisfies(requirement))
+    {
+        return Ok(false);
+    }
     apply_migration(transaction, calendar).await?;
 
     for (old_version, new_version, name) in [
@@ -2589,6 +2626,46 @@ mod tests {
                 .execute(&pool)
                 .await
                 .expect("malformed Linear migration stamp");
+        }
+
+        assert!(run_migrations(&pool).await.is_err());
+        let calendar_column_count: i64 = query(
+            "SELECT COUNT(*) AS count
+             FROM pragma_table_info('notes')
+             WHERE name = 'calendar_event_html_link'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("calendar column lookup")
+        .get("count");
+        assert_eq!(calendar_column_count, 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_linear_prerelease_schema_is_rejected_transactionally() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..44])
+            .await
+            .expect("schema before calendar release");
+        query(
+            "CREATE TABLE linear_mcp_connection (
+                wrong_id TEXT PRIMARY KEY NOT NULL,
+                state TEXT NOT NULL
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("malformed prerelease Linear schema");
+        for (version, name) in [
+            (45_i64, "linear_managed_mcp"),
+            (46_i64, "linear_managed_mcp_repair"),
+        ] {
+            query("INSERT INTO schema_migrations (version, name) VALUES (?, ?)")
+                .bind(version)
+                .bind(name)
+                .execute(&pool)
+                .await
+                .expect("prerelease Linear migration stamp");
         }
 
         assert!(run_migrations(&pool).await.is_err());

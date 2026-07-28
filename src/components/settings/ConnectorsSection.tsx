@@ -770,11 +770,17 @@ export function ConnectorsSection({
     if (!account || disconnecting) return;
     setDisconnecting(true);
     try {
-      await connectorsDisconnect({ accountId: account.accountId, revoke });
+      const outcome = await connectorsDisconnect({ accountId: account.accountId, revoke });
       if (account.provider !== "linear") await connectorsApplyRuntime();
       await refresh();
       setDisconnectTarget(null);
-      toast.success(`Disconnected ${accountDisplayName(account)}`);
+      if (outcome?.providerRevocationConfirmed === false) {
+        toast.warning(
+          `Disconnected ${accountDisplayName(account)} locally. June could not confirm revocation with ${PROVIDER_NAMES[account.provider]}; you can remove June in ${PROVIDER_NAMES[account.provider]} settings.`,
+        );
+      } else {
+        toast.success(`Disconnected ${accountDisplayName(account)}`);
+      }
     } catch (err) {
       toast.error(messageFromError(err));
     } finally {

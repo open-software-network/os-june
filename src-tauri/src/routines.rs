@@ -525,7 +525,7 @@ pub async fn reconcile_after_restart(pool: &SqlitePool) -> Result<(), AppError> 
            AND EXISTS (
              SELECT 1 FROM agent_runs
              WHERE agent_runs.id = routine_runs.agent_run_id
-               AND agent_runs.status IN ('running', 'waiting_for_user')
+               AND agent_runs.status IN ('queued', 'running', 'waiting_for_user')
            )",
     )
     .bind(&timestamp)
@@ -536,7 +536,7 @@ pub async fn reconcile_after_restart(pool: &SqlitePool) -> Result<(), AppError> 
     // pending approval or clarification remains resumable after relaunch.
     // Ordinary running work cannot survive the process boundary and is
     // interrupted, which releases its claim through `reconcile`.
-    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status = 'running')")
+    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status IN ('queued', 'running'))")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;
     query("UPDATE routine_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE status IN ('queued', 'running')")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;

@@ -504,7 +504,12 @@ pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<
         .latest_run(&session_id)
         .await
         .ok()
-        .filter(|run| matches!(run.status.as_str(), "running" | "waiting_for_user"))
+        .filter(|run| {
+            matches!(
+                run.status.as_str(),
+                "queued" | "running" | "waiting_for_user"
+            )
+        })
         .map(|run| run.id);
     repository
         .items(&session_id)
@@ -835,6 +840,65 @@ async fn interruption_record(
     }))
 }
 
+async fn claim_interruption_resume(
+    repository: &AgentRepository,
+    record: &InterruptionRecord,
+    original_payload_json: &str,
+    resolved_payload_json: &str,
+    updated_at: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let claimed = sqlx::query::query(
+        "UPDATE agent_runs
+         SET status = 'queued', last_sequence = 0, updated_at = ?
+         WHERE id = ? AND status = 'waiting_for_user'",
+    )
+    .bind(updated_at)
+    .bind(&record.run_id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if claimed != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    let item_updated = sqlx::query::query(
+        "UPDATE agent_items
+         SET payload_json = ?
+         WHERE id = ?
+           AND run_id = ?
+           AND payload_json = ?
+           AND COALESCE(json_extract(payload_json, '$.status'), 'pending') = 'pending'",
+    )
+    .bind(resolved_payload_json)
+    .bind(&record.item_id)
+    .bind(&record.run_id)
+    .bind(original_payload_json)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if item_updated != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    let session_updated = sqlx::query::query(
+        "UPDATE agent_sessions
+         SET status = 'running', updated_at = ?, last_error = NULL
+         WHERE id = ? AND status = 'waiting_for_user'",
+    )
+    .bind(updated_at)
+    .bind(&record.session_id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if session_updated != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub async fn resolve_agent_interruption(
     app: AppHandle,
@@ -850,7 +914,7 @@ pub async fn resolve_agent_interruption(
                 "This interruption can no longer be resumed.",
             )
         })?;
-    let original_interruption_json = record.payload_json;
+    let original_interruption_json = record.payload_json.clone();
     let mut interruption: Value = serde_json::from_str(&original_interruption_json)
         .map_err(|error| AppError::new("agent_interruption_invalid", error.to_string()))?;
     let run = repository.get_run(&record.run_id).await?;
@@ -986,59 +1050,100 @@ pub async fn resolve_agent_interruption(
     if let Some(secret_ref) = secret_ref.as_deref() {
         interruption["secretRef"] = json!(secret_ref);
     }
+    let resolved_interruption_json = interruption.to_string();
+    let resolution_time = chrono::Utc::now().to_rfc3339();
     // Persist the visible resolution and reset sequencing as one unit. The
     // sidecar can emit resumed events immediately after accepting the request,
     // so both must be in place before dispatch, but neither may be left behind
     // when preparation or persistence fails.
-    let persist_result: Result<(), sqlx::Error> = async {
-        let mut transaction = repository.pool.begin().await?;
-        sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
-            .bind(interruption.to_string())
-            .bind(&record.item_id)
-            .execute(&mut *transaction)
-            .await?;
-        sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ?")
-            .bind(chrono::Utc::now().to_rfc3339())
-            .bind(&run.id)
-            .execute(&mut *transaction)
-            .await?;
-        transaction.commit().await
-    }
-    .await;
-    if let Err(error) = persist_result {
+    let claimed = match claim_interruption_resume(
+        &repository,
+        &record,
+        &original_interruption_json,
+        &resolved_interruption_json,
+        &resolution_time,
+    )
+    .await
+    {
+        Ok(claimed) => claimed,
+        Err(error) => {
+            if let Some(secret_ref) = secret_ref.as_deref() {
+                let _ = super::secrets::delete(secret_ref).await;
+            }
+            return Err(error.into());
+        }
+    };
+    if !claimed {
         if let Some(secret_ref) = secret_ref.as_deref() {
             let _ = super::secrets::delete(secret_ref).await;
         }
-        return Err(error.into());
+        return Err(AppError::new(
+            "agent_interruption_expired",
+            "This interruption can no longer be resumed.",
+        ));
     }
     if let Err(error) = host
         .request("run.resume", &session.id, &run.id, params)
         .await
     {
-        let restore_result = async {
-            let mut transaction = repository.pool.begin().await?;
-            sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
-                .bind(&original_interruption_json)
-                .bind(&record.item_id)
-                .execute(&mut *transaction)
-                .await?;
-            sqlx::query::query(
-                "UPDATE agent_runs SET last_sequence = ?, updated_at = ? WHERE id = ?",
+        let restore_result: Result<bool, sqlx::Error> = async {
+            let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
+            let run_restored = sqlx::query::query(
+                "UPDATE agent_runs
+                 SET status = 'waiting_for_user', last_sequence = ?, updated_at = ?
+                 WHERE id = ? AND status = 'queued'",
             )
             .bind(run.last_sequence)
             .bind(chrono::Utc::now().to_rfc3339())
             .bind(&run.id)
             .execute(&mut *transaction)
-            .await?;
-            transaction.commit().await
+            .await?
+            .rows_affected();
+            if run_restored != 1 {
+                transaction.rollback().await?;
+                return Ok(false);
+            }
+            let item_restored = sqlx::query::query(
+                "UPDATE agent_items
+                 SET payload_json = ?
+                 WHERE id = ? AND payload_json = ?",
+            )
+            .bind(&original_interruption_json)
+            .bind(&record.item_id)
+            .bind(&resolved_interruption_json)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            if item_restored != 1 {
+                transaction.rollback().await?;
+                return Ok(false);
+            }
+            let session_restored = sqlx::query::query(
+                "UPDATE agent_sessions
+                 SET status = 'waiting_for_user', updated_at = ?
+                 WHERE id = ? AND status = 'running'",
+            )
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(&session.id)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            if session_restored != 1 {
+                transaction.rollback().await?;
+                return Ok(false);
+            }
+            transaction.commit().await?;
+            Ok(true)
         }
         .await;
-        if let Some(secret_ref) = secret_ref.as_deref() {
-            if let Err(cleanup_error) = super::secrets::delete(secret_ref).await {
-                tracing::warn!(
-                    error_code = %cleanup_error.code,
-                    "failed to remove a secret after resume dispatch failed"
-                );
+        if restore_result.as_ref().is_ok_and(|restored| *restored) {
+            if let Some(secret_ref) = secret_ref.as_deref() {
+                if let Err(cleanup_error) = super::secrets::delete(secret_ref).await {
+                    tracing::warn!(
+                        error_code = %cleanup_error.code,
+                        "failed to remove a secret after resume dispatch failed"
+                    );
+                }
             }
         }
         restore_result?;
@@ -2109,6 +2214,111 @@ mod tests {
         assert_eq!(selected.item_id, waiting_item.id);
         assert_eq!(selected.run_id, waiting_run.id);
         assert_ne!(selected.item_id, old_item.id);
+    }
+
+    #[tokio::test]
+    async fn interruption_resume_claim_only_accepts_one_resolution() {
+        use sqlx::{query::query, row::Row};
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool);
+        let session = repository
+            .create_session("Approval claim", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting run");
+        let item = repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(json!({
+                    "id": "functions.mcp_linear_save_issue:0",
+                    "kind": "approval",
+                    "runId": run.id,
+                    "sessionId": session.id,
+                    "status": "pending"
+                })),
+                Some(&format!(
+                    "interruption:{}:functions.mcp_linear_save_issue:0",
+                    run.id
+                )),
+            )
+            .await
+            .expect("pending interruption")
+            .expect("interruption inserted");
+        let original_payload: String = query("SELECT payload_json FROM agent_items WHERE id = ?")
+            .bind(&item.id)
+            .fetch_one(&repository.pool)
+            .await
+            .expect("stored interruption")
+            .get("payload_json");
+        let record = InterruptionRecord {
+            item_id: item.id,
+            run_id: run.id.clone(),
+            session_id: session.id,
+            payload_json: original_payload.clone(),
+        };
+        let first_payload = json!({"status":"resolved","decision":"approve"}).to_string();
+        let second_payload = json!({"status":"resolved","decision":"deny"}).to_string();
+
+        let first = claim_interruption_resume(
+            &repository,
+            &record,
+            &original_payload,
+            &first_payload,
+            "2026-07-28T00:00:00Z",
+        )
+        .await
+        .expect("first claim");
+        let second = claim_interruption_resume(
+            &repository,
+            &record,
+            &original_payload,
+            &second_payload,
+            "2026-07-28T00:00:01Z",
+        )
+        .await
+        .expect("second claim");
+
+        assert!(first);
+        assert!(!second);
+        assert_eq!(
+            repository
+                .get_run(&run.id)
+                .await
+                .expect("claimed run")
+                .status,
+            "queued"
+        );
+        let stored_payload: String = query("SELECT payload_json FROM agent_items WHERE id = ?")
+            .bind(&record.item_id)
+            .fetch_one(&repository.pool)
+            .await
+            .expect("claimed interruption")
+            .get("payload_json");
+        assert_eq!(stored_payload, first_payload);
     }
 
     #[tokio::test]

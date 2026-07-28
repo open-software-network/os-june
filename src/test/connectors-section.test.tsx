@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
+  toastWarning: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
@@ -72,6 +73,7 @@ vi.mock("../components/ui/Toaster", () => ({
   toast: {
     success: mocks.toastSuccess,
     error: mocks.toastError,
+    warning: mocks.toastWarning,
   },
 }));
 
@@ -806,6 +808,29 @@ describe("ConnectorsSection — Linear", () => {
     expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
     expect(mocks.toastError).not.toHaveBeenCalled();
     expect(mocks.toastSuccess).toHaveBeenCalledWith("Disconnected Acme");
+    expect(await findEnabledConnect("Connect Linear")).toBeInTheDocument();
+  });
+
+  it("warns when local Linear disconnect succeeds but provider revoke is unconfirmed", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount()]);
+    mocks.connectorsDisconnect.mockResolvedValue({
+      providerRevocationConfirmed: false,
+    });
+    render(<ConnectorsSection />);
+    await screen.findByText(/Acme/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Linear" }));
+    const dialog = await screen.findByRole("dialog", { name: /Disconnect Acme/ });
+    mocks.connectorsList.mockResolvedValue([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(mocks.toastWarning).toHaveBeenCalledWith(
+        "Disconnected Acme locally. June could not confirm revocation with Linear; you can remove June in Linear settings.",
+      ),
+    );
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
     expect(await findEnabledConnect("Connect Linear")).toBeInTheDocument();
   });
 });

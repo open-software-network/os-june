@@ -395,10 +395,14 @@ is UI; the reference is the token).
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
 group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, `june_image`, `june_recorder`, `june_video`, and the connector
-servers `june_gmail`, `june_gcal`, `june_linear`, and `june_notion`, plus their
-`*_actions` counterparts). `june_notion` is the hosted Notion MCP read toolset;
-`june_notion_actions` is the separately approval-gated create/update toolset.
+`june_web`, `june_image`, `june_recorder`, and `june_video`). Connector
+toolsets include `june_gmail`, `june_gcal`, `june_notion`, and their
+`*_actions` counterparts. Linear's official hosted MCP supplies a dynamic
+external tool inventory under the `mcp_linear_*` runtime namespace;
+`june_linear` and `june_linear_actions` remain historical routine toolset
+identities, not June-owned MCP servers. `june_notion` is the hosted Notion MCP
+read toolset; `june_notion_actions` is the separately approval-gated
+create/update toolset.
 _Avoid_: using "tool" for all three.
 
 **Obsidian plugin**:
@@ -424,29 +428,31 @@ integration (too broad), plugin for a Tauri framework package.
 
 **Connector**:
 A private-by-architecture integration between June and a third-party account
-(shipped: Google Gmail + Calendar and the Notion hosted MCP preview; Linear
-and GitHub are currently in progress). The user authorizes the provider on
-their Mac; local connector credentials remain in OS credential storage, and
-Rust owns direct provider or hosted MCP calls. MCP servers never hold the
-credentials. Google ships `june_gmail` and `june_gcal` read servers plus their
-`*_actions` counterparts. Notion preview ships `june_notion` for hosted MCP
-reads and `june_notion_actions` for approval-gated page creation and updates.
-GitHub ships `june_github` reads plus approval-only `june_github_actions`
-issue writes through a GitHub App user grant. See
+(shipped: Google Gmail + Calendar, Linear, GitHub, and the Notion hosted MCP
+preview). The user authorizes the provider on their Mac; local connector
+credentials remain in OS credential storage, and Rust owns direct provider or
+hosted MCP calls. External MCP servers receive credentials only on
+device-originated requests and never persist June's local custody. Google
+ships `june_gmail` and `june_gcal` read servers plus their `*_actions`
+counterparts. Linear uses its official hosted MCP with workspace-wide OAuth
+access; June dynamically registers its valid tools and approval-gates anything
+not clearly annotated read-only. Notion preview ships `june_notion` for hosted
+MCP reads and `june_notion_actions` for approval-gated page creation and
+updates. GitHub ships `june_github` reads plus approval-only
+`june_github_actions` issue writes through a GitHub App user grant. See
 [ADR-0016](docs/adr/0016-private-connectors-local-mode.md),
 [ADR-0033](docs/adr/0033-notion-hosted-mcp-connect-preview.md), and
-[ADR-0036](docs/adr/0036-github-connector-app-user-tokens.md).
+[ADR-0036](docs/adr/0036-github-connector-app-user-tokens.md), and
+[ADR-0050](docs/adr/0050-linear-official-hosted-mcp.md).
 _Avoid_: integration (unqualified), plugin, the Google API.
 
-**Selected teams** (Linear):
-The June-side authorization grant limiting every Linear read and write to the
-teams the user checked at connect time (stored in SQLite, editable in
-settings, enforced in Rust). Not a provider OAuth scope: Linear's `read` and
-`write` scopes are workspace-wide, so team boundaries exist only because
-June's own proxy refuses anything outside the grant. An account with no
-selected teams is connected but inert.
-_Avoid_: team scopes (they are not OAuth scopes), team filter (it is an
-enforcement boundary, not a view preference), workspace access.
+**Linear workspace access**:
+The workspace-wide `read` and `write` OAuth grant June uses with Linear's
+official hosted MCP. June does not add a selected-team authorization boundary
+or maintain a provider-specific tool allowlist. The hosted server controls the
+tool inventory; June validates each descriptor, runs clearly read-only tools
+directly, and requires approval for every ambiguous or mutating tool.
+_Avoid_: selected teams, team scopes, team filter.
 
 **Local mode**:
 The default (and, in v1, only) connector trust model: the OAuth grant is
