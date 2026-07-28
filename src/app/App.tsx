@@ -125,6 +125,7 @@ import {
   isMicrophoneRecordingBlocked,
   isNewSessionShortcut,
 } from "./app-helpers";
+import { matchesSidebarShortcut, SHORTCUT_CAPTURE_ATTRIBUTE } from "../lib/sidebar-shortcut";
 export { isAccessibilityBlocked, isMicrophoneRecordingBlocked } from "./app-helpers";
 import {
   ACCESSIBILITY_PERMISSION_REFRESH_INTERVAL_MS,
@@ -132,6 +133,7 @@ import {
   AGENT_MENU_BAR_SESSION_RETRY_DELAYS_MS,
   CHECK_FOR_UPDATES_EVENT,
   RECOVERY_FUNDING_DISABLED_REASON,
+  SIDEBAR_DEFAULT_WIDTH,
   SYSTEM_AUDIO_PERMISSION_REFRESH_INTERVAL_MS,
   SYSTEM_AUDIO_PERMISSION_REFRESH_TIMEOUT_MS,
   UP_TO_DATE_DISMISS_MS,
@@ -1751,6 +1753,34 @@ export function App() {
     }
     void handleCreateNote(null);
   }, [activeView, appBlocked, bootstrapped, handleCreateNote, selectedNote, state.selectedNoteId]);
+
+  useEffect(() => {
+    function onToggleSidebarShortcut(event: KeyboardEvent) {
+      // This runs on every keystroke; the chord match rejects nearly all of
+      // them on field compares, so it must run before the DOM guards.
+      if (!matchesSidebarShortcut(event)) return;
+      if (
+        document.documentElement.hasAttribute(SHORTCUT_CAPTURE_ATTRIBUTE) ||
+        document.querySelector('[role="dialog"]')
+      ) {
+        return;
+      }
+      event.preventDefault();
+      // The configurable shortcut owns its chord. Capture it before editor and
+      // tab handlers so a reassigned app shortcut cannot trigger two actions.
+      event.stopImmediatePropagation();
+      setSidebarTransition("none");
+      if (sidebarCollapsed) {
+        setSidebarWidth((width) => Math.max(width, SIDEBAR_DEFAULT_WIDTH));
+        setSidebarCollapsed(false);
+        return;
+      }
+      setSidebarCollapsed(true);
+    }
+
+    window.addEventListener("keydown", onToggleSidebarShortcut, true);
+    return () => window.removeEventListener("keydown", onToggleSidebarShortcut, true);
+  }, [setSidebarCollapsed, setSidebarTransition, setSidebarWidth, sidebarCollapsed]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

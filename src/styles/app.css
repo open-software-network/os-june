@@ -18662,7 +18662,8 @@ button.memory-project:hover {
   background: transparent;
 }
 
-.keycap-frame-capturing {
+.keycap-frame-capturing,
+.keycap-frame-empty {
   justify-content: flex-end;
   padding: 0 var(--sp-3);
   color: var(--muted-foreground);

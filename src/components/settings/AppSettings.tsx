@@ -143,6 +143,13 @@ import {
   setStoredDateFormat,
   type DateFormatPreference,
 } from "../../lib/date-format";
+import {
+  defaultSidebarShortcut,
+  getStoredSidebarShortcut,
+  setStoredSidebarShortcut,
+  SHORTCUT_CAPTURE_ATTRIBUTE,
+  type SidebarShortcut,
+} from "../../lib/sidebar-shortcut";
 
 const THEME_OPTIONS: readonly {
   value: ThemePreference;
@@ -480,6 +487,11 @@ export function AppSettings({
   const capturingShortcutRef = useRef<DictationShortcutKind>();
   const [shortcutError, setShortcutError] = useState<string>();
   const [shortcutErrorKind, setShortcutErrorKind] = useState<DictationShortcutKind>();
+  const [sidebarShortcut, setSidebarShortcut] = useState<SidebarShortcut | null>(() =>
+    getStoredSidebarShortcut(),
+  );
+  const [capturingSidebarShortcut, setCapturingSidebarShortcut] = useState(false);
+  const [sidebarShortcutError, setSidebarShortcutError] = useState<string>();
   const [status, setStatus] = useState<string>();
   // Set when the dictation helper dies (crash or the bundle swap after an
   // update) and cleared once it re-arms the hotkey, so the shortcuts pane never
@@ -567,10 +579,17 @@ export function AppSettings({
           push_to_talk: DEFAULT_SETTINGS.pushToTalkShortcut,
           toggle: DEFAULT_SETTINGS.toggleShortcut,
         };
+  const sidebarDefaultShortcut = defaultSidebarShortcut();
   const modifierRequiredMessage =
     capabilities.platform === "windows"
       ? "Shortcut must include Ctrl, Alt, Shift, or Win."
       : MODIFIER_REQUIRED_MESSAGE;
+  // Stricter than the dictation rule: the sidebar chord fires while typing in
+  // the app, so shift- or option-only chords would swallow ordinary keys.
+  const sidebarModifierMessage =
+    capabilities.platform === "windows"
+      ? "Shortcut must include Ctrl or Win."
+      : "Shortcut must include Cmd or Ctrl.";
 
   useEffect(() => {
     if (!experimentalFlags.loaded || runtimeFlagStatusLoadedRef.current) return;
@@ -876,6 +895,60 @@ export function AppSettings({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [capturingShortcut]);
+
+  const shortcutCaptureActive = Boolean(capturingShortcut || capturingSidebarShortcut);
+  useEffect(() => {
+    if (shortcutCaptureActive) {
+      document.documentElement.setAttribute(SHORTCUT_CAPTURE_ATTRIBUTE, "");
+    } else {
+      document.documentElement.removeAttribute(SHORTCUT_CAPTURE_ATTRIBUTE);
+    }
+    return () => document.documentElement.removeAttribute(SHORTCUT_CAPTURE_ATTRIBUTE);
+  }, [shortcutCaptureActive]);
+
+  useEffect(() => {
+    if (!capturingSidebarShortcut) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCapturingSidebarShortcut(false);
+        setSidebarShortcutError(undefined);
+        return;
+      }
+      if (event.key === "Backspace" || event.key === "Delete") {
+        event.preventDefault();
+        event.stopPropagation();
+        setStoredSidebarShortcut(null);
+        setSidebarShortcut(null);
+        setCapturingSidebarShortcut(false);
+        setSidebarShortcutError(undefined);
+        setStatus("Toggle sidebar shortcut turned off.");
+        return;
+      }
+      const result = chordFromKeyEvent(event);
+      if (result.kind === "ignore") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (
+        result.kind === "needsModifier" ||
+        (!result.shortcut.modifiers.command && !result.shortcut.modifiers.control)
+      ) {
+        setSidebarShortcutError(sidebarModifierMessage);
+        setStatus(sidebarModifierMessage);
+        return;
+      }
+      const next = setStoredSidebarShortcut({
+        ...result.shortcut,
+        pressCount: 1,
+      });
+      setSidebarShortcut(next);
+      setCapturingSidebarShortcut(false);
+      setSidebarShortcutError(undefined);
+      setStatus(`Toggle sidebar set to ${next.label}.`);
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [capturingSidebarShortcut, sidebarModifierMessage]);
 
   async function requestMicrophones() {
     try {
@@ -1891,6 +1964,31 @@ export function AppSettings({
             ) : null}
             <div className="settings-card">
               <div className="settings-rows">
+                <ShortcutRow
+                  title="Toggle sidebar"
+                  description="Show or hide the sidebar. Backspace turns the shortcut off while changing it."
+                  shortcut={sidebarShortcut}
+                  defaultShortcut={sidebarDefaultShortcut}
+                  capturing={capturingSidebarShortcut}
+                  capturingLabel="Press shortcut or Backspace..."
+                  disabled={Boolean(capturingShortcut)}
+                  error={sidebarShortcutError}
+                  onChange={() => {
+                    setSidebarShortcutError(undefined);
+                    setCapturingSidebarShortcut(true);
+                  }}
+                  onReset={() => {
+                    const next = setStoredSidebarShortcut(sidebarDefaultShortcut);
+                    setSidebarShortcut(next);
+                    setSidebarShortcutError(undefined);
+                    setStatus(`Toggle sidebar reset to ${next.label}.`);
+                  }}
+                  onCancel={() => {
+                    setCapturingSidebarShortcut(false);
+                    setSidebarShortcutError(undefined);
+                  }}
+                  platform={capabilities.platform}
+                />
                 {capabilities.shortcuts ? (
                   <>
                     <ShortcutRow
@@ -1899,7 +1997,10 @@ export function AppSettings({
                       shortcut={settings.pushToTalkShortcut}
                       defaultShortcut={defaultShortcuts.push_to_talk}
                       capturing={capturingShortcut === "push_to_talk"}
-                      disabled={!!capturingShortcut && capturingShortcut !== "push_to_talk"}
+                      disabled={
+                        capturingSidebarShortcut ||
+                        (!!capturingShortcut && capturingShortcut !== "push_to_talk")
+                      }
                       error={shortcutErrorKind === "push_to_talk" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("push_to_talk")}
                       onReset={() =>
@@ -1915,7 +2016,10 @@ export function AppSettings({
                       shortcut={settings.toggleShortcut}
                       defaultShortcut={defaultShortcuts.toggle}
                       capturing={capturingShortcut === "toggle"}
-                      disabled={!!capturingShortcut && capturingShortcut !== "toggle"}
+                      disabled={
+                        capturingSidebarShortcut ||
+                        (!!capturingShortcut && capturingShortcut !== "toggle")
+                      }
                       error={shortcutErrorKind === "toggle" ? shortcutError : undefined}
                       onChange={() => void startShortcutCapture("toggle")}
                       onReset={() => void saveShortcut("toggle", defaultShortcuts.toggle)}
@@ -3393,6 +3497,7 @@ function ShortcutRow({
   shortcut,
   defaultShortcut,
   capturing,
+  capturingLabel,
   disabled,
   error,
   onChange,
@@ -3402,9 +3507,10 @@ function ShortcutRow({
 }: {
   title: string;
   description: string;
-  shortcut: DictationShortcutSetting;
+  shortcut: DictationShortcutSetting | null;
   defaultShortcut: DictationShortcutSetting;
   capturing: boolean;
+  capturingLabel?: string;
   disabled: boolean;
   error?: string;
   onChange: () => void;
@@ -3412,7 +3518,8 @@ function ShortcutRow({
   onCancel: () => void;
   platform: "macos" | "windows" | "unsupported";
 }) {
-  const canReset = !capturing && !shortcutsMatch(shortcut, defaultShortcut) && !disabled;
+  const canReset =
+    !capturing && (shortcut === null || !shortcutsMatch(shortcut, defaultShortcut)) && !disabled;
 
   return (
     <div className="settings-row">
@@ -3422,7 +3529,12 @@ function ShortcutRow({
         {error ? <p className="settings-row-error">{error}</p> : null}
       </div>
       <div className="settings-row-control">
-        <KeycapShortcut label={shortcut.label} capturing={capturing} platform={platform} />
+        <KeycapShortcut
+          label={shortcut?.label ?? ""}
+          capturing={capturing}
+          capturingLabel={capturingLabel}
+          platform={platform}
+        />
         <button
           type="button"
           className="btn btn-secondary"

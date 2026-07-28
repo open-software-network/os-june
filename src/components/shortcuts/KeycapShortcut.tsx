@@ -34,14 +34,23 @@ const WINDOWS_KEY_GLYPHS: Record<string, { glyph: string; name: string }> = {
 export function KeycapShortcut({
   label,
   capturing = false,
+  capturingLabel = "Press shortcut...",
   platform,
 }: {
   label: string;
   capturing?: boolean;
+  capturingLabel?: string;
   platform?: "macos" | "windows" | "unsupported";
 }) {
   if (capturing) {
-    return <span className="keycap-frame keycap-frame-capturing">Press shortcut...</span>;
+    return <span className="keycap-frame keycap-frame-capturing">{capturingLabel}</span>;
+  }
+  if (!label) {
+    return (
+      <span className="keycap-frame keycap-frame-empty" aria-label="Shortcut not set">
+        Not set
+      </span>
+    );
   }
   const windows = platform === "windows" || (platform === undefined && isWindowsPlatform());
   const keyGlyphs = windows ? WINDOWS_KEY_GLYPHS : MAC_KEY_GLYPHS;
