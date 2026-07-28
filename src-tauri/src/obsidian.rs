@@ -285,24 +285,9 @@ fn validate_vault_path(path: &Path) -> Result<PathBuf, AppError> {
             "Choose a folder that contains an .obsidian directory.",
         ));
     }
-    Ok(normalize_vault_path_for_external_use(canonical))
-}
-
-#[cfg(target_os = "windows")]
-fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
-    let path = path.to_string_lossy();
-    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{unc}"));
-    }
-    if let Some(drive_path) = path.strip_prefix(r"\\?\") {
-        return PathBuf::from(drive_path);
-    }
-    PathBuf::from(path.as_ref())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
-    path
+    Ok(crate::filesystem::normalize_path_for_external_use(
+        &canonical,
+    ))
 }
 
 fn ensure_readable(path: &Path) -> Result<(), AppError> {

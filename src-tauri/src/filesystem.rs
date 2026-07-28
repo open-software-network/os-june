@@ -1,4 +1,28 @@
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+/// Strips the Win32 file namespace prefix (`\\?\` or `\\?\UNC\`) that
+/// `Path::canonicalize` adds on Windows so paths shown to the AI model or UI
+/// are ordinary drive or UNC paths. On non-Windows targets the path is
+/// returned unchanged.
+#[cfg(windows)]
+pub(crate) fn normalize_path_for_external_use(path: &Path) -> PathBuf {
+    let path = path.to_string_lossy();
+    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    if let Some(drive_path) = path.strip_prefix(r"\\?\") {
+        return PathBuf::from(drive_path);
+    }
+    PathBuf::from(path.as_ref())
+}
+
+#[cfg(not(windows))]
+pub(crate) fn normalize_path_for_external_use(path: &Path) -> PathBuf {
+    path.to_path_buf()
+}
 
 #[cfg(windows)]
 pub(crate) fn replace_file(temp_path: &Path, path: &Path) -> io::Result<()> {

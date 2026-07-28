@@ -622,7 +622,7 @@ async fn generate_video(context: &ToolContext, arguments: &Value) -> Result<Valu
                     .await?;
                 return Ok(json!({
                     "mediaType": "video",
-                    "path": destination,
+                    "path": crate::filesystem::normalize_path_for_external_use(&destination),
                     "mimeType": mime_type,
                     "model": model,
                     "prompt": prompt,
@@ -665,7 +665,7 @@ async fn persist_generated_image(
     Ok(json!({
         "mediaType": "image",
         "dataUrl": format!("data:{};base64,{}", generated.mime_type, generated.image_base64),
-        "path": path,
+        "path": crate::filesystem::normalize_path_for_external_use(&path),
         "mimeType": generated.mime_type,
         "model": generated.model,
         "prompt": prompt,
@@ -773,12 +773,15 @@ async fn list_files(context: &ToolContext, arguments: &Value) -> Result<Value, A
     let mut result = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(io_error)? {
         let metadata = entry.metadata().await.map_err(io_error)?;
-        result.push(json!({ "name": entry.file_name().to_string_lossy(), "path": entry.path(), "directory": metadata.is_dir(), "sizeBytes": metadata.len() }));
+        let entry_path = entry.path();
+        result.push(json!({ "name": entry.file_name().to_string_lossy(), "path": crate::filesystem::normalize_path_for_external_use(&entry_path), "directory": metadata.is_dir(), "sizeBytes": metadata.len() }));
         if result.len() >= 500 {
             break;
         }
     }
-    Ok(json!({ "path": path, "entries": result }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "entries": result }),
+    )
 }
 
 async fn read_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -797,7 +800,9 @@ async fn read_file(context: &ToolContext, arguments: &Value) -> Result<Value, Ap
     }
     let content = String::from_utf8(bytes)
         .map_err(|_| AppError::new("agent_file_not_text", "File is not UTF-8 text."))?;
-    Ok(json!({ "path": path, "content": content }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "content": content }),
+    )
 }
 
 async fn write_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -808,7 +813,9 @@ async fn write_file(context: &ToolContext, arguments: &Value) -> Result<Value, A
     }
     tokio::fs::write(&path, content).await.map_err(io_error)?;
     record_artifact(context, &path, "created", None).await?;
-    Ok(json!({ "path": path, "sizeBytes": content.len() }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "sizeBytes": content.len() }),
+    )
 }
 
 async fn patch_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -827,7 +834,9 @@ async fn patch_file(context: &ToolContext, arguments: &Value) -> Result<Value, A
         .await
         .map_err(io_error)?;
     record_artifact(context, &path, "updated", None).await?;
-    Ok(json!({ "path": path, "updated": true }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "updated": true }),
+    )
 }
 
 async fn import_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -855,7 +864,9 @@ async fn import_file(context: &ToolContext, arguments: &Value) -> Result<Value, 
         .await
         .map_err(io_error)?;
     record_artifact(context, &destination, "imported", Some(&source)).await?;
-    Ok(json!({ "path": destination, "sourcePath": source }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&destination), "sourcePath": crate::filesystem::normalize_path_for_external_use(&source) }),
+    )
 }
 
 async fn preview_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -866,7 +877,9 @@ async fn preview_file(context: &ToolContext, arguments: &Value) -> Result<Value,
     } else {
         None
     };
-    Ok(json!({ "path": path, "sizeBytes": metadata.len(), "text": preview }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "sizeBytes": metadata.len(), "text": preview }),
+    )
 }
 
 async fn record_artifact(
@@ -976,7 +989,12 @@ fn search_text_files(root: &Path, needle: &str) -> FileSearchResult {
             if !line.contains(needle) {
                 continue;
             }
-            let entry = format!("{}:{}:{}\n", path.display(), line_index + 1, line);
+            let entry = format!(
+                "{}:{}:{}\n",
+                crate::filesystem::normalize_path_for_external_use(&path).display(),
+                line_index + 1,
+                line
+            );
             if match_count >= MAX_SEARCH_MATCHES
                 || output.len().saturating_add(entry.len()) > MAX_TOOL_OUTPUT_BYTES
             {
