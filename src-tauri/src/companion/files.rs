@@ -9,6 +9,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{query::query, row::Row};
 use std::{
+    collections::HashSet,
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -88,6 +89,9 @@ pub(super) fn start_cleanup(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
             prune_expired_browse_references(&app);
+            if let Err(error) = cleanup_orphaned_browse_attachments(&app).await {
+                tracing::warn!(code = %error.code, "orphaned companion browse cleanup failed");
+            }
             if let Ok(repositories) = crate::commands::repositories(&app).await {
                 if let Err(error) = cleanup_expired_uploads(&app, &repositories).await {
                     tracing::warn!(code = %error.code, "companion upload cleanup failed");
@@ -1095,18 +1099,27 @@ async fn materialize_browse_attachment(
 ) -> Result<MaterializedBrowseAttachment, AppError> {
     let destination_directory =
         browse_attachment_directory(app, account_user_id, device_id, reference_id)?;
+    let cleanup_directory = destination_directory.clone();
     let root = root.clone();
     let relative_path = relative_path.to_string();
-    tokio::task::spawn_blocking(move || {
+    let result = match tokio::task::spawn_blocking(move || {
         materialize_browse_attachment_blocking(&root, &relative_path, &destination_directory)
     })
     .await
-    .map_err(|_| {
-        AppError::new(
-            "companion_browse_unavailable",
-            "June could not preserve this file selection.",
-        )
-    })?
+    {
+        Ok(result) => result,
+        Err(_) => {
+            let _ = fs::remove_dir_all(cleanup_directory).await;
+            return Err(AppError::new(
+                "companion_browse_unavailable",
+                "June could not preserve this file selection.",
+            ));
+        }
+    };
+    if result.is_err() {
+        let _ = fs::remove_dir_all(cleanup_directory).await;
+    }
+    result
 }
 
 #[cfg(unix)]
@@ -1492,13 +1505,78 @@ fn browse_attachment_directory(
 ) -> Result<PathBuf, AppError> {
     let device_id = parse_uuid(device_id)?;
     let account_digest = format!("{:x}", Sha256::digest(account_user_id.as_bytes()));
-    Ok(app_paths::app_data_dir(app)
-        .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
-        .join("companion")
-        .join("browse-attachments")
+    Ok(browse_attachments_root(app)?
         .join(&account_digest[..32])
         .join(device_id.to_string())
         .join(reference_id.to_string()))
+}
+
+fn browse_attachments_root(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
+        .join("companion")
+        .join("browse-attachments"))
+}
+
+async fn cleanup_orphaned_browse_attachments(app: &AppHandle) -> Result<(), AppError> {
+    let active_directories = app
+        .state::<super::CompanionRuntime>()
+        .browse_references
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "companion_browse_unavailable",
+                "Companion file references are unavailable.",
+            )
+        })?
+        .values()
+        .filter_map(|reference| reference.materialized_path.parent().map(Path::to_path_buf))
+        .collect::<HashSet<_>>();
+    cleanup_orphaned_browse_attachments_in(
+        &browse_attachments_root(app)?,
+        &active_directories,
+        SystemTime::now(),
+    )
+    .await
+    .map_err(browse_io_error)
+}
+
+async fn cleanup_orphaned_browse_attachments_in(
+    root: &Path,
+    active_directories: &HashSet<PathBuf>,
+    now: SystemTime,
+) -> std::io::Result<()> {
+    let mut account_entries = match fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    while let Some(account) = account_entries.next_entry().await? {
+        if !account.file_type().await?.is_dir() {
+            continue;
+        }
+        let mut device_entries = fs::read_dir(account.path()).await?;
+        while let Some(device) = device_entries.next_entry().await? {
+            if !device.file_type().await?.is_dir() {
+                continue;
+            }
+            let mut reference_entries = fs::read_dir(device.path()).await?;
+            while let Some(reference) = reference_entries.next_entry().await? {
+                if !reference.file_type().await?.is_dir()
+                    || active_directories.contains(&reference.path())
+                {
+                    continue;
+                }
+                let modified = reference.metadata().await?.modified()?;
+                if now.duration_since(modified).unwrap_or_default() > BROWSE_REFERENCE_LIFETIME {
+                    fs::remove_dir_all(reference.path()).await?;
+                }
+            }
+            let _ = fs::remove_dir(device.path()).await;
+        }
+        let _ = fs::remove_dir(account.path()).await;
+    }
+    Ok(())
 }
 
 fn upload_staging_path(
@@ -1774,6 +1852,35 @@ mod tests {
         assert_eq!(loaded, vec![granted]);
         assert!(!loaded[0].volume_device_id.is_empty());
         assert!(!loaded[0].directory_file_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn restart_cleanup_removes_expired_untracked_browse_copies() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("browse-attachments");
+        let device = root.join("account").join("device");
+        let active = device.join("active-reference");
+        let orphan = device.join("orphan-reference");
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(active.join("content"), "active").unwrap();
+        std::fs::write(orphan.join("content"), "orphan").unwrap();
+        let after_expiry = SystemTime::now() + BROWSE_REFERENCE_LIFETIME + Duration::from_secs(1);
+
+        cleanup_orphaned_browse_attachments_in(
+            &root,
+            &HashSet::from([active.clone()]),
+            after_expiry,
+        )
+        .await
+        .unwrap();
+        assert!(active.exists());
+        assert!(!orphan.exists());
+
+        cleanup_orphaned_browse_attachments_in(&root, &HashSet::new(), after_expiry)
+            .await
+            .unwrap();
+        assert!(!active.exists());
     }
 
     #[cfg(unix)]

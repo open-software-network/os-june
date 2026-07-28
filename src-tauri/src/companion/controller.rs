@@ -483,6 +483,29 @@ impl Controller {
                     })?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
+            Body::ComputerUseApprovalReceived(receipt) => {
+                let device_uuid = device_id.parse().map_err(|_| {
+                    AppError::new(
+                        "companion_device_invalid",
+                        "The linked device identity is invalid.",
+                    )
+                })?;
+                if !app
+                    .state::<super::CompanionRuntime>()
+                    .peer_has_capability(device_uuid, Capability::ComputerUseApprove)
+                {
+                    return Err(AppError::new(
+                        "companion_computer_use_approval_disabled",
+                        "This linked device did not advertise Computer use approval support.",
+                    ));
+                }
+                super::confirm_computer_use_approval_delivery(
+                    app,
+                    &receipt.request_id,
+                    &receipt.stored_session_id,
+                )?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
+            }
             Body::ComputerUseApprovalRespond(request) => {
                 let device_uuid = device_id.parse().map_err(|_| {
                     AppError::new(
@@ -803,7 +826,7 @@ mod tests {
     use super::*;
     use june_companion_protocol::{
         AgentSendRequest, ComputerUseApprovalDecision, ComputerUseApprovalDecisionRequest,
-        PageRequest,
+        ComputerUseApprovalReceipt, PageRequest,
     };
     use uuid::Uuid;
 
@@ -820,13 +843,17 @@ mod tests {
                 recording_session_id: "active".to_string(),
             },
             Body::DeviceRevokeSelf,
+            Body::ComputerUseApprovalReceived(ComputerUseApprovalReceipt {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+            }),
             Body::ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest {
                 request_id: "call-1".to_string(),
                 stored_session_id: "session-1".to_string(),
                 decision: ComputerUseApprovalDecision::Deny,
             }),
         ];
-        assert_eq!(allowed.len(), 5);
+        assert_eq!(allowed.len(), 6);
         // Compile-time exhaustiveness in `dispatch` is the real gate. This
         // regression assertion makes the most important exclusions visible.
         let encoded = serde_json::to_string(&allowed).unwrap();
@@ -834,6 +861,7 @@ mod tests {
             assert!(!encoded.contains(forbidden));
         }
         assert!(encoded.contains("computerUseApprovalRespond"));
+        assert!(encoded.contains("computerUseApprovalReceived"));
         assert_ne!(Uuid::nil(), Uuid::new_v4());
     }
 

@@ -17,10 +17,12 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tauri::{AppHandle, Manager};
 
 const MAX_SESSION_MEDIA_REFERENCES: usize = 800;
 const MAX_CACHED_TRANSFERS: usize = 16;
 const TRANSFER_IDLE_TTL: Duration = Duration::from_secs(30 * 60);
+const TRANSFER_CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +59,30 @@ struct CachedTransfer {
 #[derive(Default)]
 pub struct MediaTransferCache {
     entries: HashMap<String, CachedTransfer>,
+}
+
+pub(super) fn start_cleanup(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(TRANSFER_CLEANUP_INTERVAL).await;
+            let runtime = app.state::<super::CompanionRuntime>();
+            match runtime.media_transfers.lock() {
+                Ok(mut cache) => cache.prune(),
+                Err(_) => tracing::warn!("companion media cache cleanup lock failed"),
+            };
+        }
+    });
+}
+
+pub(super) fn clear_cache(app: &AppHandle) {
+    if let Ok(mut cache) = app
+        .state::<super::CompanionRuntime>()
+        .media_transfers
+        .lock()
+    {
+        cache.entries.clear();
+    }
 }
 
 pub async fn session_projections(
@@ -224,7 +250,10 @@ fn read_exact_at(file: &File, bytes: &mut [u8], offset: u64) -> std::io::Result<
 
 impl MediaTransferCache {
     fn prune(&mut self) {
-        let now = Instant::now();
+        self.prune_at(Instant::now());
+    }
+
+    fn prune_at(&mut self, now: Instant) {
         self.entries.retain(|_, entry| {
             now.saturating_duration_since(entry.touched_at) <= TRANSFER_IDLE_TTL
         });
@@ -629,6 +658,32 @@ mod tests {
             available: true,
             created_at: "2026-07-28T00:00:00Z".to_string(),
         }
+    }
+
+    #[test]
+    fn idle_media_handles_expire_without_another_fetch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cached.png");
+        std::fs::write(&path, b"cached").unwrap();
+        let now = Instant::now();
+        let mut cache = MediaTransferCache::default();
+        cache.entries.insert(
+            "account\0device\0session\0artifact".to_string(),
+            CachedTransfer {
+                file: Arc::new(File::open(&path).unwrap()),
+                artifact_id: "artifact".to_string(),
+                path,
+                size_bytes: 6,
+                sha256: "0".repeat(64),
+                touched_at: now
+                    .checked_sub(TRANSFER_IDLE_TTL + Duration::from_secs(1))
+                    .unwrap(),
+            },
+        );
+
+        cache.prune_at(now);
+
+        assert!(cache.entries.is_empty());
     }
 
     #[test]

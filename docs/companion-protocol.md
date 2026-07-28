@@ -183,9 +183,11 @@ unchanged.
 `computerUseApprove` is limited to the existing `computer_use` agent-runtime
 approval interruption. A pending event carries a request id, stored session id,
 bounded action and description, optional target app/URL, and a 60-second
-deadline. Approve/deny repeats both ids. Status events report approved, denied,
-executing, succeeded, failed, expired, or cancelled. Desktop binds the request
-id to the distinct SDK tool-call id rather than assuming equality. Before
+deadline. After receiving the event, a linked device may send the additive
+`computerUseApprovalReceived` mutation with both ids; approve/deny repeats the
+same pair. Status events report approved, denied, executing, succeeded, failed,
+expired, or cancelled. Desktop binds the request id to the distinct SDK
+tool-call id rather than assuming equality. Before
 publishing, Desktop resolves the exact process, window, and app identity; a
 contradictory app/window selector, changed target, or target that is not yet
 verifiable keeps the interruption desktop-local. Permit consumption compares
@@ -199,7 +201,10 @@ experiment, authenticated live peer advertising `computerUseApprove`, active
 link, and Rust broker policy all gate it. The authoritative expiry uses a
 monotonic deadline; wall-clock values are display metadata. Auto-deny retries
 bounded transient failures, then retires the remote request and leaves the
-interruption Mac-local if dispatch cannot be completed. See ADR-0053.
+interruption Mac-local if dispatch cannot be completed. The timer is armed only
+after an authenticated `computerUseApprovalReceived` frame proves that a live,
+capable peer received this exact request; a historical handshake or successful
+relay write is insufficient. See ADR-0053.
 
 There is no variant for arbitrary Tauri or agent-harness calls, recording
 start, note delete, other approvals, unrestricted mode, general filesystem

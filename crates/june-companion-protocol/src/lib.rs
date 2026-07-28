@@ -207,6 +207,7 @@ pub enum Body {
     },
     DeviceGetSelf,
     DeviceRevokeSelf,
+    ComputerUseApprovalReceived(ComputerUseApprovalReceipt),
     ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest),
     Response(Response),
     Event(Event),
@@ -230,6 +231,7 @@ impl Body {
                 | Self::RecordingStop { .. }
                 | Self::AppFocus { .. }
                 | Self::DeviceRevokeSelf
+                | Self::ComputerUseApprovalReceived(_)
                 | Self::ComputerUseApprovalRespond(_)
         )
     }
@@ -259,7 +261,9 @@ impl Body {
             Self::AppFocus { .. } => Capability::AppFocus,
             Self::DeviceGetSelf => Capability::DevicesReadSelf,
             Self::DeviceRevokeSelf => Capability::DevicesRevokeSelf,
-            Self::ComputerUseApprovalRespond(_) => Capability::ComputerUseApprove,
+            Self::ComputerUseApprovalReceived(_) | Self::ComputerUseApprovalRespond(_) => {
+                Capability::ComputerUseApprove
+            }
             Self::Response(response) => response.capability,
             Self::Event(event) => event.capability(),
         }
@@ -321,6 +325,7 @@ impl Body {
             }
             Self::SessionModelSet(request) => request.validate(),
             Self::MediaFetch(request) => request.validate(),
+            Self::ComputerUseApprovalReceived(receipt) => receipt.validate(),
             Self::ComputerUseApprovalRespond(request) => request.validate(),
             Self::SettingsEditSafe(patch) if patch.is_empty() => Err(ProtocolError::EmptyPatch),
             Self::Event(Event::AgentDelta {
@@ -353,6 +358,20 @@ impl Body {
             Self::Event(Event::ComputerUseApprovalStatusChanged(status)) => status.validate(),
             _ => Ok(()),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseApprovalReceipt {
+    pub request_id: String,
+    pub stored_session_id: String,
+}
+
+impl ComputerUseApprovalReceipt {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        validate_computer_use_approval_id(&self.request_id)?;
+        validate_computer_use_approval_id(&self.stored_session_id)
     }
 }
 
@@ -1645,6 +1664,13 @@ mod tests {
             .is_mutation()
         );
         assert!(
+            Body::ComputerUseApprovalReceived(ComputerUseApprovalReceipt {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+            })
+            .is_mutation()
+        );
+        assert!(
             Body::ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest {
                 request_id: "call-1".to_string(),
                 stored_session_id: "session-1".to_string(),
@@ -1854,6 +1880,21 @@ mod tests {
 
     #[test]
     fn computer_use_approval_decisions_and_statuses_have_stable_wire_values() {
+        let receipt = Body::ComputerUseApprovalReceived(ComputerUseApprovalReceipt {
+            request_id: "call-1".to_string(),
+            stored_session_id: "session-1".to_string(),
+        });
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap(),
+            serde_json::json!({
+                "type": "computerUseApprovalReceived",
+                "data": {
+                    "requestId": "call-1",
+                    "storedSessionId": "session-1"
+                }
+            })
+        );
+
         let decision = Body::ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest {
             request_id: "call-1".to_string(),
             stored_session_id: "session-1".to_string(),
@@ -1976,6 +2017,14 @@ mod tests {
         ));
 
         let oversized_session = "s".repeat(MAX_COMPUTER_USE_APPROVAL_ID_BYTES + 1);
+        assert!(matches!(
+            ComputerUseApprovalReceipt {
+                request_id: request.request_id.clone(),
+                stored_session_id: oversized_session.clone(),
+            }
+            .validate(),
+            Err(ProtocolError::InvalidIdentifier)
+        ));
         assert!(matches!(
             ComputerUseApprovalDecisionRequest {
                 request_id: request.request_id.clone(),

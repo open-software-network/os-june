@@ -244,3 +244,19 @@ interruption also records `resolvedByDeviceId`. These receipts survive sidecar
 resume failure and later device deletion. Independent interruptions use
 independent resolution locks, while decisions for the same interruption remain
 serialized.
+
+## 2026-07-28 addendum: authenticated receipt arms auto-deny
+
+An authenticated Noise handshake proves that a device was recently reachable,
+not that it remains connected when a later approval event crosses the relay.
+The relay intentionally does not reveal recipient presence and accepts an
+envelope even when the recipient is offline. Desktop therefore registers and
+queues a pending request without arming its auto-deny timer. The receiving
+device returns the additive `computerUseApprovalReceived` mutation with the
+exact request and stored-session ids. Only that authenticated receipt arms the
+existing monotonic deadline and bounded auto-deny task.
+
+This remains backward compatible: a client that does not send the receipt can
+still approve or deny a request it actually received, but its absence cannot
+cause Desktop to deny a durable Mac interruption. A receipt arriving after the
+published deadline fails closed as expired.

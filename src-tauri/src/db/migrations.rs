@@ -2142,7 +2142,28 @@ mod tests {
 
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
+        assert!(table_exists(&pool, "companion_browse_roots").await);
+        assert!(table_exists(&pool, "companion_uploads").await);
         assert!(table_exists(&pool, "companion_computer_use_approval_audit").await);
+        let companion_tail = query(
+            "SELECT version, name
+             FROM schema_migrations
+             WHERE version >= 46
+             ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("companion migration stamps")
+        .into_iter()
+        .map(|row| (row.get::<i64, _>("version"), row.get::<String, _>("name")))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            companion_tail,
+            vec![
+                (46, "companion_files".to_string()),
+                (47, "companion_computer_use_approval_audit".to_string()),
+            ]
+        );
         assert_latest_stamp(&pool).await;
     }
 

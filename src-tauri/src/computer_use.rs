@@ -2578,6 +2578,9 @@ impl CompanionAuthorizationPermit {
         if !self.available.swap(false, Ordering::AcqRel) {
             return crate::companion::ComputerUsePermitOutcome::Unavailable;
         }
+        let Some(target) = target else {
+            return crate::companion::ComputerUsePermitOutcome::Unavailable;
+        };
         crate::companion::take_computer_use_remote_permit(
             app,
             &self.stored_session_id,
@@ -2647,6 +2650,7 @@ pub(crate) async fn companion_approval_target(
     arguments: &Value,
     action: &str,
 ) -> Result<Option<CompanionApprovalTarget>, AppError> {
+    reject_unverifiable_companion_action(action)?;
     let state = app.state::<ComputerUseState>();
     let _operation = state.operation.lock().await;
     let current = || {
@@ -2693,16 +2697,21 @@ pub(crate) async fn companion_approval_target(
             Ok(Some(CompanionApprovalTarget::from_context(&current)))
         }
         "list_apps" | "wait" => Ok(None),
-        // LaunchServices resolves the application identity only after launch.
-        // Treat this as an explicitly targetless decision: the approval card
-        // describes opening the selected app without echoing a model-supplied
-        // name, and the permit can only match another targetless decision.
-        "open_app" => Ok(None),
         _ => Err(AppError::new(
             "computer_use_action_invalid",
             "Computer use received an unknown action.",
         )),
     }
+}
+
+fn reject_unverifiable_companion_action(action: &str) -> Result<(), AppError> {
+    if action == "open_app" {
+        return Err(AppError::new(
+            "companion_computer_use_target_unverified",
+            "Opening an app requires approval on this Mac so June can verify the launched app.",
+        ));
+    }
+    Ok(())
 }
 
 async fn handle_action(
@@ -5908,6 +5917,15 @@ mod tests {
         ] {
             assert!(open_app_name(&arguments).is_err(), "{arguments}");
         }
+    }
+
+    #[test]
+    fn open_app_stays_desktop_local_until_launch_resolves_its_identity() {
+        let error = reject_unverifiable_companion_action("open_app").unwrap_err();
+
+        assert_eq!(error.code, "companion_computer_use_target_unverified");
+        assert!(reject_unverifiable_companion_action("capture").is_ok());
+        assert!(reject_unverifiable_companion_action("wait").is_ok());
     }
 
     #[test]

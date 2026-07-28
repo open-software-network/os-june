@@ -106,3 +106,13 @@ desktop authority and keeps relay/API changes unnecessary.
 Existing linked devices gain the bounded `filesUpload` capability on upgrade.
 Settings makes that grant visible per device and unlinking is the v1 revoke
 mechanism; a narrower per-device capability toggle is deferred.
+
+## 2026-07-28 addendum: browse staging survives only its reference lifetime
+
+Browse attachment copies live in a Desktop-owned staging namespace, but their
+references are intentionally memory-only. Cleanup therefore cannot rely only
+on that map: Desktop scans the staging namespace periodically, preserves every
+currently tracked reference, and removes untracked directories once the
+15-minute reference lifetime has elapsed. This covers process termination and
+restart without racing a newly materialized or still-live reference. A failed
+materialization removes its staging directory immediately when possible.
