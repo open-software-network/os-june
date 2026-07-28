@@ -1264,6 +1264,18 @@ const MIGRATIONS: &[Migration] = &[
             columns: NOTE_CALENDAR_HTML_LINK_COLUMN,
         }],
     },
+    Migration {
+        version: 46,
+        name: "routine_google_account_binding",
+        requirements: &[SchemaRequirement::Column {
+            table: "routine_trust",
+            column: "account_id",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "routine_trust",
+            columns: ROUTINE_GOOGLE_ACCOUNT_COLUMN,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1272,6 +1284,10 @@ const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 }];
 const NOTE_CALENDAR_HTML_LINK_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "calendar_event_html_link",
+    definition: "TEXT",
+}];
+const ROUTINE_GOOGLE_ACCOUNT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "account_id",
     definition: "TEXT",
 }];
 const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {

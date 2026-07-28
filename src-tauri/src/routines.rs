@@ -1122,6 +1122,12 @@ async fn unattended_tools(
     enabled_toolsets: &[String],
 ) -> Value {
     let autonomous_tools = routine_autonomous_tools(&repository.pool, routine_id).await;
+    let repos = crate::db::repositories::Repositories::new(repository.pool.clone());
+    let bound_google_account =
+        crate::connectors::commands::stored_routine_account_id(&repos, routine_id)
+            .await
+            .ok()
+            .flatten();
     let mut tools = base_unattended_tools();
     if let Some(descriptors) = tools.as_array_mut() {
         descriptors.retain(|descriptor| {
@@ -1171,7 +1177,12 @@ async fn unattended_tools(
             "MCP discovery was unavailable for this routine run"
         ),
     }
-    match crate::agent_runtime::native_connectors::descriptors(app).await {
+    match crate::agent_runtime::native_connectors::routine_descriptors(
+        app,
+        bound_google_account.as_deref(),
+    )
+    .await
+    {
         Ok(descriptors) => tools
             .as_array_mut()
             .expect("routine tool catalog is an array")
@@ -1238,6 +1249,7 @@ pub async fn routine_tool_allowed_for_session(
     pool: &SqlitePool,
     session_id: &str,
     name: &str,
+    arguments: &Value,
 ) -> Result<Option<bool>, AppError> {
     let row = query(
         "SELECT routines.id, routines.metadata_json, routines.tool_catalog_version
@@ -1258,6 +1270,19 @@ pub async fn routine_tool_allowed_for_session(
     let enabled_toolsets =
         enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0);
     let autonomous_tools = routine_autonomous_tools(pool, &routine_id).await;
+    if crate::agent_runtime::native_connectors::is_google_tool(name) {
+        let repos = crate::db::repositories::Repositories::new(pool.clone());
+        let bound_account =
+            crate::connectors::commands::stored_routine_account_id(&repos, &routine_id).await?;
+        let requested_account = arguments
+            .get("accountId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|account_id| !account_id.is_empty());
+        if requested_account != bound_account.as_deref() {
+            return Ok(Some(false));
+        }
+    }
     Ok(Some(
         routine_base_tool_allowed(name, &enabled_toolsets)
             || crate::agent_runtime::native_connectors::routine_tool_allowed(
@@ -1438,6 +1463,15 @@ mod tests {
             "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, status TEXT, updated_at TEXT, last_error TEXT)",
             "CREATE TABLE agent_runs (id TEXT PRIMARY KEY, session_id TEXT, status TEXT, updated_at TEXT, completed_at TEXT, interrupted_state_json TEXT, error_code TEXT, error_message TEXT)",
             "CREATE TABLE connector_triggers (id TEXT PRIMARY KEY, job_id TEXT, kind TEXT, account_id TEXT)",
+            "CREATE TABLE routine_trust (
+                job_id TEXT PRIMARY KEY,
+                trust_mode TEXT NOT NULL,
+                approval_run_count INTEGER NOT NULL DEFAULT 0,
+                autonomous_tools TEXT NOT NULL DEFAULT '[]',
+                account_id TEXT,
+                approval_since TEXT,
+                updated_at TEXT NOT NULL
+            )",
         ] {
             query(statement).execute(&pool).await.unwrap();
         }
@@ -1704,6 +1738,73 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(claim.enabled_toolsets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn routine_google_tool_execution_rechecks_the_bound_account() {
+        let pool = pool().await;
+        let mut request = create_request("every 1h");
+        request.enabled_toolsets = Some(vec!["june_gmail".into()]);
+        create(&pool, request).await.unwrap();
+        query(
+            "INSERT INTO routine_trust
+             (job_id, trust_mode, autonomous_tools, account_id, updated_at)
+             VALUES ('routine-1', 'read_only', '[]', 'bound@example.test', '2026-07-28T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-bound')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query("INSERT INTO agent_runs (id) VALUES ('run-bound')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            "session-bound",
+            "run-bound",
+            &now(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            routine_tool_allowed_for_session(
+                &pool,
+                "session-bound",
+                "read_thread",
+                &json!({"accountId":"bound@example.test"}),
+            )
+            .await
+            .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            routine_tool_allowed_for_session(
+                &pool,
+                "session-bound",
+                "read_thread",
+                &json!({"accountId":"other@example.test"}),
+            )
+            .await
+            .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            routine_tool_allowed_for_session(&pool, "session-bound", "read_thread", &json!({}),)
+                .await
+                .unwrap(),
+            Some(false)
+        );
     }
 
     #[tokio::test]

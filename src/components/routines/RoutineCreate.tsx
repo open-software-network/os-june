@@ -1,5 +1,6 @@
 import { IconGoogle } from "central-icons/IconGoogle";
-import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState } from "react";
 import {
   TRUST_MODE_META,
   isConnectorNotConfiguredError,
@@ -18,8 +19,13 @@ import {
 } from "../../lib/routine-schedule";
 import {
   connectorsApplyRuntime,
+  connectorsCancelConnect,
   connectorsConnect,
   connectorsList,
+  CONNECTOR_AUTHORIZATION_URL_EVENT,
+  createConnectorFlowId,
+  openExternalUrl,
+  type ConnectorAuthorizationUrlPayload,
   type ConnectorAccount,
   type RoutineTrustMode,
 } from "../../lib/tauri";
@@ -84,6 +90,42 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const connectFlowRef = useRef<string | null>(null);
+  const authorizationListenerReadyRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen(
+      CONNECTOR_AUTHORIZATION_URL_EVENT,
+      (event: { payload: ConnectorAuthorizationUrlPayload }) => {
+        if (
+          !cancelled &&
+          event.payload.provider === "google" &&
+          event.payload.flowId === connectFlowRef.current
+        ) {
+          setAuthorizationUrl(event.payload.url);
+        }
+      },
+    )
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else {
+          authorizationListenerReadyRef.current = true;
+          unlisten = cleanup;
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setConnectError(messageFromError(error));
+      });
+    return () => {
+      cancelled = true;
+      authorizationListenerReadyRef.current = false;
+      if (connectFlowRef.current) void connectorsCancelConnect(connectFlowRef.current);
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,10 +152,11 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   const selectedAccount = connectedAccounts.find(
     (account) => account.accountId === selectedAccountId,
   );
-  // Only event triggers and autonomous grants have a persisted account
-  // binding. Scheduled reads fan out across every connected account, and
-  // attended mutations ask the user when the account is unclear.
-  const accountPickerRequired = trigger.source !== "schedule" || trustMode === "autonomous";
+  // Every connector-aware unattended run is bound to one Google account.
+  // This includes scheduled reads and approval-mode actions, not only event
+  // triggers and autonomous grants.
+  const accountPickerRequired =
+    trigger.source !== "schedule" || trustMode !== "read_only" || Boolean(requiredScopes);
   const scopeAccount = accountPickerRequired
     ? selectedAccount
     : connectedAccounts.find(
@@ -148,13 +191,22 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
     !triggerScopeSatisfied;
 
   async function connectForTemplate() {
-    if (!requiredScopes || !policy || connectBusy) return;
+    if (!requiredScopes || !policy || connectFlowRef.current) return;
+    if (!authorizationListenerReadyRef.current) {
+      setConnectError("The authorization window is still loading. Try again.");
+      return;
+    }
+    const flowId = createConnectorFlowId();
+    connectFlowRef.current = flowId;
     setConnectBusy(true);
     setConnectError(null);
+    setAuthorizationUrl(null);
     try {
       const connected = await connectorsConnect({
         scopes: requiredScopes,
         loginHint: selectedAccount?.email,
+        provider: "google",
+        flowId,
       });
       await connectorsApplyRuntime();
       setAccounts(await connectorsList());
@@ -166,6 +218,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
           : messageFromError(err),
       );
     } finally {
+      if (connectFlowRef.current === flowId) connectFlowRef.current = null;
       setConnectBusy(false);
     }
   }
@@ -225,7 +278,33 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
           </p>
         ) : null}
 
+        {accountPickerRequired && accounts !== null && connectedAccounts.length === 0 ? (
+          <InlineNotice
+            tone="info"
+            aria-label="Google account needed"
+            body={
+              connectError ??
+              "This routine needs one connected Google account. Connect it in Plugins, then return here to choose it."
+            }
+            actions={
+              requiredScopes ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={connectBusy}
+                  aria-busy={connectBusy || undefined}
+                  onClick={() => void connectForTemplate()}
+                >
+                  <IconGoogle size={13} aria-hidden />
+                  {connectBusy ? "Waiting for browser…" : "Connect Google account"}
+                </button>
+              ) : undefined
+            }
+          />
+        ) : null}
+
         {requiredScopes &&
+        connectedAccounts.length > 0 &&
         !scopeGateSatisfied &&
         !(accountPickerRequired && connectedAccounts.length > 1 && !selectedAccount) ? (
           <InlineNotice
@@ -248,6 +327,33 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
               </button>
             }
           />
+        ) : null}
+
+        {connectBusy && authorizationUrl ? (
+          <details className="connector-authorization-fallback">
+            <summary>Trouble opening your browser?</summary>
+            <div className="connector-authorization-fallback-body">
+              <label htmlFor="routine-authorization-url">Authorization link</label>
+              <input
+                id="routine-authorization-url"
+                className="text-input"
+                value={authorizationUrl}
+                readOnly
+              />
+              <button
+                type="button"
+                className="btn btn-secondary connector-authorization-open"
+                onClick={() => {
+                  void openExternalUrl(authorizationUrl).catch((error) =>
+                    setConnectError(messageFromError(error)),
+                  );
+                }}
+              >
+                Open again
+              </button>
+              <p>This link works only in a browser on this Mac.</p>
+            </div>
+          </details>
         ) : null}
 
         <div className="routine-detail-body">

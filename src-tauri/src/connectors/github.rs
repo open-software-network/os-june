@@ -269,6 +269,7 @@ pub fn device_poll_action(error: Option<&str>, interval_secs: u64) -> DevicePoll
 /// GitHub error code mapped to `Pending` forever.
 async fn poll_for_token(
     flow: &ConnectFlow,
+    flow_id: &str,
     client_id: &str,
     device_code: &GithubDeviceCode,
 ) -> Result<GithubTokenResponse, AppError> {
@@ -282,7 +283,7 @@ async fn poll_for_token(
 
     // Register a cancellation sender for the duration of the poll.
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    flow.register_cancel_sender(cancel_tx);
+    flow.register_cancel_sender(flow_id, cancel_tx)?;
 
     let result = loop {
         // Check the local deadline before sleeping. This runs at the top of
@@ -394,7 +395,7 @@ async fn poll_for_token(
     };
 
     // Clear the cancel slot so a later connect starts clean.
-    flow.clear_cancel_sender();
+    flow.clear_cancel_sender(flow_id);
     result
 }
 
@@ -421,13 +422,14 @@ fn poll_form<'a>(client_id: &'a str, device_code: &'a str) -> [(&'static str, &'
 /// taking a dependency on `tauri`.
 pub async fn authorize(
     flow: &ConnectFlow,
+    flow_id: &str,
     client_id: &str,
     on_device_code: impl Fn(&GithubDeviceCode),
 ) -> Result<GithubAuthorizedGrant, AppError> {
     let device_code = request_device_code(client_id).await?;
     on_device_code(&device_code);
 
-    let tokens = poll_for_token(flow, client_id, &device_code).await?;
+    let tokens = poll_for_token(flow, flow_id, client_id, &device_code).await?;
     let identity = fetch_identity(&tokens.access_token).await?;
     Ok(GithubAuthorizedGrant { tokens, identity })
 }

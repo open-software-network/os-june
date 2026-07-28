@@ -43,7 +43,12 @@ const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinf
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-pub(crate) const AUTHORIZATION_URL_EVENT: &str = "june://connector-authorization-url";
+const AUTHORIZATION_URL_EVENT: &str =
+    include_str!("../../../src/lib/connector-authorization-event-name.txt");
+
+pub(crate) fn authorization_url_event() -> &'static str {
+    AUTHORIZATION_URL_EVENT.trim()
+}
 /// Total refresh attempts (1 initial + retries) on transient upstream
 /// failures; definitive rejections (invalid_grant) never retry.
 pub(crate) const REFRESH_MAX_ATTEMPTS: usize = 3;
@@ -64,35 +69,108 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
     })
 }
 
-/// Cancel slot for an in-flight connect, mirroring `os_accounts::LoginFlow`.
-/// Managed as Tauri state; `connectors_cancel_connect` drains it.
+struct ActiveConnect {
+    flow_id: String,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    cancel_requested: bool,
+}
+
+/// Single-flight ownership for connector authorization. The flow id is minted
+/// by the frontend before it invokes Rust, carried on every browser-handoff
+/// event, and checked again when cancellation or cleanup touches the slot.
+/// This prevents an older connect from canceling or clearing a newer one.
 #[derive(Default)]
 pub struct ConnectFlow {
-    cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    active: std::sync::Mutex<Option<ActiveConnect>>,
 }
 
 impl ConnectFlow {
-    pub fn cancel(&self) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            if let Some(sender) = slot.take() {
+    pub(super) fn begin(&self, flow_id: &str) -> Result<(), AppError> {
+        let mut active = self.active.lock().map_err(|_| {
+            AppError::new(
+                "connector_connect_state_unavailable",
+                "Connector authorization state is unavailable. Try again.",
+            )
+        })?;
+        if active.is_some() {
+            return Err(AppError::new(
+                "connector_connect_in_progress",
+                "Another connector authorization is already in progress.",
+            ));
+        }
+        *active = Some(ActiveConnect {
+            flow_id: flow_id.to_string(),
+            cancel: None,
+            cancel_requested: false,
+        });
+        Ok(())
+    }
+
+    pub fn cancel(&self, flow_id: Option<&str>) {
+        if let Ok(mut active) = self.active.lock() {
+            let Some(current) = active.as_mut() else {
+                return;
+            };
+            if flow_id.is_some_and(|flow_id| flow_id != current.flow_id) {
+                return;
+            }
+            current.cancel_requested = true;
+            if let Some(sender) = current.cancel.take() {
                 let _ = sender.send(());
             }
         }
     }
 
-    /// Register a cancel sender for an in-flight device-flow poll. Sibling
-    /// modules (e.g. `github`) call this so the shared cancel signal works
-    /// without accessing the private `cancel` field directly.
-    pub(super) fn register_cancel_sender(&self, tx: tokio::sync::oneshot::Sender<()>) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            *slot = Some(tx);
+    /// Register the cancel receiver only for the connect that owns the slot.
+    /// A cancel that arrived before the provider finished setup is remembered
+    /// and delivered immediately.
+    pub(super) fn register_cancel_sender(
+        &self,
+        flow_id: &str,
+        tx: tokio::sync::oneshot::Sender<()>,
+    ) -> Result<(), AppError> {
+        let mut active = self.active.lock().map_err(|_| {
+            AppError::new(
+                "connector_connect_state_unavailable",
+                "Connector authorization state is unavailable. Try again.",
+            )
+        })?;
+        let current = active.as_mut().ok_or_else(|| {
+            AppError::new(
+                "connector_connect_stale",
+                "This connector authorization is no longer active.",
+            )
+        })?;
+        if current.flow_id != flow_id {
+            return Err(AppError::new(
+                "connector_connect_stale",
+                "This connector authorization is no longer active.",
+            ));
+        }
+        if current.cancel_requested {
+            let _ = tx.send(());
+        } else {
+            current.cancel = Some(tx);
+        }
+        Ok(())
+    }
+
+    pub(super) fn clear_cancel_sender(&self, flow_id: &str) {
+        if let Ok(mut active) = self.active.lock() {
+            if let Some(current) = active.as_mut().filter(|current| current.flow_id == flow_id) {
+                current.cancel = None;
+            }
         }
     }
 
-    /// Clear the cancel slot after a device-flow poll completes or is aborted.
-    pub(super) fn clear_cancel_sender(&self) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            *slot = None;
+    pub(super) fn finish(&self, flow_id: &str) {
+        if let Ok(mut active) = self.active.lock() {
+            if active
+                .as_ref()
+                .is_some_and(|current| current.flow_id == flow_id)
+            {
+                *active = None;
+            }
         }
     }
 }
@@ -163,23 +241,44 @@ pub(crate) enum LoopbackPort {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AuthorizationUrlPayload {
     pub url: String,
+    pub provider: String,
+    pub flow_id: String,
 }
 
-fn emit_authorization_url_with<E>(
+fn emit_authorization_url<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     auth_url: &str,
-    emit: impl FnOnce(&str, AuthorizationUrlPayload) -> Result<(), E>,
-) -> Result<(), E> {
-    emit(
-        AUTHORIZATION_URL_EVENT,
+    provider: &str,
+    flow_id: &str,
+) -> Result<(), AppError> {
+    use tauri::Emitter;
+    app.emit_to(
+        "main",
+        authorization_url_event(),
         AuthorizationUrlPayload {
             url: auth_url.to_string(),
+            provider: provider.to_string(),
+            flow_id: flow_id.to_string(),
         },
     )
-}
-
-fn emit_authorization_url(app: &tauri::AppHandle, auth_url: &str) {
-    use tauri::Emitter;
-    let _ = emit_authorization_url_with(auth_url, |event, payload| app.emit(event, payload));
+    .map_err(|error| {
+        tracing::warn!(
+            error = %error,
+            provider,
+            "connector authorization URL delivery failed"
+        );
+        AppError::new(
+            "connector_authorization_handoff_failed",
+            "June could not show the browser authorization link. Try again.",
+        )
+    })?;
+    tracing::debug!(
+        event = authorization_url_event(),
+        provider,
+        flow_id,
+        "connector authorization URL delivered to the waiting dialog"
+    );
+    Ok(())
 }
 
 fn authorization_browser_launch_error<E>(
@@ -233,6 +332,8 @@ pub(crate) async fn loopback_authorize(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
     provider_label: &str,
+    provider: &str,
+    flow_id: &str,
     port: LoopbackPort,
     build_auth_url: impl FnOnce(&str, &str, &str) -> String,
 ) -> Result<LoopbackAuthorization, AppError> {
@@ -247,7 +348,12 @@ pub(crate) async fn loopback_authorize(
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
     let auth_url = build_auth_url(&redirect_uri, &challenge, &csrf);
 
-    emit_authorization_url(app, &auth_url);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    flow.register_cancel_sender(flow_id, cancel_tx)?;
+    if let Err(error) = emit_authorization_url(app, &auth_url, provider, flow_id) {
+        flow.clear_cancel_sender(flow_id);
+        return Err(error);
+    }
     // The waiting dialog exposes the same URL as a manual fallback. A failed
     // OS launcher must not tear down the loopback listener before the user can
     // copy or open that link themselves.
@@ -261,10 +367,6 @@ pub(crate) async fn loopback_authorize(
         );
     }
 
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    if let Ok(mut slot) = flow.cancel.lock() {
-        *slot = Some(cancel_tx);
-    }
     let outcome = tokio::select! {
         result = tokio::time::timeout(CONNECT_TIMEOUT, await_callback(&listener, &csrf, provider_label)) => {
             result.unwrap_or_else(|_| {
@@ -279,9 +381,7 @@ pub(crate) async fn loopback_authorize(
             format!("Connecting to {provider_label} was canceled."),
         )),
     };
-    if let Ok(mut slot) = flow.cancel.lock() {
-        *slot = None;
-    }
+    flow.clear_cancel_sender(flow_id);
     let code = outcome?;
 
     Ok(LoopbackAuthorization {
@@ -300,6 +400,7 @@ pub(crate) async fn loopback_authorize(
 pub async fn authorize(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
+    flow_id: &str,
     client_id: &str,
     client_secret: &str,
     scopes: &[&str],
@@ -309,6 +410,8 @@ pub async fn authorize(
         app,
         flow,
         "Google",
+        "google",
+        flow_id,
         LoopbackPort::Ephemeral,
         |redirect_uri, code_challenge, state| {
             build_auth_url(
@@ -756,26 +859,73 @@ mod tests {
     use std::cell::RefCell;
 
     #[test]
-    fn authorization_url_is_emitted_for_the_waiting_dialog() {
-        let emitted = RefCell::new(None);
-        emit_authorization_url_with(
-            "https://accounts.google.com/o/oauth2/v2/auth?state=test",
-            |event, payload| {
-                emitted.replace(Some((event.to_string(), payload)));
-                Ok::<(), ()>(())
-            },
-        )
-        .expect("emit");
+    fn real_tauri_emit_path_reaches_the_main_window() {
+        use std::sync::mpsc;
+        use tauri::Listener;
 
+        let app = tauri::test::mock_app();
+        let window = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        window.listen(authorization_url_event(), move |event| {
+            tx.send(event.payload().to_string()).expect("capture event");
+        });
+
+        emit_authorization_url(
+            app.handle(),
+            "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+            "google",
+            "flow-test",
+        )
+        .expect("emit through Tauri");
+
+        let payload = rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("main window receives event");
         assert_eq!(
-            emitted.into_inner(),
-            Some((
-                AUTHORIZATION_URL_EVENT.to_string(),
-                AuthorizationUrlPayload {
-                    url: "https://accounts.google.com/o/oauth2/v2/auth?state=test".to_string(),
-                },
-            ))
+            serde_json::from_str::<serde_json::Value>(&payload).expect("event JSON"),
+            serde_json::json!({
+                "url": "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+                "provider": "google",
+                "flowId": "flow-test",
+            })
         );
+    }
+
+    #[test]
+    fn connect_flow_is_single_flight_and_cleanup_is_owner_scoped() {
+        let flow = ConnectFlow::default();
+        flow.begin("first").expect("first flow");
+        let error = flow.begin("second").expect_err("overlap rejected");
+        assert_eq!(error.code, "connector_connect_in_progress");
+
+        flow.finish("second");
+        assert!(flow.begin("second").is_err(), "stale cleanup kept owner");
+        flow.finish("first");
+        flow.begin("second").expect("slot released by owner");
+    }
+
+    #[tokio::test]
+    async fn stale_cancel_cannot_abort_the_current_flow() {
+        let flow = ConnectFlow::default();
+        flow.begin("current").expect("current flow");
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        flow.register_cancel_sender("current", tx)
+            .expect("register owner");
+
+        flow.cancel(Some("stale"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut rx)
+                .await
+                .is_err(),
+            "stale cancel must not reach current receiver"
+        );
+        flow.cancel(Some("current"));
+        tokio::time::timeout(Duration::from_millis(50), &mut rx)
+            .await
+            .expect("owner cancel delivered")
+            .expect("cancel sender");
     }
 
     #[test]

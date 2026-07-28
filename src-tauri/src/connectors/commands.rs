@@ -45,6 +45,10 @@ pub struct ConnectorsConnectRequest {
     /// multi-provider support and older frontends never send it.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Frontend-minted correlation id for the pending authorization dialog.
+    /// Optional keeps older desktop bundles compatible.
+    #[serde(default)]
+    pub flow_id: Option<String>,
 }
 
 #[tauri::command]
@@ -56,44 +60,95 @@ pub async fn connectors_connect(
     let provider = parse_provider(request.provider.as_deref())?;
     let bundles = parse_bundles(&request.scopes)?;
     validate_bundle_providers(&bundles, provider)?;
-    let account = match provider {
+    let flow_id = request
+        .flow_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|flow_id| !flow_id.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| super::random_b64url(18));
+    flow.begin(&flow_id)?;
+    let result = match provider {
         ConnectorProvider::Google => {
-            begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+            begin_connect(
+                &app,
+                &flow,
+                &flow_id,
+                &bundles,
+                request.login_hint.as_deref(),
+            )
+            .await
         }
         ConnectorProvider::Linear => {
-            begin_connect_linear(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+            begin_connect_linear(
+                &app,
+                &flow,
+                &flow_id,
+                &bundles,
+                request.login_hint.as_deref(),
+            )
+            .await
         }
         ConnectorProvider::Github => {
-            begin_connect_github(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+            begin_connect_github(
+                &app,
+                &flow,
+                &flow_id,
+                &bundles,
+                request.login_hint.as_deref(),
+            )
+            .await
         }
-        ConnectorProvider::Notion => {
-            return Err(AppError::new(
-                "connector_provider_invalid",
-                "Notion uses its dedicated connect flow.",
-            ));
-        }
+        ConnectorProvider::Notion => Err(AppError::new(
+            "connector_provider_invalid",
+            "Notion uses its dedicated connect flow.",
+        )),
     };
+    flow.finish(&flow_id);
+    let account = result?;
     if provider != ConnectorProvider::Google {
         return Ok(account);
     }
 
     // Re-mint autonomous grants for routines that still declare autonomous
-    // trust. Preserve each routine's already-stored account binding; connecting
-    // a second Google account must never retarget an older routine. A legacy
-    // routine with no stored binding stays untouched until the user explicitly
-    // chooses an account in the routine editor. Best-effort and per routine: a
-    // re-mint failure must not fail the connect.
+    // trust. Preserve a healthy stored binding. A legacy or disconnected
+    // binding defaults only when exactly one connected Google account exists;
+    // otherwise it remains visibly unresolved in the routine UI. Best-effort
+    // and per routine: a re-mint failure must not fail the connect.
     let repos = crate::commands::repositories(&app).await?;
     match repos.list_routine_trust_by_mode("autonomous").await {
         Ok(records) => {
             for record in records {
-                let account_id = match stored_routine_account_id(&repos, &record.job_id).await {
-                    Ok(Some(account_id)) => Some(account_id),
-                    Ok(None) => None,
+                let stored_account = match stored_routine_account_id(&repos, &record.job_id).await {
+                    Ok(account_id) => account_id,
                     Err(error) => {
                         tracing::warn!(error_code = %error.code, "autonomous routine account lookup on connect failed");
                         None
                     }
+                };
+                let account_id = match stored_account {
+                    Some(account_id)
+                        if require_google_routine_account(&repos, &account_id)
+                            .await
+                            .is_ok() =>
+                    {
+                        Some(account_id)
+                    }
+                    _ => sole_connected_google_account_id(&app).await,
+                };
+                let account_id = match account_id {
+                    Some(account_id) => {
+                        if let Err(error) = repos
+                            .routine_trust_set_account(&record.job_id, Some(&account_id))
+                            .await
+                        {
+                            tracing::warn!(error_code = %AppError::from(error).code, "autonomous routine account default failed");
+                            None
+                        } else {
+                            Some(account_id)
+                        }
+                    }
+                    None => None,
                 };
                 let Some(account_id) = account_id else {
                     tracing::warn!(job_id = %record.job_id, "autonomous routine has no unambiguous Google account");
@@ -113,8 +168,11 @@ pub async fn connectors_connect(
 }
 
 #[tauri::command]
-pub fn connectors_cancel_connect(flow: tauri::State<'_, ConnectFlow>) -> Result<(), AppError> {
-    super::cancel_connect(&flow);
+pub fn connectors_cancel_connect(
+    flow: tauri::State<'_, ConnectFlow>,
+    flow_id: Option<String>,
+) -> Result<(), AppError> {
+    super::cancel_connect(&flow, flow_id.as_deref());
     Ok(())
 }
 
@@ -377,8 +435,11 @@ pub async fn routine_trust_set(
             .map(|record| record.autonomous_tools)
             .unwrap_or_default()
     });
-    let record = repos
+    repos
         .routine_trust_set(&request.job_id, &request.trust_mode, &autonomous_tools)
+        .await?;
+    let record = repos
+        .routine_trust_set_account(&request.job_id, account_id.as_deref())
         .await?;
     // Autonomy grant minting is the choke point for session-blind
     // attribution: an autonomous routine gets a per-provider grant (token +
@@ -446,10 +507,18 @@ fn trust_dto(
     }
 }
 
-async fn stored_routine_account_id(
+pub(crate) async fn stored_routine_account_id(
     repos: &Repositories,
     job_id: &str,
 ) -> Result<Option<String>, AppError> {
+    if let Some(account_id) = repos
+        .routine_trust_get(job_id)
+        .await?
+        .and_then(|record| record.account_id)
+        .filter(|account_id| !account_id.is_empty())
+    {
+        return Ok(Some(account_id));
+    }
     if let Some(account_id) = repos
         .connector_grants_for_job(job_id)
         .await?
@@ -482,17 +551,26 @@ async fn require_google_routine_account(
     repos: &Repositories,
     account_id: &str,
 ) -> Result<(), AppError> {
-    let is_google = repos
-        .get_connector_account(account_id)
-        .await?
-        .is_some_and(|record| record.provider == ConnectorProvider::Google.as_str());
-    if is_google {
-        Ok(())
-    } else {
-        Err(AppError::new(
+    match repos.get_connector_account(account_id).await? {
+        Some(record)
+            if record.provider == ConnectorProvider::Google.as_str()
+                && record.status == ConnectorAccountStatus::Connected.as_str() =>
+        {
+            Ok(())
+        }
+        Some(record)
+            if record.provider == ConnectorProvider::Google.as_str()
+                && record.status == ConnectorAccountStatus::ReconnectRequired.as_str() =>
+        {
+            Err(AppError::new(
+                "connector_reconnect_required",
+                "Reconnect that Google account before using it for this routine.",
+            ))
+        }
+        _ => Err(AppError::new(
             "connector_account_not_found",
             "That Google account is not connected.",
-        ))
+        )),
     }
 }
 
@@ -693,18 +771,7 @@ pub async fn connector_trigger_set(
     // Triggers poll Gmail history and Calendar events, so the subscribed
     // account must be a Google one: a Linear workspace id would pass a bare
     // existence check and leave the routine silently never firing.
-    let is_google_account = repos
-        .get_connector_account(&request.account_id)
-        .await?
-        .is_some_and(|record| {
-            super::ConnectorProvider::from_db(&record.provider) == super::ConnectorProvider::Google
-        });
-    if !is_google_account {
-        return Err(AppError::new(
-            "connector_account_not_found",
-            "That Google account is not connected.",
-        ));
-    }
+    require_google_routine_account(&repos, &request.account_id).await?;
     let config = request
         .config
         .unwrap_or(serde_json::Value::Object(Default::default()));
@@ -1041,6 +1108,7 @@ mod tests {
             trust_mode: "autonomous".to_string(),
             approval_run_count: 3,
             autonomous_tools: vec!["send_email".to_string()],
+            account_id: Some("first@example.com".to_string()),
             approval_since: None,
             updated_at: "2026-07-28T00:00:00Z".to_string(),
         };

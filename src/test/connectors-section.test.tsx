@@ -2,7 +2,11 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsSection } from "../components/settings/ConnectorsSection";
-import type { ConnectorAccount, LinearTeam } from "../lib/tauri";
+import {
+  CONNECTOR_AUTHORIZATION_URL_EVENT,
+  type ConnectorAccount,
+  type LinearTeam,
+} from "../lib/tauri";
 import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 const mocks = vi.hoisted(() => ({
@@ -93,6 +97,12 @@ let connectorsChangedListener: (() => void) | null = null;
 // Map from event name to its handler so device-code events can be fired
 // independently of the connectors-changed event.
 const eventHandlers = new Map<string, (event: { payload: unknown }) => void>();
+
+function activeFlowId(): string {
+  const input = mocks.connectorsConnect.mock.calls.at(-1)?.[0] as { flowId?: string } | undefined;
+  if (!input?.flowId) throw new Error("No active connector flow");
+  return input.flowId;
+}
 
 function account(overrides: Partial<ConnectorAccount> = {}): ConnectorAccount {
   const email = overrides.email ?? "alex@example.com";
@@ -606,6 +616,7 @@ describe("ConnectorsSection", () => {
         scopes: ["gmail_read", "calendar_read"],
         loginHint: undefined,
         provider: "google",
+        flowId: expect.any(String),
       }),
     );
   });
@@ -629,6 +640,7 @@ describe("ConnectorsSection", () => {
         scopes: ["gmail_read", "gmail_draft", "calendar_read"],
         loginHint: undefined,
         provider: "google",
+        flowId: expect.any(String),
       }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
@@ -659,7 +671,7 @@ describe("ConnectorsSection", () => {
 
     await userEvent.click(cancel);
     // The backend loopback wait is aborted and the dialog closes.
-    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalledWith(activeFlowId()));
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Connect Google account" })).toBeNull(),
     );
@@ -680,8 +692,8 @@ describe("ConnectorsSection", () => {
     const authorizationUrl =
       "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http://127.0.0.1:43123/callback";
     act(() => {
-      eventHandlers.get("june://connector-authorization-url")?.({
-        payload: { url: authorizationUrl },
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: { url: authorizationUrl, provider: "google", flowId: activeFlowId() },
       });
     });
 
@@ -701,6 +713,36 @@ describe("ConnectorsSection", () => {
     expect(mocks.invoke).toHaveBeenCalledWith("june_open_external_url", {
       url: authorizationUrl,
     });
+  });
+
+  it("ignores an authorization URL from a stale connect flow", async () => {
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+    await userEvent.click(await findEnabledConnect("Connect Google"));
+    const dialog = screen.getByRole("dialog", { name: "Connect Google account" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    act(() => {
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: {
+          url: "https://accounts.google.com/stale",
+          provider: "google",
+          flowId: "stale-flow",
+        },
+      });
+    });
+    expect(within(dialog).queryByText("Trouble opening your browser?")).toBeNull();
+
+    act(() => {
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: {
+          url: "https://accounts.google.com/current",
+          provider: "google",
+          flowId: activeFlowId(),
+        },
+      });
+    });
+    expect(await within(dialog).findByText("Trouble opening your browser?")).toBeInTheDocument();
   });
 
   it("shows an inline notice when the connector is not configured in this build", async () => {
@@ -730,6 +772,7 @@ describe("ConnectorsSection", () => {
         scopes: ["gmail_read", "calendar_events"],
         loginHint: "alex@example.com",
         provider: "google",
+        flowId: expect.any(String),
       }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
@@ -744,8 +787,12 @@ describe("ConnectorsSection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Reconnect alex@example.com" }));
     const dialog = await screen.findByRole("dialog", { name: "Reconnect Google account" });
     act(() => {
-      eventHandlers.get("june://connector-authorization-url")?.({
-        payload: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=reconnect" },
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: {
+          url: "https://accounts.google.com/o/oauth2/v2/auth?state=reconnect",
+          provider: "google",
+          flowId: activeFlowId(),
+        },
       });
     });
 
@@ -822,6 +869,7 @@ describe("ConnectorsSection — Linear", () => {
         scopes: ["linear_read"],
         loginHint: undefined,
         provider: "linear",
+        flowId: expect.any(String),
       }),
     );
     // Slice 2 registers the june_linear MCP server, so a Linear connect now
@@ -1016,6 +1064,7 @@ describe("ConnectorsSection — Linear", () => {
         scopes: ["linear_read"],
         loginHint: "linear-acc-1",
         provider: "linear",
+        flowId: expect.any(String),
       }),
     );
     // A reconnect goes through the same runConnect path as a fresh connect,
@@ -1070,6 +1119,7 @@ describe("ConnectorsSection — GitHub", () => {
         scopes: ["github_read"],
         loginHint: undefined,
         provider: "github",
+        flowId: expect.any(String),
       }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
@@ -1093,6 +1143,7 @@ describe("ConnectorsSection — GitHub", () => {
         scopes: ["github_read", "github_write"],
         loginHint: undefined,
         provider: "github",
+        flowId: expect.any(String),
       }),
     );
   });
@@ -1138,6 +1189,7 @@ describe("ConnectorsSection — GitHub", () => {
         scopes: ["github_read"],
         loginHint: "12345678",
         provider: "github",
+        flowId: expect.any(String),
       }),
     );
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
@@ -1162,6 +1214,7 @@ describe("ConnectorsSection — GitHub", () => {
         scopes: ["github_read"],
         loginHint: "12345678",
         provider: "github",
+        flowId: expect.any(String),
       }),
     );
 
@@ -1172,6 +1225,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "RECON-5678",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1225,11 +1280,16 @@ describe("ConnectorsSection — GitHub", () => {
         scopes: ["linear_read"],
         loginHint: "linear-acc-1",
         provider: "linear",
+        flowId: expect.any(String),
       }),
     );
     act(() => {
-      eventHandlers.get("june://connector-authorization-url")?.({
-        payload: { url: "https://linear.app/oauth/authorize?state=reconnect" },
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: {
+          url: "https://linear.app/oauth/authorize?state=reconnect",
+          provider: "linear",
+          flowId: activeFlowId(),
+        },
       });
     });
     expect(await within(dialog).findByText("Trouble opening your browser?")).toBeInTheDocument();
@@ -1285,6 +1345,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "ABCD-1234",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1314,6 +1376,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "FIRST-111",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1325,6 +1389,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "SECOND-222",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1353,6 +1419,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "ABCD-9999",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1389,6 +1457,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "EXPIRING-1",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1420,6 +1490,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "SHOULD-NOT-SHOW",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });
@@ -1445,6 +1517,8 @@ describe("ConnectorsSection — GitHub", () => {
           userCode: "SHOULD-NOT-SHOW",
           verificationUri: "https://github.com/login/device",
           expiresInSeconds: 900,
+          provider: "github",
+          flowId: activeFlowId(),
         },
       });
     });

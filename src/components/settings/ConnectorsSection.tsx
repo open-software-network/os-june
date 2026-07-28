@@ -28,6 +28,7 @@ import {
   notionConnectorConnect,
   notionConnectorDisconnect,
   connectorsSetSelectedTeams,
+  createConnectorFlowId,
   obsidianConfigure,
   obsidianDisconnect,
   obsidianStatus,
@@ -436,11 +437,20 @@ export function ConnectorsSection({
   // An inline error inside the connect dialog (device-flow specific errors
   // that keep the dialog open so the user can retry).
   const [connectError, setConnectError] = useState<string | null>(null);
+  const activeFlowRef = useRef<{
+    flowId: string;
+    provider: OAuthConnectorProvider;
+  } | null>(null);
+  const authorizationListenerReadyRef = useRef(false);
+  const githubListenerReadyRef = useRef(false);
 
   useEffect(
     () => () => {
       window.clearTimeout(codeCopiedTimerRef.current);
       window.clearTimeout(authorizationUrlCopiedTimerRef.current);
+      if (activeFlowRef.current) {
+        void connectorsCancelConnect(activeFlowRef.current.flowId);
+      }
     },
     [],
   );
@@ -544,13 +554,29 @@ export function ConnectorsSection({
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listen(GITHUB_DEVICE_CODE_EVENT, (event: { payload: GitHubDeviceCodePayload }) => {
-      if (!cancelled) setGithubDeviceCode(event.payload);
-    }).then((cleanup) => {
-      if (cancelled) cleanup();
-      else unlisten = cleanup;
-    });
+      const active = activeFlowRef.current;
+      if (
+        !cancelled &&
+        active?.provider === "github" &&
+        event.payload.provider === "github" &&
+        event.payload.flowId === active.flowId
+      ) {
+        setGithubDeviceCode(event.payload);
+      }
+    })
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else {
+          githubListenerReadyRef.current = true;
+          unlisten = cleanup;
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setConnectError(messageFromError(error));
+      });
     return () => {
       cancelled = true;
+      githubListenerReadyRef.current = false;
       unlisten?.();
     };
   }, []);
@@ -561,14 +587,29 @@ export function ConnectorsSection({
     void listen(
       CONNECTOR_AUTHORIZATION_URL_EVENT,
       (event: { payload: ConnectorAuthorizationUrlPayload }) => {
-        if (!cancelled) setAuthorizationUrl(event.payload.url);
+        const active = activeFlowRef.current;
+        if (
+          !cancelled &&
+          active?.provider === event.payload.provider &&
+          active.flowId === event.payload.flowId
+        ) {
+          setAuthorizationUrl(event.payload.url);
+        }
       },
-    ).then((cleanup) => {
-      if (cancelled) cleanup();
-      else unlisten = cleanup;
-    });
+    )
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else {
+          authorizationListenerReadyRef.current = true;
+          unlisten = cleanup;
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setConnectError(messageFromError(error));
+      });
     return () => {
       cancelled = true;
+      authorizationListenerReadyRef.current = false;
       unlisten?.();
     };
   }, []);
@@ -596,11 +637,13 @@ export function ConnectorsSection({
     provider: OAuthConnectorProvider;
     scopes: ConnectorScopeBundle[];
     loginHint?: string;
+    flowId: string;
   }) {
     const account = await connectorsConnect({
       provider: input.provider,
       scopes: input.scopes,
       loginHint: input.loginHint,
+      flowId: input.flowId,
     });
     // A fresh grant only takes effect once the rendered MCP config picks it
     // up: registering (or dropping) a server name is a config-render change,
@@ -642,7 +685,17 @@ export function ConnectorsSection({
   }
 
   async function submitConnect() {
-    if (bundles.length === 0 || connecting) return;
+    if (bundles.length === 0 || activeFlowRef.current) return;
+    const listenerReady =
+      connectProvider === "github"
+        ? githubListenerReadyRef.current
+        : authorizationListenerReadyRef.current;
+    if (!listenerReady) {
+      setConnectError("The authorization window is still loading. Try again.");
+      return;
+    }
+    const flowId = createConnectorFlowId();
+    activeFlowRef.current = { flowId, provider: connectProvider };
     setNotConfigured(null);
     setConnectError(null);
     setGithubDeviceCode(null);
@@ -654,6 +707,7 @@ export function ConnectorsSection({
         provider: connectProvider,
         scopes: bundles,
         loginHint: connectTarget ? loginHintFor(connectTarget) : undefined,
+        flowId,
       });
       setConnectOpen(false);
       setConnectIsReconnect(false);
@@ -691,6 +745,7 @@ export function ConnectorsSection({
         toast.error(messageFromError(err));
       }
     } finally {
+      if (activeFlowRef.current?.flowId === flowId) activeFlowRef.current = null;
       setConnecting(false);
     }
   }
@@ -779,7 +834,9 @@ export function ConnectorsSection({
   // the backend's wait, so Cancel and the close button work during that window
   // instead of being stuck until the flow resolves or times out.
   function dismissConnect() {
-    if (connecting) void connectorsCancelConnect();
+    if (activeFlowRef.current) {
+      void connectorsCancelConnect(activeFlowRef.current.flowId);
+    }
     setConnectOpen(false);
     setGithubDeviceCode(null);
     setAuthorizationUrl(null);
@@ -789,7 +846,17 @@ export function ConnectorsSection({
   }
 
   async function reconnect(account: ConnectorAccount) {
-    if (account.provider === "notion" || !policy) return;
+    if (account.provider === "notion" || !policy || activeFlowRef.current) return;
+    const listenerReady =
+      account.provider === "github"
+        ? githubListenerReadyRef.current
+        : authorizationListenerReadyRef.current;
+    if (!listenerReady) {
+      toast.error("The authorization window is still loading. Try again.");
+      return;
+    }
+    const flowId = createConnectorFlowId();
+    activeFlowRef.current = { flowId, provider: account.provider };
     setNotConfigured(null);
     const accountBundles = bundlesFromScopes(policy, account.scopes, account.provider);
     setConnectProvider(account.provider);
@@ -810,6 +877,7 @@ export function ConnectorsSection({
         provider: account.provider,
         scopes: accountBundles,
         loginHint: loginHintFor(account),
+        flowId,
       });
       setConnectOpen(false);
       setConnectIsReconnect(false);
@@ -838,6 +906,7 @@ export function ConnectorsSection({
         toast.error(messageFromError(err));
       }
     } finally {
+      if (activeFlowRef.current?.flowId === flowId) activeFlowRef.current = null;
       setConnecting(false);
       setReconnectingId(null);
     }

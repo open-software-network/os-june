@@ -119,6 +119,7 @@ pub async fn dispatch_tool(
             &context.repository.pool,
             &context.session_id,
             name,
+            &arguments,
         )
         .await?
             == Some(false)

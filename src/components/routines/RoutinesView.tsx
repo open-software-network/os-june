@@ -47,10 +47,13 @@ import {
 import { compactScheduleLabel, humanizeSchedule } from "../../lib/routine-schedule";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import {
+  connectorsList,
   connectorTriggerSet,
+  routineTrustGet,
   routineTrustRecordRun,
   routineTrustSet,
   type ConnectorPolicyCatalog,
+  type RoutineTrust,
 } from "../../lib/tauri";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { HoverTip } from "../ui/HoverTip";
@@ -125,6 +128,10 @@ export function RoutinesView({
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [routineTrustById, setRoutineTrustById] = useState<
+    ReadonlyMap<string, RoutineTrust | null>
+  >(new Map());
+  const [connectedGoogleIds, setConnectedGoogleIds] = useState<ReadonlySet<string>>(new Set());
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailErrorRetryable, setDetailErrorRetryable] = useState(false);
   const [describeDraft, setDescribeDraft] = useState("");
@@ -155,7 +162,24 @@ export function RoutinesView({
     setRefreshing(true);
     try {
       const jobs = await listRoutines();
+      const [trustRecords, connectorAccounts] = await Promise.all([
+        Promise.all(
+          jobs.map(async (job) => {
+            const trust = await routineTrustGet(job.job_id).catch(() => null);
+            return [job.job_id, trust] as const;
+          }),
+        ),
+        connectorsList().catch(() => []),
+      ]);
       setRoutines(sortRoutines(jobs));
+      setRoutineTrustById(new Map(trustRecords));
+      setConnectedGoogleIds(
+        new Set(
+          connectorAccounts
+            .filter((account) => account.provider === "google" && account.status === "connected")
+            .map((account) => account.accountId),
+        ),
+      );
       setError(null);
       setErrorRetryable(false);
       return null;
@@ -618,6 +642,12 @@ export function RoutinesView({
               key={routine.job_id}
               policy={policy}
               routine={routine}
+              needsAccount={(() => {
+                const trust = routineTrustById.get(routine.job_id);
+                return Boolean(
+                  trust && (!trust.accountId || !connectedGoogleIds.has(trust.accountId)),
+                );
+              })()}
               busy={busyIds.has(routine.job_id)}
               onOpen={() => openDetail(routine)}
               onRunNow={() =>
@@ -730,6 +760,7 @@ function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void 
 function RoutineRow({
   routine,
   policy,
+  needsAccount,
   busy,
   onOpen,
   onRunNow,
@@ -738,6 +769,7 @@ function RoutineRow({
 }: {
   routine: RoutineJob;
   policy: ConnectorPolicyCatalog | null;
+  needsAccount: boolean;
   busy: boolean;
   onOpen: () => void;
   onRunNow: () => void;
@@ -808,6 +840,11 @@ function RoutineRow({
             ) : null}
             {routine.last_status === "error" ? (
               <span className="routines-item-badge routines-item-badge-error">Last run failed</span>
+            ) : null}
+            {needsAccount ? (
+              <span className="routines-item-badge routines-item-badge-error">
+                Needs an account
+              </span>
             ) : null}
           </span>
         </span>

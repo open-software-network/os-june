@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoutinesView } from "../components/routines/RoutinesView";
 import type { RoutineJob } from "../lib/agent-routines";
 import type { RoutineRunSession } from "../lib/agent-routine-history";
+import { CONNECTOR_AUTHORIZATION_URL_EVENT } from "../lib/tauri";
 import appCss from "../styles/app.css?raw";
 import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
@@ -76,6 +77,7 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => ({
 const eventMocks = vi.hoisted(() => ({
   listen: vi.fn(),
 }));
+const eventHandlers = new Map<string, (event: { payload: unknown }) => void>();
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: eventMocks.listen,
@@ -164,6 +166,7 @@ async function openDetail(name: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  eventHandlers.clear();
   mocks.routineDetailOnRunNow = undefined;
   mocks.pauseRoutine.mockResolvedValue({});
   mocks.resumeRoutine.mockResolvedValue({});
@@ -205,7 +208,12 @@ beforeEach(() => {
     attendedEnabled: true,
     managedEnabled: true,
   });
-  eventMocks.listen.mockResolvedValue(() => {});
+  eventMocks.listen.mockImplementation(
+    async (event: string, handler: (event: { payload: unknown }) => void) => {
+      eventHandlers.set(event, handler);
+      return () => {};
+    },
+  );
 });
 
 function googleAccount(overrides: Record<string, unknown> = {}) {
@@ -222,6 +230,14 @@ function googleAccount(overrides: Record<string, unknown> = {}) {
     status: "connected" as const,
     ...overrides,
   };
+}
+
+function activeConnectorFlowId(): string {
+  const input = tauriMocks.connectorsConnect.mock.calls.at(-1)?.[0] as
+    | { flowId?: string }
+    | undefined;
+  if (!input?.flowId) throw new Error("No active connector flow");
+  return input.flowId;
 }
 
 function mockAutonomousEventRoutineWithTwoAccounts() {
@@ -593,7 +609,10 @@ describe("RoutinesView connector templates", () => {
   });
 
   it("gates a connector template on the required Google scopes and connects inline", async () => {
-    tauriMocks.connectorsList.mockResolvedValueOnce([]).mockResolvedValue([googleAccount()]);
+    tauriMocks.connectorsList
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([googleAccount()]);
     mocks.listRoutines.mockResolvedValue([]);
     renderView();
     await screen.findByText("Morning briefing");
@@ -601,7 +620,7 @@ describe("RoutinesView connector templates", () => {
     await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
 
     // Blocked: no account with the template's bundles is connected yet.
-    expect(await screen.findByText(/needs a connected Google account/)).toBeInTheDocument();
+    expect(await screen.findByText(/needs one connected Google account/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
 
     await userEvent.click(screen.getByRole("button", { name: "Connect Google account" }));
@@ -609,13 +628,61 @@ describe("RoutinesView connector templates", () => {
     await waitFor(() =>
       expect(tauriMocks.connectorsConnect).toHaveBeenCalledWith({
         scopes: ["gmail_read", "calendar_read"],
+        loginHint: undefined,
+        provider: "google",
+        flowId: expect.any(String),
       }),
     );
     await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled());
     await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
   });
 
-  it("allows a scheduled read routine when any connected account has the required scopes", async () => {
+  it("shows the manual authorization link while connecting from a routine template", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([]);
+    tauriMocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    mocks.listRoutines.mockResolvedValue([]);
+    renderView();
+    await screen.findByText("Morning briefing");
+
+    await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Connect Google account" }));
+
+    const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth?state=routine";
+    act(() => {
+      eventHandlers.get(CONNECTOR_AUTHORIZATION_URL_EVENT)?.({
+        payload: {
+          url: authorizationUrl,
+          provider: "google",
+          flowId: activeConnectorFlowId(),
+        },
+      });
+    });
+
+    await userEvent.click(await screen.findByText("Trouble opening your browser?"));
+    expect(screen.getByLabelText("Authorization link")).toHaveValue(authorizationUrl);
+    expect(screen.getByRole("button", { name: "Open again" })).toBeEnabled();
+  });
+
+  it("explains why an autonomous routine cannot be saved without an account", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([]);
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "autonomous",
+      approvalRunCount: 3,
+      autonomousTools: ["create_draft"],
+      autonomousServers: [],
+      accountId: null,
+    });
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(
+      await screen.findByRole("status", { name: "Routine needs a Google account" }),
+    ).toHaveTextContent(/needs a connected Google account/i);
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("requires an explicit account for a scheduled connector routine", async () => {
     tauriMocks.connectorsList.mockResolvedValue([
       googleAccount({
         accountId: "acc-first",
@@ -633,8 +700,13 @@ describe("RoutinesView connector templates", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Add Morning briefing" }));
 
-    // Ambiguous reads fan out, so the calendar-capable second account satisfies
-    // this scheduled read-only routine without silently picking the first.
+    const accountPicker = screen.getByRole("button", { name: "Google account" });
+    expect(accountPicker).toHaveTextContent("Choose account");
+    expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
+
+    await userEvent.click(accountPicker);
+    await userEvent.click(screen.getByRole("option", { name: "second@example.com" }));
+
     expect(screen.queryByText(/needs a connected Google account/)).toBeNull();
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
   });
@@ -913,6 +985,62 @@ describe("RoutinesView detail", () => {
     );
   });
 
+  it("ignores a second save click while the first save is in flight", async () => {
+    let finishSave: (value: RoutineJob) => void = () => {};
+    mocks.updateRoutine.mockReturnValue(
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+    );
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+
+    const instructions = await openDetail("Morning summary");
+    await userEvent.clear(instructions);
+    await userEvent.type(instructions, "List my unread notes only.");
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(save);
+    fireEvent.click(save);
+
+    expect(mocks.updateRoutine).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      finishSave(job({ prompt: "List my unread notes only." }));
+    });
+  });
+
+  it("does not mark a legacy unbound routine dirty when one account is the safe default", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
+    tauriMocks.routineTrustGet.mockResolvedValue(null);
+    tauriMocks.connectorTriggersList.mockResolvedValue([]);
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+
+    await openDetail("Morning summary");
+
+    await waitFor(() => expect(tauriMocks.connectorsList).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("button", { name: "Google account" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("marks an unbound autonomous routine as needing an account in the list", async () => {
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "autonomous",
+      approvalRunCount: 3,
+      autonomousTools: ["create_draft"],
+      autonomousServers: [],
+      accountId: null,
+    });
+    tauriMocks.connectorsList.mockResolvedValue([
+      googleAccount(),
+      googleAccount({ accountId: "acc-2", email: "personal@example.com" }),
+    ]);
+    mocks.listRoutines.mockResolvedValue([job()]);
+    renderView();
+
+    const list = await screen.findByRole("list", { name: "Routines" });
+    expect(within(list).getByText("Needs an account")).toBeInTheDocument();
+  });
+
   it("rolls the trust change back when the cron save fails", async () => {
     // An autonomous routine (autonomy already unlocked) with one granted tool.
     tauriMocks.routineTrustGet.mockResolvedValue({
@@ -1103,7 +1231,7 @@ describe("RoutinesView detail", () => {
     expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
     expect(mocks.resumeRoutine).not.toHaveBeenCalled();
     expect(accountPicker).toHaveTextContent("personal@example.com");
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry save" })).toBeEnabled();
   });
 
   it("stays paused when an account rebind cannot remove the old event trigger", async () => {

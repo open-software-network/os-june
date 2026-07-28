@@ -51,6 +51,7 @@ import {
 import { messageFromError } from "../../lib/errors";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { HoverTip } from "../ui/HoverTip";
+import { InlineNotice } from "../ui/InlineNotice";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { toast } from "../ui/Toaster";
@@ -136,6 +137,7 @@ export function RoutineDetail({
   const [accounts, setAccounts] = useState<ConnectorAccount[]>([]);
   const [storedAccountId, setStoredAccountId] = useState<string | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [runtimeApplyError, setRuntimeApplyError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"details" | "history">("details");
   // "Run now" only queues the job for the scheduler's next tick, so the
   // confirmation is a short-lived label swap rather than a new run row.
@@ -144,6 +146,7 @@ export function RoutineDetail({
   const [tabIndicator, setTabIndicator] = useState({ x: 0, width: 0 });
   const queueTimer = useRef<number>();
   const accountRebindPausedRef = useRef(false);
+  const saveInFlightRef = useRef(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
   const detailsTabRef = useRef<HTMLButtonElement>(null);
   const historyTabRef = useRef<HTMLButtonElement>(null);
@@ -191,7 +194,7 @@ export function RoutineDetail({
       );
       const defaultAccountId =
         accountId ?? (connectedGoogle.length === 1 ? connectedGoogle[0].accountId : null);
-      setStoredAccountId(accountId);
+      setStoredAccountId(defaultAccountId);
       setSelectedAccountId(defaultAccountId);
     });
     routineBrowserAccessGet(routine.job_id)
@@ -244,12 +247,13 @@ export function RoutineDetail({
     trustMode !== storedTrustMode ||
     (trustMode === "autonomous" && JSON.stringify(autonomousTools) !== JSON.stringify(storedTools));
   const googleAccounts = accounts.filter((entry) => entry.provider === "google");
+  const connectedGoogleAccounts = googleAccounts.filter((entry) => entry.status === "connected");
   const selectedAccount = googleAccounts.find((entry) => entry.accountId === selectedAccountId);
   const accountPickerRequired =
     trigger.source !== "schedule" ||
-    trustMode === "autonomous" ||
+    trustMode !== "read_only" ||
     storedTrigger !== null ||
-    storedTrust?.trustMode === "autonomous";
+    storedTrust !== null;
   const accountChanged = accountPickerRequired && selectedAccountId !== storedAccountId;
   const storedTriggerDraft: TriggerDraft = storedTrigger
     ? triggerDraftFromStored(storedTrigger)
@@ -280,6 +284,17 @@ export function RoutineDetail({
   }
 
   async function save() {
+    if (saveInFlightRef.current) return;
+    saveInFlightRef.current = true;
+    try {
+      await saveOnce();
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  }
+
+  async function saveOnce() {
+    setRuntimeApplyError(null);
     const connectorPolicyNeeded =
       trustChanged ||
       triggerChanged ||
@@ -590,7 +605,10 @@ export function RoutineDetail({
         await connectorsApplyRuntime();
       } catch (err) {
         if (pausedForAccountRebind) {
-          toast.error(messageFromError(err));
+          const message = messageFromError(err);
+          setRuntimeApplyError(message);
+          toast.error(message);
+          await onReload();
           return;
         }
       }
@@ -598,6 +616,7 @@ export function RoutineDetail({
 
     if (accountChanged) setStoredAccountId(selectedAccountId);
     if (!(await restoreAccountRebindActivity())) return;
+    setRuntimeApplyError(null);
   }
 
   async function runNow() {
@@ -670,11 +689,11 @@ export function RoutineDetail({
                 !prompt.trim() ||
                 saving ||
                 busy ||
-                (accountPickerRequired && !selectedAccountId)
+                (accountPickerRequired && selectedAccount?.status !== "connected")
               }
               onClick={() => void save()}
             >
-              {saving ? "Saving…" : "Save"}
+              {saving ? "Saving…" : runtimeApplyError ? "Retry save" : "Save"}
             </button>
           </div>
         }
@@ -752,6 +771,24 @@ export function RoutineDetail({
               </button>
             ) : null}
           </div>
+        ) : null}
+        {runtimeApplyError ? (
+          <InlineNotice
+            tone="warning"
+            aria-label="Routine runtime update failed"
+            body={`This routine is paused because June could not apply its Google account change. Choose Retry save to try again. ${runtimeApplyError}`}
+          />
+        ) : null}
+        {accountPickerRequired && selectedAccount?.status !== "connected" ? (
+          <InlineNotice
+            tone="info"
+            aria-label="Routine needs a Google account"
+            body={
+              connectedGoogleAccounts.length === 0
+                ? "This routine needs a connected Google account before it can run. Reconnect or add an account in Plugins, then choose it here."
+                : "This routine needs an account before it can run. Choose one of the connected Google accounts below and save."
+            }
+          />
         ) : null}
         {failure ? (
           <div className="routine-detail-failure" role="status">

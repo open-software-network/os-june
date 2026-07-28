@@ -1,4 +1,5 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
+import connectorAuthorizationEventName from "./connector-authorization-event-name.txt?raw";
 import type {
   AgentArtifactDto,
   AgentInterruptionDto,
@@ -1862,11 +1863,17 @@ export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
  * Mac because its redirect targets June's loopback listener. */
 export type ConnectorAuthorizationUrlPayload = {
   url: string;
+  provider: ConnectorProvider;
+  flowId: string;
 };
 
 /** Tauri event: a local OAuth authorization URL is ready for the waiting
  * dialog's manual-open fallback. */
-export const CONNECTOR_AUTHORIZATION_URL_EVENT = "june://connector-authorization-url";
+export const CONNECTOR_AUTHORIZATION_URL_EVENT = connectorAuthorizationEventName.trim();
+
+export function createConnectorFlowId(): string {
+  return globalThis.crypto.randomUUID();
+}
 
 /** Payload emitted by `june://connectors-github-device-code` while a GitHub
  * device-flow connect is in progress. May be emitted more than once (a
@@ -1876,6 +1883,8 @@ export type GitHubDeviceCodePayload = {
   userCode: string;
   verificationUri: string;
   expiresInSeconds: number;
+  provider: "github";
+  flowId: string;
 };
 
 /** Tauri event: a GitHub device-authorization code is ready to display.
@@ -1908,14 +1917,20 @@ export async function connectorsConnect(input: {
   scopes: ConnectorScopeBundle[];
   loginHint?: string;
   provider?: ConnectorProvider;
+  flowId?: string;
 }) {
   return invoke<ConnectorAccount>("connectors_connect", {
-    request: { scopes: input.scopes, loginHint: input.loginHint, provider: input.provider },
+    request: {
+      scopes: input.scopes,
+      loginHint: input.loginHint,
+      provider: input.provider,
+      flowId: input.flowId,
+    },
   });
 }
 
-export async function connectorsCancelConnect() {
-  return invoke<void>("connectors_cancel_connect");
+export async function connectorsCancelConnect(flowId?: string) {
+  return invoke<void>("connectors_cancel_connect", { flowId });
 }
 
 export async function openExternalUrl(url: string) {

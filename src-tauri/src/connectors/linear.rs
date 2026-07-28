@@ -145,6 +145,7 @@ pub enum LinearRefreshOutcome {
 pub async fn authorize(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
+    flow_id: &str,
     client_id: &str,
     scopes: &[&str],
     loopback_ports: &[u16],
@@ -156,6 +157,8 @@ pub async fn authorize(
         app,
         flow,
         "Linear",
+        "linear",
+        flow_id,
         oauth::LoopbackPort::Candidates(loopback_ports.to_vec()),
         |redirect_uri, code_challenge, state| {
             build_auth_url(client_id, redirect_uri, scopes, code_challenge, state)

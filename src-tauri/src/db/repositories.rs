@@ -132,6 +132,9 @@ pub struct RoutineTrustRecord {
     pub trust_mode: String,
     pub approval_run_count: i64,
     pub autonomous_tools: Vec<String>,
+    /// Durable Google account binding for every connector-aware routine,
+    /// including read-only and approval modes that have no autonomy grant.
+    pub account_id: Option<String>,
     /// When the routine most recently entered approval mode (RFC 3339), or
     /// `None` if it has never been in approval mode. Approval-run crediting
     /// only counts runs that finished at or after this instant.
@@ -1076,7 +1079,7 @@ impl Repositories {
         job_id: &str,
     ) -> Result<Option<RoutineTrustRecord>, sqlx::error::Error> {
         let row = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, approval_since, updated_at
              FROM routine_trust WHERE job_id = ?",
         )
         .bind(job_id)
@@ -1096,7 +1099,7 @@ impl Repositories {
         trust_mode: &str,
     ) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, approval_since, updated_at
              FROM routine_trust WHERE trust_mode = ?",
         )
         .bind(trust_mode)
@@ -1150,6 +1153,22 @@ impl Repositories {
         .bind(&now)
         .execute(&self.pool)
         .await?;
+        self.routine_trust_get(job_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn routine_trust_set_account(
+        &self,
+        job_id: &str,
+        account_id: Option<&str>,
+    ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
+        query("UPDATE routine_trust SET account_id = ?, updated_at = ? WHERE job_id = ?")
+            .bind(account_id)
+            .bind(timestamp())
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
         self.routine_trust_get(job_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
@@ -6316,6 +6335,7 @@ fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
         trust_mode: row.get("trust_mode"),
         approval_run_count: row.get("approval_run_count"),
         autonomous_tools: string_vec_from_json(&row.get::<String, _>("autonomous_tools")),
+        account_id: row.get::<Option<String>, _>("account_id"),
         approval_since: row.get::<Option<String>, _>("approval_since"),
         updated_at: row.get("updated_at"),
     }
@@ -9226,6 +9246,11 @@ mod tests {
         assert_eq!(record.trust_mode, "approval");
         assert_eq!(record.approval_run_count, 0);
         assert!(record.approval_since.is_some());
+        let record = repos
+            .routine_trust_set_account("job-1", Some("bound@example.test"))
+            .await
+            .expect("bind account");
+        assert_eq!(record.account_id.as_deref(), Some("bound@example.test"));
 
         // Three distinct runs each count once.
         for (index, run_id) in ["run-1", "run-2", "run-3"].iter().enumerate() {
@@ -9256,6 +9281,7 @@ mod tests {
             .expect("set trust");
         assert_eq!(record.trust_mode, "autonomous");
         assert_eq!(record.approval_run_count, 3);
+        assert_eq!(record.account_id.as_deref(), Some("bound@example.test"));
         assert_eq!(
             record.autonomous_tools,
             scopes(&["gmail.create_draft", "gmail.modify_labels"])

@@ -167,6 +167,42 @@ pub async fn descriptors(app: &AppHandle) -> Result<Vec<Value>, AppError> {
     Ok(descriptors_from_accounts(&accounts))
 }
 
+/// Routine catalogs are scoped to the routine's durable Google binding. An
+/// unbound routine receives no Google tools; a bound one receives descriptors
+/// whose `accountId` enum contains only that account. Other single-account
+/// providers keep their existing catalog behavior.
+pub async fn routine_descriptors(
+    app: &AppHandle,
+    google_account_id: Option<&str>,
+) -> Result<Vec<Value>, AppError> {
+    let accounts = connectors::list_runtime_accounts(app).await?;
+    Ok(routine_descriptors_from_accounts(
+        &accounts,
+        google_account_id,
+    ))
+}
+
+fn routine_descriptors_from_accounts(
+    accounts: &[ConnectorAccount],
+    google_account_id: Option<&str>,
+) -> Vec<Value> {
+    let accounts = accounts
+        .iter()
+        .filter(|account| {
+            account.provider != ConnectorProvider::Google
+                || google_account_id.is_some_and(|account_id| account.account_id == account_id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    descriptors_from_accounts(&accounts)
+}
+
+pub fn is_google_tool(name: &str) -> bool {
+    CAPABILITIES.iter().any(|capability| {
+        capability.name == name && capability.provider == ConnectorProvider::Google
+    })
+}
+
 pub fn routine_tool_allowed(
     name: &str,
     enabled_toolsets: &[String],
@@ -1325,5 +1361,23 @@ mod tests {
         let catalog = descriptors_from_accounts(&[stale, unselected]);
         assert!(!catalog.iter().any(|tool| tool["name"] == "search_issues"));
         assert!(!catalog.iter().any(|tool| tool["name"] == "create_issue"));
+    }
+
+    #[test]
+    fn routine_catalog_exposes_only_its_bound_google_account() {
+        let mut first = account(ConnectorProvider::Google, &[GMAIL_READONLY], 0);
+        first.account_id = "first@example.test".into();
+        let mut second = account(ConnectorProvider::Google, &[GMAIL_READONLY], 0);
+        second.account_id = "second@example.test".into();
+        let accounts = [first, second];
+
+        let catalog = routine_descriptors_from_accounts(&accounts, Some("second@example.test"));
+        assert_eq!(
+            named(&catalog, "search_threads")["parameters"]["properties"]["accountId"]["enum"],
+            json!(["second@example.test"])
+        );
+
+        let unbound = routine_descriptors_from_accounts(&accounts, None);
+        assert!(!unbound.iter().any(|tool| tool["name"] == "search_threads"));
     }
 }

@@ -927,20 +927,17 @@ fn append_notion_account(
     Ok(())
 }
 
-/// The identity of an already-stored account, for a provider that remains
-/// single-account, that differs from the one being connected. Linear and
-/// GitHub use this guard; Google routes every operation by account id and
-/// deliberately allows multiple accounts. A different provider's account
-/// never conflicts. Comparison is case-insensitive, so reconnecting or adding
-/// scope to the same identity returns `None` and is allowed.
+/// The identity of an already-stored account, for a single-account provider,
+/// that differs from the one being connected. This helper is called only for
+/// Linear and GitHub; Google deliberately supports multiple accounts. A
+/// different provider's account never conflicts. Comparison is
+/// case-insensitive, so reconnecting or adding scope to the same identity
+/// returns `None` and is allowed.
 fn conflicting_existing_account<'a>(
     existing: impl IntoIterator<Item = (&'a str, &'a str)>,
     connecting_provider: &str,
     connecting_identity: &str,
 ) -> Option<String> {
-    if connecting_provider == ConnectorProvider::Google.as_str() {
-        return None;
-    }
     existing
         .into_iter()
         .filter(|(provider, _)| *provider == connecting_provider)
@@ -956,6 +953,7 @@ fn conflicting_existing_account<'a>(
 pub async fn begin_connect(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
+    flow_id: &str,
     bundles: &[policy::ScopeBundle],
     login_hint: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
@@ -978,6 +976,7 @@ pub async fn begin_connect(
     let grant = oauth::authorize(
         app,
         flow,
+        flow_id,
         &client.client_id,
         &client.client_secret,
         &requested,
@@ -1100,6 +1099,7 @@ fn linear_account_metadata_json(identity: &linear::LinearIdentity) -> String {
 pub async fn begin_connect_linear(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
+    flow_id: &str,
     bundles: &[policy::ScopeBundle],
     reconnect_account_id: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
@@ -1139,8 +1139,15 @@ pub async fn begin_connect_linear(
     }
 
     let requested = policy::requested_linear_scopes(bundles);
-    let grant =
-        linear::authorize(app, flow, &client_id, &requested, &linear_loopback_ports()).await?;
+    let grant = linear::authorize(
+        app,
+        flow,
+        flow_id,
+        &client_id,
+        &requested,
+        &linear_loopback_ports(),
+    )
+    .await?;
     let identity = grant.identity;
     let workspace_id = identity.workspace_id.clone();
 
@@ -1316,6 +1323,7 @@ async fn ensure_github_installed(access_token: &str) -> Result<(), AppError> {
 pub async fn begin_connect_github(
     app: &tauri::AppHandle,
     flow: &ConnectFlow,
+    flow_id: &str,
     bundles: &[policy::ScopeBundle],
     reconnect_account_id: Option<&str>,
 ) -> Result<ConnectorAccount, AppError> {
@@ -1366,15 +1374,19 @@ pub async fn begin_connect_github(
     // Clone the AppHandle so we can move it into the closure. The closure is
     // called synchronously (on_device_code is not async), so no await inside.
     let app_handle = app.clone();
-    let grant = github::authorize(flow, &client.client_id, |device_code| {
+    let event_flow_id = flow_id.to_string();
+    let grant = github::authorize(flow, flow_id, &client.client_id, |device_code| {
         use tauri::Emitter;
         // Emit the camelCase device-code payload for the frontend dialog.
-        let _ = app_handle.emit(
+        let _ = app_handle.emit_to(
+            "main",
             GITHUB_DEVICE_CODE_EVENT,
             serde_json::json!({
                 "userCode": device_code.user_code,
                 "verificationUri": device_code.verification_uri,
                 "expiresInSeconds": device_code.expires_in,
+                "provider": "github",
+                "flowId": event_flow_id,
             }),
         );
         // Open the verification URI in the default browser so the user
@@ -1512,8 +1524,8 @@ pub async fn begin_connect_github(
 }
 
 /// Abort an in-flight connect (drains the browser-handoff wait).
-pub fn cancel_connect(flow: &ConnectFlow) {
-    flow.cancel();
+pub fn cancel_connect(flow: &ConnectFlow, flow_id: Option<&str>) {
+    flow.cancel(flow_id);
 }
 
 /// Disconnect an account: optionally revoke the grant at the provider
@@ -2026,18 +2038,6 @@ mod tests {
                 "workspace-b"
             ),
             Some("workspace-a".to_string())
-        );
-    }
-
-    #[test]
-    fn google_accounts_never_hit_the_single_account_guard() {
-        assert_eq!(
-            conflicting_existing_account(
-                [("google", "work@example.com")],
-                "google",
-                "personal@example.com",
-            ),
-            None
         );
     }
 
