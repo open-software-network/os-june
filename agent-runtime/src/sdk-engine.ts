@@ -20,7 +20,6 @@ import type {
   EngineRunInput,
   EngineSummaryInput,
   HostToolInvoker,
-  ModelRoute,
   RunResumeParams,
   RunStartParams,
   RuntimeHistoryItem,
@@ -151,7 +150,6 @@ export class OpenAIAgentsEngine implements AgentEngine {
       input.runId,
       input.takeSteering,
       input.emit,
-      input.params.route,
     );
     const stream = (await runner.runner.run(agent, state, {
       stream: true,
@@ -276,13 +274,11 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     takeSteering: EngineRunInput["takeSteering"],
     emit: (event: EngineEvent) => void,
-    initialRoute?: ModelRoute,
   ): { runner: Runner; modelProvider: RpcChatCompletionsModelProvider } {
     const modelProvider = this.createModelProvider(sessionId, runId, {
       takeSteering,
       onSteeringConsumed: (message) =>
         emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
-      ...(initialRoute === undefined ? {} : { initialRoute }),
     });
     return {
       modelProvider,
@@ -301,13 +297,9 @@ export class OpenAIAgentsEngine implements AgentEngine {
     steering?: {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
-      initialRoute?: ModelRoute;
     },
   ): RpcChatCompletionsModelProvider {
     if (!this.initialized) throw new Error("OpenAI Agents engine is not initialized");
-    const steeringOnly = steering
-      ? { takeSteering: steering.takeSteering, onSteeringConsumed: steering.onSteeringConsumed }
-      : undefined;
     return new RpcChatCompletionsModelProvider(
       async (request) =>
         this.invokeHostTool({
@@ -318,8 +310,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
           callId: request.callId,
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         }),
-      steeringOnly,
-      steering?.initialRoute,
+      steering,
     );
   }
 }

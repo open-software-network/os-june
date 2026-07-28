@@ -742,10 +742,9 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
   assert.equal(toolCall.id, "call-glm-skills");
 });
 
-test("preserves GLM reasoning across Auto-routed tool-call continuation via endpoint", async () => {
-  // Auto does not contain "glm" in the model ID, so the model-ID gate
-  // does not fire. The route-endpoint gate (phala-glm-5.2) must catch it
-  // for the second request in a live tool loop.
+test("does not apply a previous GLM route to an Auto continuation", async () => {
+  // Auto can resolve each request independently. A GLM route from the first
+  // response must not rewrite the next request because that route may be stale.
   const modelRequests: JsonObject[] = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
     if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
@@ -861,12 +860,12 @@ test("preserves GLM reasoning across Auto-routed tool-call continuation via endp
       Array.isArray(message.tool_calls),
   );
   assert.ok(isRecord(assistantMessage));
+  assert.equal(assistantMessage.reasoning_content, undefined);
   assert.equal(
-    assistantMessage.reasoning_content,
+    assistantMessage.reasoning,
     "Auto-routed reasoning.",
-    "Auto-routed GLM must have reasoning_content via endpoint gate",
+    "an unpinned Auto continuation must keep the SDK reasoning field",
   );
-  assert.equal(assistantMessage.reasoning, undefined);
 });
 
 test("does not rename reasoning for non-GLM models", async () => {
@@ -999,10 +998,9 @@ test("does not rename reasoning for non-GLM models", async () => {
   );
 });
 
-test("preserves GLM reasoning across Auto-routed approval resume via persisted route", async () => {
-  // Auto resolves to GLM at the routing layer. On approval resume the
-  // model provider is fresh (no latestRoute), so the route must be
-  // carried through RunResumeParams.route to detect GLM.
+test("does not infer an Auto approval resume route from prior usage", async () => {
+  // The interrupted response route cannot pin the endpoint that will handle
+  // the resumed request, so the fresh provider must leave replay unchanged.
   const modelRequests: JsonObject[] = [];
   let modelRequestCount = 0;
   const engine = new OpenAIAgentsEngine(async (input) => {
@@ -1135,15 +1133,14 @@ test("preserves GLM reasoning across Auto-routed approval resume via persisted r
           decision: "approve",
         },
       ],
-      route: paused.usage,
     },
   });
 
   assert.equal(resumed.finalOutput, "Done after approval.");
   assert.equal(resumed.interruptions.length, 0);
 
-  // The second request (after resume) must have reasoning_content, not
-  // reasoning, because the route was seeded from the interrupted run.
+  // The prior route may be stale by the time the resumed request is routed.
+  // Keep the SDK field rather than guessing which endpoint will receive it.
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   const assistantMessage = secondMessages.find(
@@ -1153,12 +1150,12 @@ test("preserves GLM reasoning across Auto-routed approval resume via persisted r
       Array.isArray(message.tool_calls),
   );
   assert.ok(isRecord(assistantMessage));
+  assert.equal(assistantMessage.reasoning_content, undefined);
   assert.equal(
-    assistantMessage.reasoning_content,
+    assistantMessage.reasoning,
     "I need to list skills first.",
-    "Auto-routed GLM resume must have reasoning_content via persisted route",
+    "an unpinned Auto resume must keep the SDK reasoning field",
   );
-  assert.equal(assistantMessage.reasoning, undefined);
 });
 
 function streamPage(streamId: string, chunk: JsonObject) {

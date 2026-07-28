@@ -908,17 +908,6 @@ pub async fn resolve_agent_interruption(
         .expect("run params object")
         .remove("history");
     params["serializedState"] = json!(serialized_state);
-    // Carry the resolved model route from the interrupted run so the
-    // agent-runtime can detect GLM on Auto-routed approval resumes.
-    if let Some(usage) = run.usage.as_ref().and_then(Value::as_object) {
-        if let Some(endpoint) = usage.get("endpoint").and_then(Value::as_str) {
-            params["route"] = json!({
-                "endpoint": endpoint,
-                "provider": usage.get("provider").and_then(Value::as_str),
-                "privacyLevel": usage.get("privacyLevel").and_then(Value::as_str),
-            });
-        }
-    }
     params["resolutions"] = if let Some(answer) = clarification_answer.as_deref() {
         json!([{ "interruptionId": request.interruption_id, "kind": "clarification", "answer": answer }])
     } else if interruption_kind == "secret" {
