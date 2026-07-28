@@ -38,6 +38,26 @@ pub struct Repositories {
     pub pool: SqlitePool,
 }
 
+pub struct PendingDictationHistoryItem {
+    transaction: sqlx::transaction::Transaction<'static, Sqlite>,
+    item: DictationHistoryItemDto,
+}
+
+impl PendingDictationHistoryItem {
+    pub async fn commit(mut self) -> Result<DictationHistoryItemDto, sqlx::error::Error> {
+        query("DELETE FROM dictation_history WHERE created_at < ?")
+            .bind(dictation_history_cutoff_timestamp())
+            .execute(&mut *self.transaction)
+            .await?;
+        self.transaction.commit().await?;
+        Ok(self.item)
+    }
+
+    pub async fn rollback(self) -> Result<(), sqlx::error::Error> {
+        self.transaction.rollback().await
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionDeviceRecord {
     pub id: String,
@@ -2814,6 +2834,22 @@ impl Repositories {
         language: Option<String>,
         provider: &str,
     ) -> Result<Option<DictationHistoryItemDto>, sqlx::error::Error> {
+        let pending = self
+            .stage_dictation_history_item(profile, text, language, provider)
+            .await?;
+        match pending {
+            Some(pending) => pending.commit().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn stage_dictation_history_item(
+        &self,
+        data_partition: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+    ) -> Result<Option<PendingDictationHistoryItem>, sqlx::error::Error> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(None);
@@ -2825,6 +2861,7 @@ impl Repositories {
             provider: provider.to_string(),
             created_at: timestamp(),
         };
+        let mut transaction = self.pool.begin().await?;
         query(
             "INSERT INTO dictation_history (id, text, language, provider, profile, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -2833,12 +2870,11 @@ impl Repositories {
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
-        .bind(profile)
+        .bind(data_partition)
         .bind(&item.created_at)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.prune_old_dictation_history().await?;
-        Ok(Some(item))
+        Ok(Some(PendingDictationHistoryItem { transaction, item }))
     }
 
     pub async fn list_dictation_history(
@@ -6510,6 +6546,48 @@ mod tests {
 
     fn scopes(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn staged_dictation_history_is_visible_only_after_commit() {
+        let repos = test_repositories().await;
+        let rolled_back = repos
+            .stage_dictation_history_item(
+                "default",
+                "cancelled transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage cancelled history")
+            .expect("non-empty transcript");
+        rolled_back.rollback().await.expect("rollback history");
+
+        let count_after_rollback: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count rolled back history")
+            .get("count");
+        assert_eq!(count_after_rollback, 0);
+
+        let committed = repos
+            .stage_dictation_history_item(
+                "default",
+                "delivered transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage delivered history")
+            .expect("non-empty transcript");
+        committed.commit().await.expect("commit history");
+
+        let count_after_commit: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count committed history")
+            .get("count");
+        assert_eq!(count_after_commit, 1);
     }
 
     #[tokio::test]

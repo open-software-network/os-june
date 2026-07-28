@@ -58,6 +58,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0046](adr/0046-companion-native-os-accounts-login.md) - superseded by ADR-0047
 - [adr/0047](adr/0047-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
 - [adr/0048](adr/0048-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
+- [adr/0049](adr/0049-cancelled-dictation-takes-never-deliver.md) - each helper-owned dictation take has one cancellation token, and cancelled takes cannot start later cleanup, history, or text delivery
 
 ## Enforceable rules (spec/)
 
