@@ -1875,6 +1875,16 @@ fn merge_revocation_confirmation(
     }
 }
 
+fn missing_revocation_tokens_confirmation(
+    revocation_requested: bool,
+    account_was_present: bool,
+) -> Option<bool> {
+    // A known account without custody cannot prove that its remote grant was
+    // revoked. During an accountless recovery sweep, however, a missing token
+    // only means that this provider did not own the deleted account.
+    (revocation_requested && account_was_present).then_some(false)
+}
+
 /// Delete the secret custody record before deleting its non-secret account
 /// index. Keeping this ordering in one tested boundary preserves the
 /// Settings retry action when secure-storage cleanup fails.
@@ -1909,7 +1919,9 @@ pub async fn disconnect(
     revoke_grant: bool,
 ) -> Result<DisconnectOutcome, AppError> {
     let repos = crate::commands::repositories(app).await?;
-    let providers: &[ConnectorProvider] = match repos.get_connector_account(account_id).await? {
+    let account = repos.get_connector_account(account_id).await?;
+    let account_was_present = account.is_some();
+    let providers: &[ConnectorProvider] = match account {
         Some(record) => match ConnectorProvider::from_db(&record.provider) {
             ConnectorProvider::Google => &[ConnectorProvider::Google],
             ConnectorProvider::Linear => &[ConnectorProvider::Linear],
@@ -1968,7 +1980,12 @@ pub async fn disconnect(
                     provider_revocation_confirmed =
                         merge_revocation_confirmation(provider_revocation_confirmed, Some(false));
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    provider_revocation_confirmed = merge_revocation_confirmation(
+                        provider_revocation_confirmed,
+                        missing_revocation_tokens_confirmation(revoke_grant, account_was_present),
+                    );
+                }
                 Err(error) => {
                     tracing::warn!(
                         provider = provider.as_str(),
@@ -2677,6 +2694,30 @@ mod tests {
         assert_eq!(
             merge_revocation_confirmation(Some(false), Some(true)),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn missing_revocation_tokens_warn_for_a_known_account_only() {
+        assert_eq!(
+            missing_revocation_tokens_confirmation(true, true),
+            Some(false)
+        );
+        assert_eq!(missing_revocation_tokens_confirmation(false, true), None);
+    }
+
+    #[test]
+    fn accountless_revocation_sweep_ignores_missing_provider_tokens() {
+        let missing_provider = missing_revocation_tokens_confirmation(true, false);
+
+        assert_eq!(missing_provider, None);
+        assert_eq!(
+            merge_revocation_confirmation(missing_provider, Some(true)),
+            Some(true)
+        );
+        assert_eq!(
+            merge_revocation_confirmation(missing_provider, missing_provider),
+            None
         );
     }
 
