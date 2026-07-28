@@ -25,5 +25,10 @@ The existing `provider` field keeps its historical Venice adapter meaning for sh
 Legacy aliases and canonical live-catalog model IDs must both cover the most expensive enabled
 private route because settlement is currently keyed by requested model ID.
 
+For an agent run, Auto selects a canonical model on the first inference. Tool continuations and
+approval resumes pin that selected model for the remainder of the agent run so provider-native
+reasoning history remains compatible. A later user-initiated agent run evaluates Auto again.
+Provider, privacy, and endpoint metadata remain observational and are not continuation tokens.
+
 Build the desktop release with `OS_JUNE_AUTO_MODE_DEFAULT=true`. Existing users retain their saved
 model. Roll back by restoring the Venice URL in production compose and removing the build flag.

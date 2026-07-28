@@ -100,6 +100,83 @@ test("retains the actual host route from the latest stream page", async () => {
   });
 });
 
+test("rejects an Auto response without a canonical selected model", async () => {
+  const provider = new RpcChatCompletionsModelProvider(async () => ({
+    streamId: "stream-auto-missing-model",
+    chunks: [{ ...finalChunk, model: "open-software/auto" }],
+    done: true,
+  }));
+  await assert.rejects(async () => {
+    for await (const _event of provider
+      .getModel("__june_auto_generation__:73")
+      .getStreamedResponse(modelRequest())) {
+      // Drain the model response.
+    }
+  }, /did not identify its selected model/);
+});
+
+test("captures Auto's canonical model from a later stream page", async () => {
+  const requests: JsonObject[] = [];
+  let page = 0;
+  const provider = new RpcChatCompletionsModelProvider(async (input) => {
+    if ("request" in input.arguments) requests.push(input.arguments.request);
+    page += 1;
+    if (page === 1) {
+      return {
+        streamId: "stream-auto-paged",
+        chunks: [{ ...finalChunk, model: "open-software/auto" }],
+        done: false,
+        cursor: "page-2",
+      };
+    }
+    return {
+      streamId: "stream-auto-paged",
+      chunks: [{ ...finalChunk, model: "z-ai/glm-5.2" }],
+      done: true,
+    };
+  });
+  for await (const _event of provider
+    .getModel("__june_auto_generation__:73")
+    .getStreamedResponse(modelRequest())) {
+    // Drain the model response.
+  }
+  assert.equal(provider.resolvedModel, "z-ai/glm-5.2");
+  assert.equal(requests.length, 1);
+});
+
+test("rejects conflicting canonical models in one Auto response", async () => {
+  const provider = new RpcChatCompletionsModelProvider(async () => ({
+    streamId: "stream-auto-conflict",
+    chunks: [
+      { ...finalChunk, model: "z-ai/glm-5.2" },
+      { ...finalChunk, model: "kimi-k2" },
+    ],
+    done: true,
+  }));
+  await assert.rejects(async () => {
+    for await (const _event of provider
+      .getModel("__june_auto_generation__:73")
+      .getStreamedResponse(modelRequest())) {
+      // Drain the model response.
+    }
+  }, /conflicting selected models/);
+});
+
+test("rejects reserved internal tags as Auto's canonical model", async () => {
+  const provider = new RpcChatCompletionsModelProvider(async () => ({
+    streamId: "stream-auto-reserved",
+    chunks: [{ ...finalChunk, model: "__june_local_generation__:z-ai%2Fglm-5.2" }],
+    done: true,
+  }));
+  await assert.rejects(async () => {
+    for await (const _event of provider
+      .getModel("__june_auto_generation__:73")
+      .getStreamedResponse(modelRequest())) {
+      // Drain the model response.
+    }
+  }, /did not identify its selected model/);
+});
+
 test("injects queued steering at the next model boundary and acknowledges consumption", async () => {
   const requests: JsonObject[] = [];
   const consumed: string[] = [];

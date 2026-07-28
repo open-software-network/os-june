@@ -150,6 +150,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       input.runId,
       input.takeSteering,
       input.emit,
+      input.params.resolvedModel,
     );
     const stream = (await runner.runner.run(agent, state, {
       stream: true,
@@ -251,6 +252,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       usage: {
         ...normalizeUsage(stream.usage),
         ...modelProvider.latestRoute,
+        ...(modelProvider.resolvedModel ? { resolvedModel: modelProvider.resolvedModel } : {}),
       },
       interruptions,
       ...(serializedState === undefined ? {} : { serializedState }),
@@ -274,12 +276,18 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     takeSteering: EngineRunInput["takeSteering"],
     emit: (event: EngineEvent) => void,
+    initialResolvedModel?: string,
   ): { runner: Runner; modelProvider: RpcChatCompletionsModelProvider } {
-    const modelProvider = this.createModelProvider(sessionId, runId, {
-      takeSteering,
-      onSteeringConsumed: (message) =>
-        emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
-    });
+    const modelProvider = this.createModelProvider(
+      sessionId,
+      runId,
+      {
+        takeSteering,
+        onSteeringConsumed: (message) =>
+          emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
+      },
+      initialResolvedModel,
+    );
     return {
       modelProvider,
       runner: new Runner({
@@ -298,6 +306,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    initialResolvedModel?: string,
   ): RpcChatCompletionsModelProvider {
     if (!this.initialized) throw new Error("OpenAI Agents engine is not initialized");
     return new RpcChatCompletionsModelProvider(
@@ -311,6 +320,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         }),
       steering,
+      initialResolvedModel,
     );
   }
 }

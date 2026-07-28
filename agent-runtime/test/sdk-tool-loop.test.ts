@@ -7,6 +7,9 @@ import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
 import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
 import type { EngineEvent, EngineRunInput, JsonObject } from "../src/types.ts";
 
+const AUTO_RUN_MODEL = "__june_auto_generation__:73";
+const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
+
 test("continues model inference after a host tool result", async () => {
   const modelRequests: JsonObject[] = [];
   const toolCalls: Array<{ name: string; callId?: string }> = [];
@@ -742,9 +745,7 @@ test("preserves GLM reasoning_content across a tool-call continuation", async ()
   assert.equal(toolCall.id, "call-glm-skills");
 });
 
-test("does not apply a previous GLM route to an Auto continuation", async () => {
-  // Auto can resolve each request independently. A GLM route from the first
-  // response must not rewrite the next request because that route may be stale.
+test("pins an Auto-routed GLM model across a tool-call continuation", async () => {
   const modelRequests: JsonObject[] = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
     if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
@@ -762,7 +763,7 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
             id: "auto-glm-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "open-software/auto",
+            model: "z-ai/glm-5.2",
             choices: [
               {
                 index: 0,
@@ -778,7 +779,7 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
             id: "auto-glm-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "open-software/auto",
+            model: "z-ai/glm-5.2",
             choices: [
               {
                 index: 0,
@@ -809,7 +810,7 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
       id: "auto-glm-2",
       object: "chat.completion.chunk",
       created: 2,
-      model: "open-software/auto",
+      model: "z-ai/glm-5.2",
       choices: [
         {
           index: 0,
@@ -828,7 +829,7 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
     emit: () => {},
     takeSteering: () => [],
     params: {
-      model: "open-software/auto",
+      model: AUTO_RUN_MODEL,
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
       workspace: "/tmp/june-workspace",
@@ -851,6 +852,8 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
     },
   });
 
+  assert.equal(modelRequests[0]?.model, AUTO_RUN_MODEL);
+  assert.equal(modelRequests[1]?.model, PINNED_GLM_RUN_MODEL);
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   const assistantMessage = secondMessages.find(
@@ -860,15 +863,15 @@ test("does not apply a previous GLM route to an Auto continuation", async () => 
       Array.isArray(message.tool_calls),
   );
   assert.ok(isRecord(assistantMessage));
-  assert.equal(assistantMessage.reasoning_content, undefined);
   assert.equal(
-    assistantMessage.reasoning,
+    assistantMessage.reasoning_content,
     "Auto-routed reasoning.",
-    "an unpinned Auto continuation must keep the SDK reasoning field",
+    "the pinned GLM continuation must use the provider-native reasoning field",
   );
+  assert.equal(assistantMessage.reasoning, undefined);
 });
 
-test("does not rename reasoning for non-GLM models", async () => {
+test("pins an Auto-routed non-GLM model without renaming reasoning", async () => {
   const modelRequests: JsonObject[] = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
     if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
@@ -952,7 +955,7 @@ test("does not rename reasoning for non-GLM models", async () => {
     emit: () => {},
     takeSteering: () => [],
     params: {
-      model: "kimi-k2",
+      model: "open-software/auto",
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
       workspace: "/tmp/june-workspace",
@@ -975,6 +978,8 @@ test("does not rename reasoning for non-GLM models", async () => {
     },
   });
 
+  assert.equal(modelRequests[0]?.model, "open-software/auto");
+  assert.equal(modelRequests[1]?.model, "__june_auto_resolved__:kimi-k2");
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   const assistantMessage = secondMessages.find(
@@ -998,9 +1003,7 @@ test("does not rename reasoning for non-GLM models", async () => {
   );
 });
 
-test("does not infer an Auto approval resume route from prior usage", async () => {
-  // The interrupted response route cannot pin the endpoint that will handle
-  // the resumed request, so the fresh provider must leave replay unchanged.
+test("pins an Auto-routed GLM model across an approval resume", async () => {
   const modelRequests: JsonObject[] = [];
   let modelRequestCount = 0;
   const engine = new OpenAIAgentsEngine(async (input) => {
@@ -1020,7 +1023,7 @@ test("does not infer an Auto approval resume route from prior usage", async () =
             id: "auto-glm-approval-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "open-software/auto",
+            model: "z-ai/glm-5.2",
             choices: [
               {
                 index: 0,
@@ -1036,7 +1039,7 @@ test("does not infer an Auto approval resume route from prior usage", async () =
             id: "auto-glm-approval-1",
             object: "chat.completion.chunk",
             created: 1,
-            model: "open-software/auto",
+            model: "z-ai/glm-5.2",
             choices: [
               {
                 index: 0,
@@ -1067,7 +1070,7 @@ test("does not infer an Auto approval resume route from prior usage", async () =
       id: "auto-glm-approval-2",
       object: "chat.completion.chunk",
       created: 2,
-      model: "open-software/auto",
+      model: "z-ai/glm-5.2",
       choices: [
         {
           index: 0,
@@ -1080,7 +1083,7 @@ test("does not infer an Auto approval resume route from prior usage", async () =
   await engine.initialize({ clientName: "June", clientVersion: "test" });
 
   const commonParams = {
-    model: "open-software/auto",
+    model: AUTO_RUN_MODEL,
     reasoningEffort: "high" as const,
     instructions: "Use list_skills, then answer.",
     workspace: "/tmp/june-workspace",
@@ -1115,8 +1118,10 @@ test("does not infer an Auto approval resume route from prior usage", async () =
   });
   assert.equal(paused.interruptions.length, 1);
   assert.ok(paused.serializedState);
-  // The start result must carry the route in usage.
+  // The start result must carry both observational route metadata and the
+  // canonical model that can pin the resumed request.
   assert.equal(paused.usage.endpoint, "phala-glm-5.2");
+  assert.equal(paused.usage.resolvedModel, "z-ai/glm-5.2");
 
   const resumed = await engine.resume({
     sessionId: "session-auto-glm-approval",
@@ -1133,14 +1138,15 @@ test("does not infer an Auto approval resume route from prior usage", async () =
           decision: "approve",
         },
       ],
+      resolvedModel: paused.usage.resolvedModel,
     },
   });
 
   assert.equal(resumed.finalOutput, "Done after approval.");
   assert.equal(resumed.interruptions.length, 0);
 
-  // The prior route may be stale by the time the resumed request is routed.
-  // Keep the SDK field rather than guessing which endpoint will receive it.
+  assert.equal(modelRequests[0]?.model, AUTO_RUN_MODEL);
+  assert.equal(modelRequests[1]?.model, PINNED_GLM_RUN_MODEL);
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   const assistantMessage = secondMessages.find(
@@ -1150,12 +1156,12 @@ test("does not infer an Auto approval resume route from prior usage", async () =
       Array.isArray(message.tool_calls),
   );
   assert.ok(isRecord(assistantMessage));
-  assert.equal(assistantMessage.reasoning_content, undefined);
   assert.equal(
-    assistantMessage.reasoning,
+    assistantMessage.reasoning_content,
     "I need to list skills first.",
-    "an unpinned Auto resume must keep the SDK reasoning field",
+    "the pinned GLM resume must use the provider-native reasoning field",
   );
+  assert.equal(assistantMessage.reasoning, undefined);
 });
 
 function streamPage(streamId: string, chunk: JsonObject) {

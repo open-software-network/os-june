@@ -731,11 +731,12 @@ async fn persist_and_emit_event(
                 .get("serializedState")
                 .cloned()
                 .unwrap_or(Value::Null);
+            let usage = params.get("usage");
             repository
                 .update_run_status(
                     &frame.run_id,
                     "waiting_for_user",
-                    None,
+                    usage,
                     Some(&serialized),
                     None,
                 )

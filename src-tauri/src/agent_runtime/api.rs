@@ -861,7 +861,15 @@ pub async fn resolve_agent_interruption(
             "Session workspace is unavailable.",
         )
     })?;
-    let model = normalize_agent_model(&session.model);
+    let model = normalize_agent_model(&run.model);
+    let auto_run = crate::june_api::is_agent_auto_model(&model);
+    let resolved_model = resolved_model_from_usage(run.usage.as_ref());
+    if auto_run && resolved_model.is_none() {
+        return Err(AppError::new(
+            "agent_auto_resume_model_missing",
+            "This approval cannot safely resume because its Auto model was not recorded. Retry the agent turn.",
+        ));
+    }
     let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;
     host.ensure_started(&app, repository.clone()).await?;
     let mut params = match repository.run_config(&run.id).await? {
@@ -899,6 +907,7 @@ pub async fn resolve_agent_interruption(
             ),
         },
     };
+    params["model"] = json!(model);
     params
         .as_object_mut()
         .expect("run params object")
@@ -908,6 +917,9 @@ pub async fn resolve_agent_interruption(
         .expect("run params object")
         .remove("history");
     params["serializedState"] = json!(serialized_state);
+    if let Some(resolved_model) = resolved_model {
+        params["resolvedModel"] = json!(resolved_model);
+    }
     params["resolutions"] = if let Some(answer) = clarification_answer.as_deref() {
         json!([{ "interruptionId": request.interruption_id, "kind": "clarification", "answer": answer }])
     } else if interruption_kind == "secret" {
@@ -998,6 +1010,15 @@ pub async fn resolve_agent_interruption(
             .update_run_status(&run.id, "running", None, None, None)
             .await?,
     ))
+}
+
+fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
+    usage
+        .and_then(Value::as_object)
+        .and_then(|usage| usage.get("resolvedModel"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| crate::june_api::is_canonical_agent_model(model))
 }
 
 async fn mark_dispatch_failed(repository: &AgentRepository, run_id: &str, error: &AppError) {
@@ -1904,6 +1925,40 @@ fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_a_concrete_model_from_persisted_usage() {
+        let usage = json!({ "resolvedModel": " z-ai/glm-5.2 " });
+        assert_eq!(
+            resolved_model_from_usage(Some(&usage)),
+            Some("z-ai/glm-5.2")
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": "open-software/auto" }))),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(
+                &json!({ "resolvedModel": "__june_auto_generation__:73" })
+            )),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(
+                &json!({ "resolvedModel": "__june_local_generation__:z-ai%2Fglm-5.2" })
+            )),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": "z-ai/glm 5.2" }))),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": 42 }))),
+            None
+        );
+        assert_eq!(resolved_model_from_usage(None), None);
+    }
 
     #[test]
     fn retry_uses_the_prompt_owned_by_the_selected_run() {

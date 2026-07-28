@@ -266,13 +266,16 @@ export class RuntimeService {
         return;
       }
       if (result.interruptions.length > 0) {
+        // Persist the concrete model before exposing an interruption so a
+        // resumed Auto run keeps the model selected for this agent run.
+        this.emitUsage(result.usage, sessionId, runId);
         for (const interruption of result.interruptions) {
           this.emit("interruption.requested", {
             ...interruption,
             serializedState: result.serializedState ?? "",
+            usage: result.usage as unknown as JsonValue,
           }, sessionId, runId);
         }
-        this.emitUsage(result.usage, sessionId, runId);
         return;
       }
       if (result.finalOutput !== undefined) {

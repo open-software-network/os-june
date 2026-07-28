@@ -7,6 +7,9 @@ import type { JsonObject, JsonValue } from "./types.js";
 import type { SteeringMessage } from "./types.js";
 
 export const MODEL_CHAT_COMPLETIONS_TOOL = "__june_model_chat_completions";
+const AUTO_MODEL_ID = "open-software/auto";
+const AUTO_MODEL_PREFIX = "__june_auto_generation__:";
+const RESOLVED_AUTO_MODEL_PREFIX = "__june_auto_resolved__:";
 
 export type ModelRpcInvoker = (input: {
   name: typeof MODEL_CHAT_COMPLETIONS_TOOL;
@@ -20,6 +23,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   readonly takeSteering: (() => SteeringMessage[]) | undefined;
   readonly onSteeringConsumed: ((message: SteeringMessage) => void) | undefined;
   latestRoute: ModelRoute | undefined;
+  resolvedModel: string | undefined;
 
   constructor(
     invoke: ModelRpcInvoker,
@@ -27,10 +31,12 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    initialResolvedModel?: string,
   ) {
     this.invoke = invoke;
     this.takeSteering = steering?.takeSteering;
     this.onSteeringConsumed = steering?.onSteeringConsumed;
+    this.resolvedModel = concreteModel(initialResolvedModel);
   }
 
   getModel(modelName?: string): Model {
@@ -61,6 +67,11 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   }
 
   private async *streamChunks(request: JsonObject, signal?: AbortSignal): AsyncIterable<JsonObject> {
+    const requestedModel = stringValue(request.model);
+    const autoRequested = isAutoModel(requestedModel);
+    if (autoRequested && this.resolvedModel) {
+      request.model = `${RESOLVED_AUTO_MODEL_PREFIX}${encodeURIComponent(this.resolvedModel)}`;
+    }
     const steering = this.takeSteering?.() ?? [];
     if (steering.length > 0) {
       const messages = Array.isArray(request.messages) ? request.messages : [];
@@ -70,7 +81,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       ];
       for (const message of steering) this.onSteeringConsumed?.(message);
     }
-    normalizeOutgoingReasoning(request);
+    normalizeOutgoingReasoning(request, autoRequested ? this.resolvedModel : undefined);
     const toolArgumentState = new Map<string, boolean>();
     let page = requireStreamPage(
       await this.invoke({
@@ -83,9 +94,21 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
     while (true) {
       if (page.route) this.latestRoute = page.route;
       for (const chunk of page.chunks) {
+        if (autoRequested) {
+          const chunkModel = concreteModel(stringValue(chunk.model));
+          if (chunkModel && this.resolvedModel && chunkModel !== this.resolvedModel) {
+            throw new Error("June's Auto model response identified conflicting selected models");
+          }
+          if (chunkModel) this.resolvedModel = chunkModel;
+        }
         yield normalizeEmptyToolArguments(normalizeReasoningContent(chunk), toolArgumentState);
       }
-      if (page.done) return;
+      if (page.done) {
+        if (autoRequested && !this.resolvedModel) {
+          throw new Error("June's Auto model response did not identify its selected model");
+        }
+        return;
+      }
       page = requireStreamPage(
         await this.invoke({
           name: MODEL_CHAT_COMPLETIONS_TOOL,
@@ -181,9 +204,8 @@ export type ModelRoute = {
 };
 
 // Known GLM model IDs that require `reasoning_content` (not `reasoning`) on
-// assistant tool-call replay. Dynamically routed aliases are deliberately
-// excluded: their previous response route does not identify the endpoint that
-// will handle the next request.
+// assistant tool-call replay. Auto is normalized only after its canonical
+// response model has been pinned; observational route metadata is never used.
 const GLM_MODEL_IDS = new Set([
   "zai-org-glm-5-2",
   "zai-org-glm-5-1",
@@ -191,13 +213,28 @@ const GLM_MODEL_IDS = new Set([
   "z-ai/glm-5.2",
 ]);
 
+function concreteModel(model: string | undefined): string | undefined {
+  const normalized = model?.trim();
+  if (!normalized || [...normalized].length > 128) return undefined;
+  if (normalized === "auto" || isAutoModel(normalized) || normalized.startsWith("__june_")) {
+    return undefined;
+  }
+  if ([...normalized].some((character) => /\s|\p{Cc}/u.test(character))) return undefined;
+  return normalized;
+}
+
+function isAutoModel(model: string | undefined): boolean {
+  return model === AUTO_MODEL_ID || model?.startsWith(AUTO_MODEL_PREFIX) === true;
+}
+
 // Renames `assistant.reasoning` → `assistant.reasoning_content` on outgoing
 // requests to GLM/Z.AI models. The SDK replays reasoning as `reasoning`, but
 // GLM expects its native `reasoning_content` field. Idempotent: messages that
 // already carry `reasoning_content` are left alone. Only applies when the
 // request uses a known GLM model ID.
-function normalizeOutgoingReasoning(request: JsonObject): void {
-  if (typeof request.model !== "string" || !GLM_MODEL_IDS.has(request.model)) return;
+function normalizeOutgoingReasoning(request: JsonObject, resolvedModel?: string): void {
+  const model = resolvedModel ?? stringValue(request.model);
+  if (!model || !GLM_MODEL_IDS.has(model)) return;
   const messages = Array.isArray(request.messages) ? request.messages : [];
   for (const message of messages) {
     if (!isRecord(message) || message.role !== "assistant") continue;
