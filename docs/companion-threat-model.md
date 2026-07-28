@@ -78,9 +78,9 @@ and APNs signing material.
   change during an active run cannot cancel or reroute that run; it applies at
   the next run boundary.
 - A remote Computer use approval is additionally bound to one SDK tool-call
-  id, its explicit SDK interruption-id mapping, exact verified window/app
-  identity, stored session id, monotonic 60-second desktop deadline, unique
-  operation id, and monotonic Noise sequence. The peer must advertise
+  id, its explicit SDK interruption-id mapping, exact verified process/window/
+  app identity, stored session id, monotonic 60-second desktop deadline,
+  unique operation id, and monotonic Noise sequence. The peer must advertise
   `computerUseApprove` in its authenticated handshake. The first local or
   remote decision wins. A phone approval supplies one invocation permit only;
   it cannot create the broker's task-scoped app grant or bypass a Rust policy

@@ -211,12 +211,12 @@ use target. A contradictory app and `window_id`, a changed target, or an action
 such as `open_app` whose resulting identity cannot be known before the side
 effect stays desktop-local.
 
-The pending registry stores that resolved window and application identity with
-the published request. The broker supplies the independently resolved target
-when it tries to consume the permit. An identity or window mismatch retires the
-remote permit as denied and forces the exact target through the Mac-local
-authorization surface, even when that app was already authorized earlier in
-the attended task.
+The pending registry stores that resolved process, window, and application
+identity with the published request. The broker supplies the independently
+resolved target when it tries to consume the permit. A process, identity, or
+window mismatch retires the remote permit as denied and forces the exact target
+through the Mac-local authorization surface, even when that app was already
+authorized earlier in the attended task.
 
 The SDK interruption id remains the phone-visible request id. The same
 interruption also carries its SDK tool-call id, and the registry stores the

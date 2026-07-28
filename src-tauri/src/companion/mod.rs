@@ -2455,6 +2455,15 @@ mod tests {
             mismatch.requests["call-1"].phase,
             ComputerUseApprovalPhase::Resolved
         );
+
+        let mut reused_window = approval_registry();
+        assert!(reused_window.complete_resolution("call-1", "session-1", true, true));
+        let replacement_process =
+            crate::computer_use::CompanionApprovalTarget::fixture_with_pid("TextEdit", 200, 100);
+        assert!(matches!(
+            reused_window.take_remote_permit("tool-call-1", "session-1", &replacement_process,),
+            ComputerUsePermitTake::TargetMismatch { .. }
+        ));
     }
 
     #[test]

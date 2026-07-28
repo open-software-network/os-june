@@ -148,6 +148,7 @@ enum AppAuthorizationKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CompanionApprovalTarget {
     app_name: String,
+    pid: i64,
     window_id: u64,
     identity: AppIdentity,
 }
@@ -156,6 +157,7 @@ impl CompanionApprovalTarget {
     fn from_window(target: &WindowTarget) -> Self {
         Self {
             app_name: target.app_name.clone(),
+            pid: target.pid,
             window_id: target.window_id,
             identity: target.identity.clone(),
         }
@@ -164,6 +166,7 @@ impl CompanionApprovalTarget {
     fn from_context(target: &TargetContext) -> Self {
         Self {
             app_name: target.app_name.clone(),
+            pid: target.pid,
             window_id: target.window_id,
             identity: target.identity.clone(),
         }
@@ -174,15 +177,21 @@ impl CompanionApprovalTarget {
     }
 
     #[cfg(test)]
-    pub(crate) fn fixture(app_name: &str, window_id: u64) -> Self {
+    pub(crate) fn fixture_with_pid(app_name: &str, pid: i64, window_id: u64) -> Self {
         Self {
             app_name: app_name.to_string(),
+            pid,
             window_id,
             identity: AppIdentity {
                 bundle_id: format!("test.{app_name}"),
                 executable_path: PathBuf::from(format!("/Applications/{app_name}.app")),
             },
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(app_name: &str, window_id: u64) -> Self {
+        Self::fixture_with_pid(app_name, window_id as i64, window_id)
     }
 }
 
