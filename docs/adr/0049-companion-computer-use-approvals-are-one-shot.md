@@ -179,3 +179,11 @@ description, target, URL, typed text, capture, or other content.
 - **Let the relay carry a display label or approval decision in plaintext.**
   Rejected because a hostile relay could mislabel the action the user is
   authorizing.
+
+## 2026-07-28 addendum: bounded fields fail closed
+
+Desktop must not shorten an approval action, description, app name, or URL to
+fit the companion contract. A prefix is not a truthful representation of the
+proposed destination. If any field exceeds its protocol byte limit, Desktop
+returns a typed routing failure, publishes no remote approval request, and
+leaves the durable interruption available for desktop-local approval.

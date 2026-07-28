@@ -1163,32 +1163,19 @@ fn publish_computer_use_status(
     }
 }
 
-fn bounded_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
-}
-
 fn approval_action(arguments: &serde_json::Value) -> String {
-    bounded_utf8(
-        arguments
-            .get("action")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("computer_use"),
-        MAX_COMPUTER_USE_ACTION_BYTES,
-    )
+    arguments
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("computer_use")
+        .to_string()
 }
 
 fn approval_description(action: &str, target_app: Option<&str>) -> String {
     let target = target_app.unwrap_or("the selected app");
-    let description = match action {
+    match action {
         "capture" => format!("Capture {target}."),
         "list_apps" => "List available app windows.".to_string(),
         "wait" => "Wait before the next Computer use action.".to_string(),
@@ -1203,8 +1190,31 @@ fn approval_description(action: &str, target_app: Option<&str>) -> String {
         "key" => format!("Press a key in {target}."),
         "set_value" => format!("Set a control value in {target}."),
         _ => format!("Use {target} with Computer use."),
-    };
-    bounded_utf8(&description, MAX_COMPUTER_USE_DESCRIPTION_BYTES)
+    }
+}
+
+fn reject_overlong_approval_field(value: &str, max_bytes: usize) -> Result<(), AppError> {
+    if value.len() <= max_bytes {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "companion_computer_use_approval_too_large",
+        "This Computer use approval cannot be shown safely on a linked device. Approve it on this Mac.",
+    ))
+}
+
+fn validate_computer_use_approval_fields(
+    request: &ComputerUseApprovalRequest,
+) -> Result<(), AppError> {
+    reject_overlong_approval_field(&request.action, MAX_COMPUTER_USE_ACTION_BYTES)?;
+    reject_overlong_approval_field(&request.description, MAX_COMPUTER_USE_DESCRIPTION_BYTES)?;
+    if let Some(target_app) = request.target_app.as_deref() {
+        reject_overlong_approval_field(target_app, MAX_COMPUTER_USE_TARGET_APP_BYTES)?;
+    }
+    if let Some(target_url) = request.target_url.as_deref() {
+        reject_overlong_approval_field(target_url, MAX_COMPUTER_USE_TARGET_URL_BYTES)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn register_computer_use_approval(
@@ -1228,14 +1238,13 @@ pub(crate) fn register_computer_use_approval(
     }
     let runtime = app.state::<CompanionRuntime>();
     let requested_at_ms = current_time_ms();
-    let target_app = crate::computer_use::companion_approval_target_app(app, arguments)
-        .map(|value| bounded_utf8(&value, MAX_COMPUTER_USE_TARGET_APP_BYTES));
+    let target_app = crate::computer_use::companion_approval_target_app(app, arguments);
     let target_url = arguments
         .get("url")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| bounded_utf8(value, MAX_COMPUTER_USE_TARGET_URL_BYTES));
+        .map(str::to_string);
     let action = approval_action(arguments);
     let request = ComputerUseApprovalRequest {
         request_id: request_id.to_string(),
@@ -1247,6 +1256,7 @@ pub(crate) fn register_computer_use_approval(
         requested_at_ms,
         expires_at_ms: requested_at_ms.saturating_add(COMPUTER_USE_APPROVAL_TTL_MS),
     };
+    validate_computer_use_approval_fields(&request)?;
     let mut registry = runtime.computer_use_approvals.lock().map_err(|_| {
         AppError::new(
             "companion_computer_use_approval_unavailable",
@@ -2225,6 +2235,35 @@ mod tests {
         assert_eq!(description, "Type in TextEdit.");
         assert!(!description.contains("private words"));
         assert!(description.len() <= MAX_COMPUTER_USE_DESCRIPTION_BYTES);
+    }
+
+    #[test]
+    fn overlong_approval_fields_fail_closed_instead_of_being_truncated() {
+        let mut request = approval_registry()
+            .requests
+            .remove("call-1")
+            .expect("approval fixture")
+            .request;
+        request.target_url = Some(format!(
+            "https://trusted.example/{}",
+            "x".repeat(MAX_COMPUTER_USE_TARGET_URL_BYTES)
+        ));
+
+        let url_error = validate_computer_use_approval_fields(&request).unwrap_err();
+        assert_eq!(url_error.code, "companion_computer_use_approval_too_large");
+        assert!(request
+            .target_url
+            .as_deref()
+            .is_some_and(|url| url.len() > MAX_COMPUTER_USE_TARGET_URL_BYTES));
+
+        request.target_url = None;
+        request.description = "é".repeat((MAX_COMPUTER_USE_DESCRIPTION_BYTES / 2) + 1);
+        let description_error = validate_computer_use_approval_fields(&request).unwrap_err();
+        assert_eq!(
+            description_error.code,
+            "companion_computer_use_approval_too_large"
+        );
+        assert!(request.description.len() > MAX_COMPUTER_USE_DESCRIPTION_BYTES);
     }
 
     #[test]
