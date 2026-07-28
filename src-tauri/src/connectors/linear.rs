@@ -169,10 +169,61 @@ pub async fn authorize(
         &authorization.redirect_uri,
     )
     .await?;
-    flow.ensure_not_canceled("Linear")?;
-    let identity = fetch_identity(&tokens.access_token).await?;
-    flow.ensure_not_canceled("Linear")?;
+    if let Err(canceled) = flow.ensure_not_canceled("Linear") {
+        return if revoke_unpersisted_grant(&tokens).await {
+            Err(canceled)
+        } else {
+            Err(unpersisted_grant_cleanup_failed())
+        };
+    }
+    let identity = match fetch_identity(&tokens.access_token).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            return if revoke_unpersisted_grant(&tokens).await {
+                Err(error)
+            } else {
+                Err(unpersisted_grant_cleanup_failed())
+            };
+        }
+    };
+    if let Err(canceled) = flow.ensure_not_canceled("Linear") {
+        return if revoke_unpersisted_grant(&tokens).await {
+            Err(canceled)
+        } else {
+            Err(unpersisted_grant_cleanup_failed())
+        };
+    }
     Ok(LinearAuthorizedGrant { tokens, identity })
+}
+
+async fn revoke_unpersisted_grant(tokens: &LinearTokenResponse) -> bool {
+    let mut confirmed = true;
+    for (token, token_type_hint) in unpersisted_revocation_targets(tokens) {
+        confirmed &= revoke(token, token_type_hint).await;
+    }
+    confirmed
+}
+
+fn unpersisted_grant_cleanup_failed() -> AppError {
+    AppError::new(
+        "connector_connect_cleanup_unconfirmed",
+        "June stopped connecting, but could not confirm that Linear removed the new authorization. Remove June in Linear's authorized applications settings before trying again.",
+    )
+}
+
+fn unpersisted_revocation_targets(tokens: &LinearTokenResponse) -> Vec<(&str, &'static str)> {
+    let mut targets = Vec::with_capacity(2);
+    if let Some(refresh_token) = tokens
+        .refresh_token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+    {
+        targets.push((refresh_token, "refresh_token"));
+    }
+    if !tokens.access_token.is_empty() {
+        targets.push((tokens.access_token.as_str(), "access_token"));
+    }
+    targets
 }
 
 fn build_auth_url(
@@ -2470,6 +2521,24 @@ pub async fn get_project_update_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unpersisted_grant_cleanup_revokes_every_issued_token() {
+        let tokens = LinearTokenResponse {
+            access_token: "issued-access".to_string(),
+            refresh_token: Some("issued-refresh".to_string()),
+            expires_in: 3_600,
+            scope: Some("read,write".to_string()),
+        };
+
+        assert_eq!(
+            unpersisted_revocation_targets(&tokens),
+            vec![
+                ("issued-refresh", "refresh_token"),
+                ("issued-access", "access_token"),
+            ]
+        );
+    }
 
     #[test]
     fn auth_url_carries_pkce_public_client_params() {

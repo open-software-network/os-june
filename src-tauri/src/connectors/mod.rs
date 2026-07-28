@@ -1175,10 +1175,17 @@ fn linear_account_metadata_json(identity: &linear::LinearIdentity) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
+struct LinearRetryAccount<'a> {
+    email: &'a str,
+    scopes: &'a [String],
+    metadata: &'a str,
+}
+
 async fn restore_linear_connect_state_with<RestoreTokens, RestoreTokensFuture>(
     repos: &crate::db::repositories::Repositories,
     workspace_id: &str,
     previous_record: Option<&crate::db::repositories::ConnectorAccountRecord>,
+    retry_account: &LinearRetryAccount<'_>,
     restore_tokens: RestoreTokens,
 ) -> Result<(), AppError>
 where
@@ -1186,12 +1193,15 @@ where
     RestoreTokensFuture: Future<Output = Result<(), AppError>>,
 {
     let token_result = restore_tokens().await;
+    let custody_restored = token_result.is_ok();
 
     // Always attempt both halves. Keychain and SQLite cannot share a
     // transaction, but a failure restoring one must not prevent the other
-    // from returning to its pre-connect state.
-    let account_result = match previous_record {
-        Some(record) => repos
+    // from returning to a safe, retryable state. When custody restoration is
+    // uncertain, retain an index row marked reconnect_required instead of
+    // deleting the only Settings surface capable of cleaning it up.
+    let account_result = match (previous_record, custody_restored) {
+        (Some(record), true) => repos
             .upsert_connector_account(
                 &record.account_id,
                 &record.provider,
@@ -1202,8 +1212,30 @@ where
             )
             .await
             .map_err(AppError::from),
-        None => repos
+        (Some(record), false) => repos
+            .upsert_connector_account(
+                &record.account_id,
+                &record.provider,
+                &record.email,
+                &record.scopes,
+                ConnectorAccountStatus::ReconnectRequired.as_str(),
+                &record.metadata,
+            )
+            .await
+            .map_err(AppError::from),
+        (None, true) => repos
             .delete_connector_account(workspace_id)
+            .await
+            .map_err(AppError::from),
+        (None, false) => repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                retry_account.email,
+                retry_account.scopes,
+                ConnectorAccountStatus::ReconnectRequired.as_str(),
+                retry_account.metadata,
+            )
             .await
             .map_err(AppError::from),
     };
@@ -1214,7 +1246,7 @@ where
         (Err(token_error), Err(account_error)) => Err(AppError::new(
             "connector_connect_rollback_failed",
             format!(
-                "Could not fully restore the connector after cancellation (custody: {}; account: {}).",
+                "June could not safely restore the Linear connection after cancellation (custody: {}; account: {}). Remove June in Linear's authorized applications settings before trying again.",
                 token_error.code, account_error.code
             ),
         )),
@@ -1226,15 +1258,22 @@ async fn restore_linear_connect_state(
     workspace_id: &str,
     previous_tokens: Option<&store::StoredConnectorTokens>,
     previous_record: Option<&crate::db::repositories::ConnectorAccountRecord>,
+    retry_account: &LinearRetryAccount<'_>,
 ) -> Result<(), AppError> {
-    restore_linear_connect_state_with(repos, workspace_id, previous_record, || async {
-        match previous_tokens {
-            Some(tokens) => {
-                store::store_tokens(ConnectorProvider::Linear, workspace_id, tokens).await
+    restore_linear_connect_state_with(
+        repos,
+        workspace_id,
+        previous_record,
+        retry_account,
+        || async {
+            match previous_tokens {
+                Some(tokens) => {
+                    store::store_tokens(ConnectorProvider::Linear, workspace_id, tokens).await
+                }
+                None => store::delete_tokens(ConnectorProvider::Linear, workspace_id).await,
             }
-            None => store::delete_tokens(ConnectorProvider::Linear, workspace_id).await,
-        }
-    })
+        },
+    )
     .await
 }
 
@@ -1400,6 +1439,12 @@ pub async fn begin_connect_linear(
         // May be empty; informational only. The workspace id keys custody.
         email: identity.user_email.clone(),
     };
+    let metadata_json = linear_account_metadata_json(&identity);
+    let retry_account = LinearRetryAccount {
+        email: &identity.user_email,
+        scopes: &granted_scopes,
+        metadata: &metadata_json,
+    };
 
     // Read the response-only projection before the first write. From this
     // point onward every await is followed by a cancellation check and, once
@@ -1428,6 +1473,7 @@ pub async fn begin_connect_linear(
             &workspace_id,
             previous_tokens.as_ref(),
             previous_record.as_ref(),
+            &retry_account,
         )
         .await
         {
@@ -1435,12 +1481,15 @@ pub async fn begin_connect_linear(
                 error_code = %error.code,
                 "failed to restore Linear state after canceled credential write"
             );
+            if error.code == "connector_connect_rollback_failed" {
+                emit_connectors_changed(app);
+                return Err(error);
+            }
         }
         emit_connectors_changed(app);
         return Err(canceled);
     }
 
-    let metadata_json = linear_account_metadata_json(&identity);
     if let Err(error) = repos
         .upsert_connector_account(
             &workspace_id,
@@ -1458,6 +1507,7 @@ pub async fn begin_connect_linear(
             &workspace_id,
             previous_tokens.as_ref(),
             previous_record.as_ref(),
+            &retry_account,
         )
         .await
         {
@@ -1465,7 +1515,12 @@ pub async fn begin_connect_linear(
                 error_code = %rollback_error.code,
                 "failed to restore Linear state after account persistence error"
             );
+            if rollback_error.code == "connector_connect_rollback_failed" {
+                emit_connectors_changed(app);
+                return Err(rollback_error);
+            }
         }
+        emit_connectors_changed(app);
         return Err(connect_error);
     }
     if let Err(canceled) = flow.complete_operation("Linear") {
@@ -1474,6 +1529,7 @@ pub async fn begin_connect_linear(
             &workspace_id,
             previous_tokens.as_ref(),
             previous_record.as_ref(),
+            &retry_account,
         )
         .await
         {
@@ -1481,6 +1537,10 @@ pub async fn begin_connect_linear(
                 error_code = %error.code,
                 "failed to restore Linear state after canceled account write"
             );
+            if error.code == "connector_connect_rollback_failed" {
+                emit_connectors_changed(app);
+                return Err(error);
+            }
         }
         emit_connectors_changed(app);
         return Err(canceled);
@@ -2178,11 +2238,22 @@ mod tests {
             .ensure_not_canceled("Linear")
             .expect_err("cancel wins before finalization");
 
+        let retry_account = LinearRetryAccount {
+            email: "actor@example.com",
+            scopes: &new_scopes,
+            metadata: r#"{"workspaceName":"New workspace"}"#,
+        };
         let custody_to_restore = Arc::clone(&custody);
-        restore_linear_connect_state_with(&repos, workspace_id, None, move || async move {
-            *custody_to_restore.lock().expect("custody lock") = None;
-            Ok(())
-        })
+        restore_linear_connect_state_with(
+            &repos,
+            workspace_id,
+            None,
+            &retry_account,
+            move || async move {
+                *custody_to_restore.lock().expect("custody lock") = None;
+                Ok(())
+            },
+        )
         .await
         .expect("fresh state rolls back");
 
@@ -2193,6 +2264,50 @@ mod tests {
             .await
             .expect("account lookup")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn fresh_connect_custody_rollback_failure_keeps_a_retryable_account() {
+        let repos = rollback_test_repositories().await;
+        let workspace_id = "fresh-custody-rollback-failed";
+        let new_scopes = vec!["linear_read".to_string(), "linear_write".to_string()];
+        let retry_account = LinearRetryAccount {
+            email: "actor@example.com",
+            scopes: &new_scopes,
+            metadata: r#"{"workspaceName":"Retry workspace"}"#,
+        };
+
+        let error = restore_linear_connect_state_with(
+            &repos,
+            workspace_id,
+            None,
+            &retry_account,
+            || async {
+                Err(AppError::new(
+                    "connector_keychain_delete_failed",
+                    "injected failure",
+                ))
+            },
+        )
+        .await
+        .expect_err("custody rollback fails");
+
+        assert_eq!(error.code, "connector_keychain_delete_failed");
+        let retry_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("retry account lookup")
+            .expect("retry account remains visible");
+        assert_eq!(
+            retry_record.status,
+            ConnectorAccountStatus::ReconnectRequired.as_str()
+        );
+        assert_eq!(retry_record.email, "actor@example.com");
+        assert_eq!(retry_record.scopes, new_scopes);
+        assert_eq!(
+            retry_record.metadata,
+            r#"{"workspaceName":"Retry workspace"}"#
+        );
     }
 
     #[tokio::test]
@@ -2248,12 +2363,18 @@ mod tests {
             .complete_operation("Linear")
             .expect_err("cancel wins during persistence");
 
+        let retry_account = LinearRetryAccount {
+            email: "new@example.com",
+            scopes: &new_scopes,
+            metadata: r#"{"workspaceName":"New workspace"}"#,
+        };
         let custody_to_restore = Arc::clone(&custody);
         let tokens_to_restore = previous_tokens.clone();
         restore_linear_connect_state_with(
             &repos,
             workspace_id,
             Some(&previous_record),
+            &retry_account,
             move || async move {
                 *custody_to_restore.lock().expect("custody lock") = Some(tokens_to_restore);
                 Ok(())
@@ -2283,6 +2404,89 @@ mod tests {
             ConnectorAccountStatus::ReconnectRequired.as_str()
         );
         assert_eq!(restored_record.metadata, previous_metadata);
+        assert_eq!(
+            repos
+                .list_selected_teams(workspace_id)
+                .await
+                .expect("selected teams"),
+            vec![team]
+        );
+    }
+
+    #[tokio::test]
+    async fn reconnect_custody_rollback_failure_keeps_previous_account_retryable() {
+        let repos = rollback_test_repositories().await;
+        let workspace_id = "reconnect-custody-rollback-failed";
+        let previous_scopes = vec!["linear_read".to_string()];
+        let previous_metadata = r#"{"workspaceName":"Previous workspace"}"#;
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                "previous@example.com",
+                &previous_scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                previous_metadata,
+            )
+            .await
+            .expect("seed previous account");
+        let team = selected_team("engineering");
+        repos
+            .set_selected_teams(workspace_id, std::slice::from_ref(&team))
+            .await
+            .expect("seed selected team");
+        let previous_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("previous account lookup")
+            .expect("previous account");
+
+        let new_scopes = vec!["linear_read".to_string(), "linear_write".to_string()];
+        let retry_account = LinearRetryAccount {
+            email: "new@example.com",
+            scopes: &new_scopes,
+            metadata: r#"{"workspaceName":"New workspace"}"#,
+        };
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                retry_account.email,
+                retry_account.scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                retry_account.metadata,
+            )
+            .await
+            .expect("simulate replacement account write");
+
+        let error = restore_linear_connect_state_with(
+            &repos,
+            workspace_id,
+            Some(&previous_record),
+            &retry_account,
+            || async {
+                Err(AppError::new(
+                    "connector_keychain_write_failed",
+                    "injected failure",
+                ))
+            },
+        )
+        .await
+        .expect_err("custody rollback fails");
+
+        assert_eq!(error.code, "connector_keychain_write_failed");
+        let retry_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("retry account lookup")
+            .expect("previous account remains visible");
+        assert_eq!(retry_record.email, "previous@example.com");
+        assert_eq!(retry_record.scopes, previous_scopes);
+        assert_eq!(
+            retry_record.status,
+            ConnectorAccountStatus::ReconnectRequired.as_str()
+        );
+        assert_eq!(retry_record.metadata, previous_metadata);
         assert_eq!(
             repos
                 .list_selected_teams(workspace_id)
