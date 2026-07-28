@@ -75,4 +75,3 @@ original Linear implementation plan.
   ambiguous metadata fails closed to approval.
 - The dormant native GraphQL operation code may be removed separately after
   the hosted integration has stable release evidence.
-

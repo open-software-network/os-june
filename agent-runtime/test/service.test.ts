@@ -84,7 +84,7 @@ test("emits the visible context summary and exact removed ids after compaction",
 test("serializes an approval interruption for durable host persistence", async () => {
   const engine = new FakeEngine({
     history: [],
-    usage: {},
+    usage: { resolvedModel: "z-ai/glm-5.2" },
     interruptions: [{ id: "approval-1", kind: "approval", toolName: "write_file", arguments: { path: "a" } }],
     serializedState: "{\"state\":true}",
   });
@@ -92,8 +92,18 @@ test("serializes an approval interruption for durable host persistence", async (
   await initialize(service);
   await service.handle(request("run.start", runParams));
   await nextTurn();
+  const events = frames().filter((frame) => "eventId" in frame);
+  assert.deepEqual(
+    events.map((event) => event.method),
+    ["run.started", "message.delta", "usage.updated", "interruption.requested"],
+  );
+  assert.equal(events[2]?.params.resolvedModel, "z-ai/glm-5.2");
   const interruption = frames().find((frame) => frame.method === "interruption.requested");
   assert.equal(interruption?.params.serializedState, "{\"state\":true}");
+  assert.equal(
+    (interruption?.params.usage as { resolvedModel?: string } | undefined)?.resolvedModel,
+    "z-ai/glm-5.2",
+  );
   assert.equal(interruption?.params.id, "approval-1");
 });
 
