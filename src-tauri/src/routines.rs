@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 const CLAIM_STALE_AFTER_MINUTES: i64 = 10;
 const SCHEDULER_TICK_SECONDS: u64 = 30;
+const ROUTINE_SELECT_BY_ID_SQL: &str = "SELECT id, legacy_job_id, name, prompt, schedule, timezone, repeat, deliver, model, safety_mode, state, enabled, created_at, updated_at, next_run_at, last_run_at, last_status, last_error, last_delivery_error, metadata_json FROM routines WHERE id = ?";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -174,6 +175,8 @@ fn resolve_routine_model(stored_model: &str, selected_model: &str) -> String {
         || stored_model == "auto"
         || stored_model == crate::providers::AUTO_GENERATION_MODEL
     {
+        // `open-software/auto` is itself a supported metered route. The shared
+        // agent proxy adds its cost-quality preference before calling June API.
         let selected_model = selected_model.trim();
         if selected_model.is_empty() || selected_model == "auto" {
             crate::providers::AUTO_GENERATION_MODEL.to_string()
@@ -237,15 +240,51 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<AgentRoutineDto>, AppError> {
 }
 
 pub async fn get(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppError> {
-    query("SELECT id, legacy_job_id, name, prompt, schedule, timezone, repeat, deliver, model, safety_mode, state, enabled, created_at, updated_at, next_run_at, last_run_at, last_status, last_error, last_delivery_error, metadata_json FROM routines WHERE id = ?")
-        .bind(id).fetch_one(pool).await.map_err(|error| if matches!(error, sqlx::Error::RowNotFound) { AppError::new("routine_not_found", "Routine was not found.") } else { app_error(error) }).map(routine_from_row)
+    query(ROUTINE_SELECT_BY_ID_SQL)
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| {
+            if matches!(error, sqlx::Error::RowNotFound) {
+                AppError::new("routine_not_found", "Routine was not found.")
+            } else {
+                app_error(error)
+            }
+        })
+        .map(routine_from_row)
+}
+
+async fn get_in_transaction(
+    transaction: &mut Transaction<'_, Sqlite>,
+    id: &str,
+) -> Result<AgentRoutineDto, AppError> {
+    query(ROUTINE_SELECT_BY_ID_SQL)
+        .bind(id)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| {
+            if matches!(error, sqlx::Error::RowNotFound) {
+                AppError::new("routine_not_found", "Routine was not found.")
+            } else {
+                app_error(error)
+            }
+        })
+        .map(routine_from_row)
 }
 
 pub async fn update(
     pool: &SqlitePool,
     request: UpdateAgentRoutineRequest,
 ) -> Result<AgentRoutineDto, AppError> {
-    let current = get(pool, &request.routine_id).await?;
+    // Routine edits derive state and metadata from the stored row. Serialize
+    // that read with terminal claim release so a stale edit cannot overwrite
+    // finite-repeat progress or re-enable a just-completed routine.
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(app_error)?;
+    let current = get_in_transaction(&mut transaction, &request.routine_id).await?;
+    let routine_id = request.routine_id;
     let state = request.state.unwrap_or(current.state);
     validate_state(&state)?;
     let enabled = request.enabled.unwrap_or(current.enabled);
@@ -277,9 +316,10 @@ pub async fn update(
         .bind(request.deliver.unwrap_or(current.deliver)).bind(request.model.unwrap_or(current.model))
         .bind(request.safety_mode.unwrap_or(current.safety_mode).as_db()).bind(&state).bind(enabled).bind(now())
         .bind(next_run_at).bind(metadata_json(metadata)).bind(tool_catalog_updated)
-        .bind(state != "scheduled" || !enabled).bind(state != "scheduled" || !enabled).bind(&request.routine_id)
-        .execute(pool).await.map_err(app_error)?;
-    get(pool, &request.routine_id).await
+        .bind(state != "scheduled" || !enabled).bind(state != "scheduled" || !enabled).bind(&routine_id)
+        .execute(&mut *transaction).await.map_err(app_error)?;
+    transaction.commit().await.map_err(app_error)?;
+    get(pool, &routine_id).await
 }
 
 pub async fn pause(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppError> {
@@ -292,7 +332,11 @@ pub async fn pause(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppEr
 }
 
 pub async fn resume(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppError> {
-    let current = get(pool, id).await?;
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(app_error)?;
+    let current = get_in_transaction(&mut transaction, id).await?;
     if requires_legacy_execution_review(&current.metadata) {
         return Err(AppError::new(
             "routine_legacy_execution_review_required",
@@ -301,7 +345,8 @@ pub async fn resume(pool: &SqlitePool, id: &str) -> Result<AgentRoutineDto, AppE
     }
     let next = next_run_after(&current.schedule, &current.timezone, Utc::now())?.map(format_time);
     query("UPDATE routines SET state = 'scheduled', enabled = 1, next_run_at = ?, updated_at = ? WHERE id = ?")
-        .bind(next).bind(now()).bind(id).execute(pool).await.map_err(app_error)?;
+        .bind(next).bind(now()).bind(id).execute(&mut *transaction).await.map_err(app_error)?;
+    transaction.commit().await.map_err(app_error)?;
     get(pool, id).await
 }
 
@@ -1486,14 +1531,10 @@ fn cron_field(field: &str, value: i32, min: i32, max: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx_sqlite::SqlitePoolOptions;
+    use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+    use std::time::Duration as StdDuration;
 
-    async fn pool() -> SqlitePool {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
+    async fn initialize_pool(pool: &SqlitePool) {
         // The routine migration only needs these parent keys for FK coverage.
         // Running the full runtime migration in memory would also require the
         // retired Hermes tables it deliberately imports from.
@@ -1502,15 +1543,40 @@ mod tests {
             "CREATE TABLE agent_runs (id TEXT PRIMARY KEY, session_id TEXT, status TEXT, updated_at TEXT, completed_at TEXT, interrupted_state_json TEXT, error_code TEXT, error_message TEXT)",
             "CREATE TABLE connector_triggers (id TEXT PRIMARY KEY, job_id TEXT, kind TEXT, account_id TEXT)",
         ] {
-            query(statement).execute(&pool).await.unwrap();
+            query(statement).execute(pool).await.unwrap();
         }
         for statement in include_str!("../migrations/026_routines.sql")
             .split(';')
             .filter(|statement| !statement.trim().is_empty())
         {
-            query(statement).execute(&pool).await.unwrap();
+            query(statement).execute(pool).await.unwrap();
         }
+    }
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        initialize_pool(&pool).await;
         pool
+    }
+
+    async fn concurrent_pool() -> (tempfile::TempDir, SqlitePool) {
+        let directory = tempfile::tempdir().expect("temporary routine database directory");
+        let options = SqliteConnectOptions::new()
+            .filename(directory.path().join("routine-concurrency.sqlite3"))
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(StdDuration::from_secs(2));
+        let pool = SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .expect("file-backed routine sqlite");
+        initialize_pool(&pool).await;
+        (directory, pool)
     }
     fn create_request(schedule: &str) -> CreateAgentRoutineRequest {
         CreateAgentRoutineRequest {
@@ -1570,6 +1636,10 @@ mod tests {
         assert_eq!(
             resolve_routine_model("explicit-model", "kimi-k2-6"),
             "explicit-model"
+        );
+        assert_eq!(
+            resolve_routine_model("auto", crate::providers::AUTO_GENERATION_MODEL),
+            crate::providers::AUTO_GENERATION_MODEL
         );
     }
 
@@ -1914,6 +1984,82 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_edit_cannot_resurrect_a_completed_finite_repeat() {
+        let (_directory, pool) = concurrent_pool().await;
+        for iteration in 0..12 {
+            let routine_id = format!("routine-concurrent-{iteration}");
+            let session_id = format!("session-concurrent-{iteration}");
+            let agent_run_id = format!("run-concurrent-{iteration}");
+            let mut request = create_request("every 1h");
+            request.id = Some(routine_id.clone());
+            request.legacy_job_id = Some(format!("legacy-concurrent-{iteration}"));
+            request.repeat = Some("once".into());
+            create(&pool, request).await.unwrap();
+            let claimed = claim(&pool, &routine_id, "manual", false)
+                .await
+                .unwrap()
+                .unwrap();
+            query("INSERT INTO agent_sessions (id) VALUES (?)")
+                .bind(&session_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            query(
+                "INSERT INTO agent_runs
+                 (id, status, completed_at)
+                 VALUES (?, 'completed', '2026-07-28T08:00:00.000Z')",
+            )
+            .bind(&agent_run_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            attach_run_mapping(
+                &pool,
+                &claimed.routine_run_id,
+                &claimed.token,
+                &session_id,
+                &agent_run_id,
+                &now(),
+            )
+            .await
+            .unwrap();
+
+            let edit = UpdateAgentRoutineRequest {
+                routine_id: routine_id.clone(),
+                name: Some(format!("Edited routine {iteration}")),
+                prompt: None,
+                schedule: None,
+                timezone: None,
+                repeat: None,
+                deliver: None,
+                model: None,
+                safety_mode: None,
+                state: None,
+                enabled: None,
+                metadata: None,
+                enabled_toolsets: None,
+            };
+            let (edit_result, terminal_result) = tokio::join!(
+                update(&pool, edit),
+                mark_agent_run_terminal(&pool, &agent_run_id)
+            );
+            edit_result.unwrap();
+            terminal_result.unwrap();
+
+            let routine = get(&pool, &routine_id).await.unwrap();
+            assert_eq!(routine.state, "completed");
+            assert!(!routine.enabled);
+            assert_eq!(
+                routine.metadata["repeatState"]["completed"].as_u64(),
+                Some(1)
+            );
+            assert_eq!(routine.last_status.as_deref(), Some("ok"));
+            let run = list_runs(&pool, Some(&routine_id)).await.unwrap().remove(0);
+            assert_eq!(run.status, "completed");
+        }
     }
 
     #[tokio::test]

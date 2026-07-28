@@ -141,6 +141,7 @@ export function RoutinesView({
   const [runsUnavailableState, setRunsUnavailable] = useState(false);
   const routineLoadSequenceRef = useRef(0);
   const visibleRoutineLoadSequenceRef = useRef(0);
+  const visibleRoutineLoadsInFlightRef = useRef(0);
   const runLoadSequenceRef = useRef(0);
   // Run ids already reported for crediting this mount; the local store is the
   // durable idempotent ledger, this just avoids re-reporting on every refresh.
@@ -158,12 +159,16 @@ export function RoutinesView({
   // `refreshing` covers every fetch so reloads keep the list visible while
   // still signalling progress on the refresh control.
   const loadRoutines = useCallback(async (options: { silent?: boolean } = {}) => {
+    const silent = options.silent ?? false;
+    // A timer or terminal event is best-effort. Let an initial, manual, or
+    // mutation-triggered load retain foreground result and error semantics.
+    if (silent && visibleRoutineLoadsInFlightRef.current > 0) return null;
     const sequence = routineLoadSequenceRef.current + 1;
     routineLoadSequenceRef.current = sequence;
-    const silent = options.silent ?? false;
     const visibleSequence = silent ? null : visibleRoutineLoadSequenceRef.current + 1;
     if (visibleSequence !== null) {
       visibleRoutineLoadSequenceRef.current = visibleSequence;
+      visibleRoutineLoadsInFlightRef.current += 1;
       setRefreshing(true);
     }
     try {
@@ -181,8 +186,14 @@ export function RoutinesView({
       return message;
     } finally {
       if (routineLoadSequenceRef.current === sequence) setLoading(false);
-      if (visibleSequence !== null && visibleRoutineLoadSequenceRef.current === visibleSequence) {
-        setRefreshing(false);
+      if (visibleSequence !== null) {
+        visibleRoutineLoadsInFlightRef.current = Math.max(
+          0,
+          visibleRoutineLoadsInFlightRef.current - 1,
+        );
+        if (visibleRoutineLoadSequenceRef.current === visibleSequence) {
+          setRefreshing(false);
+        }
       }
     }
   }, []);

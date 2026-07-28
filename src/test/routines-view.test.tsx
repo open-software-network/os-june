@@ -1340,30 +1340,27 @@ describe("RoutinesView run history", () => {
     expect(screen.queryByText("Last run failed")).toBeNull();
   });
 
-  it("ignores stale routine responses after a newer background refresh", async () => {
+  it("does not let a background refresh supersede a visible load", async () => {
     vi.useFakeTimers();
     let resolveFirstLoad: (routines: RoutineJob[]) => void = () => {};
-    mocks.listRoutines
-      .mockReturnValueOnce(
-        new Promise((resolve) => {
-          resolveFirstLoad = resolve;
-        }),
-      )
-      .mockResolvedValueOnce([job({ name: "Fresh routine" })]);
+    mocks.listRoutines.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirstLoad = resolve;
+      }),
+    );
     renderView();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10000);
     });
-    expect(screen.getByText("Fresh routine")).toBeInTheDocument();
+    expect(mocks.listRoutines).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveFirstLoad([job({ name: "Stale routine" })]);
+      resolveFirstLoad([job({ name: "Visible routine" })]);
       await Promise.resolve();
     });
 
-    expect(screen.getByText("Fresh routine")).toBeInTheDocument();
-    expect(screen.queryByText("Stale routine")).toBeNull();
+    expect(screen.getByText("Visible routine")).toBeInTheDocument();
   });
 
   it("keeps usable routine data when a background refresh fails", async () => {
