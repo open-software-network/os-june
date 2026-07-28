@@ -234,10 +234,15 @@ export function RoutinesView({
       // projections now so an open detail page cannot keep showing the
       // previous run's failure until the user navigates away.
       void refreshSilently();
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
+    })
+      .then((dispose) => {
+        if (disposed) dispose();
+        else unlisten = dispose;
+      })
+      .catch(() => {
+        // The periodic refresh remains the fallback when event registration is
+        // unavailable, including outside a native Tauri event environment.
+      });
     return () => {
       disposed = true;
       unlisten?.();

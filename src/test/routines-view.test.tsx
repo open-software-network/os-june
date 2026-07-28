@@ -1316,6 +1316,30 @@ describe("RoutinesView run history", () => {
     expect(screen.queryByText("Last run failed")).toBeNull();
   });
 
+  it("keeps polling when terminal event listener registration fails", async () => {
+    vi.useFakeTimers();
+    eventMocks.listen.mockRejectedValueOnce(new Error("event listener unavailable"));
+    mocks.listRoutines
+      .mockResolvedValueOnce([job({ last_status: "error" })])
+      .mockResolvedValueOnce([job({ last_status: "ok" })]);
+    adapterMocks.listScheduledRunSessions
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([run({ active: true, preview: "" })]);
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Last run failed")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Last run failed")).toBeNull();
+  });
+
   it("ignores stale routine responses after a newer background refresh", async () => {
     vi.useFakeTimers();
     let resolveFirstLoad: (routines: RoutineJob[]) => void = () => {};

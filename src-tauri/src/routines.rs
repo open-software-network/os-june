@@ -19,8 +19,8 @@ use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{query::query, row::Row};
-use sqlx_sqlite::SqlitePool;
+use sqlx::{query::query, query_scalar::query_scalar, row::Row, transaction::Transaction};
+use sqlx_sqlite::{Sqlite, SqlitePool};
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
@@ -441,33 +441,31 @@ pub async fn claim_due(pool: &SqlitePool) -> Result<Vec<Claim>, AppError> {
 /// becomes eligible again after a bounded lease expiry.
 pub async fn reconcile(pool: &SqlitePool) -> Result<(), AppError> {
     let timestamp = now();
-    query("UPDATE routine_runs SET status = (SELECT status FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at = COALESCE((SELECT completed_at FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at), error_code = COALESCE((SELECT error_code FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_code), error_message = COALESCE((SELECT error_message FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_message), updated_at = ? WHERE agent_run_id IS NOT NULL AND status IN ('running', 'waiting_for_user') AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id AND agent_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed'))")
-        .bind(&timestamp).execute(pool).await.map_err(app_error)?;
-    let stale_before = format_time(Utc::now() - Duration::minutes(CLAIM_STALE_AFTER_MINUTES));
-    query("UPDATE routine_runs SET status = 'interrupted', completed_at = ?, error_code = 'routine_claim_expired', error_message = 'Routine dispatch did not start before its claim expired.', updated_at = ? WHERE status = 'queued' AND agent_run_id IS NULL AND updated_at < ?")
-        .bind(&timestamp).bind(&timestamp).bind(stale_before).execute(pool).await.map_err(app_error)?;
-    release_terminal_claims(pool, &timestamp, None).await
-}
-
-async fn release_terminal_claims(
-    pool: &SqlitePool,
-    timestamp: &str,
-    agent_run_id: Option<&str>,
-) -> Result<(), AppError> {
-    // Routine edits and terminal release both update schedule metadata. Hold a
-    // write reservation across the read/derive/write sequence so a concurrent
-    // edit either lands wholly before this snapshot or wholly after it.
     let mut transaction = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(app_error)?;
+    query("UPDATE routine_runs SET status = (SELECT status FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at = COALESCE((SELECT completed_at FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at), error_code = COALESCE((SELECT error_code FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_code), error_message = COALESCE((SELECT error_message FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_message), updated_at = ? WHERE agent_run_id IS NOT NULL AND status IN ('running', 'waiting_for_user') AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id AND agent_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed'))")
+        .bind(&timestamp).execute(&mut *transaction).await.map_err(app_error)?;
+    let stale_before = format_time(Utc::now() - Duration::minutes(CLAIM_STALE_AFTER_MINUTES));
+    query("UPDATE routine_runs SET status = 'interrupted', completed_at = ?, error_code = 'routine_claim_expired', error_message = 'Routine dispatch did not start before its claim expired.', updated_at = ? WHERE status = 'queued' AND agent_run_id IS NULL AND updated_at < ?")
+        .bind(&timestamp).bind(&timestamp).bind(stale_before).execute(&mut *transaction).await.map_err(app_error)?;
+    release_terminal_claims(&mut transaction, &timestamp, None).await?;
+    transaction.commit().await.map_err(app_error)
+}
+
+async fn release_terminal_claims(
+    transaction: &mut Transaction<'_, Sqlite>,
+    timestamp: &str,
+    agent_run_id: Option<&str>,
+) -> Result<(), AppError> {
     // A terminal run releases exactly its matching routine claim. Advance the
     // schedule here rather than leaving a past `next_run_at`, which would
     // otherwise immediately re-run a completed routine on the next tick.
     let terminal = query("SELECT routines.id, routines.schedule, routines.timezone, routines.repeat, routines.metadata_json, routines.state, routines.enabled, routine_runs.claim_token, routine_runs.status, routine_runs.completed_at, routine_runs.error_message FROM routines JOIN routine_runs ON routine_runs.routine_id = routines.id AND routine_runs.claim_token = routines.claim_token WHERE routines.claim_token IS NOT NULL AND routine_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed') AND (? IS NULL OR routine_runs.agent_run_id = ?)")
         .bind(agent_run_id)
         .bind(agent_run_id)
-        .fetch_all(&mut *transaction).await.map_err(app_error)?;
+        .fetch_all(&mut **transaction).await.map_err(app_error)?;
     for row in terminal {
         let state: String = row.get("state");
         let enabled = row.get::<i64, _>("enabled") != 0;
@@ -496,9 +494,9 @@ async fn release_terminal_claims(
             .bind(timestamp)
             .bind(row.get::<String, _>("id"))
             .bind(row.get::<String, _>("claim_token"))
-            .execute(&mut *transaction).await.map_err(app_error)?;
+            .execute(&mut **transaction).await.map_err(app_error)?;
     }
-    transaction.commit().await.map_err(app_error)
+    Ok(())
 }
 
 fn advance_repeat(repeat: &str, metadata: &mut Value) -> bool {
@@ -600,17 +598,40 @@ pub async fn mark_agent_run_terminal(
     pool: &SqlitePool,
     agent_run_id: &str,
 ) -> Result<(), AppError> {
+    // Most terminal agent events are not Routine runs. Avoid taking SQLite's
+    // RESERVED write lock for those unrelated chat and dictation completions.
+    let is_routine_run: i64 = query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM routine_runs
+             WHERE agent_run_id = ? AND status IN ('running', 'waiting_for_user')
+         )",
+    )
+    .bind(agent_run_id)
+    .fetch_one(pool)
+    .await
+    .map_err(app_error)?;
+    if is_routine_run == 0 {
+        return Ok(());
+    }
+
     let timestamp = now();
+    // Project the terminal run and release its routine claim under one write
+    // reservation. A concurrent routine edit therefore lands wholly before or
+    // after both updates and cannot erase the matching claim between them.
+    let mut transaction = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(app_error)?;
     let changed = query("UPDATE routine_runs SET status = (SELECT status FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at = COALESCE((SELECT completed_at FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at), error_code = COALESCE((SELECT error_code FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_code), error_message = COALESCE((SELECT error_message FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_message), updated_at = ? WHERE agent_run_id = ? AND status IN ('running', 'waiting_for_user') AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id AND agent_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed'))")
         .bind(&timestamp)
         .bind(agent_run_id)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await
         .map_err(app_error)?;
-    if changed.rows_affected() == 0 {
-        return Ok(());
+    if changed.rows_affected() != 0 {
+        release_terminal_claims(&mut transaction, &timestamp, Some(agent_run_id)).await?;
     }
-    release_terminal_claims(pool, &timestamp, Some(agent_run_id)).await
+    transaction.commit().await.map_err(app_error)
 }
 
 /// Start the single local scheduler for June-owned routines. Claims are stored
@@ -1893,6 +1914,61 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn terminal_projection_rolls_back_when_claim_release_fails() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-atomic')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs
+             (id, status, completed_at, error_code, error_message)
+             VALUES ('run-atomic', 'failed', '2026-07-28T08:00:00.000Z',
+                     'model_not_priced', 'model_not_priced')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            "session-atomic",
+            "run-atomic",
+            &now(),
+        )
+        .await
+        .unwrap();
+        query("UPDATE routines SET schedule = 'not a schedule' WHERE id = 'routine-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let error = mark_agent_run_terminal(&pool, "run-atomic")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "routine_schedule_invalid");
+        let run = list_runs(&pool, Some("routine-1")).await.unwrap().remove(0);
+        assert_eq!(run.status, "running");
+        assert_eq!(run.error_code, None);
+        let routine = get(&pool, "routine-1").await.unwrap();
+        assert_eq!(routine.last_status, None);
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(claim_token.as_deref(), Some(claimed.token.as_str()));
     }
 
     #[tokio::test]
