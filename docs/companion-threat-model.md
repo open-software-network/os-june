@@ -5,7 +5,8 @@
 Desktop OS Accounts tokens, mobile device credentials, device private keys,
 pairing secrets, session keys, note/chat/settings plaintext, recording
 control authority, linked-device grants, companion attachment bytes, granted
-Mac browse roots, file names and metadata, and APNs signing material.
+Mac browse roots, file names and metadata, generated image/video artifacts,
+and APNs signing material.
 
 ## Trust boundaries and mitigations
 
@@ -57,6 +58,15 @@ Mac browse roots, file names and metadata, and APNs signing material.
   the phone includes its short-lived opaque reference in an agent message, at
   which point the Mac copies it through the normal safety-controlled
   attachment path.
+- Generated media stays behind `mediaRead`, Noise E2EE, the current
+  data-partition check, a 100 MiB source cap, and 31 KiB response chunks. The
+  phone receives opaque artifact ids rather than paths. Desktop resolves only
+  available tool-produced image/video rows inside the owning session
+  workspace, rejects symbolic links, pins the validated file identity, and
+  repeats one SHA-256 digest for end-to-end assembly verification.
+- Media history and fetch recheck current data-partition membership after
+  awaited artifact or file work. If the user switches partitions during a
+  fetch, the already-read chunk is discarded rather than released.
 - The mobile bundle has no OS Accounts client, callback, account token, OS
   Accounts App API key, provider key, APNs signing key, relay secret, or
   prebuilt bearer token. Pairing never copies the Desktop account session.
@@ -86,6 +96,10 @@ approved root remain sensitive even without file contents. An attacker already
 able to replace files on the Mac can race metadata checks; June revalidates at
 agent-send time, while a fully compromised endpoint remains outside the
 companion boundary.
+Saving a verified result to Photos creates a durable phone-controlled copy
+whose retention can outlive both the desktop artifact and June Companion's
+encrypted snapshot cache. A cached open desktop handle can temporarily keep a
+deleted artifact's disk blocks alive for up to 30 idle minutes.
 
 Production claims require review of the C ABI, Noise patterns, Keychain access
 classes, pairing proof and device credential authorization, APNs configuration,

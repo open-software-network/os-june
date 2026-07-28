@@ -4,19 +4,19 @@ End-to-end encrypted content includes note titles/bodies, prompts, agent
 messages/deltas/status payloads, curated model metadata, per-session model
 selections, safe settings, recording controls, focus targets, phone attachment
 bytes and metadata, granted-root labels, Mac file names and metadata, opaque
-attachment references, operation results, and protocol errors. Absolute Mac
-paths do not cross the protocol. Model metadata includes the canonical
-provider, privacy class, and price label that Desktop uses to explain the
-routing choice; the blind relay sees only ciphertext and routing metadata.
-Device private/session keys and device credentials never enter the SwiftUI
-application model. Pairing secrets are held only as transient QR or manual-code
-input during bootstrap and are never published in a snapshot or persisted by
-the application model. The explicit copy action places the short-lived
-bootstrap capability on the system clipboard, where it may remain in clipboard
-history after it expires. Desktop does not read the clipboard or risk erasing
-newer content. The relay receives a device credential only for verification and
-persists only the SHA-256 hash of its encoded authorization value; it never
-receives the Noise pairing secret.
+attachment references, generated-media references and chunks, operation
+results, and protocol errors. Absolute Mac paths do not cross the protocol.
+Model metadata includes the canonical provider, privacy class, and price label
+that Desktop uses to explain the routing choice; the blind relay sees only
+ciphertext and routing metadata. Device private/session keys and device
+credentials never enter the SwiftUI application model. Pairing secrets are held
+only as transient QR or manual-code input during bootstrap and are never
+published in a snapshot or persisted by the application model. The explicit
+copy action places the short-lived bootstrap capability on the system clipboard,
+where it may remain in clipboard history after it expires. Desktop does not read
+the clipboard or risk erasing newer content. The relay receives a device
+credential only for verification and persists only the SHA-256 hash of its
+encoded authorization value; it never receives the Noise pairing secret.
 
 June API necessarily observes the desktop's OS Accounts user id, linked device ids and
 public keys, device display names, link/revocation timestamps, APNs device
@@ -49,3 +49,12 @@ those labels before selection, while Desktop remains responsible for applying
 the provider and billing policy at run start. No service-managed provider key,
 request content, account token, or raw model catalog is added to companion
 traffic.
+
+Generated-media references contain an opaque artifact id, media type,
+dimensions or duration when available, and byte size. Full artifact bytes
+cross only in bounded E2EE chunks and are verified against the repeated
+SHA-256 digest. Desktop retains no companion-specific byte copy: its bounded
+memory cache holds validated file handles only. If the user saves a verified
+result to the system photo library, Photos owns that additional copy and its
+retention; removing the desktop artifact or June Companion cache does not
+remove it.

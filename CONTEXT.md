@@ -666,6 +666,13 @@ linked devices. Only routing metadata and ciphertext are visible to the
 **companion relay**.
 _Avoid_: raw command, Hermes frame, Tauri command.
 
+**Companion media result**:
+A bounded metadata reference to a canonical image or video artifact generated
+by June's agent for one stored session and run. The reference is not the media
+itself; a linked device with `mediaRead` fetches the verified full artifact in
+chunks.
+_Avoid_: media upload, attachment path, inline media.
+
 ### Desktop shell & updates
 
 **Release channel**:

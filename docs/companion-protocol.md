@@ -58,11 +58,12 @@ conflict.
 ## Capabilities
 
 The only grants are notes read/edit, agent read/chat/cancel, model read/edit,
-safe settings read/edit, existing-recording state/pause/resume/stop, app focus,
-and self-device read/revoke. Linked devices may also receive the separate
-`filesUpload` and `filesBrowse` grants described below. Model discovery and
-current-session reads require `modelRead`; changing a session's next-run model
-requires `modelEdit`. Body-to-capability equality is validated before dispatch.
+generated-media read, safe settings read/edit, existing-recording
+state/pause/resume/stop, app focus, and self-device read/revoke. Linked devices
+may also receive the separate `filesUpload` and `filesBrowse` grants described
+below. Model discovery and current-session reads require `modelRead`; changing
+a session's next-run model requires `modelEdit`. Body-to-capability equality is
+validated before dispatch.
 
 The encrypted `deviceGetSelf` result may include the Desktop's user-facing
 device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
@@ -74,7 +75,7 @@ an older Desktop omits it.
 Agent session and message reads go through typed frontend intents backed by
 the current Hermes session APIs. The companion receives the same sanitized
 display text as June Desktop: machine context, provider routing details,
-reasoning, tool calls/results, approvals, secrets, and media internals stay on
+reasoning, tool calls/results, approvals, secrets, and artifact paths stay on
 the Mac. The always-mounted app shell serves reads even when the Agent screen
 is closed. Send and cancel intents wake the existing Agent workspace.
 Wire session identifiers are qualified explicitly: agent data uses
@@ -115,8 +116,35 @@ with an instruction to open them on the Mac; the companion never loads a
 truncated note into its editor, which prevents an edit from overwriting unseen
 content.
 
+Agent history and status events may add up to eight **companion media result**
+references for canonical, tool-produced image/video artifacts. A reference
+contains an opaque artifact id, kind, MIME type, byte size, optional paired
+dimensions, and optional video duration. Empty media arrays are omitted, so
+version 1 clients that know only text/status keep their existing shape.
+References never contain paths or inline bytes.
+
+`mediaFetch` requires `mediaRead` and returns `mediaChunk` under the same
+capability. The source is capped at 100 MiB and each response at 31 KiB of raw
+bytes. Base64 expands a full chunk to 42,328 bytes; the contract's worst-case
+response test includes maximum identifiers, digest, and JSON syntax and keeps
+the plaintext below 44 KiB with at least 750 bytes spare. Each chunk repeats
+the source's lowercase SHA-256 digest, total size, offset, and exact completion
+state. The client advances by decoded byte count and verifies the complete
+file before display or photo-library save.
+
+Only the canonical full artifact is fetchable. June does not persist a
+canonical media thumbnail, so a thumbnail tier would create a second artifact
+and retention contract. Mobile may derive a local thumbnail only after the
+full artifact passes integrity verification.
+
+History and fetch are typed frontend intents. They check that the stored
+session is in the current data partition before artifact work and check again
+after awaited inspection or file IO; a partition switch discards the result.
+Fetch resolution always combines the stored session id with the opaque
+artifact id and never accepts a phone-supplied path.
+
 There is no variant for arbitrary Tauri/Hermes calls, recording start, note
-delete, approvals, unrestricted mode, filesystem, shell, credentials,
+delete, approvals, unrestricted mode, general filesystem access, shell, credentials,
 connectors, updates, account deletion, or adding a device. The bounded browse
 variants below are not a general filesystem capability and do not return file
 contents.

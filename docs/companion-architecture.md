@@ -64,6 +64,13 @@ existing run boundary. The companion therefore reuses June's normal session,
 model, and transcript behavior rather than creating a second agent control
 path.
 
+Generated image and video results reuse the same `agent_artifacts` rows and
+workspace files that June Desktop renders. History and status carry bounded
+metadata references only. The phone pulls the canonical full artifact through
+typed, data-partition-scoped `mediaFetch` chunks and verifies SHA-256 before
+rendering or saving it. No alternate generation, export, or thumbnail store is
+part of the desktop companion controller.
+
 ## Authority and availability
 
 The Mac is authoritative. The phone cannot run June's local agent harness,
