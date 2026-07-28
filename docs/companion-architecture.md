@@ -56,9 +56,13 @@ before tokens are cleared.
 The always-mounted desktop app shell handles sanitized agent session and
 message reads without changing the visible Mac view. Agent send and cancel
 requests are queued briefly while the existing Agent workspace mounts, so the
-consumer is advertised only after its Tauri listener is installed. The
-companion reuses June's normal session, model, and transcript behavior rather
-than creating a second agent control path.
+consumer is advertised only after its Tauri listener is installed. The shell
+also serves the curated model catalog and stages validated per-session model
+changes through the same store used by the desktop picker. Agent workspaces
+and note chat observe that store, while a run snapshots its model at the
+existing run boundary. The companion therefore reuses June's normal session,
+model, and transcript behavior rather than creating a second agent control
+path.
 
 ## Authority and availability
 
@@ -67,7 +71,10 @@ start a recording, approve tools, read arbitrary filesystem contents, or use
 provider keys. A linked device can list bounded metadata only inside roots the
 signed-in Mac user explicitly grants, and a selected file reaches June only
 through the normal agent attachment path. The companion cannot download Mac
-file contents.
+file contents. It can select only Auto or a model in the bounded recommended
+set currently available from the desktop's live catalog. A model change made
+during a run is staged for the next run and cannot alter the in-flight provider
+request.
 When the Mac is offline, control fails immediately and the UI says offline.
 No control ciphertext is queued. The encrypted mobile cache only renders the
 last successful snapshot while locked/offline and is not synchronization.

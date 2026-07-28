@@ -57,11 +57,12 @@ conflict.
 
 ## Capabilities
 
-The only grants are notes read/edit, agent read/chat/cancel, safe settings
-read/edit, existing-recording state/pause/resume/stop, app focus, and
-self-device read/revoke. Linked devices may also receive the separate
-`filesUpload` and `filesBrowse` grants described below. Body-to-capability
-equality is validated before dispatch.
+The only grants are notes read/edit, agent read/chat/cancel, model read/edit,
+safe settings read/edit, existing-recording state/pause/resume/stop, app focus,
+and self-device read/revoke. Linked devices may also receive the separate
+`filesUpload` and `filesBrowse` grants described below. Model discovery and
+current-session reads require `modelRead`; changing a session's next-run model
+requires `modelEdit`. Body-to-capability equality is validated before dispatch.
 
 The encrypted `deviceGetSelf` result may include the Desktop's user-facing
 device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
@@ -80,6 +81,29 @@ Wire session identifiers are qualified explicitly: agent data uses
 `storedSessionId`, while active-recording snapshots and controls use
 `recordingSessionId`. The companion protocol does not expose a Hermes runtime
 session id.
+
+Model control uses the `modelsList`, `sessionModelGet`, and `sessionModelSet`
+body tags. The first two return `models` and `sessionModel` results under
+`modelRead`; the mutation also returns `sessionModel`, under `modelEdit`, so
+the phone can render the exact accepted selection. `sessionModelChanged`
+events publish desktop-originated picker changes under `modelRead`. A peer
+receives that additive event only after it has demonstrated `modelRead` or
+`modelEdit` on its current Noise connection, so an older companion is not sent
+a body tag it does not understand.
+
+The model catalog is bounded to eight entries. Desktop currently exposes Auto
+plus the available subset of its four recommended generation models, using the
+live catalog for canonical names, providers, privacy classes, and price
+labels. Model ids and names are capped at 256 UTF-8 bytes, providers at 64,
+descriptions at 512, and privacy/price labels at 128. A set request for any
+model outside that curated live set returns `unsupported`; a missing or
+partition-inaccessible stored session returns `not_found`.
+
+Desktop remains authoritative for model persistence and run boundaries.
+`sessionModelSet` stages the accepted selection in the same per-session store
+as the Mac picker. It does not cancel, restart, or reroute an active run. The
+staged value becomes authoritative when the next run starts, matching
+ADR-0018; later desktop and companion reads report that staged value.
 
 Agent transcript pagination starts with the newest page and walks backward;
 items within each page remain chronological so the mobile client can prepend

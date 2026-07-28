@@ -62,6 +62,16 @@ Mac browse roots, file names and metadata, and APNs signing material.
   prebuilt bearer token. Pairing never copies the Desktop account session.
 - The desktop controller has no generic executor. The Hermes Gateway remains
   behind the existing control plane.
+- `modelEdit` permits a linked phone to change the privacy and credit-price
+  characteristics of the next agent run. Desktop limits that authority to Auto
+  plus its live recommended generation set, returns canonical privacy and
+  price labels before selection, and rejects stale or uncurated ids. The
+  capability is separate from agent chat and safe-settings access and remains
+  visible on the linked device grant.
+- A model mutation revalidates that the stored session belongs to the active
+  desktop data partition immediately before the synchronous staging write. A
+  change during an active run cannot cancel or reroute that run; it applies at
+  the next run boundary.
 
 ## Accepted risks
 
