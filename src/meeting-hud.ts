@@ -28,6 +28,8 @@ const lifecycle = createHudLifecycle();
 // Recolor this HUD window to the selected accent and keep it live-synced.
 lifecycle.trackUnlisten(subscribeBrand());
 
+const HAS_TAURI_BRIDGE = "__TAURI_INTERNALS__" in window;
+
 // Absent on the standalone browser page (no Tauri bridge), where the demo
 // driver exercises the pill — getCurrentWindow() throws there. Same guard as
 // hud.ts.
@@ -351,9 +353,10 @@ startBarLoop();
 // Console driver for this page when served standalone in a browser:
 // __recordingHud("recording") etc. See lib/recording-hud-demo.ts.
 if (import.meta.env.DEV) {
-  void import("./lib/recording-hud-demo").then(({ registerRecordingHudDemo }) =>
-    registerRecordingHudDemo({ local: true }),
-  );
+  void import("./lib/recording-hud-demo").then(({ registerRecordingHudDemo }) => {
+    const demo = registerRecordingHudDemo({ local: !HAS_TAURI_BRIDGE });
+    lifecycle.addCleanup(demo.dispose);
+  });
 }
 
 // Paint immediately if a recording is already live when this view appears.
