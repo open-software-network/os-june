@@ -60,7 +60,7 @@ try {
   & pnpm agent-runtime:build
   if ($LASTEXITCODE -ne 0) { throw "Agent runtime TypeScript build failed." }
   Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue
-  & node scripts/build-agent-runtime.mjs
+  & node scripts/build-agent-runtime.mjs --target windows
   if ($LASTEXITCODE -ne 0) { throw "Windows agent runtime SEA build failed." }
 
   $releaseDirectory = Join-Path $cargoTargetDirectory "$targetTriple\release"
