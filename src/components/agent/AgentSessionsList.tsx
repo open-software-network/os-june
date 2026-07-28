@@ -577,8 +577,10 @@ function AgentSessionListRow({
 
   const rowMain = (
     <>
+      {/* The leading icon slot carries the archived state: a scannable
+       * left-edge cue in mixed lists without adding a badge. */}
       <span className="folder-note-icon" aria-hidden>
-        <IconBubble3 size={15} />
+        {archived ? <IconArchive size={15} /> : <IconBubble3 size={15} />}
       </span>
       <span className="folder-note-body">
         <span className="folder-note-title">{title}</span>
