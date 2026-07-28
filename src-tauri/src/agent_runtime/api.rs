@@ -899,6 +899,42 @@ async fn claim_interruption_resume(
     Ok(true)
 }
 
+fn settle_interruption_payload(
+    interruption: &mut Value,
+    interruption_kind: &str,
+    approval_choice: Option<&str>,
+    clarification_answer: Option<&str>,
+    secret_ref: Option<&str>,
+    resolved_at: &str,
+) {
+    interruption["status"] = json!("resolved");
+    interruption["resolvedAt"] = json!(resolved_at);
+    if interruption_kind == "approval" {
+        if let Some(choice) = approval_choice {
+            interruption["resolution"] = json!(choice);
+        }
+    }
+    if let Some(answer) = clarification_answer {
+        interruption["answer"] = json!(answer);
+    }
+    if let Some(secret_ref) = secret_ref {
+        interruption["secretRef"] = json!(secret_ref);
+    }
+}
+
+fn approval_choice_from_resolution<'a>(
+    interruption_kind: &str,
+    resolution: &'a Value,
+) -> Option<&'a str> {
+    if interruption_kind != "approval" {
+        return None;
+    }
+    match resolution.get("choice").and_then(Value::as_str) {
+        Some(choice @ ("once" | "session" | "always" | "deny")) => Some(choice),
+        _ => Some("deny"),
+    }
+}
+
 #[tauri::command]
 pub async fn resolve_agent_interruption(
     app: AppHandle,
@@ -951,12 +987,12 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let approval_choice = approval_choice_from_resolution(&interruption_kind, &request.resolution)
+        .map(str::to_string);
     let approved = clarification_answer.is_some()
         || secret_value.is_some()
-        || request
-            .resolution
-            .get("choice")
-            .and_then(Value::as_str)
+        || approval_choice
+            .as_deref()
             .is_some_and(|choice| choice != "deny");
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
@@ -1042,14 +1078,14 @@ pub async fn resolve_agent_interruption(
     } else {
         None
     };
-    interruption["status"] = json!("resolved");
-    interruption["resolvedAt"] = json!(chrono::Utc::now().to_rfc3339());
-    if let Some(answer) = clarification_answer.as_deref() {
-        interruption["answer"] = json!(answer);
-    }
-    if let Some(secret_ref) = secret_ref.as_deref() {
-        interruption["secretRef"] = json!(secret_ref);
-    }
+    settle_interruption_payload(
+        &mut interruption,
+        &interruption_kind,
+        approval_choice.as_deref(),
+        clarification_answer.as_deref(),
+        secret_ref.as_deref(),
+        &chrono::Utc::now().to_rfc3339(),
+    );
     let resolved_interruption_json = interruption.to_string();
     let resolution_time = chrono::Utc::now().to_rfc3339();
     // Persist the visible resolution and reset sequencing as one unit. The
@@ -2214,6 +2250,48 @@ mod tests {
         assert_eq!(selected.item_id, waiting_item.id);
         assert_eq!(selected.run_id, waiting_run.id);
         assert_ne!(selected.item_id, old_item.id);
+    }
+
+    #[test]
+    fn settled_approval_payload_persists_the_submitted_choice() {
+        let mut interruption = json!({
+            "id": "functions.mcp_linear_save_issue:0",
+            "kind": "approval",
+            "status": "pending"
+        });
+
+        settle_interruption_payload(
+            &mut interruption,
+            "approval",
+            Some("deny"),
+            None,
+            None,
+            "2026-07-28T00:00:00Z",
+        );
+
+        assert_eq!(interruption["status"], "resolved");
+        assert_eq!(interruption["resolution"], "deny");
+        assert_eq!(interruption["resolvedAt"], "2026-07-28T00:00:00Z");
+    }
+
+    #[test]
+    fn approval_choice_validation_accepts_known_values_and_fails_closed() {
+        assert_eq!(
+            approval_choice_from_resolution("approval", &json!({"choice": "always"})),
+            Some("always")
+        );
+        assert_eq!(
+            approval_choice_from_resolution("approval", &json!({"choice": "unexpected"})),
+            Some("deny")
+        );
+        assert_eq!(
+            approval_choice_from_resolution("approval", &json!({})),
+            Some("deny")
+        );
+        assert_eq!(
+            approval_choice_from_resolution("clarification", &json!({"choice": "always"})),
+            None
+        );
     }
 
     #[tokio::test]

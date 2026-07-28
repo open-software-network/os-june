@@ -16,6 +16,7 @@ use sqlx::{query::query, row::Row};
 use sqlx_sqlite::SqlitePool;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    future::Future,
     process::Stdio,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
@@ -66,6 +67,10 @@ const MANAGED_LINEAR_POLICY_REVISION: &str = "linear-official-mcp-v1";
 const MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES: usize = 64 * 1024;
 const MANAGED_MCP_DESCRIPTION_MAX_CHARS: usize = 240;
 const MANAGED_MCP_TOOL_NAME_MAX_CHARS: usize = 128;
+const MANAGED_MCP_DISCOVERY_MAX_PAGES: usize = 20;
+const MANAGED_MCP_DISCOVERY_MAX_TOOLS: usize = 512;
+const MANAGED_MCP_DISCOVERY_MAX_BYTES: usize = 4 * 1024 * 1024;
+const MANAGED_MCP_CURSOR_MAX_CHARS: usize = 2_048;
 
 type SharedMcpSession = Arc<AsyncMutex<McpSessionSlot>>;
 static MCP_SESSIONS: OnceLock<AsyncMutex<HashMap<String, SharedMcpSession>>> = OnceLock::new();
@@ -1365,6 +1370,18 @@ fn normalize_managed_mcp_tool(mut tool: McpDiscoveredTool) -> Option<McpDiscover
         return None;
     }
     let schema = tool.input_schema.as_object()?;
+    if schema.get("type").and_then(Value::as_str) != Some("object")
+        || schema
+            .get("properties")
+            .is_some_and(|properties| !properties.is_object())
+        || schema.get("required").is_some_and(|required| {
+            !required
+                .as_array()
+                .is_some_and(|items| items.iter().all(Value::is_string))
+        })
+    {
+        return None;
+    }
     if serde_json::to_vec(schema)
         .map(|encoded| encoded.len() > MANAGED_MCP_TOOL_SCHEMA_MAX_BYTES)
         .unwrap_or(true)
@@ -1708,14 +1725,14 @@ async fn discover_managed_linear(
     let Some((server, secrets)) = managed_linear_connection(app, false).await? else {
         return Ok(None);
     };
-    match discover_server(&server, &secrets, sandbox_workspace).await {
+    match discover_managed_server(&server, &secrets, sandbox_workspace).await {
         Ok(tools) => Ok(Some((server, tools))),
         Err(AgentMcpError::Unauthorized) => {
             retire_server_sessions(MANAGED_LINEAR_SERVER_ID).await;
             let Some((server, refreshed)) = managed_linear_connection(app, true).await? else {
                 return Ok(None);
             };
-            discover_server(&server, &refreshed, sandbox_workspace)
+            discover_managed_server(&server, &refreshed, sandbox_workspace)
                 .await
                 .map(|tools| Some((server, tools)))
         }
@@ -1872,10 +1889,107 @@ async fn discover_server(
     discovered_tools_from_response(&value)
 }
 
+#[derive(Debug)]
+struct McpDiscoveredToolsPage {
+    tools: Vec<McpDiscoveredTool>,
+    next_cursor: Option<String>,
+}
+
+async fn discover_managed_tools_with<F, Fut>(
+    mut fetch_page: F,
+) -> Result<Vec<McpDiscoveredTool>, AgentMcpError>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: Future<Output = Result<Value, AgentMcpError>>,
+{
+    let mut tools = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut next_cursor: Option<String> = None;
+    let mut seen_cursors = BTreeSet::new();
+
+    for _ in 0..MANAGED_MCP_DISCOVERY_MAX_PAGES {
+        let params = next_cursor
+            .as_deref()
+            .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
+        let page = discovered_tools_page_from_response(&fetch_page(params).await?)?;
+        if tools.len().saturating_add(page.tools.len()) > MANAGED_MCP_DISCOVERY_MAX_TOOLS {
+            return Err(AgentMcpError::Protocol);
+        }
+        let page_bytes = serde_json::to_vec(&page.tools)
+            .map_err(|_| AgentMcpError::Protocol)?
+            .len();
+        total_bytes = total_bytes
+            .checked_add(page_bytes)
+            .ok_or(AgentMcpError::Protocol)?;
+        if total_bytes > MANAGED_MCP_DISCOVERY_MAX_BYTES {
+            return Err(AgentMcpError::Protocol);
+        }
+        tools.extend(page.tools);
+
+        let Some(cursor) = page.next_cursor else {
+            return Ok(tools);
+        };
+        if cursor.chars().count() > MANAGED_MCP_CURSOR_MAX_CHARS
+            || !seen_cursors.insert(cursor.clone())
+        {
+            return Err(AgentMcpError::Protocol);
+        }
+        next_cursor = Some(cursor);
+    }
+
+    Err(AgentMcpError::Protocol)
+}
+
+async fn discover_managed_server(
+    server: &McpServerDefinition,
+    secrets: &McpSecretBundle,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
+    discover_managed_tools_with(|params| {
+        session_request(
+            server,
+            secrets,
+            "tools/list",
+            params,
+            sandbox_workspace,
+            None,
+        )
+    })
+    .await
+}
+
 fn discovered_tools_from_response(value: &Value) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
-    let tools = value
+    let result = value
         .get("result")
-        .and_then(|result| result.get("tools"))
+        .and_then(Value::as_object)
+        .ok_or(AgentMcpError::Protocol)?;
+    discovered_tools_from_result(result)
+}
+
+fn discovered_tools_page_from_response(
+    value: &Value,
+) -> Result<McpDiscoveredToolsPage, AgentMcpError> {
+    let result = value
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or(AgentMcpError::Protocol)?;
+    let next_cursor = match result.get("nextCursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(cursor)) if cursor.is_empty() => None,
+        Some(Value::String(cursor)) => Some(cursor.clone()),
+        Some(_) => return Err(AgentMcpError::Protocol),
+    };
+    Ok(McpDiscoveredToolsPage {
+        tools: discovered_tools_from_result(result)?,
+        next_cursor,
+    })
+}
+
+fn discovered_tools_from_result(
+    result: &Map<String, Value>,
+) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
+    let tools = result
+        .get("tools")
         .and_then(Value::as_array)
         .ok_or(AgentMcpError::Protocol)?;
     Ok(tools
@@ -1901,7 +2015,7 @@ fn discovered_tools_from_response(value: &Value) -> Result<Vec<McpDiscoveredTool
                     .unwrap_or_default(),
             })
         })
-        .collect::<Vec<_>>())
+        .collect())
 }
 async fn call_server(
     server: &McpServerDefinition,
@@ -4405,6 +4519,7 @@ done
     fn hosted_tool_discovery_retains_safety_annotations_and_fails_closed_on_malformed_data() {
         let tools = discovered_tools_from_response(&json!({
             "result": {
+                "nextCursor": 42,
                 "tools": [
                     {
                         "name": "read",
@@ -4432,6 +4547,118 @@ done
             }
         );
         assert_eq!(tools[1].annotations, McpToolAnnotations::default());
+    }
+
+    #[tokio::test]
+    async fn managed_linear_discovery_follows_bounded_cursor_pagination() {
+        let mut pages = std::collections::VecDeque::from([
+            json!({
+                "result": {
+                    "tools": [{
+                        "name": "first",
+                        "inputSchema": {"type": "object"}
+                    }],
+                    "nextCursor": "page-2"
+                }
+            }),
+            json!({
+                "result": {
+                    "tools": [{
+                        "name": "second",
+                        "inputSchema": {"type": "object"}
+                    }]
+                }
+            }),
+        ]);
+        let mut requests = Vec::new();
+
+        let tools = discover_managed_tools_with(|params| {
+            requests.push(params);
+            std::future::ready(pages.pop_front().ok_or(AgentMcpError::Protocol))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(requests, vec![json!({}), json!({"cursor": "page-2"})]);
+    }
+
+    #[tokio::test]
+    async fn managed_linear_discovery_rejects_repeated_cursors() {
+        let mut pages = std::collections::VecDeque::from([
+            json!({"result": {"tools": [], "nextCursor": "repeat"}}),
+            json!({"result": {"tools": [], "nextCursor": "repeat"}}),
+        ]);
+        let mut requests = Vec::new();
+
+        let result = discover_managed_tools_with(|params| {
+            requests.push(params);
+            std::future::ready(pages.pop_front().ok_or(AgentMcpError::Protocol))
+        })
+        .await;
+
+        assert!(matches!(result, Err(AgentMcpError::Protocol)));
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn managed_linear_discovery_enforces_aggregate_bounds() {
+        let mut page_requests = 0usize;
+        let page_result = discover_managed_tools_with(|_| {
+            page_requests += 1;
+            std::future::ready(Ok(json!({
+                "result": {
+                    "tools": [],
+                    "nextCursor": format!("page-{page_requests}")
+                }
+            })))
+        })
+        .await;
+        assert!(matches!(page_result, Err(AgentMcpError::Protocol)));
+        assert_eq!(page_requests, MANAGED_MCP_DISCOVERY_MAX_PAGES);
+
+        let too_many_tools = vec![
+            json!({
+                "name": "tool",
+                "inputSchema": {"type": "object"}
+            });
+            MANAGED_MCP_DISCOVERY_MAX_TOOLS + 1
+        ];
+        let tool_result = discover_managed_tools_with(|_| {
+            std::future::ready(Ok(json!({"result": {"tools": too_many_tools}})))
+        })
+        .await;
+        assert!(matches!(tool_result, Err(AgentMcpError::Protocol)));
+
+        let long_cursor = "x".repeat(MANAGED_MCP_CURSOR_MAX_CHARS + 1);
+        let cursor_result = discover_managed_tools_with(|_| {
+            std::future::ready(Ok(json!({
+                "result": {"tools": [], "nextCursor": long_cursor}
+            })))
+        })
+        .await;
+        assert!(matches!(cursor_result, Err(AgentMcpError::Protocol)));
+
+        let oversized_description = "x".repeat(MANAGED_MCP_DISCOVERY_MAX_BYTES + 1);
+        let byte_result = discover_managed_tools_with(|_| {
+            std::future::ready(Ok(json!({
+                "result": {
+                    "tools": [{
+                        "name": "oversized",
+                        "description": oversized_description,
+                        "inputSchema": {"type": "object"}
+                    }]
+                }
+            })))
+        })
+        .await;
+        assert!(matches!(byte_result, Err(AgentMcpError::Protocol)));
     }
 
     #[test]
@@ -4546,6 +4773,24 @@ done
                         name: "bad-schema".into(),
                         description: "invalid".into(),
                         input_schema: json!(["not", "an", "object"]),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "wrong-schema-type".into(),
+                        description: "invalid".into(),
+                        input_schema: json!({"type":"array","items":{}}),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "malformed-properties".into(),
+                        description: "invalid".into(),
+                        input_schema: json!({"type":"object","properties":[]}),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "malformed-required".into(),
+                        description: "invalid".into(),
+                        input_schema: json!({"type":"object","required":{}}),
                         annotations: McpToolAnnotations::default(),
                     },
                     McpDiscoveredTool {
