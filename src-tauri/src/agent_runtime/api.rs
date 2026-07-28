@@ -947,6 +947,63 @@ async fn claim_interruption_resume(
     Ok(true)
 }
 
+async fn claim_resolved_interruption_redispatch(
+    repository: &AgentRepository,
+    record: &InterruptionRecord,
+    resolved_payload_json: &str,
+    updated_at: &str,
+) -> Result<bool, sqlx::Error> {
+    let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
+    let run_updated = sqlx::query::query(
+        "UPDATE agent_runs
+         SET status = 'queued', last_sequence = 0, updated_at = ?
+         WHERE id = ? AND status = 'waiting_for_user'",
+    )
+    .bind(updated_at)
+    .bind(&record.run_id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if run_updated != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    let resolved_item_exists = sqlx::query::query(
+        "SELECT 1
+         FROM agent_items
+         WHERE id = ?
+           AND run_id = ?
+           AND payload_json = ?
+           AND json_extract(payload_json, '$.status') = 'resolved'",
+    )
+    .bind(&record.item_id)
+    .bind(&record.run_id)
+    .bind(resolved_payload_json)
+    .fetch_optional(&mut *transaction)
+    .await?
+    .is_some();
+    if !resolved_item_exists {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    let session_updated = sqlx::query::query(
+        "UPDATE agent_sessions
+         SET status = 'running', updated_at = ?, last_error = NULL
+         WHERE id = ? AND status = 'waiting_for_user'",
+    )
+    .bind(updated_at)
+    .bind(&record.session_id)
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if session_updated != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    transaction.commit().await?;
+    Ok(true)
+}
+
 fn settle_interruption_payload(
     interruption: &mut Value,
     interruption_kind: &str,
@@ -1111,6 +1168,14 @@ async fn resolve_agent_interruption_inner(
             "This interruption can no longer be resumed.",
         ));
     }
+    let interruption_status = interruption
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("pending");
+    let redispatching_resolved = interruption_status == "resolved";
+    if !matches!(interruption_status, "pending" | "resolved") {
+        return Ok(run_json(run));
+    }
     let session = repository.get_session(&record.session_id).await?;
     let serialized_state = run
         .interrupted_state
@@ -1127,46 +1192,71 @@ async fn resolve_agent_interruption_inner(
         .and_then(Value::as_str)
         .unwrap_or("approval")
         .to_string();
-    let resolution_kind = request
-        .resolution
-        .get("kind")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            AppError::new(
-                "agent_interruption_resolution_invalid",
-                "The interruption response kind is required.",
-            )
-        })?;
-    if resolution_kind != interruption_kind {
-        return Err(AppError::new(
-            "agent_interruption_resolution_invalid",
-            "The interruption response does not match the pending request.",
-        ));
-    }
-    let clarification_answer = request
-        .resolution
-        .get("answer")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let secret_value = request
-        .resolution
-        .get("secret")
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let choice = request.resolution.get("choice").and_then(Value::as_str);
-    let approved = match interruption_kind.as_str() {
-        "clarification" if clarification_answer.is_some() => true,
-        "secret" if secret_value.is_some() && choice == Some("once") => true,
-        "secret" if secret_value.is_none() && choice == Some("deny") => false,
-        "approval" if matches!(choice, Some("once" | "session" | "always")) => true,
-        "approval" if choice == Some("deny") => false,
-        _ => {
+    let (clarification_answer, secret_value, approved) = if redispatching_resolved {
+        let clarification_answer = interruption
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let approved = interruption
+            .get("approved")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                interruption
+                    .get("decision")
+                    .and_then(Value::as_str)
+                    .map(|decision| decision == "approve")
+            })
+            .unwrap_or_else(|| {
+                clarification_answer.is_some()
+                    || interruption
+                        .get("secretRef")
+                        .and_then(Value::as_str)
+                        .is_some()
+            });
+        (clarification_answer, None, approved)
+    } else {
+        let resolution_kind = request
+            .resolution
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::new(
+                    "agent_interruption_resolution_invalid",
+                    "The interruption response kind is required.",
+                )
+            })?;
+        if resolution_kind != interruption_kind {
             return Err(AppError::new(
                 "agent_interruption_resolution_invalid",
-                "The interruption response is invalid.",
+                "The interruption response does not match the pending request.",
             ));
         }
+        let clarification_answer = request
+            .resolution
+            .get("answer")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let secret_value = request
+            .resolution
+            .get("secret")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let choice = request.resolution.get("choice").and_then(Value::as_str);
+        let approved = match interruption_kind.as_str() {
+            "clarification" if clarification_answer.is_some() => true,
+            "secret" if secret_value.is_some() && choice == Some("once") => true,
+            "secret" if secret_value.is_none() && choice == Some("deny") => false,
+            "approval" if matches!(choice, Some("once" | "session" | "always")) => true,
+            "approval" if choice == Some("deny") => false,
+            _ => {
+                return Err(AppError::new(
+                    "agent_interruption_resolution_invalid",
+                    "The interruption response is invalid.",
+                ));
+            }
+        };
+        (clarification_answer, secret_value, approved)
     };
     let approval_choice = approval_choice_from_resolution(&interruption_kind, &request.resolution)
         .map(str::to_string);
@@ -1242,7 +1332,7 @@ async fn resolve_agent_interruption_inner(
     } else {
         json!([{ "interruptionId": request.interruption_id, "kind": "approval", "decision": if approved { "approve" } else { "reject" } }])
     };
-    let secret_ref = if interruption_kind == "secret" {
+    let created_secret_ref = if interruption_kind == "secret" && !redispatching_resolved {
         match secret_value {
             Some(value) => {
                 let secret_ref = format!("agent-secret-{}", uuid::Uuid::new_v4());
@@ -1254,74 +1344,98 @@ async fn resolve_agent_interruption_inner(
     } else {
         None
     };
-    let resolution_nonce = uuid::Uuid::new_v4().to_string();
     let resolution_time = chrono::Utc::now().to_rfc3339();
-    settle_interruption_payload(
-        &mut interruption,
-        &interruption_kind,
-        approval_choice.as_deref(),
-        clarification_answer.as_deref(),
-        secret_ref.as_deref(),
-        &resolution_time,
-    );
-    interruption["approved"] = json!(approved);
-    interruption["resolutionNonce"] = json!(resolution_nonce);
-    if interruption_kind == "approval" {
-        interruption["resolvedBy"] = json!(match &origin {
-            InterruptionResolutionOrigin::Desktop => "desktop",
-            InterruptionResolutionOrigin::Companion(
-                crate::companion::ComputerUseApprovalOrigin::Companion { .. },
-            ) => "linkedDevice",
-            InterruptionResolutionOrigin::Companion(
-                crate::companion::ComputerUseApprovalOrigin::Timeout,
-            ) => "timeout",
-        });
-        if let InterruptionResolutionOrigin::Companion(
-            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
-        ) = &origin
-        {
-            interruption["resolvedByDeviceId"] = json!(device_id);
+    let resolution_nonce = if redispatching_resolved {
+        interruption
+            .get("resolutionNonce")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
+    if !redispatching_resolved {
+        settle_interruption_payload(
+            &mut interruption,
+            &interruption_kind,
+            approval_choice.as_deref(),
+            clarification_answer.as_deref(),
+            created_secret_ref.as_deref(),
+            &resolution_time,
+        );
+        interruption["approved"] = json!(approved);
+        interruption["resolutionNonce"] = json!(resolution_nonce);
+        if interruption_kind == "approval" {
+            interruption["resolvedBy"] = json!(match &origin {
+                InterruptionResolutionOrigin::Desktop => "desktop",
+                InterruptionResolutionOrigin::Companion(
+                    crate::companion::ComputerUseApprovalOrigin::Companion { .. },
+                ) => "linkedDevice",
+                InterruptionResolutionOrigin::Companion(
+                    crate::companion::ComputerUseApprovalOrigin::Timeout,
+                ) => "timeout",
+            });
+            if let InterruptionResolutionOrigin::Companion(
+                crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+            ) = &origin
+            {
+                interruption["resolvedByDeviceId"] = json!(device_id);
+            }
         }
     }
     let resolved_interruption_json = interruption.to_string();
-    let companion_audit = match &origin {
-        InterruptionResolutionOrigin::Companion(
-            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
-        ) => Some((
-            device_id.as_str(),
-            request.interruption_id.as_str(),
-            companion_session_id
-                .as_deref()
-                .unwrap_or(record.session_id.as_str()),
-            if approved { "approve" } else { "deny" },
-            resolution_time.as_str(),
-        )),
-        _ => None,
+    let companion_audit = if redispatching_resolved {
+        None
+    } else {
+        match &origin {
+            InterruptionResolutionOrigin::Companion(
+                crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+            ) => Some((
+                device_id.as_str(),
+                request.interruption_id.as_str(),
+                companion_session_id
+                    .as_deref()
+                    .unwrap_or(record.session_id.as_str()),
+                if approved { "approve" } else { "deny" },
+                resolution_time.as_str(),
+            )),
+            _ => None,
+        }
     };
     // Persist the visible resolution and reset sequencing as one unit. The
     // sidecar can emit resumed events immediately after accepting the request,
     // so both must be in place before dispatch, but neither may be left behind
     // when preparation or persistence fails.
-    let claimed = match claim_interruption_resume(
-        &repository,
-        &record,
-        &original_interruption_json,
-        &resolved_interruption_json,
-        &resolution_time,
-        companion_audit,
-    )
-    .await
-    {
+    let persist_result = if redispatching_resolved {
+        claim_resolved_interruption_redispatch(
+            &repository,
+            &record,
+            &resolved_interruption_json,
+            &resolution_time,
+        )
+        .await
+    } else {
+        claim_interruption_resume(
+            &repository,
+            &record,
+            &original_interruption_json,
+            &resolved_interruption_json,
+            &resolution_time,
+            companion_audit,
+        )
+        .await
+    };
+    let claimed = match persist_result {
         Ok(claimed) => claimed,
         Err(error) => {
-            if let Some(secret_ref) = secret_ref.as_deref() {
+            if let Some(secret_ref) = created_secret_ref.as_deref() {
                 let _ = super::secrets::delete(secret_ref).await;
             }
             return Err(error.into());
         }
     };
     if !claimed {
-        if let Some(secret_ref) = secret_ref.as_deref() {
+        if let Some(secret_ref) = created_secret_ref.as_deref() {
             let _ = super::secrets::delete(secret_ref).await;
         }
         return Err(AppError::new(
@@ -1376,6 +1490,24 @@ async fn resolve_agent_interruption_inner(
                 transaction.rollback().await?;
                 return Ok(false);
             }
+            if redispatching_resolved {
+                let session_restored = sqlx::query::query(
+                    "UPDATE agent_sessions
+                     SET status = 'waiting_for_user', updated_at = ?
+                     WHERE id = ? AND status = 'running'",
+                )
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(&session.id)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+                if session_restored != 1 {
+                    transaction.rollback().await?;
+                    return Ok(false);
+                }
+                transaction.commit().await?;
+                return Ok(true);
+            }
             let item_restored = sqlx::query::query(
                 "UPDATE agent_items
                  SET payload_json = ?
@@ -1410,7 +1542,7 @@ async fn resolve_agent_interruption_inner(
         }
         .await;
         if restore_result.as_ref().is_ok_and(|restored| *restored) {
-            if let Some(secret_ref) = secret_ref.as_deref() {
+            if let Some(secret_ref) = created_secret_ref.as_deref() {
                 if let Err(cleanup_error) = super::secrets::delete(secret_ref).await {
                     tracing::warn!(
                         error_code = %cleanup_error.code,
