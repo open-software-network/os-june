@@ -2019,6 +2019,10 @@ export async function obsidianDisconnect() {
   return invoke<ObsidianStatus>("obsidian_disconnect");
 }
 
+export async function connectorsApplyRuntime() {
+  return invoke<void>("connectors_apply_runtime");
+}
+
 export async function routineTrustGet(jobId: string) {
   return invoke<RoutineTrust | null>("routine_trust_get", { jobId });
 }

@@ -18,6 +18,7 @@ import { errorCode, messageFromError } from "../../lib/errors";
 import {
   CONNECTORS_CHANGED_EVENT,
   GITHUB_DEVICE_CODE_EVENT,
+  connectorsApplyRuntime,
   connectorsCancelConnect,
   connectorsConnect,
   connectorsDisconnect,
@@ -447,6 +448,13 @@ export function ConnectorsSection({
   const [teamsTruncated, setTeamsTruncated] = useState(false);
   const [selectedTeamIds, setSelectedTeamIds] = useState<ReadonlySet<string>>(new Set());
   const [savingTeams, setSavingTeams] = useState(false);
+  // A first team save persists the grant before applying the runtime. Keep
+  // that second step pending by account id until it succeeds: the persistence
+  // event refreshes `accounts`, so selectedTeams alone cannot tell a retry
+  // that registration still needs to be applied.
+  const [runtimeApplyPendingAccountId, setRuntimeApplyPendingAccountId] = useState<string | null>(
+    null,
+  );
 
   // Previously selected teams the live listing no longer returns (archived,
   // visibility lost, or beyond the truncation cap). They must stay visible
@@ -551,9 +559,17 @@ export function ConnectorsSection({
       scopes: input.scopes,
       loginHint: input.loginHint,
     });
-    // Connector tools are discovered fresh per agent run, so no runtime
-    // apply is needed — the Rust side emits connectors-changed on
-    // connect/disconnect, and refresh() picks up the updated state.
+    // A fresh grant only takes effect once the rendered MCP config picks it
+    // up: registering (or dropping) a server name is a config-render change,
+    // so it needs a runtime apply for both providers. Linear teams saves
+    // follow the same rule, split by whether registration changes (see
+    // saveTeams below): the FIRST save registers june_linear and applies the
+    // runtime; later edits only change what the already-registered server
+    // may read, which Rust enforces per request - no restart. Whether
+    // june_linear actually renders here (it needs at least one selected
+    // team) is the Rust side's call; the frontend applies runtime on every
+    // connect regardless.
+    await connectorsApplyRuntime();
     await refresh();
     return account;
   }
@@ -651,12 +667,8 @@ export function ConnectorsSection({
     setNotionConnecting(true);
     try {
       await notionConnectorConnect();
-      // OAuth succeeded: tokens are stored. Close the consent dialog now,
-      // before the runtime apply/refresh that can fail independently. A
-      // runtime-apply failure after a successful grant is a transient
-      // infra issue, not a reason to re-prompt for OAuth. The success
-      // toast is deferred until the full chain completes so the user
-      // never sees "connected" followed by an error.
+      // Notion tools are discovered fresh for each agent run, so the new
+      // connection is available without applying a long-lived MCP config.
       if (operationId === notionOperationIdRef.current) {
         setNotionConnectOpen(false);
       }
@@ -782,6 +794,10 @@ export function ConnectorsSection({
     setDisconnecting(true);
     try {
       await connectorsDisconnect({ accountId: account.accountId, revoke });
+      // Same runtime-surface reasoning as runConnect: disconnecting drops the
+      // provider's MCP server registration, so both providers need a runtime
+      // apply here too.
+      await connectorsApplyRuntime();
       await refresh();
       setDisconnectTarget(null);
       toast.success(`Disconnected ${accountDisplayName(account)}`);
@@ -866,7 +882,24 @@ export function ConnectorsSection({
     const accountId = teamsAccountId;
     setSavingTeams(true);
     try {
+      // The june_linear server only registers once at least one team is
+      // selected, so the FIRST teams save (zero selected before this save)
+      // crosses the registration boundary and must apply the runtime - a
+      // connect-then-select flow would otherwise leave the server
+      // unregistered until an unrelated restart. Later edits never
+      // (de)register the server: the grant is enforced per-request in Rust,
+      // so they skip the restart.
+      const needsRuntimeApply =
+        runtimeApplyPendingAccountId === accountId ||
+        (teamsAccount?.selectedTeams.length ?? 0) === 0;
       await connectorsSetSelectedTeams({ accountId, teams: teamsPayload });
+      if (needsRuntimeApply) {
+        setRuntimeApplyPendingAccountId(accountId);
+        await connectorsApplyRuntime();
+        setRuntimeApplyPendingAccountId((pendingAccountId) =>
+          pendingAccountId === accountId ? null : pendingAccountId,
+        );
+      }
       await refresh();
       setTeamsAccountId(null);
       toast.success("Linear teams updated");

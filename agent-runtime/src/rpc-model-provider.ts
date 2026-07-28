@@ -25,9 +25,8 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   readonly takeSteering: (() => SteeringMessage[]) | undefined;
   readonly onSteeringConsumed: ((message: SteeringMessage) => void) | undefined;
   latestRoute: ModelRoute | undefined;
-  reasoningWireFormat: ReasoningWireFormat | undefined;
-
   resolvedModel: string | undefined;
+  reasoningWireFormat: ReasoningWireFormat | undefined;
 
   constructor(
     invoke: ModelRpcInvoker,

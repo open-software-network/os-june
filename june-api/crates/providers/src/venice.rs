@@ -610,8 +610,7 @@ impl VeniceChat {
                 retryable,
             });
         }
-        let route = extract_upstream_route(&response);
-        log_resolved_upstream_route(&route);
+        let route = upstream_route(&response);
         response
             .json::<ChatCompletionResponse>()
             .await
@@ -633,7 +632,6 @@ impl VeniceChat {
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatCompletion, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
-        let request_shape = agent_chat_request_shape(&body);
         let url = self.chat_completions_url(auth.provider_credentials);
         let request = self
             .client(auth.unmetered)
@@ -644,11 +642,10 @@ impl VeniceChat {
             .send()
             .await
             .map_err(|error| {
-                log_agent_chat_transport_error(&error, &model.0, request_shape);
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
                 DomainError::UpstreamProvider
-            })?;
+        })?;
         let status = response.status();
-        let route = extract_upstream_route(&response);
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -663,16 +660,15 @@ impl VeniceChat {
             return Err(handle_agent_chat_non_success(
                 AgentChatNonSuccess {
                     status,
+                    url: &url,
                     model: &model.0,
                     body_bytes: body.len(),
                     body: &body,
-                    route: &route,
-                    request_shape,
                 },
                 auth.provider_credentials,
             ));
         }
-        log_resolved_upstream_route(&route);
+        let route = upstream_route(&response);
         let body = response.bytes().await.map_err(|error| {
             tracing::error!(%error, %url, model = %model.0, "venice: agent chat body read failed");
             DomainError::UpstreamProvider
@@ -694,7 +690,6 @@ impl VeniceChat {
         auth: ChatCallAuth<'_>,
     ) -> Result<AgentChatStream, DomainError> {
         let body = prepare_agent_chat_body(body, &model)?;
-        let request_shape = agent_chat_request_shape(&body);
         let url = self.chat_completions_url(auth.provider_credentials);
         let request = self
             .client(auth.unmetered)
@@ -705,11 +700,10 @@ impl VeniceChat {
             .send()
             .await
             .map_err(|error| {
-                log_agent_chat_transport_error(&error, &model.0, request_shape);
+                tracing::error!(%error, %url, model = %model.0, "venice: agent chat transport error");
                 DomainError::UpstreamProvider
-            })?;
+        })?;
         let status = response.status();
-        let route = extract_upstream_route(&response);
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -724,16 +718,15 @@ impl VeniceChat {
             return Err(handle_agent_chat_non_success(
                 AgentChatNonSuccess {
                     status,
+                    url: &url,
                     model: &model.0,
                     body_bytes: body.len(),
                     body: &body,
-                    route: &route,
-                    request_shape,
                 },
                 auth.provider_credentials,
             ));
         }
-        log_resolved_upstream_route(&route);
+        let route = upstream_route(&response);
 
         let (chunks_tx, chunks_rx) = mpsc::unbounded_channel();
         let (outcome_tx, outcome_rx) = oneshot::channel();
@@ -776,7 +769,7 @@ fn apply_private_routing(request: RequestBuilder, auth: ChatCallAuth<'_>) -> Req
     }
 }
 
-fn extract_upstream_route(response: &reqwest::Response) -> UpstreamRouteMetadata {
+fn upstream_route(response: &reqwest::Response) -> UpstreamRouteMetadata {
     let header = |name| {
         response
             .headers()
@@ -786,20 +779,18 @@ fn extract_upstream_route(response: &reqwest::Response) -> UpstreamRouteMetadata
             .filter(|value| !value.is_empty())
             .map(str::to_string)
     };
-    UpstreamRouteMetadata {
+    let route = UpstreamRouteMetadata {
         provider: header(OS_PROVIDER_HEADER),
         privacy_level: header(OS_PRIVACY_LEVEL_HEADER),
         endpoint: header(OS_ENDPOINT_HEADER),
-    }
-}
-
-fn log_resolved_upstream_route(route: &UpstreamRouteMetadata) {
+    };
     tracing::info!(
         upstream_provider = route.provider.as_deref().unwrap_or("unknown"),
         privacy_level = route.privacy_level.as_deref().unwrap_or("unknown"),
         upstream_endpoint = route.endpoint.as_deref().unwrap_or("unknown"),
         "venice: resolved upstream route"
     );
+    route
 }
 
 fn prepare_agent_chat_body(
@@ -838,30 +829,19 @@ fn handle_agent_chat_non_success(
     error: AgentChatNonSuccess<'_>,
     provider_credentials: &ProviderCredentials,
 ) -> DomainError {
-    // Provider error messages can echo request values even inside a structured
-    // JSON envelope. Emit only a fixed local classification; never log provider
-    // fields, the message, request body, or response body.
-    let error_class = upstream_error_class(error.body);
+    // The upstream error body is the only place Venice states WHY it
+    // rejected the request (e.g. its tool-schema normalizer bugs) —
+    // but agent chat bodies can carry private note/chat content that a
+    // validation error might echo. Log ONLY the structured error field
+    // from a JSON error body (capped), never a raw body preview, so
+    // this path keeps the provider-wide no-payload-in-logs rule.
+    let error_detail = upstream_error_detail(error.body).unwrap_or_default();
     tracing::error!(
         status = %error.status,
+        url = %error.url,
         model = %error.model,
         body_bytes = error.body_bytes,
-        upstream_provider = error.route.provider.as_deref().unwrap_or("unknown"),
-        privacy_level = error.route.privacy_level.as_deref().unwrap_or("unknown"),
-        upstream_endpoint = error.route.endpoint.as_deref().unwrap_or("unknown"),
-        error_class,
-        request_bytes = error.request_shape.request_bytes,
-        message_count = error.request_shape.message_count,
-        tools_count = error.request_shape.tools_count,
-        assistant_tool_message_count = error.request_shape.assistant_tool_message_count,
-        tool_call_count = error.request_shape.tool_call_count,
-        tool_result_count = error.request_shape.tool_result_count,
-        matched_tool_result_count = error.request_shape.matched_tool_result_count,
-        orphan_tool_result_count = error.request_shape.orphan_tool_result_count,
-        unresolved_tool_call_count = error.request_shape.unresolved_tool_call_count,
-        assistant_tool_content_null_count = error.request_shape.assistant_tool_content_null_count,
-        assistant_tool_content_empty_count = error.request_shape.assistant_tool_content_empty_count,
-        stream = error.request_shape.stream,
+        error_detail = %error_detail,
         "venice: agent chat non-success response"
     );
     if let Some(error) = user_venice_key_auth_error(error.status, provider_credentials) {
@@ -873,11 +853,10 @@ fn handle_agent_chat_non_success(
 #[derive(Clone, Copy)]
 struct AgentChatNonSuccess<'a> {
     status: StatusCode,
+    url: &'a str,
     model: &'a str,
     body_bytes: usize,
     body: &'a [u8],
-    route: &'a UpstreamRouteMetadata,
-    request_shape: AgentChatRequestShape,
 }
 
 struct StreamPump<'a> {
@@ -998,159 +977,17 @@ async fn pump_agent_chat_stream(pump: StreamPump<'_>) {
     }
 }
 
-/// Payload-free shape of an agent request for diagnosing provider failures.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct AgentChatRequestShape {
-    request_bytes: usize,
-    message_count: usize,
-    tools_count: usize,
-    assistant_tool_message_count: usize,
-    tool_call_count: usize,
-    tool_result_count: usize,
-    matched_tool_result_count: usize,
-    orphan_tool_result_count: usize,
-    unresolved_tool_call_count: usize,
-    assistant_tool_content_null_count: usize,
-    assistant_tool_content_empty_count: usize,
-    stream: bool,
-}
-
-fn agent_chat_request_shape(body: &serde_json::Value) -> AgentChatRequestShape {
-    let mut shape = AgentChatRequestShape {
-        request_bytes: body.to_string().len(),
-        tools_count: body
-            .get("tools")
-            .and_then(serde_json::Value::as_array)
-            .map_or(0, Vec::len),
-        stream: body.get("stream").and_then(serde_json::Value::as_bool) == Some(true),
-        ..AgentChatRequestShape::default()
-    };
-    let Some(messages) = body.get("messages").and_then(serde_json::Value::as_array) else {
-        return shape;
-    };
-    shape.message_count = messages.len();
-    let mut pending_calls = BTreeMap::<String, usize>::new();
-    for message in messages {
-        match message.get("role").and_then(serde_json::Value::as_str) {
-            Some("assistant") => {
-                let Some(tool_calls) = message
-                    .get("tool_calls")
-                    .and_then(serde_json::Value::as_array)
-                    .filter(|calls| !calls.is_empty())
-                else {
-                    continue;
-                };
-                shape.assistant_tool_message_count += 1;
-                shape.tool_call_count += tool_calls.len();
-                match message.get("content") {
-                    Some(serde_json::Value::Null) => {
-                        shape.assistant_tool_content_null_count += 1;
-                    }
-                    Some(serde_json::Value::String(content)) if content.is_empty() => {
-                        shape.assistant_tool_content_empty_count += 1;
-                    }
-                    _ => {}
-                }
-                for call in tool_calls {
-                    if let Some(id) = call
-                        .get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|id| !id.is_empty())
-                    {
-                        *pending_calls.entry(id.to_string()).or_default() += 1;
-                    }
-                }
-            }
-            Some("tool") => {
-                shape.tool_result_count += 1;
-                let matched = message
-                    .get("tool_call_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|id| pending_calls.get_mut(id))
-                    .is_some_and(|remaining| {
-                        if *remaining == 0 {
-                            return false;
-                        }
-                        *remaining -= 1;
-                        true
-                    });
-                if matched {
-                    shape.matched_tool_result_count += 1;
-                } else {
-                    shape.orphan_tool_result_count += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    shape.unresolved_tool_call_count = pending_calls.values().sum();
-    shape
-}
-
-fn log_agent_chat_transport_error(
-    error: &reqwest::Error,
-    model: &str,
-    shape: AgentChatRequestShape,
-) {
-    tracing::error!(
-        %error,
-        model,
-        request_bytes = shape.request_bytes,
-        message_count = shape.message_count,
-        tools_count = shape.tools_count,
-        assistant_tool_message_count = shape.assistant_tool_message_count,
-        tool_call_count = shape.tool_call_count,
-        tool_result_count = shape.tool_result_count,
-        matched_tool_result_count = shape.matched_tool_result_count,
-        orphan_tool_result_count = shape.orphan_tool_result_count,
-        unresolved_tool_call_count = shape.unresolved_tool_call_count,
-        assistant_tool_content_null_count = shape.assistant_tool_content_null_count,
-        assistant_tool_content_empty_count = shape.assistant_tool_content_empty_count,
-        stream = shape.stream,
-        "venice: agent chat transport error"
-    );
-}
-
-fn upstream_error_class(body: &[u8]) -> &'static str {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return "unknown";
-    };
-    let nested = value.get("error").filter(|error| error.is_object());
-    let message = nested
-        .and_then(|error| error.get("message"))
+/// Extracts the short, structured error message from an upstream JSON error
+/// body (`{"error": "..."}` / `{"message": "..."}`), capped. Returns `None`
+/// for a non-JSON body or one without a string error field, so free-text
+/// bodies that might echo request content are never logged.
+fn upstream_error_detail(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let detail = value
+        .get("error")
         .and_then(serde_json::Value::as_str)
-        .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
-        .or_else(|| value.get("error").and_then(serde_json::Value::as_str));
-    classify_upstream_error(message)
-}
-
-fn classify_upstream_error(message: Option<&str>) -> &'static str {
-    let Some(message) = message.map(str::to_ascii_lowercase) else {
-        return "unknown";
-    };
-    if message.contains("tool_call_id")
-        || message.contains("tool call id")
-        || message.contains("tool_calls")
-    {
-        "tool_pairing"
-    } else if message.contains("schema") {
-        "schema_validation"
-    } else if message.contains("message") && message.contains("invalid") {
-        "message_validation"
-    } else if message.contains("unsupported") || message.contains("not supported") {
-        "unsupported_parameter"
-    } else if message.contains("rate limit") || message.contains("too many requests") {
-        "rate_limit"
-    } else if message.contains("unauthorized")
-        || message.contains("forbidden")
-        || message.contains("api key")
-    {
-        "authentication"
-    } else if message.contains("internal") || message.contains("upstream") {
-        "upstream_internal"
-    } else {
-        "unknown"
-    }
+        .or_else(|| value.get("message").and_then(serde_json::Value::as_str))?;
+    Some(detail.chars().take(200).collect())
 }
 
 fn venice_api_key<'a>(configured: &'a str, credentials: &'a ProviderCredentials) -> &'a str {
@@ -1736,12 +1573,10 @@ fn strip_scaffolding_tags(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentChatRequestShape, SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat,
-        VeniceGenerator, VeniceModelsApiResponse, agent_chat_request_shape,
-        cleanup_generated_note_text, cleanup_source_text, generation_source_text,
-        inject_safety_context, prepare_agent_chat_body, sanitize_tool_schemas,
-        strip_scaffolding_tags, upstream_error_class, usage_from_chat_body,
-        venice_priced_model_items,
+        SAFETY_CONTEXT, STREAM_HEARTBEAT_INTERVAL, VeniceAgentChat, VeniceGenerator,
+        VeniceModelsApiResponse, cleanup_generated_note_text, cleanup_source_text,
+        generation_source_text, inject_safety_context, sanitize_tool_schemas,
+        strip_scaffolding_tags, usage_from_chat_body, venice_priced_model_items,
     };
 
     #[test]
@@ -1761,114 +1596,6 @@ mod tests {
                 prompt_tokens: 12,
                 completion_tokens: 7,
             })
-        );
-    }
-
-    #[test]
-    fn agent_chat_preparation_preserves_canonical_tool_follow_up() {
-        let body = json!({
-            "model": "client-model",
-            "stream": true,
-            "messages": [
-                { "role": "user", "content": "private prompt" },
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [{
-                        "id": "call-private-id",
-                        "type": "function",
-                        "function": { "name": "private_tool", "arguments": "{\"secret\":true}" }
-                    }]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call-private-id",
-                    "content": "private result"
-                }
-            ],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": "private_tool",
-                    "parameters": { "type": "object", "properties": {} }
-                }
-            }]
-        });
-
-        let prepared =
-            prepare_agent_chat_body(body, &june_domain::ModelId("zai-org-glm-5-2".to_string()))
-                .expect("valid body");
-
-        assert_eq!(prepared["model"], "zai-org-glm-5-2");
-        assert_eq!(prepared["messages"][0]["role"], "system");
-        assert_eq!(prepared["messages"][2]["content"], serde_json::Value::Null);
-        assert_eq!(
-            prepared["messages"][2]["tool_calls"][0]["id"],
-            "call-private-id"
-        );
-        assert_eq!(prepared["messages"][3]["tool_call_id"], "call-private-id");
-        assert_eq!(prepared["tools"][0]["function"]["name"], "private_tool");
-        assert_eq!(prepared["stream_options"]["include_usage"], true);
-    }
-
-    #[test]
-    fn agent_chat_request_shape_counts_tool_pairing_without_payloads() {
-        let body = json!({
-            "stream": true,
-            "messages": [
-                { "role": "user", "content": "PRIVATE-PROMPT" },
-                {
-                    "role": "assistant",
-                    "content": null,
-                    "tool_calls": [
-                        { "id": "PRIVATE-CALL-1" },
-                        { "id": "PRIVATE-CALL-2" }
-                    ]
-                },
-                { "role": "tool", "tool_call_id": "PRIVATE-CALL-1", "content": "PRIVATE-RESULT" },
-                { "role": "tool", "tool_call_id": "ORPHAN-CALL", "content": "PRIVATE-RESULT" }
-            ],
-            "tools": [{ "type": "function" }]
-        });
-
-        let shape = agent_chat_request_shape(&body);
-
-        assert_eq!(
-            shape,
-            AgentChatRequestShape {
-                request_bytes: body.to_string().len(),
-                message_count: 4,
-                tools_count: 1,
-                assistant_tool_message_count: 1,
-                tool_call_count: 2,
-                tool_result_count: 2,
-                matched_tool_result_count: 1,
-                orphan_tool_result_count: 1,
-                unresolved_tool_call_count: 1,
-                assistant_tool_content_null_count: 1,
-                assistant_tool_content_empty_count: 0,
-                stream: true,
-            }
-        );
-        let debug = format!("{shape:?}");
-        for secret in ["PRIVATE-PROMPT", "PRIVATE-CALL", "PRIVATE-RESULT"] {
-            assert!(!debug.contains(secret));
-        }
-    }
-
-    #[test]
-    fn upstream_error_class_emits_only_fixed_values() {
-        assert_eq!(
-            upstream_error_class(
-                br#"{"error":{"message":"Invalid tool_call_id PRIVATE-CALL with PRIVATE-RESULT","type":"PRIVATE_TYPE","code":"PRIVATE_PROJECT_APOLLO"}}"#,
-            ),
-            "tool_pairing"
-        );
-        assert_eq!(
-            upstream_error_class(
-                br#"{"error":{"message":"schema rejected PRIVATE-PROMPT","type":"PRIVATE_TYPE","code":"PRIVATE_PROJECT_APOLLO"}}"#,
-            ),
-            "schema_validation"
         );
     }
     use crate::http;

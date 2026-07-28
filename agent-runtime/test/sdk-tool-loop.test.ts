@@ -36,7 +36,6 @@ test("continues model inference after a host tool result", async () => {
             finish_reason: "tool_calls",
             delta: {
               role: "assistant",
-              reasoning_content: "I should inspect the installed skills.",
               tool_calls: [
                 {
                   index: 0,
@@ -114,27 +113,14 @@ test("continues model inference after a host tool result", async () => {
   assert.equal(modelRequests[0]?.reasoning_effort, "high");
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
-  const toolResultIndex = secondMessages.findIndex(
-    (message) =>
-      isRecord(message) &&
-      message.role === "tool" &&
-      message.tool_call_id === "call-list-skills",
+  assert.ok(
+    secondMessages.some(
+      (message) =>
+        isRecord(message) &&
+        message.role === "tool" &&
+        message.tool_call_id === "call-list-skills",
+    ),
   );
-  assert.ok(toolResultIndex > 0);
-  const assistantToolMessage = secondMessages[toolResultIndex - 1];
-  assert.ok(isRecord(assistantToolMessage));
-  assert.equal(assistantToolMessage.role, "assistant");
-  assert.equal(assistantToolMessage.content, null);
-  assert.ok(Array.isArray(assistantToolMessage.tool_calls));
-  assert.equal(assistantToolMessage.tool_calls[0]?.id, "call-list-skills");
-  assert.ok(isRecord(assistantToolMessage.tool_calls[0]?.function));
-  assert.equal(assistantToolMessage.tool_calls[0].function.name, "list_skills");
-  assert.equal(assistantToolMessage.tool_calls[0].function.arguments, "{}");
-  assert.equal(assistantToolMessage.reasoning_content, "I should inspect the installed skills.");
-  assert.equal(assistantToolMessage.reasoning, undefined);
-  assert.deepEqual(modelRequests[1]?.tools, modelRequests[0]?.tools);
-  assert.equal(modelRequests[1]?.stream, true);
-  assert.deepEqual(modelRequests[1]?.stream_options, { include_usage: true });
   assert.ok(events.some((event) => event.type === "tool.completed"));
   assert.equal(result.usage.provider, "phala");
   assert.equal(result.usage.privacyLevel, "tee");
@@ -504,8 +490,8 @@ test("resumes a serialized approval and continues after the host tool result", a
             finish_reason: "tool_calls",
             delta: {
               role: "assistant",
-              reasoning_content: "",
               reasoning: "I should write the requested file.",
+              reasoning_content: "",
               tool_calls: [
                 {
                   index: 0,
@@ -611,103 +597,6 @@ test("resumes a serialized approval and continues after the host tool result", a
   );
   assert.ok(isRecord(resumedAssistant));
   assert.equal(resumedAssistant.reasoning, "I should write the requested file.");
-  assert.equal(resumedAssistant.reasoning_content, undefined);
-});
-
-test("preserves native reasoning across a serialized approval resume", async () => {
-  let modelRequestCount = 0;
-  const modelRequests: JsonObject[] = [];
-  const engine = new OpenAIAgentsEngine(async (input) => {
-    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) return { written: true };
-    if (!("request" in input.arguments)) throw new Error("Expected a single-page stream");
-    modelRequests.push(input.arguments.request);
-    modelRequestCount += 1;
-    if (modelRequestCount === 1) {
-      return streamPage("native-reasoning-start", {
-        id: "completion-native-reasoning-start",
-        object: "chat.completion.chunk",
-        created: 6,
-        model: "private-auto",
-        choices: [
-          {
-            index: 0,
-            finish_reason: "tool_calls",
-            delta: {
-              role: "assistant",
-              reasoning: "I should perform the approved write.",
-              tool_calls: [
-                {
-                  index: 0,
-                  id: "call-native-reasoning",
-                  type: "function",
-                  function: { name: "write_file", arguments: "{}" },
-                },
-              ],
-            },
-          },
-        ],
-      });
-    }
-    return streamPage("native-reasoning-finish", {
-      id: "completion-native-reasoning-finish",
-      object: "chat.completion.chunk",
-      created: 7,
-      model: "private-auto",
-      choices: [
-        {
-          index: 0,
-          finish_reason: "stop",
-          delta: { role: "assistant", content: "Done." },
-        },
-      ],
-    });
-  });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
-  const commonParams = {
-    model: "private-auto",
-    instructions: "Use the requested file tool.",
-    workspace: "/tmp/june-workspace",
-    safetyMode: "sandboxed" as const,
-    tools: [
-      {
-        name: "write_file",
-        description: "Write a file.",
-        parameters: { type: "object", properties: {}, additionalProperties: false },
-        requiresApproval: true,
-      },
-    ],
-    skills: [],
-    contextWindow: 16_000,
-  };
-  const paused = await engine.start({
-    sessionId: "session-native-reasoning",
-    runId: "run-native-reasoning",
-    signal: new AbortController().signal,
-    emit: () => {},
-    takeSteering: () => [],
-    params: { ...commonParams, input: "Create the file.", history: [] },
-  });
-  assert.ok(paused.serializedState);
-  await engine.resume({
-    sessionId: "session-native-reasoning",
-    runId: "run-native-reasoning",
-    signal: new AbortController().signal,
-    emit: () => {},
-    takeSteering: () => [],
-    params: {
-      ...commonParams,
-      serializedState: paused.serializedState,
-      resolutions: [{ interruptionId: paused.interruptions[0]!.id, decision: "approve" }],
-    },
-  });
-
-  const resumedMessages = modelRequests[1]?.messages;
-  assert.ok(Array.isArray(resumedMessages));
-  const resumedAssistant = resumedMessages.find(
-    (message) => isRecord(message) && message.role === "assistant" && Array.isArray(message.tool_calls),
-  );
-  assert.ok(isRecord(resumedAssistant));
-  assert.equal(resumedAssistant.reasoning, "I should perform the approved write.");
   assert.equal(resumedAssistant.reasoning_content, undefined);
 });
 

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   connectorsConnect: vi.fn(),
   connectorsCancelConnect: vi.fn(),
   connectorsDisconnect: vi.fn(),
+  connectorsApplyRuntime: vi.fn(),
   extensionPairingStatus: vi.fn(),
   registerBrowserExtensionHost: vi.fn(),
   browserTransportPolicy: vi.fn(),
@@ -45,6 +46,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   connectorsConnect: mocks.connectorsConnect,
   connectorsCancelConnect: mocks.connectorsCancelConnect,
   connectorsDisconnect: mocks.connectorsDisconnect,
+  connectorsApplyRuntime: mocks.connectorsApplyRuntime,
   extensionPairingStatus: mocks.extensionPairingStatus,
   registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
   browserTransportPolicy: mocks.browserTransportPolicy,
@@ -130,6 +132,7 @@ beforeEach(() => {
   );
   mocks.connectorsConnect.mockResolvedValue(account());
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
+  mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   mocks.connectorsCancelConnect.mockResolvedValue(undefined);
   mocks.connectorsLinearTeams.mockResolvedValue({
     teams: [TEAM_ENG, TEAM_DESIGN],
@@ -478,6 +481,7 @@ describe("ConnectorsSection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
 
     await waitFor(() => expect(mocks.notionConnectorDisconnect).toHaveBeenCalled());
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
     expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
   });
 
@@ -596,6 +600,7 @@ describe("ConnectorsSection", () => {
         provider: "google",
       }),
     );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
     expect(await screen.findByText(/alex@example\.com/)).toBeInTheDocument();
   });
 
@@ -663,6 +668,7 @@ describe("ConnectorsSection", () => {
         provider: "google",
       }),
     );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 
   it("revokes by default so a disconnect cannot orphan the grant", async () => {
@@ -737,6 +743,7 @@ describe("ConnectorsSection — Linear", () => {
     // Slice 2 registers the june_linear MCP server, so a Linear connect now
     // needs a runtime apply just like Google — registering a server name is
     // a config-render change.
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
 
     const teamsDialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
     await waitFor(() =>
@@ -783,6 +790,7 @@ describe("ConnectorsSection — Linear", () => {
     // This save crossed the registration boundary (zero teams before it),
     // which is what lets june_linear register at all - so it must apply the
     // runtime.
+    expect(mocks.connectorsApplyRuntime).toHaveBeenCalled();
   });
 
   it("skips the runtime apply when a teams edit does not cross the registration boundary", async () => {
@@ -804,11 +812,15 @@ describe("ConnectorsSection — Linear", () => {
     // The server was already registered (a team was selected before this
     // edit); the grant change is enforced per-request in Rust, so no
     // restart.
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
   });
 
-  it("closes the dialog after the first-team save succeeds", async () => {
+  it("retries a failed first-team runtime apply after the account refreshes", async () => {
     const selectedAccount = linearAccount({ selectedTeams: [TEAM_ENG] });
     mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
+    mocks.connectorsApplyRuntime
+      .mockRejectedValueOnce({ message: "Runtime apply failed" })
+      .mockResolvedValueOnce(undefined);
     mocks.connectorsSetSelectedTeams.mockImplementation(async () => {
       mocks.connectorsList.mockResolvedValue([selectedAccount]);
       connectorsChangedListener?.();
@@ -823,11 +835,12 @@ describe("ConnectorsSection — Linear", () => {
     const saveButton = within(dialog).getByRole("button", { name: "Save teams" });
 
     await userEvent.click(saveButton);
-    await waitFor(() => expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalled());
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Select Linear teams" })).toBeNull(),
-    );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
+    expect(dialog).toBeInTheDocument();
     await screen.findByText(/1 team selected/i);
+
+    await userEvent.click(saveButton);
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(2));
   });
 
   it("preselects the account's current teams when managing teams", async () => {
@@ -923,6 +936,7 @@ describe("ConnectorsSection — Linear", () => {
     );
     // A reconnect goes through the same runConnect path as a fresh connect,
     // so it applies the runtime too.
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 });
 
@@ -974,6 +988,7 @@ describe("ConnectorsSection — GitHub", () => {
         provider: "github",
       }),
     );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 
   it("adds github_write when the write checkbox is checked", async () => {
@@ -1041,6 +1056,7 @@ describe("ConnectorsSection — GitHub", () => {
         provider: "github",
       }),
     );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 
   it("GitHub reconnect opens the dialog and device-code panel is visible when the event fires", async () => {
@@ -1155,6 +1171,7 @@ describe("ConnectorsSection — GitHub", () => {
         revoke: true,
       }),
     );
+    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
     expect(await findEnabledConnect("Connect GitHub")).toBeInTheDocument();
   });
 
