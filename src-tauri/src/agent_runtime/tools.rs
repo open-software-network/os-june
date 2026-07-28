@@ -287,7 +287,8 @@ async fn mcp_tool(context: &ToolContext, name: &str, arguments: Value) -> Result
         crate::agent_mcp::KeychainMcpSecretStore,
     );
     subsystem
-        .refresh_registry_for_workspace(
+        .refresh_registry_for_workspace_with_managed_linear(
+            &context.app,
             context.safety_mode == AgentSafetyMode::Sandboxed,
             Some(&context.workspace),
         )
@@ -329,7 +330,8 @@ async fn mcp_tool(context: &ToolContext, name: &str, arguments: Value) -> Result
         ));
     }
     let elicitation_answer = latest_mcp_elicitation_answer(context).await?;
-    let invocation = subsystem.invoke_in_workspace_with_elicitation(
+    let invocation = subsystem.invoke_in_workspace_with_elicitation_and_managed_linear(
+        &context.app,
         name,
         arguments,
         context.safety_mode == AgentSafetyMode::Sandboxed,

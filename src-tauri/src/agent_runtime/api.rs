@@ -1526,7 +1526,8 @@ async fn tool_descriptors(
         crate::agent_mcp::KeychainMcpSecretStore,
     );
     match subsystem
-        .refresh_registry_for_workspace(
+        .refresh_registry_for_workspace_with_managed_linear(
+            app,
             safety_mode == AgentSafetyMode::Sandboxed,
             Some(std::path::Path::new(workspace)),
         )

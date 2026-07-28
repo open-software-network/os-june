@@ -59,6 +59,10 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const OAUTH_CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const OAUTH_EXPIRY_BUFFER_SECS: i64 = 60;
+pub const MANAGED_LINEAR_SERVER_ID: &str = "builtin:linear";
+pub const MANAGED_LINEAR_SERVER_NAME: &str = "linear";
+pub const MANAGED_LINEAR_MCP_URL: &str = "https://mcp.linear.app/mcp";
+const MANAGED_LINEAR_POLICY_REVISION: &str = "linear-official-mcp-v1";
 
 type SharedMcpSession = Arc<AsyncMutex<McpSessionSlot>>;
 static MCP_SESSIONS: OnceLock<AsyncMutex<HashMap<String, SharedMcpSession>>> = OnceLock::new();
@@ -1145,6 +1149,17 @@ pub struct McpDiscoveredTool {
     pub description: String,
     #[serde(default)]
     pub input_schema: Value,
+    #[serde(default)]
+    pub annotations: McpToolAnnotations,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotations {
+    #[serde(default)]
+    pub read_only_hint: Option<bool>,
+    #[serde(default)]
+    pub destructive_hint: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1183,6 +1198,74 @@ impl McpToolRegistry {
         server: &McpServerDefinition,
         discovered: Vec<McpDiscoveredTool>,
     ) -> Result<(), AgentMcpError> {
+        self.register_with_approval(server, discovered, |server, tool| {
+            server.safety.requires_approval
+                || server
+                    .safety
+                    .approval_tools
+                    .iter()
+                    .any(|item| item == &tool.name)
+        })
+    }
+
+    fn register_managed_linear(
+        &mut self,
+        server: &McpServerDefinition,
+        discovered: Vec<McpDiscoveredTool>,
+    ) -> Result<(), AgentMcpError> {
+        let mut seen_remote = BTreeSet::new();
+        let mut seen_runtime = BTreeSet::new();
+        for tool in discovered {
+            if tool.name.is_empty()
+                || !seen_remote.insert(tool.name.clone())
+                || !server.tool_visibility.allows(&tool.name)
+            {
+                continue;
+            }
+            let name = match runtime_tool_name(&server.name, &tool.name) {
+                Ok(name) if seen_runtime.insert(name.clone()) => name,
+                Ok(_) => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        error_code = "linear_managed_mcp_tool_invalid",
+                        remote_tool = %tool.name,
+                        error = %error,
+                        "Skipping an invalid Linear hosted MCP tool"
+                    );
+                    continue;
+                }
+            };
+            let requires_approval = tool.annotations.read_only_hint != Some(true)
+                || tool.annotations.destructive_hint == Some(true);
+            let descriptor = RuntimeToolDescriptorJson {
+                id: format!("mcp:{}/{}", server.id, tool.name),
+                name: name.clone(),
+                description: tool.description,
+                parameters: object_schema(tool.input_schema),
+                requires_approval: requires_approval.then_some(true),
+            };
+            // The managed source owns the mcp_linear_* namespace. A
+            // user-configured server with the same display name must not
+            // shadow Linear's official tools.
+            self.tools.insert(
+                name,
+                RegisteredMcpTool {
+                    server_id: server.id.clone(),
+                    server_name: server.name.clone(),
+                    remote_name: tool.name,
+                    descriptor,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn register_with_approval(
+        &mut self,
+        server: &McpServerDefinition,
+        discovered: Vec<McpDiscoveredTool>,
+        requires_approval: impl Fn(&McpServerDefinition, &McpDiscoveredTool) -> bool,
+    ) -> Result<(), AgentMcpError> {
         let mut seen = BTreeSet::new();
         for tool in discovered {
             if tool.name.is_empty()
@@ -1195,12 +1278,7 @@ impl McpToolRegistry {
             if self.tools.contains_key(&name) {
                 return Err(AgentMcpError::DuplicateServer);
             }
-            let requires_approval = server.safety.requires_approval
-                || server
-                    .safety
-                    .approval_tools
-                    .iter()
-                    .any(|item| item == &tool.name);
+            let requires_approval = requires_approval(server, &tool);
             let descriptor = RuntimeToolDescriptorJson {
                 id: format!("mcp:{}/{}", server.id, tool.name),
                 name: name.clone(),
@@ -1310,6 +1388,26 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
         sandboxed: bool,
         workspace: Option<&std::path::Path>,
     ) -> Result<Vec<RuntimeToolDescriptorJson>, AgentMcpError> {
+        self.refresh_registry_for_workspace_internal(sandboxed, workspace, None)
+            .await
+    }
+
+    pub async fn refresh_registry_for_workspace_with_managed_linear(
+        &self,
+        app: &AppHandle,
+        sandboxed: bool,
+        workspace: Option<&std::path::Path>,
+    ) -> Result<Vec<RuntimeToolDescriptorJson>, AgentMcpError> {
+        self.refresh_registry_for_workspace_internal(sandboxed, workspace, Some(app))
+            .await
+    }
+
+    async fn refresh_registry_for_workspace_internal(
+        &self,
+        sandboxed: bool,
+        workspace: Option<&std::path::Path>,
+        app: Option<&AppHandle>,
+    ) -> Result<Vec<RuntimeToolDescriptorJson>, AgentMcpError> {
         let mut next = McpToolRegistry::default();
         for server in self
             .repository
@@ -1342,6 +1440,18 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
                     transport = ?server.transport,
                     error = %error,
                     "MCP server discovery failed; continuing with the remaining servers"
+                ),
+            }
+        }
+        if let Some(app) = app {
+            match discover_managed_linear(app, sandboxed.then_some(workspace).flatten()).await {
+                Ok(Some((server, tools))) => next.register_managed_linear(&server, tools)?,
+                Ok(None) => {}
+                Err(error) => tracing::warn!(
+                    error_code = "linear_managed_mcp_discovery_failed",
+                    server_id = MANAGED_LINEAR_SERVER_ID,
+                    error = %error,
+                    "Linear hosted MCP discovery failed"
                 ),
             }
         }
@@ -1383,6 +1493,46 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
         workspace: Option<&std::path::Path>,
         elicitation_answer: Option<&str>,
     ) -> Result<Value, AgentMcpError> {
+        self.invoke_registered(
+            runtime_name,
+            arguments,
+            sandboxed,
+            workspace,
+            elicitation_answer,
+            None,
+        )
+        .await
+    }
+
+    pub async fn invoke_in_workspace_with_elicitation_and_managed_linear(
+        &self,
+        app: &AppHandle,
+        runtime_name: &str,
+        arguments: Value,
+        sandboxed: bool,
+        workspace: Option<&std::path::Path>,
+        elicitation_answer: Option<&str>,
+    ) -> Result<Value, AgentMcpError> {
+        self.invoke_registered(
+            runtime_name,
+            arguments,
+            sandboxed,
+            workspace,
+            elicitation_answer,
+            Some(app),
+        )
+        .await
+    }
+
+    async fn invoke_registered(
+        &self,
+        runtime_name: &str,
+        arguments: Value,
+        sandboxed: bool,
+        workspace: Option<&std::path::Path>,
+        elicitation_answer: Option<&str>,
+        app: Option<&AppHandle>,
+    ) -> Result<Value, AgentMcpError> {
         let registered = self
             .registry
             .lock()
@@ -1390,6 +1540,23 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
             .resolve(runtime_name)
             .cloned()
             .ok_or(AgentMcpError::ToolUnavailable)?;
+        if registered.server_id == MANAGED_LINEAR_SERVER_ID {
+            let app = app.ok_or(AgentMcpError::ToolUnavailable)?;
+            let Some((server, secrets)) = managed_linear_connection(app, false).await? else {
+                return Err(AgentMcpError::ToolUnavailable);
+            };
+            // Never replay a hosted Linear tools/call request. A timeout,
+            // disconnect, or 401 can arrive after Linear applied a mutation.
+            return call_server(
+                &server,
+                &secrets,
+                &registered.remote_name,
+                arguments,
+                sandboxed.then_some(workspace).flatten(),
+                elicitation_answer,
+            )
+            .await;
+        }
         let server = self.repository.get(&registered.server_id).await?;
         if !server_available(&server, sandboxed, workspace) {
             return Err(AgentMcpError::ToolUnavailable);
@@ -1447,6 +1614,78 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
     }
 }
 
+fn managed_linear_definition() -> McpServerDefinition {
+    McpServerDefinition {
+        id: MANAGED_LINEAR_SERVER_ID.to_string(),
+        name: MANAGED_LINEAR_SERVER_NAME.to_string(),
+        enabled: true,
+        transport: McpTransport::StreamableHttp,
+        command: None,
+        args: Vec::new(),
+        url: Some(MANAGED_LINEAR_MCP_URL.to_string()),
+        secret_ref: None,
+        metadata: json!({"managed": true, "provider": "linear"}),
+        tool_visibility: McpToolVisibility::default(),
+        safety: McpSafetyPolicy {
+            requires_approval: false,
+            ..McpSafetyPolicy::default()
+        },
+    }
+}
+
+async fn managed_linear_connection(
+    app: &AppHandle,
+    force_refresh: bool,
+) -> Result<Option<(McpServerDefinition, McpSecretBundle)>, AgentMcpError> {
+    let account = crate::connectors::list_runtime_accounts(app)
+        .await
+        .map_err(|_| AgentMcpError::Storage)?
+        .into_iter()
+        .find(|account| {
+            account.provider == crate::connectors::ConnectorProvider::Linear
+                && account.status == crate::connectors::ConnectorAccountStatus::Connected
+        });
+    let Some(account) = account else {
+        return Ok(None);
+    };
+    let token = if force_refresh {
+        crate::connectors::force_refresh_linear_access_token(app, &account.account_id).await
+    } else {
+        crate::connectors::linear_access_token(app, &account.account_id).await
+    }
+    .map_err(|error| match error.code.as_str() {
+        "connector_reconnect_required" | "linear_unauthorized" => AgentMcpError::Unauthorized,
+        _ => AgentMcpError::Transport,
+    })?;
+    let mut secrets = McpSecretBundle::default();
+    secrets
+        .headers
+        .insert("Authorization".to_string(), format!("Bearer {token}"));
+    Ok(Some((managed_linear_definition(), secrets)))
+}
+
+async fn discover_managed_linear(
+    app: &AppHandle,
+    sandbox_workspace: Option<&std::path::Path>,
+) -> Result<Option<(McpServerDefinition, Vec<McpDiscoveredTool>)>, AgentMcpError> {
+    let Some((server, secrets)) = managed_linear_connection(app, false).await? else {
+        return Ok(None);
+    };
+    match discover_server(&server, &secrets, sandbox_workspace).await {
+        Ok(tools) => Ok(Some((server, tools))),
+        Err(AgentMcpError::Unauthorized) => {
+            retire_server_sessions(MANAGED_LINEAR_SERVER_ID).await;
+            let Some((server, refreshed)) = managed_linear_connection(app, true).await? else {
+                return Ok(None);
+            };
+            discover_server(&server, &refreshed, sandbox_workspace)
+                .await
+                .map(|tools| Some((server, tools)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub async fn snapshot_run_policies(
     pool: &SqlitePool,
     run_id: &str,
@@ -1482,13 +1721,17 @@ pub async fn snapshot_run_policies(
         else {
             continue;
         };
-        let updated_at = query("SELECT updated_at FROM agent_mcp_servers WHERE id = ?")
-            .bind(server_id)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| AgentMcpError::Storage)?
-            .map(|row| row.get::<String, _>("updated_at"))
-            .ok_or(AgentMcpError::NotFound)?;
+        let updated_at = if server_id == MANAGED_LINEAR_SERVER_ID {
+            MANAGED_LINEAR_POLICY_REVISION.to_string()
+        } else {
+            query("SELECT updated_at FROM agent_mcp_servers WHERE id = ?")
+                .bind(server_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(|_| AgentMcpError::Storage)?
+                .map(|row| row.get::<String, _>("updated_at"))
+                .ok_or(AgentMcpError::NotFound)?
+        };
         query(
             "INSERT INTO agent_run_mcp_policies
              (run_id, tool_name, server_id, server_updated_at, requires_approval)
@@ -1524,6 +1767,23 @@ pub async fn run_policy_matches(
     tool_name: &str,
     current: &McpToolPolicy,
 ) -> Result<bool, AgentMcpError> {
+    if current.server_id == MANAGED_LINEAR_SERVER_ID {
+        let row = query(
+            "SELECT server_id, server_updated_at, requires_approval
+             FROM agent_run_mcp_policies
+             WHERE run_id = ? AND tool_name = ?",
+        )
+        .bind(run_id)
+        .bind(tool_name)
+        .fetch_optional(pool)
+        .await
+        .map_err(|_| AgentMcpError::Storage)?;
+        return Ok(row.is_some_and(|row| {
+            row.get::<String, _>("server_id") == current.server_id
+                && row.get::<String, _>("server_updated_at") == MANAGED_LINEAR_POLICY_REVISION
+                && row.get::<bool, _>("requires_approval") == current.requires_approval
+        }));
+    }
     let row = query(
         "SELECT policy.server_id, policy.server_updated_at, policy.requires_approval,
                 server.updated_at AS current_updated_at
@@ -1572,6 +1832,10 @@ async fn discover_server(
         None,
     )
     .await?;
+    discovered_tools_from_response(&value)
+}
+
+fn discovered_tools_from_response(value: &Value) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
     let tools = value
         .get("result")
         .and_then(|result| result.get("tools"))
@@ -1593,6 +1857,11 @@ async fn discover_server(
                     .or_else(|| tool.get("input_schema"))
                     .cloned()
                     .unwrap_or_else(|| json!({"type":"object","properties":{}})),
+                annotations: tool
+                    .get("annotations")
+                    .cloned()
+                    .and_then(|annotations| serde_json::from_value(annotations).ok())
+                    .unwrap_or_default(),
             })
         })
         .collect::<Vec<_>>())
@@ -3314,6 +3583,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_linear_policy_snapshot_needs_no_custom_server_row() {
+        let repo = repository().await;
+        query(
+            "CREATE TABLE agent_runs (
+                id TEXT PRIMARY KEY,
+                mcp_policy_snapshotted INTEGER NOT NULL DEFAULT 0
+             )",
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+        for statement in include_str!("../migrations/028_agent_run_mcp_policy.sql")
+            .split(';')
+            .filter(|statement| !statement.trim().is_empty())
+        {
+            query(statement).execute(&repo.pool).await.unwrap();
+        }
+        query("INSERT INTO agent_runs (id) VALUES ('run-linear')")
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let descriptor = RuntimeToolDescriptorJson {
+            id: format!("mcp:{MANAGED_LINEAR_SERVER_ID}/search"),
+            name: "mcp_linear_search".into(),
+            description: "Search Linear".into(),
+            parameters: json!({"type":"object","properties":{}}),
+            requires_approval: None,
+        };
+
+        snapshot_run_policies(&repo.pool, "run-linear", std::slice::from_ref(&descriptor))
+            .await
+            .unwrap();
+
+        let policy = McpToolPolicy {
+            server_id: MANAGED_LINEAR_SERVER_ID.into(),
+            requires_approval: false,
+        };
+        assert!(
+            run_policy_matches(&repo.pool, "run-linear", &descriptor.name, &policy)
+                .await
+                .unwrap()
+        );
+        assert!(!run_policy_matches(
+            &repo.pool,
+            "run-linear",
+            &descriptor.name,
+            &McpToolPolicy {
+                requires_approval: true,
+                ..policy
+            },
+        )
+        .await
+        .unwrap());
+    }
+
+    #[tokio::test]
     async fn empty_run_policy_snapshot_cannot_gain_a_server_on_resume() {
         let repo = repository().await;
         query(
@@ -4003,16 +4328,153 @@ done
                         name: "read-file".into(),
                         description: String::new(),
                         input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations::default(),
                     },
                     McpDiscoveredTool {
                         name: "hidden".into(),
                         description: String::new(),
                         input_schema: json!({}),
+                        annotations: McpToolAnnotations::default(),
                     },
                 ],
             )
             .unwrap();
         assert_eq!(registry.descriptors().len(), 1);
         assert!(registry.resolve("mcp_my_server_read_file").is_some());
+    }
+
+    #[test]
+    fn managed_linear_uses_the_fixed_official_endpoint() {
+        let server = managed_linear_definition();
+        assert_eq!(server.id, MANAGED_LINEAR_SERVER_ID);
+        assert_eq!(server.name, MANAGED_LINEAR_SERVER_NAME);
+        assert_eq!(server.url.as_deref(), Some(MANAGED_LINEAR_MCP_URL));
+        assert_eq!(server.transport, McpTransport::StreamableHttp);
+        assert!(server.secret_ref.is_none());
+        assert!(server.validate().is_ok());
+    }
+
+    #[test]
+    fn hosted_tool_discovery_retains_safety_annotations_and_fails_closed_on_malformed_data() {
+        let tools = discovered_tools_from_response(&json!({
+            "result": {
+                "tools": [
+                    {
+                        "name": "read",
+                        "inputSchema": {"type": "object"},
+                        "annotations": {
+                            "readOnlyHint": true,
+                            "destructiveHint": false
+                        }
+                    },
+                    {
+                        "name": "unknown",
+                        "inputSchema": {"type": "object"},
+                        "annotations": {"readOnlyHint": "not-a-boolean"}
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            tools[0].annotations,
+            McpToolAnnotations {
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+            }
+        );
+        assert_eq!(tools[1].annotations, McpToolAnnotations::default());
+    }
+
+    #[test]
+    fn managed_linear_requires_approval_unless_annotations_are_clearly_read_only() {
+        let server = managed_linear_definition();
+        let tool = |name: &str, read_only_hint, destructive_hint| McpDiscoveredTool {
+            name: name.to_string(),
+            description: String::new(),
+            input_schema: json!({"type":"object"}),
+            annotations: McpToolAnnotations {
+                read_only_hint,
+                destructive_hint,
+            },
+        };
+        let mut registry = McpToolRegistry::default();
+        registry
+            .register_managed_linear(
+                &server,
+                vec![
+                    tool("safe", Some(true), Some(false)),
+                    tool("ambiguous", None, None),
+                    tool("conflicting", Some(true), Some(true)),
+                    tool("write", Some(false), Some(false)),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .resolve("mcp_linear_safe")
+                .unwrap()
+                .descriptor
+                .requires_approval,
+            None
+        );
+        for name in ["ambiguous", "conflicting", "write"] {
+            assert_eq!(
+                registry
+                    .resolve(&format!("mcp_linear_{name}"))
+                    .unwrap()
+                    .descriptor
+                    .requires_approval,
+                Some(true)
+            );
+        }
+    }
+
+    #[test]
+    fn managed_linear_skips_invalid_tools_and_cannot_be_shadowed_by_custom_mcp() {
+        let server = managed_linear_definition();
+        let mut custom = McpServerDefinition::new("linear", McpTransport::Stdio);
+        custom.command = Some("node".into());
+        let mut registry = McpToolRegistry::default();
+        registry
+            .register(
+                &custom,
+                vec![McpDiscoveredTool {
+                    name: "search".into(),
+                    description: "custom".into(),
+                    input_schema: json!({"type":"object"}),
+                    annotations: McpToolAnnotations::default(),
+                }],
+            )
+            .unwrap();
+        registry
+            .register_managed_linear(
+                &server,
+                vec![
+                    McpDiscoveredTool {
+                        name: "x".repeat(200),
+                        description: "invalid".into(),
+                        input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations::default(),
+                    },
+                    McpDiscoveredTool {
+                        name: "search".into(),
+                        description: "official".into(),
+                        input_schema: json!({"type":"object"}),
+                        annotations: McpToolAnnotations {
+                            read_only_hint: Some(true),
+                            destructive_hint: Some(false),
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+
+        let search = registry.resolve("mcp_linear_search").unwrap();
+        assert_eq!(search.server_id, MANAGED_LINEAR_SERVER_ID);
+        assert_eq!(search.descriptor.description, "official");
+        assert_eq!(registry.descriptors().len(), 1);
     }
 }

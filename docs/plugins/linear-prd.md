@@ -3,8 +3,8 @@
 - **Mode:** CEO
 - **Rank:** 8 of 10
 - **Score:** 69/100
-- **Date:** 2026-07-13
-- **Status:** Proposed; tracked by JUN-284
+- **Date:** 2026-07-28
+- **Status:** Accepted for the official hosted MCP integration
 
 ## Thesis
 
@@ -24,29 +24,29 @@ delivery state in Linear. Status reporting becomes repeated synthesis.
 
 ## Product promise
 
-Connect a Linear workspace and let June turn selected meeting outcomes into
-reviewed issues and updates, with the workspace, team, project, and exact change
-visible before anything is written.
+Connect a Linear workspace and let June use Linear's official hosted MCP tools
+to turn meeting outcomes into reviewed work. The workspace and exact proposed
+change remain visible before an approval-required tool runs.
 
 ## V1 experience
 
-- Connect a workspace and select allowed teams.
-- Prepare a planning or status meeting from projects, cycles, issues, and recent
-  updates.
-- Turn action items into draft issues with team/project, title, description,
-  assignee suggestion, and source note reference.
-- Approve issue creation, comments, and project updates individually or as a
-  clearly previewed batch.
+- Connect one workspace with workspace-wide read and write access.
+- Discover the complete valid tool inventory from Linear's official hosted MCP
+  server for each agent run.
+- Run clearly annotated read-only tools directly.
+- Require approval for write, destructive, ambiguous, or incompletely
+  annotated tools.
 - Link June notes to Linear objects and refresh status on demand.
 
 ## Scope
 
 ### V1
 
-- Read teams, users, projects, cycles, initiatives, issues, comments, and project
-  updates within selected teams.
-- Create issue, update a narrow issue field set, add comment, create project
-  update behind approval.
+- Expose every valid tool published by Linear's official hosted MCP server.
+- Keep OAuth connect, refresh-token rotation, reconnect, revoke, and disconnect
+  in June.
+- Keep MCP transport, credential isolation, timeouts, output bounds, and
+  approval enforcement in June.
 - Planning brief, standup, issue drafting, and weekly project-status skills.
 
 ### Later
@@ -65,9 +65,12 @@ visible before anything is written.
 ## Privacy and trust
 
 Use Linear OAuth with refresh-token rotation and store token material in the
-Keychain if the public client flow supports a desktop-safe exchange. Calls
-originate on-device. Team selection is enforced in Rust. Issue/comment content
-is untrusted. Every write is approved in v1.
+Keychain. Rust sends the current access token only to
+`https://mcp.linear.app/mcp`; the model and TypeScript runtime never receive
+it. Access is workspace-wide, not selected-team scoped. Linear content and MCP
+metadata are untrusted. Only tools explicitly annotated read-only and
+non-destructive may run directly; everything ambiguous or mutating requires
+approval.
 
 ## Business model
 
@@ -78,28 +81,31 @@ cross-plugin GitHub/Slack workflows are Pro.
 
 | Metric | Target |
 | --- | ---: |
-| Connections selecting at least one team | 90% |
+| Successful workspace connections | 90% |
 | Weekly connected users running a planning/status brief | 35% |
 | Draft issues approved | 60% |
 | Created issues needing team/project correction | under 2% |
-| Reads/writes outside selected teams | 0 successful |
+| Unapproved ambiguous or mutating calls | 0 successful |
 
 ## Risks and gates
 
 - OAuth flow and refresh-token rotation changed in 2026; implementation must
   follow current provider behavior.
 - Webhooks require public HTTPS and therefore away mode.
-- GraphQL makes over-fetching easy; every operation needs bounded selections.
+- Hosted tool inventory and annotations can change; discovery and approval
+  handling must fail safely.
 - Model-generated priority/assignee choices can look authoritative when they
   are suggestions.
 
 ## Decision requested
 
-Approve selected-team read access and approved narrow writes; pair the product
-launch with GitHub composition but do not block either plugin on the other.
+Approve workspace-wide hosted MCP access with June-owned connection lifecycle
+and conservative approval policy; pair the product launch with GitHub
+composition but do not block either plugin on the other.
 
 ## Sources
 
 - [Linear OAuth 2.0](https://linear.app/developers/oauth-2-0-authentication)
+- [Linear MCP server](https://linear.app/docs/mcp)
 - [Linear webhooks](https://linear.app/developers/webhooks)
 - [Linear developer platform](https://linear.app/developers)

@@ -1576,6 +1576,7 @@ pub async fn disconnect(
             ConnectorProvider::Github,
         ],
     };
+    let disconnects_linear = providers.contains(&ConnectorProvider::Linear);
     for &provider in providers {
         if revoke_grant {
             if let Ok(Some(stored)) = store::load_tokens(provider, account_id).await {
@@ -1636,6 +1637,9 @@ pub async fn disconnect(
         store::delete_tokens(provider, account_id).await?;
     }
     repos.delete_connector_account(account_id).await?;
+    if disconnects_linear {
+        crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
+    }
     emit_connectors_changed(app);
     Ok(())
 }

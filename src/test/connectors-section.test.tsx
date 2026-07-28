@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConnectorsSection } from "../components/settings/ConnectorsSection";
-import type { ConnectorAccount, LinearTeam } from "../lib/tauri";
+import type { ConnectorAccount } from "../lib/tauri";
 import { representativeConnectorPolicy } from "./fixtures/connector-policy";
 
 const mocks = vi.hoisted(() => ({
@@ -86,9 +86,6 @@ vi.mock("../components/plugins/ComputerUseControl", () => ({
 const GMAIL_READONLY = "https://www.googleapis.com/auth/gmail.readonly";
 const CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events";
 
-const TEAM_ENG: LinearTeam = { id: "team-eng", key: "ENG", name: "Engineering" };
-const TEAM_DESIGN: LinearTeam = { id: "team-design", key: "DES", name: "Design" };
-let connectorsChangedListener: (() => void) | null = null;
 // Map from event name to its handler so device-code events can be fired
 // independently of the connectors-changed event.
 const eventHandlers = new Map<string, (event: { payload: unknown }) => void>();
@@ -113,7 +110,7 @@ function linearAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAcco
     accountId: "linear-acc-1",
     provider: "linear",
     email: "alex@example.com",
-    scopes: ["read"],
+    scopes: ["read", "write"],
     status: "connected",
     workspaceName: "Acme",
     workspaceUrlKey: "acme",
@@ -124,7 +121,6 @@ function linearAccount(overrides: Partial<ConnectorAccount> = {}): ConnectorAcco
 
 beforeEach(() => {
   vi.clearAllMocks();
-  connectorsChangedListener = null;
   eventHandlers.clear();
   mocks.connectorsList.mockResolvedValue([]);
   mocks.invoke.mockImplementation(async (command: string) =>
@@ -134,11 +130,8 @@ beforeEach(() => {
   mocks.connectorsDisconnect.mockResolvedValue(undefined);
   mocks.connectorsApplyRuntime.mockResolvedValue(undefined);
   mocks.connectorsCancelConnect.mockResolvedValue(undefined);
-  mocks.connectorsLinearTeams.mockResolvedValue({
-    teams: [TEAM_ENG, TEAM_DESIGN],
-    truncated: false,
-  });
-  mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+  mocks.connectorsLinearTeams.mockResolvedValue({ teams: [], truncated: false });
+  mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount());
   mocks.extensionPairingStatus.mockResolvedValue({ paired: false, listenerRunning: true });
   mocks.registerBrowserExtensionHost.mockResolvedValue({
     manifestPath: "/tmp/co.opensoftware.june.extension.json",
@@ -160,11 +153,6 @@ beforeEach(() => {
     async (event: string, handler: (e: { payload: unknown }) => void) => {
       // Store every handler by event name so tests can fire specific events.
       eventHandlers.set(event, handler);
-      // Backward-compat: keep the single-listener reference for legacy tests
-      // that only care about the connectors-changed event.
-      if (event === "june://connectors-changed") {
-        connectorsChangedListener = () => handler({ payload: undefined });
-      }
       return () => {};
     },
   );
@@ -304,7 +292,9 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText("Google")).toBeInTheDocument();
     expect(screen.getByText("Linear")).toBeInTheDocument();
     expect(await findEnabledConnect("Connect Linear")).toBeInTheDocument();
-    expect(screen.getByText(/projects, cycles, and issues/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/workspace-wide access through Linear's official MCP server/i),
+    ).toBeInTheDocument();
   });
 
   it("qualifies local connector privacy with the model inference path", async () => {
@@ -719,224 +709,104 @@ describe("ConnectorsSection", () => {
 });
 
 describe("ConnectorsSection — Linear", () => {
-  it("connects a workspace, applies the runtime, and auto-opens team selection", async () => {
-    mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [] }));
+  it("connects workspace-wide without runtime apply or team selection", async () => {
+    mocks.connectorsConnect.mockResolvedValue(linearAccount());
     render(<ConnectorsSection />);
 
+    mocks.connectorsList.mockResolvedValue([linearAccount()]);
     await userEvent.click(await findEnabledConnect("Connect Linear"));
-    const dialog = screen.getByRole("dialog", { name: "Connect Linear workspace" });
-    expect(within(dialog).getByRole("checkbox", { name: /read workspace/i })).toBeChecked();
-    expect(
-      within(dialog).getByRole("checkbox", { name: /create and update issues/i }),
-    ).not.toBeChecked();
-
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
-    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({
-        scopes: ["linear_read"],
+        scopes: ["linear_read", "linear_write"],
         loginHint: undefined,
         provider: "linear",
       }),
     );
-    // Slice 2 registers the june_linear MCP server, so a Linear connect now
-    // needs a runtime apply just like Google — registering a server name is
-    // a config-render change.
-    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
-
-    const teamsDialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-    await waitFor(() =>
-      expect(mocks.connectorsLinearTeams).toHaveBeenCalledWith({ accountId: "linear-acc-1" }),
-    );
-    // Nothing preselected on a first connect.
-    expect(within(teamsDialog).getByRole("checkbox", { name: /engineering/i })).not.toBeChecked();
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+    expect(mocks.connectorsLinearTeams).not.toHaveBeenCalled();
+    expect(mocks.connectorsSetSelectedTeams).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: /Linear teams/i })).toBeNull();
+    expect(await screen.findByText(/workspace-wide Linear MCP access/i)).toBeInTheDocument();
   });
 
-  it("shows the unfinished-setup hint and a Select teams action when no teams are chosen yet", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
+  it("shows only disconnect for a connected workspace", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount()]);
     render(<ConnectorsSection />);
 
-    expect(await screen.findByText("Select teams to finish setup")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Select teams" })).toBeInTheDocument();
+    expect(await screen.findByText(/workspace-wide Linear MCP access/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect Linear" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add access" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select teams" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Manage teams" })).toBeNull();
   });
 
-  it("disables Save teams until a team is checked, then saves the chosen teams", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
+  it("reconnects workspace-wide without runtime apply", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockResolvedValue(linearAccount());
     render(<ConnectorsSection />);
-    await screen.findByText("Select teams to finish setup");
-
-    await userEvent.click(screen.getByRole("button", { name: "Select teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-    await waitFor(() => expect(mocks.connectorsLinearTeams).toHaveBeenCalled());
-
-    const saveButton = within(dialog).getByRole("button", { name: "Save teams" });
-    expect(saveButton).toBeDisabled();
-
-    await userEvent.click(within(dialog).getByRole("checkbox", { name: /engineering/i }));
-    expect(saveButton).toBeEnabled();
-
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    await userEvent.click(saveButton);
-
-    await waitFor(() =>
-      expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalledWith({
-        accountId: "linear-acc-1",
-        teams: [TEAM_ENG],
-      }),
-    );
-    expect(await screen.findByText(/1 team selected/i)).toBeInTheDocument();
-    // This save crossed the registration boundary (zero teams before it),
-    // which is what lets june_linear register at all - so it must apply the
-    // runtime.
-    expect(mocks.connectorsApplyRuntime).toHaveBeenCalled();
-  });
-
-  it("skips the runtime apply when a teams edit does not cross the registration boundary", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    mocks.connectorsSetSelectedTeams.mockResolvedValue(
-      linearAccount({ selectedTeams: [TEAM_ENG, TEAM_DESIGN] }),
-    );
-    render(<ConnectorsSection />);
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-    await waitFor(() => expect(mocks.connectorsLinearTeams).toHaveBeenCalled());
-
-    await userEvent.click(within(dialog).getByRole("checkbox", { name: /design/i }));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Save teams" }));
-
-    await waitFor(() => expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalled());
-    // The server was already registered (a team was selected before this
-    // edit); the grant change is enforced per-request in Rust, so no
-    // restart.
-    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
-  });
-
-  it("retries a failed first-team runtime apply after the account refreshes", async () => {
-    const selectedAccount = linearAccount({ selectedTeams: [TEAM_ENG] });
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [] })]);
-    mocks.connectorsApplyRuntime
-      .mockRejectedValueOnce({ message: "Runtime apply failed" })
-      .mockResolvedValueOnce(undefined);
-    mocks.connectorsSetSelectedTeams.mockImplementation(async () => {
-      mocks.connectorsList.mockResolvedValue([selectedAccount]);
-      connectorsChangedListener?.();
-      return selectedAccount;
-    });
-
-    render(<ConnectorsSection />);
-    await screen.findByText("Select teams to finish setup");
-    await userEvent.click(screen.getByRole("button", { name: "Select teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-    await userEvent.click(await within(dialog).findByRole("checkbox", { name: /engineering/i }));
-    const saveButton = within(dialog).getByRole("button", { name: "Save teams" });
-
-    await userEvent.click(saveButton);
-    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
-    expect(dialog).toBeInTheDocument();
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(saveButton);
-    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalledTimes(2));
-  });
-
-  it("preselects the account's current teams when managing teams", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    render(<ConnectorsSection />);
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-    await waitFor(() => expect(mocks.connectorsLinearTeams).toHaveBeenCalled());
-
-    expect(within(dialog).getByRole("checkbox", { name: /engineering/i })).toBeChecked();
-    expect(within(dialog).getByRole("checkbox", { name: /design/i })).not.toBeChecked();
-  });
-
-  it("shows an error with a retry when the team list fails to load", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    mocks.connectorsLinearTeams.mockRejectedValueOnce({ message: "Linear is unreachable" });
-    render(<ConnectorsSection />);
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-
-    expect(await within(dialog).findByText("Linear is unreachable")).toBeInTheDocument();
-    mocks.connectorsLinearTeams.mockResolvedValueOnce({
-      teams: [TEAM_ENG, TEAM_DESIGN],
-      truncated: false,
-    });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
-
-    expect(await within(dialog).findByRole("checkbox", { name: /engineering/i })).toBeChecked();
-  });
-
-  it("keeps a selected team the live listing no longer returns", async () => {
-    // TEAM_ENG is persisted as selected but absent from the live fetch
-    // (archived, hidden, or beyond the pagination cap). It must stay
-    // visible, stay checked, and survive an unrelated save untouched.
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    mocks.connectorsLinearTeams.mockResolvedValue({ teams: [TEAM_DESIGN], truncated: false });
-    render(<ConnectorsSection />);
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-
-    const stale = await within(dialog).findByRole("checkbox", { name: /engineering/i });
-    expect(stale).toBeChecked();
-    expect(within(dialog).getByText(/not visible in Linear right now/i)).toBeInTheDocument();
-
-    await userEvent.click(within(dialog).getByRole("checkbox", { name: /design/i }));
-    await userEvent.click(within(dialog).getByRole("button", { name: "Save teams" }));
-
-    await waitFor(() =>
-      expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalledWith({
-        accountId: "linear-acc-1",
-        teams: [TEAM_DESIGN, TEAM_ENG],
-      }),
-    );
-  });
-
-  it("flags a truncated team listing instead of presenting it as complete", async () => {
-    mocks.connectorsList.mockResolvedValue([linearAccount({ selectedTeams: [TEAM_ENG] })]);
-    mocks.connectorsLinearTeams.mockResolvedValue({
-      teams: [TEAM_ENG, TEAM_DESIGN],
-      truncated: true,
-    });
-    render(<ConnectorsSection />);
-    await screen.findByText(/1 team selected/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Manage teams" }));
-    const dialog = await screen.findByRole("dialog", { name: "Select Linear teams" });
-
-    expect(await within(dialog).findByText(/only the first 500 teams/i)).toBeInTheDocument();
-  });
-
-  it("reconnects a workspace using the account id as the login hint", async () => {
-    mocks.connectorsList.mockResolvedValue([
-      linearAccount({ status: "reconnect_required", selectedTeams: [TEAM_ENG] }),
-    ]);
-    mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
-    render(<ConnectorsSection />);
-    await screen.findByText(/Acme/);
+    expect(
+      await screen.findByText(/Reconnect to enable workspace-wide Linear MCP access/i),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Linear" }));
 
     await waitFor(() =>
       expect(mocks.connectorsConnect).toHaveBeenCalledWith({
-        scopes: ["linear_read"],
+        scopes: ["linear_read", "linear_write"],
         loginHint: "linear-acc-1",
         provider: "linear",
       }),
     );
-    // A reconnect goes through the same runConnect path as a fresh connect,
-    // so it applies the runtime too.
-    await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+    expect(mocks.connectorsLinearTeams).not.toHaveBeenCalled();
+  });
+
+  it("requires legacy read-only workspaces to reconnect for write access", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount({ scopes: ["read"] })]);
+    mocks.connectorsConnect.mockResolvedValue(linearAccount());
+    render(<ConnectorsSection />);
+
+    expect(
+      await screen.findByText(/Reconnect to enable workspace-wide Linear MCP access/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Reconnect needed")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect Linear" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["linear_read", "linear_write"],
+        loginHint: "linear-acc-1",
+        provider: "linear",
+      }),
+    );
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+  });
+
+  it("disconnects successfully when the retired runtime command is unavailable", async () => {
+    mocks.connectorsList.mockResolvedValue([linearAccount()]);
+    mocks.connectorsApplyRuntime.mockRejectedValue(
+      new Error("Command connectors_apply_runtime not found"),
+    );
+    render(<ConnectorsSection />);
+    await screen.findByText(/Acme/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Disconnect Linear" }));
+    const dialog = await screen.findByRole("dialog", { name: /Disconnect Acme/ });
+    mocks.connectorsList.mockResolvedValue([]);
+    await userEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(mocks.connectorsDisconnect).toHaveBeenCalledWith({
+        accountId: "linear-acc-1",
+        revoke: true,
+      }),
+    );
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("Disconnected Acme");
+    expect(await findEnabledConnect("Connect Linear")).toBeInTheDocument();
   });
 });
 
@@ -1126,10 +996,8 @@ describe("ConnectorsSection — GitHub", () => {
   });
 
   it("Linear reconnect does NOT open the connect dialog", async () => {
-    mocks.connectorsList.mockResolvedValue([
-      linearAccount({ status: "reconnect_required", selectedTeams: [TEAM_ENG] }),
-    ]);
-    mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+    mocks.connectorsList.mockResolvedValue([linearAccount({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockResolvedValue(linearAccount());
     render(<ConnectorsSection />);
     await screen.findByText(/Acme/);
 
@@ -1337,13 +1205,11 @@ describe("ConnectorsSection — GitHub", () => {
     expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
   });
 
-  it("never renders the device-code panel in the Linear connect dialog", async () => {
+  it("connects Linear directly without rendering a device-code dialog", async () => {
     mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
     render(<ConnectorsSection />);
 
     await userEvent.click(await findEnabledConnect("Connect Linear"));
-    const dialog = screen.getByRole("dialog", { name: "Connect Linear workspace" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     act(() => {
       eventHandlers.get("june://connectors-github-device-code")?.({
@@ -1355,9 +1221,11 @@ describe("ConnectorsSection — GitHub", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(within(dialog).getByRole("checkbox", { name: /read workspace/i })).toBeInTheDocument(),
-    );
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
+    expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+      provider: "linear",
+      scopes: ["linear_read", "linear_write"],
+    });
   });
 });

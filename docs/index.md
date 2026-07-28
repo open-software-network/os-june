@@ -59,6 +59,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0047](adr/0047-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
 - [adr/0048](adr/0048-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
 - [adr/0049](adr/0049-cancelled-dictation-takes-never-deliver.md) - each helper-owned dictation take has one cancellation token, and cancelled takes cannot start later cleanup, history, or text delivery
+- [adr/0050](adr/0050-linear-official-hosted-mcp.md) - Linear agent capabilities come from Linear's official hosted MCP while June owns connection state, credential custody, and conservative approvals
 
 ## Enforceable rules (spec/)
 
@@ -111,7 +112,7 @@ Per-repo config the engineering skills read before acting (see the
   - [Computer use](plugins/computer-use-prd.md) — [implementation plan](plugins/computer-use-implementation-plan.md)
   - [Notion](plugins/notion-prd.md) — [implementation plan](plugins/notion-implementation-plan.md)
   - [GitHub](plugins/github-prd.md) — [implementation plan](plugins/github-implementation-plan.md)
-  - [Linear](plugins/linear-prd.md) — [implementation plan](plugins/linear-implementation-plan.md), [Phase 0 OAuth spike findings](plugins/linear-oauth-spike.md)
+  - [Linear](plugins/linear-prd.md) — [hosted MCP implementation plan](plugins/linear-hosted-mcp-implementation-plan.md), [original implementation plan](plugins/linear-implementation-plan.md), [Phase 0 OAuth spike findings](plugins/linear-oauth-spike.md)
   - [Documents](plugins/documents-prd.md) — [implementation plan](plugins/documents-implementation-plan.md)
   - [Spreadsheets](plugins/spreadsheets-prd.md) — [implementation plan](plugins/spreadsheets-implementation-plan.md)
 - [plugins/integrations-next-ten.md](plugins/integrations-next-ten.md) - follow-on provider portfolio: ranks 11-20, auth feasibility, sequencing, and decision gates

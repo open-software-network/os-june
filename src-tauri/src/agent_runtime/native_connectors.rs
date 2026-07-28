@@ -12,7 +12,7 @@ use crate::{
         self,
         policy::{
             self, CALENDAR_EVENTS, CALENDAR_READONLY, GITHUB_READ, GITHUB_WRITE, GMAIL_COMPOSE,
-            GMAIL_MODIFY, GMAIL_READONLY, GMAIL_SEND, LINEAR_READ, LINEAR_WRITE,
+            GMAIL_MODIFY, GMAIL_READONLY, GMAIL_SEND,
         },
         ConnectorAccount, ConnectorAccountStatus, ConnectorProvider,
     },
@@ -23,7 +23,6 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tauri::AppHandle;
 
-const PROVIDER_LINEAR: &str = "linear";
 const PROVIDER_GITHUB: &str = "github";
 
 #[derive(Clone, Copy)]
@@ -149,14 +148,6 @@ const CAPABILITIES: &[Capability] = &[
         mutation: false,
         needs_selected_teams: false,
     },
-    Capability {
-        name: "list_projects",
-        description: "List Linear projects in the connected workspace's selected teams.",
-        provider: ConnectorProvider::Linear,
-        required_scope: LINEAR_READ,
-        mutation: false,
-        needs_selected_teams: true,
-    },
 ];
 
 /// Build a fresh catalog from the non-secret account index. It is invoked for
@@ -174,8 +165,7 @@ pub fn routine_tool_allowed(
 ) -> bool {
     use crate::connectors::policy::{
         JUNE_GCAL_ACTIONS_SERVER, JUNE_GCAL_SERVER, JUNE_GITHUB_ACTIONS_SERVER, JUNE_GITHUB_SERVER,
-        JUNE_GMAIL_ACTIONS_SERVER, JUNE_GMAIL_SERVER, JUNE_LINEAR_ACTIONS_SERVER,
-        JUNE_LINEAR_SERVER,
+        JUNE_GMAIL_ACTIONS_SERVER, JUNE_GMAIL_SERVER,
     };
     let has = |server: &str| enabled_toolsets.iter().any(|value| value == server);
     let has_prefix = |prefix: &str| {
@@ -197,14 +187,8 @@ pub fn routine_tool_allowed(
                     && autonomous_tools.iter().any(|tool| tool == name))
         }
         "list_repositories" | "get_pull_request" => has(JUNE_GITHUB_SERVER),
-        "list_projects" => has(JUNE_LINEAR_SERVER),
-        "search_issues" | "get_issue" | "list_issue_comments" => {
-            has(JUNE_LINEAR_SERVER) || has(JUNE_GITHUB_SERVER)
-        }
-        "create_issue" | "update_issue" | "add_comment" => {
-            has(JUNE_LINEAR_ACTIONS_SERVER) || has(JUNE_GITHUB_ACTIONS_SERVER)
-        }
-        "create_project_update" => has(JUNE_LINEAR_ACTIONS_SERVER),
+        "search_issues" | "get_issue" | "list_issue_comments" => has(JUNE_GITHUB_SERVER),
+        "create_issue" | "update_issue" | "add_comment" => has(JUNE_GITHUB_ACTIONS_SERVER),
         _ => false,
     }
 }
@@ -223,83 +207,69 @@ fn descriptors_from_accounts(accounts: &[ConnectorAccount]) -> Vec<Value> {
         })
         .collect::<Vec<_>>();
 
-    let linear_read = eligible_account_ids(accounts, ConnectorProvider::Linear, LINEAR_READ, true);
     let github_read = eligible_account_ids(accounts, ConnectorProvider::Github, GITHUB_READ, false);
-    if !linear_read.is_empty() || !github_read.is_empty() {
-        let providers = provider_choices(!linear_read.is_empty(), !github_read.is_empty());
-        let ids = [linear_read, github_read].concat();
+    if !github_read.is_empty() {
+        let providers = provider_choices(true);
         descriptors.extend([
             provider_descriptor(
                 "search_issues",
-                "Search issues in Linear selected teams or GitHub repositories.",
+                "Search issues in connected GitHub repositories.",
                 &providers,
-                ids.clone(),
+                github_read.clone(),
                 false,
             ),
             provider_descriptor(
                 "get_issue",
-                "Read one Linear or GitHub issue.",
+                "Read one GitHub issue.",
                 &providers,
-                ids.clone(),
+                github_read.clone(),
                 false,
             ),
             provider_descriptor(
                 "list_issue_comments",
-                "List comments on one Linear or GitHub issue.",
+                "List comments on one GitHub issue.",
                 &providers,
-                ids,
+                github_read,
                 false,
             ),
         ]);
     }
-    let linear_write =
-        eligible_account_ids(accounts, ConnectorProvider::Linear, LINEAR_WRITE, true);
     let github_write =
         eligible_account_ids(accounts, ConnectorProvider::Github, GITHUB_WRITE, false);
-    if !linear_write.is_empty() || !github_write.is_empty() {
-        let providers = provider_choices(!linear_write.is_empty(), !github_write.is_empty());
-        let ids = [linear_write, github_write].concat();
+    if !github_write.is_empty() {
+        let providers = provider_choices(true);
         descriptors.extend([
             provider_descriptor(
                 "create_issue",
-                "Create a Linear or GitHub issue. The user must approve this action.",
+                "Create a GitHub issue. The user must approve this action.",
                 &providers,
-                ids.clone(),
+                github_write.clone(),
                 true,
             ),
             provider_descriptor(
                 "update_issue",
-                "Update a Linear or GitHub issue. The user must approve this action.",
+                "Update a GitHub issue. The user must approve this action.",
                 &providers,
-                ids.clone(),
+                github_write.clone(),
                 true,
             ),
             provider_descriptor(
                 "add_comment",
-                "Add a Linear or GitHub issue comment. The user must approve this action.",
+                "Add a GitHub issue comment. The user must approve this action.",
                 &providers,
-                ids,
+                github_write,
                 true,
             ),
         ]);
     }
-    if !eligible_account_ids(accounts, ConnectorProvider::Linear, LINEAR_WRITE, true).is_empty() {
-        descriptors.push(account_descriptor(
-            Capability { name: "create_project_update", description: "Create a Linear project update in a selected team. The user must approve this action.", provider: ConnectorProvider::Linear, required_scope: LINEAR_WRITE, mutation: true, needs_selected_teams: true },
-            eligible_account_ids(accounts, ConnectorProvider::Linear, LINEAR_WRITE, true),
-        ));
-    }
     descriptors
 }
 
-fn provider_choices(linear: bool, github: bool) -> Vec<&'static str> {
-    [
-        linear.then_some(PROVIDER_LINEAR),
-        github.then_some(PROVIDER_GITHUB),
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
+fn provider_choices(github: bool) -> Vec<&'static str> {
+    [github.then_some(PROVIDER_GITHUB)]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn eligible_account_ids(
@@ -543,14 +513,12 @@ pub async fn dispatch(
         "respond_to_invite" => calendar_respond_to_invite(app, arguments).await,
         "list_repositories" => github_list_repositories(app, arguments).await,
         "get_pull_request" => github_get_pull_request(app, arguments).await,
-        "list_projects" => linear_list_projects(app, arguments).await,
         "search_issues" => issues_search(app, arguments).await,
         "get_issue" => issues_get(app, arguments).await,
         "list_issue_comments" => issues_comments(app, arguments).await,
         "create_issue" => issues_create(app, arguments).await,
         "update_issue" => issues_update(app, arguments).await,
         "add_comment" => issues_add_comment(app, arguments).await,
-        "create_project_update" => linear_create_project_update(app, arguments).await,
         _ => return Ok(None),
     }?;
     Ok(Some(result))
@@ -940,136 +908,57 @@ async fn github_get_pull_request(app: &AppHandle, arguments: Value) -> Result<Va
     )
 }
 
-async fn linear_token_and_teams(
-    app: &AppHandle,
-    arguments: &Value,
-    scope: &str,
-) -> Result<(String, Vec<String>), AppError> {
-    let account = authorized_account(
-        app,
-        &account_id(arguments)?,
-        ConnectorProvider::Linear,
-        scope,
-        true,
-    )
-    .await?;
-    let teams = connectors::linear_granted_team_ids(app, &account.account_id).await?;
-    Ok((
-        connectors::linear_access_token(app, &account.account_id).await?,
-        teams,
-    ))
-}
-async fn linear_list_projects(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_READ).await?;
-    as_value(
-        crate::connectors::linear::list_projects(&token, &teams)
-            .await
-            .map_err(app_error)?,
-    )
-}
-
-fn issue_provider(arguments: &Value) -> Result<&str, AppError> {
-    match required(arguments, "provider")?.as_str() {
-        PROVIDER_LINEAR => Ok(PROVIDER_LINEAR),
-        PROVIDER_GITHUB => Ok(PROVIDER_GITHUB),
-        _ => Err(AppError::new(
+fn require_github_provider(arguments: &Value) -> Result<(), AppError> {
+    if required(arguments, "provider")? == PROVIDER_GITHUB {
+        Ok(())
+    } else {
+        Err(AppError::new(
             "invalid_arguments",
-            "provider must be linear or github.",
-        )),
+            "provider must be github.",
+        ))
     }
 }
 async fn issues_search(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_READ).await?;
-            let params = crate::connectors::linear::IssueSearchParams {
-                query: optional(&arguments, "query"),
-                team_ids: teams,
-                state_type: optional(&arguments, "stateType"),
-                assignee_id: optional(&arguments, "assigneeId"),
-                first: number(&arguments, "first"),
-            };
-            as_value(
-                crate::connectors::linear::search_issues(&token, &params)
-                    .await
-                    .map_err(app_error)?,
-            )
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_READ).await?;
-            as_value(
-                crate::connectors::github::search_issues(
-                    &token,
-                    &required(&arguments, "query")?,
-                    number(&arguments, "first"),
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_READ).await?;
+    as_value(
+        crate::connectors::github::search_issues(
+            &token,
+            &required(&arguments, "query")?,
+            number(&arguments, "first"),
+        )
+        .await
+        .map_err(app_error)?,
+    )
 }
 async fn issues_get(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_READ).await?;
-            let issue =
-                crate::connectors::linear::get_issue(&token, &required(&arguments, "issueId")?)
-                    .await
-                    .map_err(app_error)?;
-            connectors::linear_require_any_team_granted(
-                std::slice::from_ref(&issue.team_id),
-                &teams,
-            )?;
-            as_value(issue)
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_READ).await?;
-            as_value(
-                crate::connectors::github::get_issue(
-                    &token,
-                    &required(&arguments, "owner")?,
-                    &required(&arguments, "repo")?,
-                    parse_number(&arguments)?,
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_READ).await?;
+    as_value(
+        crate::connectors::github::get_issue(
+            &token,
+            &required(&arguments, "owner")?,
+            &required(&arguments, "repo")?,
+            parse_number(&arguments)?,
+        )
+        .await
+        .map_err(app_error)?,
+    )
 }
 async fn issues_comments(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_READ).await?;
-            let (team, comments) = crate::connectors::linear::list_issue_comments(
-                &token,
-                &required(&arguments, "issueId")?,
-                number(&arguments, "first"),
-            )
-            .await
-            .map_err(app_error)?;
-            connectors::linear_require_any_team_granted(&[team], &teams)?;
-            as_value(comments)
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_READ).await?;
-            as_value(
-                crate::connectors::github::list_issue_comments(
-                    &token,
-                    &required(&arguments, "owner")?,
-                    &required(&arguments, "repo")?,
-                    parse_number(&arguments)?,
-                    number(&arguments, "first"),
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_READ).await?;
+    as_value(
+        crate::connectors::github::list_issue_comments(
+            &token,
+            &required(&arguments, "owner")?,
+            &required(&arguments, "repo")?,
+            parse_number(&arguments)?,
+            number(&arguments, "first"),
+        )
+        .await
+        .map_err(app_error)?,
+    )
 }
 fn parse_number(arguments: &Value) -> Result<u64, AppError> {
     arguments
@@ -1079,162 +968,53 @@ fn parse_number(arguments: &Value) -> Result<u64, AppError> {
 }
 
 async fn issues_create(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_WRITE).await?;
-            let team_id = required(&arguments, "teamId")?;
-            connectors::linear_require_team_granted(&team_id, &teams)?;
-            let project_id = optional(&arguments, "projectId");
-            if let Some(project_id) = project_id.as_deref() {
-                let project_teams =
-                    crate::connectors::linear::get_project_team_ids(&token, project_id)
-                        .await
-                        .map_err(app_error)?;
-                connectors::linear_require_any_team_granted(&project_teams, &teams)?;
-            }
-            let input = crate::connectors::linear::LinearIssueCreate {
-                id: uuid::Uuid::new_v4().to_string(),
-                team_id,
-                title: required(&arguments, "title")?,
-                description: optional(&arguments, "description"),
-                priority: arguments.get("priority").and_then(Value::as_i64),
-                assignee_id: optional(&arguments, "assigneeId"),
-                project_id,
-            };
-            as_value(
-                crate::connectors::linear::create_issue(&token, input)
-                    .await
-                    .map_err(app_error)?,
-            )
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_WRITE).await?;
-            let labels = string_list(&arguments, "labels");
-            as_value(
-                crate::connectors::github::create_issue(
-                    &token,
-                    &required(&arguments, "owner")?,
-                    &required(&arguments, "repo")?,
-                    &required(&arguments, "title")?,
-                    optional(&arguments, "body").as_deref(),
-                    labels.as_deref(),
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_WRITE).await?;
+    let labels = string_list(&arguments, "labels");
+    as_value(
+        crate::connectors::github::create_issue(
+            &token,
+            &required(&arguments, "owner")?,
+            &required(&arguments, "repo")?,
+            &required(&arguments, "title")?,
+            optional(&arguments, "body").as_deref(),
+            labels.as_deref(),
+        )
+        .await
+        .map_err(app_error)?,
+    )
 }
 async fn issues_update(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_WRITE).await?;
-            let issue_id = required(&arguments, "issueId")?;
-            let current = crate::connectors::linear::get_issue(&token, &issue_id)
-                .await
-                .map_err(app_error)?;
-            connectors::linear_require_any_team_granted(&[current.team_id], &teams)?;
-            let project_id = optional(&arguments, "projectId");
-            if let Some(project_id) = project_id.as_deref() {
-                let project_teams =
-                    crate::connectors::linear::get_project_team_ids(&token, project_id)
-                        .await
-                        .map_err(app_error)?;
-                connectors::linear_require_any_team_granted(&project_teams, &teams)?;
-            }
-            let input = crate::connectors::linear::LinearIssueUpdate {
-                title: optional(&arguments, "title"),
-                description: optional(&arguments, "description"),
-                state_id: optional(&arguments, "stateId"),
-                priority: arguments.get("priority").and_then(Value::as_i64),
-                assignee_id: optional(&arguments, "assigneeId"),
-                project_id,
-                cycle_id: optional(&arguments, "cycleId"),
-            };
-            as_value(
-                crate::connectors::linear::update_issue(&token, &issue_id, input)
-                    .await
-                    .map_err(app_error)?,
-            )
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_WRITE).await?;
-            let labels = string_list(&arguments, "labels");
-            as_value(
-                crate::connectors::github::update_issue(
-                    &token,
-                    &required(&arguments, "owner")?,
-                    &required(&arguments, "repo")?,
-                    parse_number(&arguments)?,
-                    optional(&arguments, "title").as_deref(),
-                    optional(&arguments, "body").as_deref(),
-                    labels.as_deref(),
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_WRITE).await?;
+    let labels = string_list(&arguments, "labels");
+    as_value(
+        crate::connectors::github::update_issue(
+            &token,
+            &required(&arguments, "owner")?,
+            &required(&arguments, "repo")?,
+            parse_number(&arguments)?,
+            optional(&arguments, "title").as_deref(),
+            optional(&arguments, "body").as_deref(),
+            labels.as_deref(),
+        )
+        .await
+        .map_err(app_error)?,
+    )
 }
 async fn issues_add_comment(app: &AppHandle, arguments: Value) -> Result<Value, AppError> {
-    match issue_provider(&arguments)? {
-        PROVIDER_LINEAR => {
-            let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_WRITE).await?;
-            let issue_id = required(&arguments, "issueId")?;
-            let issue = crate::connectors::linear::get_issue(&token, &issue_id)
-                .await
-                .map_err(app_error)?;
-            connectors::linear_require_any_team_granted(&[issue.team_id], &teams)?;
-            let input = crate::connectors::linear::LinearCommentCreate {
-                id: uuid::Uuid::new_v4().to_string(),
-                issue_id,
-                body: required(&arguments, "body")?,
-            };
-            as_value(
-                crate::connectors::linear::add_comment(&token, input)
-                    .await
-                    .map_err(app_error)?,
-            )
-        }
-        PROVIDER_GITHUB => {
-            let token = github_token(app, &arguments, GITHUB_WRITE).await?;
-            as_value(
-                crate::connectors::github::add_comment(
-                    &token,
-                    &required(&arguments, "owner")?,
-                    &required(&arguments, "repo")?,
-                    parse_number(&arguments)?,
-                    &required(&arguments, "body")?,
-                )
-                .await
-                .map_err(app_error)?,
-            )
-        }
-        _ => unreachable!(),
-    }
-}
-async fn linear_create_project_update(
-    app: &AppHandle,
-    arguments: Value,
-) -> Result<Value, AppError> {
-    let (token, teams) = linear_token_and_teams(app, &arguments, LINEAR_WRITE).await?;
-    let project_id = required(&arguments, "projectId")?;
-    let project_teams = crate::connectors::linear::get_project_team_ids(&token, &project_id)
-        .await
-        .map_err(app_error)?;
-    connectors::linear_require_any_team_granted(&project_teams, &teams)?;
-    let input = crate::connectors::linear::LinearProjectUpdateCreate {
-        id: uuid::Uuid::new_v4().to_string(),
-        project_id,
-        body: required(&arguments, "body")?,
-        health: optional(&arguments, "health"),
-    };
+    require_github_provider(&arguments)?;
+    let token = github_token(app, &arguments, GITHUB_WRITE).await?;
     as_value(
-        crate::connectors::linear::create_project_update(&token, input)
-            .await
-            .map_err(app_error)?,
+        crate::connectors::github::add_comment(
+            &token,
+            &required(&arguments, "owner")?,
+            &required(&arguments, "repo")?,
+            parse_number(&arguments)?,
+            &required(&arguments, "body")?,
+        )
+        .await
+        .map_err(app_error)?,
     )
 }
 fn string_list(arguments: &Value, field: &str) -> Option<Vec<String>> {
@@ -1286,7 +1066,7 @@ mod tests {
                 &[GMAIL_READONLY, CALENDAR_READONLY],
                 0,
             ),
-            account(ConnectorProvider::Linear, &[LINEAR_READ], 0),
+            account(ConnectorProvider::Linear, &[policy::LINEAR_READ], 0),
             account(ConnectorProvider::Github, &[GITHUB_READ], 0),
         ]);
         assert!(catalog.iter().any(|tool| tool["name"] == "search_threads"));
@@ -1300,30 +1080,47 @@ mod tests {
     #[test]
     fn mutation_descriptors_require_sdk_approval_and_keep_provider_choices_bounded() {
         let catalog = descriptors_from_accounts(&[
-            account(ConnectorProvider::Linear, &[LINEAR_WRITE], 1),
+            account(ConnectorProvider::Linear, &[policy::LINEAR_WRITE], 1),
             account(ConnectorProvider::Github, &[GITHUB_WRITE], 0),
         ]);
         let create = named(&catalog, "create_issue");
         assert_eq!(create["requiresApproval"], true);
         assert_eq!(
             create["parameters"]["properties"]["provider"]["enum"],
-            json!(["linear", "github"])
+            json!(["github"])
         );
         assert_eq!(
             create["parameters"]["properties"]["accountId"]["enum"]
                 .as_array()
                 .unwrap()
                 .len(),
-            2
+            1
         );
     }
     #[test]
-    fn stale_or_unselected_linear_accounts_are_not_advertised() {
-        let mut stale = account(ConnectorProvider::Linear, &[LINEAR_READ, LINEAR_WRITE], 1);
+    fn native_catalog_never_advertises_linear_accounts() {
+        let mut stale = account(
+            ConnectorProvider::Linear,
+            &[policy::LINEAR_READ, policy::LINEAR_WRITE],
+            1,
+        );
         stale.status = ConnectorAccountStatus::ReconnectRequired;
-        let unselected = account(ConnectorProvider::Linear, &[LINEAR_READ, LINEAR_WRITE], 0);
-        let catalog = descriptors_from_accounts(&[stale, unselected]);
+        let unselected = account(
+            ConnectorProvider::Linear,
+            &[policy::LINEAR_READ, policy::LINEAR_WRITE],
+            0,
+        );
+        let connected = account(
+            ConnectorProvider::Linear,
+            &[policy::LINEAR_READ, policy::LINEAR_WRITE],
+            1,
+        );
+        let catalog = descriptors_from_accounts(&[stale, unselected, connected]);
         assert!(!catalog.iter().any(|tool| tool["name"] == "search_issues"));
         assert!(!catalog.iter().any(|tool| tool["name"] == "create_issue"));
+        assert!(!catalog.iter().any(|tool| tool["name"] == "list_projects"));
+        assert!(!catalog
+            .iter()
+            .any(|tool| tool["name"] == "create_project_update"));
     }
 }

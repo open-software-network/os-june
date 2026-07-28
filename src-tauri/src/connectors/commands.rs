@@ -61,7 +61,11 @@ pub async fn connectors_connect(
             begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?
         }
         ConnectorProvider::Linear => {
-            begin_connect_linear(&app, &flow, &bundles, request.login_hint.as_deref()).await?
+            let account =
+                begin_connect_linear(&app, &flow, &bundles, request.login_hint.as_deref()).await?;
+            crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID)
+                .await;
+            account
         }
         ConnectorProvider::Github => {
             begin_connect_github(&app, &flow, &bundles, request.login_hint.as_deref()).await?

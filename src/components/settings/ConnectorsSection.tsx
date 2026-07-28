@@ -12,6 +12,7 @@ import {
   defaultBundlesForProvider,
   grantedFeatureLabels,
   isConnectorNotConfiguredError,
+  scopesCoverBundles,
 } from "../../lib/connectors";
 import { useConnectorPolicy } from "../../lib/connector-policy";
 import { errorCode, messageFromError } from "../../lib/errors";
@@ -22,11 +23,9 @@ import {
   connectorsCancelConnect,
   connectorsConnect,
   connectorsDisconnect,
-  connectorsLinearTeams,
   connectorsList,
   notionConnectorConnect,
   notionConnectorDisconnect,
-  connectorsSetSelectedTeams,
   obsidianConfigure,
   obsidianDisconnect,
   obsidianStatus,
@@ -34,7 +33,6 @@ import {
   type ConnectorProvider,
   type ConnectorScopeBundle,
   type GitHubDeviceCodePayload,
-  type LinearTeam,
   type ObsidianStatus,
 } from "../../lib/tauri";
 import { CopyStateIcon } from "../ui/CopyStateIcon";
@@ -60,7 +58,7 @@ const PROVIDER_NAMES = {
  * connecting it lets June do, in the provider directory row. */
 const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
-  linear: "Projects, cycles, and issues for planning briefs and status updates.",
+  linear: "Workspace-wide access through Linear's official MCP server.",
   github:
     "Read issues, pull requests, and code in the repositories chosen when you install the GitHub App. June allows drafting issues and comments with your approval. Repository access is managed on GitHub, not here.",
 } satisfies Record<OAuthConnectorProvider, string>;
@@ -75,6 +73,11 @@ const NOTION_RECONNECT_BLURB = "Reconnect Notion to restore pages, search, and a
 const NOTION_SCOPE_DISCLOSURE = "Access may extend beyond selected pages.";
 
 const NOTION_SEARCH_DISCLOSURE = "Search may include Notion-connected sources.";
+
+const LINEAR_FULL_ACCESS_BUNDLES = [
+  "linear_read",
+  "linear_write",
+] as const satisfies readonly ConnectorScopeBundle[];
 
 const NOTION_CONNECT_DIALOG_DESCRIPTION =
   "You'll sign in to Notion and approve June's access in your browser. June reads pages and workspace content for briefs and search, and creates or updates pages only with your approval.";
@@ -311,6 +314,16 @@ function featureSummary(
   return features.length > 0 ? `Can ${features.join(", ").toLowerCase()}.` : "";
 }
 
+function linearNeedsScopeReconnect(
+  policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
+  account: ConnectorAccount,
+): boolean {
+  return (
+    account.provider === "linear" &&
+    !scopesCoverBundles(policy, account.scopes, LINEAR_FULL_ACCESS_BUNDLES)
+  );
+}
+
 function obsidianSubtitle(status: ObsidianStatus | null): string {
   if (!status?.connected)
     return "Local vault read capability. Note updates need an unrestricted session.";
@@ -325,19 +338,23 @@ function obsidianStatusMeta(status: ObsidianStatus | null) {
   return { label: "Connected", tone: "ok" } as const;
 }
 
-/** The connected row's one-liner: who is connected, then what June may do,
- * then (Linear only) how many teams are selected. */
+/** The connected row's one-liner: who is connected, then what June may do. */
 function accountSubtitle(
   policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
   account: ConnectorAccount,
 ): string {
+  if (account.provider === "linear") {
+    if (account.status === "unavailable") {
+      return `${accountDisplayName(account)} · June could not confirm Linear MCP access.`;
+    }
+    if (account.status === "reconnect_required" || linearNeedsScopeReconnect(policy, account)) {
+      return `${accountDisplayName(account)} · Reconnect to enable workspace-wide Linear MCP access.`;
+    }
+    return `${accountDisplayName(account)} · Workspace-wide Linear MCP access.`;
+  }
   const parts = [accountDisplayName(account)];
   const summary = featureSummary(policy, account);
   if (summary) parts.push(summary);
-  if (account.provider === "linear" && account.selectedTeams.length > 0) {
-    const count = account.selectedTeams.length;
-    parts.push(count === 1 ? "1 team selected" : `${count} teams selected`);
-  }
   return parts.join(" · ");
 }
 
@@ -360,7 +377,7 @@ function connectDescription(
   } else if (provider === "github") {
     contentPhrase = "selected repository and issue content";
   } else {
-    contentPhrase = "selected project and issue content";
+    contentPhrase = "workspace content";
   }
   return `${lead} You approve everything in ${PROVIDER_NAMES[provider]}'s own sign-in, and you can disconnect any time. When a feature uses AI, ${contentPhrase} goes to your chosen model provider. Choose a local model to keep inference on this device.`;
 }
@@ -369,11 +386,10 @@ function connectDescription(
  * The Connectors settings page: a provider directory (one row per provider,
  * always listed) with a feature-bundle picker per provider, reconnect for
  * lapsed grants, and disconnect with optional provider-side revoke. A
- * connected Linear workspace also needs a team selection before June can
- * read or write anything in it. Browser use is a separate capability row
- * because its grant and extension pairing have no account, email, or scopes.
- * Local mode only: tokens live in the Mac's Keychain and provider calls
- * originate on this device.
+ * Linear connects workspace-wide through the provider's official hosted MCP.
+ * Browser use is a separate capability row because its grant and extension
+ * pairing have no account, email, or scopes. Local mode only: tokens live in
+ * the Mac's Keychain and provider calls originate on this device.
  */
 export function ConnectorsSection({
   onOpenModels = () => {},
@@ -438,42 +454,6 @@ export function ConnectorsSection({
   const [notionDialogMode, setNotionDialogMode] = useState<"connect" | "reconnect">("connect");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const notionOperationIdRef = useRef(0);
-  // Linear team-selection dialog: the account id it's open for (null =
-  // closed). Kept separate from the fetched team list/selection so a fetch
-  // failure can be retried without losing the open state.
-  const [teamsAccountId, setTeamsAccountId] = useState<string | null>(null);
-  const [teamsLoading, setTeamsLoading] = useState(false);
-  const [teamsError, setTeamsError] = useState<string | null>(null);
-  const [availableTeams, setAvailableTeams] = useState<LinearTeam[]>([]);
-  const [teamsTruncated, setTeamsTruncated] = useState(false);
-  const [selectedTeamIds, setSelectedTeamIds] = useState<ReadonlySet<string>>(new Set());
-  const [savingTeams, setSavingTeams] = useState(false);
-  // A first team save persists the grant before applying the runtime. Keep
-  // that second step pending by account id until it succeeds: the persistence
-  // event refreshes `accounts`, so selectedTeams alone cannot tell a retry
-  // that registration still needs to be applied.
-  const [runtimeApplyPendingAccountId, setRuntimeApplyPendingAccountId] = useState<string | null>(
-    null,
-  );
-
-  // Previously selected teams the live listing no longer returns (archived,
-  // visibility lost, or beyond the truncation cap). They must stay visible
-  // and count toward the save payload, or an unrelated "Manage teams" save
-  // would silently narrow the stored selection - the selection is June's
-  // authorization boundary once Linear reads land.
-  const teamsAccount = teamsAccountId
-    ? ((accounts ?? []).find((account) => account.accountId === teamsAccountId) ?? null)
-    : null;
-  const missingSelectedTeams = (teamsAccount?.selectedTeams ?? []).filter(
-    (team) => !availableTeams.some((live) => live.id === team.id),
-  );
-  // The exact set a save would persist: checked teams, with metadata from
-  // the live listing when present and from the persisted selection
-  // otherwise. The save button gates on THIS length, not on
-  // selectedTeamIds.size, so the two can never disagree.
-  const teamsPayload = [...availableTeams, ...missingSelectedTeams].filter((team) =>
-    selectedTeamIds.has(team.id),
-  );
   const obsidianMeta = obsidianStatusMeta(obsidian);
 
   const refresh = useCallback(async () => {
@@ -530,25 +510,6 @@ export function ConnectorsSection({
     };
   }, []);
 
-  const loadTeams = useCallback(async (accountId: string) => {
-    setTeamsLoading(true);
-    setTeamsError(null);
-    try {
-      const listing = await connectorsLinearTeams({ accountId });
-      setAvailableTeams(listing.teams);
-      setTeamsTruncated(listing.truncated);
-    } catch (err) {
-      setTeamsError(messageFromError(err));
-    } finally {
-      setTeamsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!teamsAccountId) return;
-    void loadTeams(teamsAccountId);
-  }, [teamsAccountId, loadTeams]);
-
   async function runConnect(input: {
     provider: OAuthConnectorProvider;
     scopes: ConnectorScopeBundle[];
@@ -559,19 +520,31 @@ export function ConnectorsSection({
       scopes: input.scopes,
       loginHint: input.loginHint,
     });
-    // A fresh grant only takes effect once the rendered MCP config picks it
-    // up: registering (or dropping) a server name is a config-render change,
-    // so it needs a runtime apply for both providers. Linear teams saves
-    // follow the same rule, split by whether registration changes (see
-    // saveTeams below): the FIRST save registers june_linear and applies the
-    // runtime; later edits only change what the already-registered server
-    // may read, which Rust enforces per request - no restart. Whether
-    // june_linear actually renders here (it needs at least one selected
-    // team) is the Rust side's call; the frontend applies runtime on every
-    // connect regardless.
-    await connectorsApplyRuntime();
+    // The June-owned runtime derives managed Linear MCP availability from
+    // current connector state for every run. Other providers retain their
+    // existing apply behavior until their migrations are handled separately.
+    if (input.provider !== "linear") await connectorsApplyRuntime();
     await refresh();
     return account;
+  }
+
+  async function connectLinear() {
+    if (connecting) return;
+    setConnectProvider("linear");
+    setNotConfigured(null);
+    setConnecting(true);
+    try {
+      await runConnect({
+        provider: "linear",
+        scopes: ["linear_read", "linear_write"],
+      });
+      toast.success(CONNECT_TOASTS.linear.connect);
+    } catch (err) {
+      if (isConnectorNotConfiguredError(err)) setNotConfigured("linear");
+      else if (errorCode(err) !== "connector_connect_canceled") toast.error(messageFromError(err));
+    } finally {
+      setConnecting(false);
+    }
   }
 
   // Open the connect dialog for a brand-new account of the given provider
@@ -579,6 +552,10 @@ export function ConnectorsSection({
   // existing account.
   function openConnectNew(provider: OAuthConnectorProvider) {
     if (!policy) return;
+    if (provider === "linear") {
+      void connectLinear();
+      return;
+    }
     setConnectProvider(provider);
     setBundles(defaultBundlesForProvider(policy, provider));
     setConnectTarget(null);
@@ -602,7 +579,7 @@ export function ConnectorsSection({
     setGithubDeviceCode(null);
     setConnecting(true);
     try {
-      const account = await runConnect({
+      await runConnect({
         provider: connectProvider,
         scopes: bundles,
         loginHint: connectTarget ? loginHintFor(connectTarget) : undefined,
@@ -614,12 +591,6 @@ export function ConnectorsSection({
       toast.success(
         connectIsReconnect ? toasts.reconnect : connectTarget ? toasts.add : toasts.connect,
       );
-      // A Linear connect that comes back with no teams yet — always true on a
-      // first connect — needs one more step before June can read or write
-      // anything in the workspace, so walk straight into team selection.
-      if (connectProvider === "linear" && account.selectedTeams.length === 0) {
-        openTeamsDialog(account);
-      }
     } catch (err) {
       const code = errorCode(err);
       if (isConnectorNotConfiguredError(err)) {
@@ -777,15 +748,15 @@ export function ConnectorsSection({
 
     setReconnectingId(account.accountId);
     try {
-      const updated = await runConnect({
+      await runConnect({
         provider: account.provider,
-        scopes: bundlesFromScopes(policy, account.scopes, account.provider),
+        scopes:
+          account.provider === "linear"
+            ? ["linear_read", "linear_write"]
+            : bundlesFromScopes(policy, account.scopes, account.provider),
         loginHint: loginHintFor(account),
       });
       toast.success(CONNECT_TOASTS[account.provider].reconnect);
-      if (account.provider === "linear" && updated.selectedTeams.length === 0) {
-        openTeamsDialog(updated);
-      }
     } catch (err) {
       if (isConnectorNotConfiguredError(err)) setNotConfigured(account.provider);
       else toast.error(messageFromError(err));
@@ -800,10 +771,7 @@ export function ConnectorsSection({
     setDisconnecting(true);
     try {
       await connectorsDisconnect({ accountId: account.accountId, revoke });
-      // Same runtime-surface reasoning as runConnect: disconnecting drops the
-      // provider's MCP server registration, so both providers need a runtime
-      // apply here too.
-      await connectorsApplyRuntime();
+      if (account.provider !== "linear") await connectorsApplyRuntime();
       await refresh();
       setDisconnectTarget(null);
       toast.success(`Disconnected ${accountDisplayName(account)}`);
@@ -856,64 +824,6 @@ export function ConnectorsSection({
       else next.delete(bundle);
       return bundlesForProvider(policy, connectProvider).filter((entry) => next.has(entry));
     });
-  }
-
-  function openTeamsDialog(account: ConnectorAccount) {
-    // None preselected on a first connect; a "manage teams" open preselects
-    // what is already saved.
-    setSelectedTeamIds(new Set(account.selectedTeams.map((team) => team.id)));
-    setAvailableTeams([]);
-    setTeamsError(null);
-    setTeamsAccountId(account.accountId);
-  }
-
-  function closeTeamsDialog() {
-    // Cancelling on a first connect is allowed: the row falls back to its
-    // "select teams to finish setup" state until the user opens it again.
-    if (savingTeams) return;
-    setTeamsAccountId(null);
-  }
-
-  function toggleTeam(id: string, checked: boolean) {
-    setSelectedTeamIds((current) => {
-      const next = new Set(current);
-      if (checked) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }
-
-  async function saveTeams() {
-    if (!teamsAccountId || teamsPayload.length === 0 || savingTeams) return;
-    const accountId = teamsAccountId;
-    setSavingTeams(true);
-    try {
-      // The june_linear server only registers once at least one team is
-      // selected, so the FIRST teams save (zero selected before this save)
-      // crosses the registration boundary and must apply the runtime - a
-      // connect-then-select flow would otherwise leave the server
-      // unregistered until an unrelated restart. Later edits never
-      // (de)register the server: the grant is enforced per-request in Rust,
-      // so they skip the restart.
-      const needsRuntimeApply =
-        runtimeApplyPendingAccountId === accountId ||
-        (teamsAccount?.selectedTeams.length ?? 0) === 0;
-      await connectorsSetSelectedTeams({ accountId, teams: teamsPayload });
-      if (needsRuntimeApply) {
-        setRuntimeApplyPendingAccountId(accountId);
-        await connectorsApplyRuntime();
-        setRuntimeApplyPendingAccountId((pendingAccountId) =>
-          pendingAccountId === accountId ? null : pendingAccountId,
-        );
-      }
-      await refresh();
-      setTeamsAccountId(null);
-      toast.success("Linear teams updated");
-    } catch (err) {
-      toast.error(messageFromError(err));
-    } finally {
-      setSavingTeams(false);
-    }
   }
 
   return (
@@ -991,7 +901,13 @@ export function ConnectorsSection({
             ? oauthProviders.map((provider) => {
                 const account = accounts?.find((entry) => entry.provider === provider) ?? null;
                 const name = PROVIDER_NAMES[provider];
-                const status = account ? accountStatusMeta(account.status, provider) : null;
+                const effectiveStatus =
+                  account?.status === "connected" && linearNeedsScopeReconnect(policy, account)
+                    ? "reconnect_required"
+                    : account?.status;
+                const status = effectiveStatus
+                  ? accountStatusMeta(effectiveStatus, provider)
+                  : null;
                 const subtitle = account
                   ? accountSubtitle(policy, account)
                   : PROVIDER_BLURBS[provider];
@@ -999,18 +915,11 @@ export function ConnectorsSection({
                   account !== null &&
                   (reconnectingId === account.accountId ||
                     (provider === "github" && connectIsReconnect && connectOpen));
-                // Linear only: a connected workspace with no teams picked yet
-                // still needs one more step before June can read or write
-                // anything in it.
-                const needsTeams =
-                  account !== null && provider === "linear" && account.selectedTeams.length === 0;
-                const showTeamsHint =
-                  needsTeams && account !== null && account.status === "connected";
-                // Google's "Add access" stays unconditional (preserves existing
-                // Google behavior); Linear hides it once both bundles are
-                // granted, since there is nothing left to add.
+                const connectingThisProvider =
+                  account === null && connecting && connectProvider === provider;
                 const showAddAccess =
                   account !== null &&
+                  provider !== "linear" &&
                   (provider === "google" || !allBundlesGranted(policy, account));
                 return (
                   <li key={provider} className="connector-row">
@@ -1022,11 +931,6 @@ export function ConnectorsSection({
                       <p className="connector-subtitle" title={subtitle}>
                         {subtitle}
                       </p>
-                      {showTeamsHint ? (
-                        <span className="status-pill" data-tone="warning">
-                          Select teams to finish setup
-                        </span>
-                      ) : null}
                     </div>
                     <div className="connector-actions">
                       {account && status ? (
@@ -1043,14 +947,15 @@ export function ConnectorsSection({
                           type="button"
                           className="btn btn-secondary"
                           aria-label={`Connect ${name}`}
-                          disabled={accounts === null}
+                          disabled={accounts === null || connectingThisProvider}
+                          aria-busy={connectingThisProvider || undefined}
                           onClick={() => openConnectNew(provider)}
                         >
-                          Connect
+                          {connectingThisProvider ? "Connecting…" : "Connect"}
                         </button>
                       ) : (
                         <>
-                          {account.status === "reconnect_required" ? (
+                          {effectiveStatus === "reconnect_required" ? (
                             <button
                               type="button"
                               className="btn btn-secondary"
@@ -1061,28 +966,15 @@ export function ConnectorsSection({
                             >
                               {reconnecting ? "Reconnecting…" : "Reconnect"}
                             </button>
-                          ) : (
-                            <>
-                              {provider === "linear" ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  onClick={() => openTeamsDialog(account)}
-                                >
-                                  {needsTeams ? "Select teams" : "Manage teams"}
-                                </button>
-                              ) : null}
-                              {showAddAccess ? (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary"
-                                  onClick={() => openAddAccess(account)}
-                                >
-                                  Add access
-                                </button>
-                              ) : null}
-                            </>
-                          )}
+                          ) : showAddAccess ? (
+                            <button
+                              type="button"
+                              className="btn btn-secondary"
+                              onClick={() => openAddAccess(account)}
+                            >
+                              Add access
+                            </button>
+                          ) : null}
                           <button
                             type="button"
                             className="btn btn-ghost"
@@ -1275,105 +1167,6 @@ export function ConnectorsSection({
         </label>
       </Dialog>
 
-      <Dialog
-        open={teamsAccountId !== null}
-        onClose={closeTeamsDialog}
-        title="Select Linear teams"
-        description="June only reads and changes Linear data in the teams you select. You can change this any time."
-        footer={
-          <>
-            <button
-              type="button"
-              className="primary-action"
-              onClick={closeTeamsDialog}
-              disabled={savingTeams}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="primary-action primary-solid"
-              disabled={
-                teamsPayload.length === 0 || savingTeams || teamsLoading || teamsError !== null
-              }
-              aria-busy={savingTeams || undefined}
-              onClick={() => void saveTeams()}
-            >
-              {savingTeams ? "Saving…" : "Save teams"}
-            </button>
-          </>
-        }
-      >
-        {teamsLoading ? (
-          <p className="routines-tool-summary">Loading teams…</p>
-        ) : teamsError ? (
-          <InlineNotice
-            tone="warning"
-            body={teamsError}
-            actions={
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  if (teamsAccountId) void loadTeams(teamsAccountId);
-                }}
-              >
-                Retry
-              </button>
-            }
-          />
-        ) : (
-          <>
-            {teamsTruncated ? (
-              <InlineNotice
-                tone="info"
-                body="Linear returned only the first 500 teams, so this list is incomplete."
-                aria-label="Team list truncated"
-              />
-            ) : null}
-            <div className="connectors-bundle-list">
-              {availableTeams.map((team) => (
-                <label
-                  key={team.id}
-                  className="connectors-bundle-option"
-                  htmlFor={`connectors-team-${team.id}`}
-                >
-                  <Checkbox
-                    id={`connectors-team-${team.id}`}
-                    checked={selectedTeamIds.has(team.id)}
-                    disabled={savingTeams}
-                    onChange={(event) => toggleTeam(team.id, event.currentTarget.checked)}
-                  />
-                  <span className="connectors-bundle-copy">
-                    <span className="connectors-bundle-label">{team.name}</span>
-                    <span className="connectors-bundle-description">{team.key}</span>
-                  </span>
-                </label>
-              ))}
-              {missingSelectedTeams.map((team) => (
-                <label
-                  key={team.id}
-                  className="connectors-bundle-option"
-                  htmlFor={`connectors-team-${team.id}`}
-                >
-                  <Checkbox
-                    id={`connectors-team-${team.id}`}
-                    checked={selectedTeamIds.has(team.id)}
-                    disabled={savingTeams}
-                    onChange={(event) => toggleTeam(team.id, event.currentTarget.checked)}
-                  />
-                  <span className="connectors-bundle-copy">
-                    <span className="connectors-bundle-label">{team.name}</span>
-                    <span className="connectors-bundle-description">
-                      {team.key} · not visible in Linear right now
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </>
-        )}
-      </Dialog>
       <Dialog
         open={notionConnectOpen}
         onClose={() => {

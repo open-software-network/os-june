@@ -1,6 +1,12 @@
-# Implementation plan: Linear plugin
+# Historical implementation plan: native Linear plugin
 
-> **Stale integration point.** This plan predates the runtime migration:
+> **Superseded agent integration.** The native GraphQL tools and selected-team
+> grant in this plan are superseded by
+> [ADR-0050](../adr/0050-linear-official-hosted-mcp.md) and the
+> [hosted MCP implementation plan](linear-hosted-mcp-implementation-plan.md).
+> The OAuth, Keychain custody, refresh, identity, and disconnect work remains
+> the connection layer for the hosted MCP. This plan also predates the runtime
+> migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
 > Agent-facing MCP registration is now June-owned per
@@ -13,7 +19,8 @@
 
 - **Mode:** CTO
 - **Date:** 2026-07-13
-- **Status:** Proposed; Phase 0 documentation spike complete, see
+- **Status:** Historical; agent-tool design superseded, Phase 0 findings remain
+  relevant, see
   [linear-oauth-spike.md](linear-oauth-spike.md) (live verification pending
   OAuth app registration)
 - **PRD:** [linear-prd.md](linear-prd.md)
