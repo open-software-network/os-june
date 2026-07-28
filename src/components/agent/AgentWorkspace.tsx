@@ -1810,9 +1810,7 @@ export function AgentWorkspace({
                   ...item.interruption,
                   status: "resolved",
                   resolvedAt: new Date().toISOString(),
-                  ...(item.interruption.kind === "approval"
-                    ? { resolution: choice }
-                    : {}),
+                  ...(item.interruption.kind === "approval" ? { resolution: choice } : {}),
                 },
               }
             : item,

@@ -824,7 +824,9 @@ describe("ConnectorsSection — Linear", () => {
 
     await userEvent.click(saveButton);
     await waitFor(() => expect(mocks.connectorsSetSelectedTeams).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Select Linear teams" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Select Linear teams" })).toBeNull(),
+    );
     await screen.findByText(/1 team selected/i);
   });
 
