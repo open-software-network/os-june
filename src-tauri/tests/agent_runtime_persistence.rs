@@ -1,6 +1,6 @@
 use os_june_lib::agent_runtime::{
     import_legacy_agent_state, legacy_import_completed, AgentItemPayload, AgentRepository,
-    LegacyImportOptions, MessagePayload,
+    LegacyImportOptions, MessagePayload, ToolPayload,
 };
 use os_june_lib::db::migrations::run_migrations;
 use sqlx::{query::query, row::Row};
@@ -158,6 +158,117 @@ async fn streamed_assistant_text_survives_mid_run_hydration_without_duplicates()
             if message.content == "What was already said, plus the ending."
     ));
     assert_eq!(repository.get_run(&run.id).await.unwrap().last_sequence, 3);
+}
+
+#[tokio::test]
+async fn completed_assistant_text_moves_behind_the_tools_that_produced_it() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool);
+    let session = repository
+        .create_session(
+            "Tool ordering",
+            "private-auto",
+            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            None,
+        )
+        .await
+        .expect("session");
+    let run = repository
+        .create_run(&session.id, "private-auto", Some("medium"))
+        .await
+        .expect("run");
+    let stream_id = format!("assistant:{}", run.id);
+
+    // Stream the start of the assistant response — this allocates the first
+    // display sequence (0) and a low created_at.
+    repository
+        .append_assistant_message_delta(&session.id, &run.id, 1, "Here is ", &stream_id)
+        .await
+        .expect("streamed delta");
+
+    let streamed = repository
+        .items(&session.id)
+        .await
+        .expect("items after delta");
+    assert_eq!(streamed.len(), 1);
+    let assistant_row_id = streamed[0].id.clone();
+
+    // Simulate back-dating: the delta row was created early, but tool call and
+    // tool result arrive afterward and get higher display sequences.
+    repository
+        .append_item(
+            &session.id,
+            Some(&run.id),
+            2,
+            &AgentItemPayload::ToolCall(ToolPayload {
+                tool_name: Some("read_file".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: Some(serde_json::json!({ "path": "notes.md" })),
+                result: None,
+                status: None,
+            }),
+            None,
+        )
+        .await
+        .expect("tool call item")
+        .expect("tool call inserted");
+
+    repository
+        .append_item(
+            &session.id,
+            Some(&run.id),
+            3,
+            &AgentItemPayload::ToolResult(ToolPayload {
+                tool_name: Some("read_file".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: None,
+                result: Some(serde_json::json!("file contents")),
+                status: Some("ok".into()),
+            }),
+            None,
+        )
+        .await
+        .expect("tool result item")
+        .expect("tool result inserted");
+
+    // Complete the assistant message — the fix moves the coalesced row to the
+    // session-global tail so hydration places it after the tool rows.
+    repository
+        .complete_assistant_message(
+            &session.id,
+            &run.id,
+            4,
+            "Here is the final answer based on the file.",
+            &stream_id,
+        )
+        .await
+        .expect("completed message");
+
+    let hydrated = repository.items(&session.id).await.expect("hydrated items");
+    assert_eq!(
+        hydrated.len(),
+        3,
+        "should have exactly one assistant row (reused) plus two tool rows"
+    );
+
+    // The assistant row must reuse the original id, not create a duplicate.
+    assert_eq!(hydrated[2].id, assistant_row_id);
+
+    // Order must be: tool call, tool result, final assistant response.
+    assert!(matches!(
+        &hydrated[0].payload,
+        AgentItemPayload::ToolCall(tool) if tool.tool_name.as_deref() == Some("read_file")
+    ));
+    assert!(matches!(
+        &hydrated[1].payload,
+        AgentItemPayload::ToolResult(tool) if tool.tool_name.as_deref() == Some("read_file")
+    ));
+    assert!(matches!(
+        &hydrated[2].payload,
+        AgentItemPayload::AssistantMessage(msg)
+            if msg.content == "Here is the final answer based on the file."
+    ));
+    assert_eq!(hydrated[2].external_id, None);
 }
 
 #[tokio::test]
