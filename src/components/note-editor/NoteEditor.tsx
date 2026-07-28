@@ -5,6 +5,8 @@ import { IconMicrophoneOff } from "central-icons/IconMicrophoneOff";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconMicrophone as IconMicrophoneLine } from "central-icons/IconMicrophone";
 import { IconVolumeFull } from "central-icons/IconVolumeFull";
+import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
+import { IconClock } from "central-icons/IconClock";
 import { IconGoogle } from "central-icons/IconGoogle";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconChevronBottom } from "central-icons-filled/IconChevronBottom";
@@ -17,6 +19,7 @@ import { Switch } from "../ui/Switch";
 import type {
   FolderDto,
   LiveTranscriptEventDto,
+  NoteCalendarEventDto,
   NoteDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
@@ -141,16 +144,109 @@ function formatTurnTime(startMs?: number, endMs?: number) {
   return `${format(startMs)}-${format(endMs)}`;
 }
 
-function formatCalendarEventTime(startAt: string, endAt: string) {
+function calendarEventSchedule(startAt: string, endAt: string) {
   const start = new Date(startAt);
   const end = new Date(endAt);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
-  const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(start);
+  const day = new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
   const time = new Intl.DateTimeFormat(undefined, {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `${day}, ${time.format(start)} to ${time.format(end)}`;
+  return {
+    range: `${time.format(start)} to ${time.format(end)}`,
+    // An event that runs past midnight names both days so the range stays honest.
+    date:
+      start.toDateString() === end.toDateString()
+        ? day.format(start)
+        : `${day.format(start)} to ${day.format(end)}`,
+  };
+}
+
+/** The matched event's Google Calendar URL, targeted at the connected account
+ * via authuser. Prefers Google's own persisted htmlLink; events matched before
+ * that field shipped fall back to constructing the link, which is valid
+ * because calendar matching reads each account's primary calendar
+ * (meeting_calendar_context.rs), so the calendar id is the account email and
+ * eid is base64url of "<eventId> <calendarId>". Returns null if the id defeats
+ * base64 (never seen from the Google API) so the card just omits the link. */
+function googleCalendarEventUrl(event: NoteCalendarEventDto): string | null {
+  if (event.htmlLink?.startsWith("https://")) {
+    const separator = event.htmlLink.includes("?") ? "&" : "?";
+    return `${event.htmlLink}${separator}authuser=${encodeURIComponent(event.accountEmail)}`;
+  }
+  try {
+    const eid = btoa(`${event.eventId} ${event.accountEmail}`)
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return `https://calendar.google.com/calendar/event?eid=${eid}&authuser=${encodeURIComponent(
+      event.accountEmail,
+    )}`;
+  } catch {
+    return null;
+  }
+}
+
+/** The overline's matched-event chip: a quiet badge (Google mark + event
+ * title) whose hover card is a small sectioned snapshot of the event — title
+ * with an open-in-Google-Calendar link beside it, then the time range over its
+ * date, then the source account, each row led by a muted icon (the Amie event
+ * card structure, reduced to read-only). The card is an interactive HoverTip
+ * so the pointer can travel into it and reach the link; the link itself is a
+ * plain external anchor, routed through the OS browser by the global
+ * interceptor in lib/external-links.ts. */
+function CalendarEventChip({ event }: { event: NoteCalendarEventDto }) {
+  const schedule = calendarEventSchedule(event.startAt, event.endAt);
+  const url = googleCalendarEventUrl(event);
+
+  return (
+    <HoverTip
+      interactive
+      className="note-calendar-chip"
+      tabIndex={0}
+      aria-label={`Matched to ${event.title} in Google Calendar`}
+      tip={
+        <div className="note-calendar-card">
+          <div className="note-calendar-card-header">
+            <span className="note-calendar-card-title">{event.title}</span>
+            {url ? (
+              <a
+                className="note-calendar-card-open"
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open in Google Calendar"
+                title="Open in Google Calendar"
+              >
+                <IconArrowUpRight size={14} />
+              </a>
+            ) : null}
+          </div>
+          {schedule ? (
+            <div className="note-calendar-card-row note-calendar-card-schedule">
+              <IconClock size={14} aria-hidden />
+              <span className="note-calendar-card-when">
+                <span className="note-calendar-card-range">{schedule.range}</span>
+                <span className="note-calendar-card-date">{schedule.date}</span>
+              </span>
+            </div>
+          ) : null}
+          <div className="note-calendar-card-row">
+            <IconGoogle size={13} aria-hidden />
+            <span className="note-calendar-card-account">{event.accountEmail}</span>
+          </div>
+        </div>
+      }
+    >
+      <IconGoogle size={12} aria-hidden />
+      <span className="note-calendar-chip-label">{event.title}</span>
+    </HoverTip>
+  );
 }
 
 export function NoteEditor({
@@ -381,9 +477,6 @@ export function NoteEditor({
   const queuedRecordings = note.queuedRecordings ?? 0;
   const queuedTooltipId = useId();
   const updatedAtLabel = formatFullDate(note.updatedAt);
-  const calendarEventTime = note.calendarEvent
-    ? formatCalendarEventTime(note.calendarEvent.startAt, note.calendarEvent.endAt)
-    : null;
 
   return (
     <article className="note-editor">
@@ -416,17 +509,7 @@ export function NoteEditor({
             {note.calendarEvent ? (
               <>
                 <span className="note-overline-dot" aria-hidden="true" />
-                <HoverTip
-                  className="note-calendar-chip"
-                  tip={`Matched to "${note.calendarEvent.title}" in Google Calendar (${note.calendarEvent.accountEmail})`}
-                  tabIndex={0}
-                  aria-label={`Matched to ${note.calendarEvent.title} in Google Calendar`}
-                >
-                  <IconGoogle size={12} aria-hidden />
-                  <span className="note-calendar-chip-label">
-                    {calendarEventTime ?? note.calendarEvent.title}
-                  </span>
-                </HoverTip>
+                <CalendarEventChip event={note.calendarEvent} />
               </>
             ) : null}
           </div>

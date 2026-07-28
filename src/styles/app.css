@@ -11123,20 +11123,29 @@ button.agent-user-attachment:hover {
 
 /* Matched Google Calendar event, folded into the overline as a quiet badge on
  * the house recipe (.status-pill's soft muted wash). The Google mark carries
- * the source, the label carries the event time; the account email lives in the
- * hover tip so the row stays one succinct line. */
+ * the source, the label carries the event title; hovering (or focusing)
+ * reveals the interactive event-snapshot card. */
 .note-calendar-chip {
   display: inline-flex;
   align-items: center;
   flex: 0 1 auto;
   gap: var(--sp-2);
+  height: var(--control-xs);
   min-width: 0;
-  padding: 1px var(--sp-2);
+  padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   background: color-mix(in oklch, var(--muted) 60%, transparent);
   color: var(--muted-foreground);
-  font-size: var(--fs-xs);
+  /* The label is the event title inline with the fs-sm date and project chip,
+   * so it matches their size (and the folder trigger's control-xs height)
+   * rather than the fs-xs badge recipe it grew from. */
+  font-size: var(--fs-sm);
   line-height: 1.4;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.note-calendar-chip:hover {
+  background: var(--muted);
 }
 
 .note-calendar-chip > svg {
@@ -11144,6 +11153,93 @@ button.agent-user-attachment:hover {
 }
 
 .note-calendar-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The chip's hover card: a read-only snapshot of the matched event in the
+ * Amie sectioned-card structure — header (title + open-in-Google-Calendar
+ * link), then icon-led rows split by full-bleed hairlines. The negative
+ * margins bleed the section rows to the .hover-tip surface's edges so the
+ * dividers span the card. */
+.note-calendar-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 300px;
+  margin: calc(-1 * var(--sp-3)) calc(-1 * var(--sp-4));
+}
+
+.note-calendar-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+}
+
+.note-calendar-card-title {
+  min-width: 0;
+  font-weight: var(--fw-medium);
+}
+
+/* The external link beside the title: an icon-only affordance that stays
+ * muted until hovered (background change only, per the house hover rule). */
+.note-calendar-card-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin: -2px 0 0 auto;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  color: var(--muted-foreground);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.note-calendar-card-open:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.note-calendar-card-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border-subtle);
+  color: var(--muted-foreground);
+}
+
+.note-calendar-card-row > svg {
+  flex: 0 0 auto;
+}
+
+/* The schedule row stacks the time range over its date; the clock rides the
+ * range line (Amie's alignment), not the row's vertical center. */
+.note-calendar-card-schedule {
+  align-items: flex-start;
+}
+
+.note-calendar-card-schedule > svg {
+  margin-top: 3px;
+}
+
+.note-calendar-card-when {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.note-calendar-card-range {
+  color: var(--foreground);
+}
+
+.note-calendar-card-date {
+  font-size: var(--fs-xs);
+}
+
+.note-calendar-card-account {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
