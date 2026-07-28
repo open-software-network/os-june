@@ -620,7 +620,7 @@ describe("ConnectorsSection", () => {
 
     await userEvent.click(cancel);
     // The backend loopback wait is aborted and the dialog closes.
-    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.queryByRole("dialog", { name: "Connect Google account" })).toBeNull(),
     );
@@ -1020,18 +1020,31 @@ describe("ConnectorsSection — GitHub", () => {
     expect(within(dialog).getByRole("button", { name: "Connect" })).toBeEnabled();
   });
 
-  it("Linear reconnect does NOT open the connect dialog", async () => {
+  it("keeps a cancel surface open while reconnecting Linear", async () => {
     mocks.connectorsList.mockResolvedValue([linearAccount({ status: "reconnect_required" })]);
-    mocks.connectorsConnect.mockResolvedValue(linearAccount());
+    let rejectConnect: (reason: unknown) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectConnect = reject;
+      }),
+    );
     render(<ConnectorsSection />);
     await screen.findByText(/Acme/);
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Linear" }));
 
-    // No connect dialog should open for Linear reconnect.
-    await waitFor(() => expect(mocks.connectorsConnect).toHaveBeenCalled());
-    expect(screen.queryByRole("dialog", { name: /reconnect/i })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: /connect linear/i })).toBeNull();
+    const dialog = await screen.findByRole("dialog", { name: "Reconnect Linear workspace" });
+    expect(within(dialog).queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Reconnect Linear workspace" })).toBeNull(),
+    );
+
+    rejectConnect({ code: "connector_connect_canceled", message: "canceled" });
+    await waitFor(() => expect(mocks.toastError).not.toHaveBeenCalled());
   });
 
   it("shows no team management UI for GitHub", async () => {
@@ -1230,11 +1243,17 @@ describe("ConnectorsSection — GitHub", () => {
     expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
   });
 
-  it("connects Linear directly without rendering a device-code dialog", async () => {
-    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+  it("connects Linear directly with a cancel-only waiting dialog", async () => {
+    let rejectConnect: (reason: unknown) => void = () => {};
+    mocks.connectorsConnect.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectConnect = reject;
+      }),
+    );
     render(<ConnectorsSection />);
 
     await userEvent.click(await findEnabledConnect("Connect Linear"));
+    const dialog = await screen.findByRole("dialog", { name: "Connect Linear workspace" });
 
     act(() => {
       eventHandlers.get("june://connectors-github-device-code")?.({
@@ -1246,11 +1265,17 @@ describe("ConnectorsSection — GitHub", () => {
       });
     });
 
-    expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByText("SHOULD-NOT-SHOW")).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled();
     expect(mocks.connectorsConnect).toHaveBeenCalledWith({
       provider: "linear",
       scopes: ["linear_read", "linear_write"],
+      loginHint: undefined,
     });
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(mocks.connectorsCancelConnect).toHaveBeenCalled());
+    rejectConnect({ code: "connector_connect_canceled", message: "canceled" });
   });
 });

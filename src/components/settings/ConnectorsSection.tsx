@@ -528,18 +528,27 @@ export function ConnectorsSection({
     return account;
   }
 
-  async function connectLinear() {
+  async function connectLinear(target: ConnectorAccount | null = null) {
     if (connecting) return;
     setConnectProvider("linear");
+    setConnectTarget(target);
+    setConnectIsReconnect(target !== null);
+    setConnectError(null);
     setNotConfigured(null);
+    setConnectOpen(true);
     setConnecting(true);
     try {
       await runConnect({
         provider: "linear",
         scopes: ["linear_read", "linear_write"],
+        loginHint: target ? loginHintFor(target) : undefined,
       });
-      toast.success(CONNECT_TOASTS.linear.connect);
+      setConnectOpen(false);
+      setConnectIsReconnect(false);
+      toast.success(target ? CONNECT_TOASTS.linear.reconnect : CONNECT_TOASTS.linear.connect);
     } catch (err) {
+      setConnectOpen(false);
+      setConnectIsReconnect(false);
       if (isConnectorNotConfiguredError(err)) setNotConfigured("linear");
       else if (errorCode(err) !== "connector_connect_canceled") toast.error(messageFromError(err));
     } finally {
@@ -553,7 +562,7 @@ export function ConnectorsSection({
   function openConnectNew(provider: OAuthConnectorProvider) {
     if (!policy) return;
     if (provider === "linear") {
-      void connectLinear();
+      void connectLinear(null);
       return;
     }
     setConnectProvider(provider);
@@ -740,14 +749,16 @@ export function ConnectorsSection({
       return;
     }
 
+    if (account.provider === "linear") {
+      await connectLinear(account);
+      return;
+    }
+
     setReconnectingId(account.accountId);
     try {
       await runConnect({
         provider: account.provider,
-        scopes:
-          account.provider === "linear"
-            ? ["linear_read", "linear_write"]
-            : bundlesFromScopes(policy, account.scopes, account.provider),
+        scopes: bundlesFromScopes(policy, account.scopes, account.provider),
         loginHint: loginHintFor(account),
       });
       toast.success(CONNECT_TOASTS[account.provider].reconnect);
@@ -914,7 +925,7 @@ export function ConnectorsSection({
                 const reconnecting =
                   account !== null &&
                   (reconnectingId === account.accountId ||
-                    (provider === "github" && connectIsReconnect && connectOpen));
+                    (provider === connectProvider && connectIsReconnect && connecting));
                 const connectingThisProvider =
                   account === null && connecting && connectProvider === provider;
                 const showAddAccess =
@@ -1035,19 +1046,26 @@ export function ConnectorsSection({
         open={connectOpen}
         onClose={dismissConnect}
         title={
-          connectIsReconnect && connectProvider === "github" && CONNECT_TITLES.github.reconnect
-            ? CONNECT_TITLES.github.reconnect
-            : connectTarget
-              ? CONNECT_TITLES[connectProvider].add
-              : CONNECT_TITLES[connectProvider].connect
+          connectIsReconnect && connectProvider === "linear"
+            ? "Reconnect Linear workspace"
+            : connectIsReconnect && connectProvider === "github" && CONNECT_TITLES.github.reconnect
+              ? CONNECT_TITLES.github.reconnect
+              : connectTarget
+                ? CONNECT_TITLES[connectProvider].add
+                : CONNECT_TITLES[connectProvider].connect
         }
         description={
-          githubDeviceCode && connectProvider === "github"
-            ? undefined
-            : connectDescription(connectProvider, connectTarget)
+          connecting && connectProvider === "linear"
+            ? connectIsReconnect
+              ? "Finish reconnecting Linear in your browser. You can cancel this request at any time."
+              : "Finish connecting Linear in your browser. You can cancel this request at any time."
+            : githubDeviceCode && connectProvider === "github"
+              ? undefined
+              : connectDescription(connectProvider, connectTarget)
         }
         footer={
-          githubDeviceCode && connectProvider === "github" ? (
+          (connecting && connectProvider === "linear") ||
+          (githubDeviceCode && connectProvider === "github") ? (
             // Device-code waiting state: only a cancel affordance. The connect
             // resolves (or errors) on its own once the user approves on GitHub.
             // Cancel calls connectorsCancelConnect via dismissConnect.
@@ -1072,7 +1090,8 @@ export function ConnectorsSection({
           )
         }
       >
-        {githubDeviceCode && connectProvider === "github" ? (
+        {connecting && connectProvider === "linear" ? null : githubDeviceCode &&
+          connectProvider === "github" ? (
           // GitHub device-authorization flow: show the user code the user must
           // enter at github.com/login/device. The backend has already opened
           // the page; the code display and link are the fallback.
