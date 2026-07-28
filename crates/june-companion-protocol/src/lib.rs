@@ -221,6 +221,7 @@ impl Body {
                 | Self::UploadBegin(_)
                 | Self::UploadChunk(_)
                 | Self::UploadCommit { .. }
+                | Self::BrowseFileStat { .. }
                 | Self::AgentCancel { .. }
                 | Self::SessionModelSet(_)
                 | Self::SettingsEditSafe(_)
@@ -1612,6 +1613,13 @@ mod tests {
         assert!(
             Body::UploadCommit {
                 reservation_id: Uuid::new_v4(),
+            }
+            .is_mutation()
+        );
+        assert!(
+            Body::BrowseFileStat {
+                root_id: Uuid::new_v4(),
+                relative_path: "Project/briefs/jca-8.md".to_string(),
             }
             .is_mutation()
         );

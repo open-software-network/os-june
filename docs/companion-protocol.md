@@ -199,7 +199,7 @@ experiment, authenticated live peer advertising `computerUseApprove`, active
 link, and Rust broker policy all gate it. The authoritative expiry uses a
 monotonic deadline; wall-clock values are display metadata. Auto-deny retries
 bounded transient failures, then retires the remote request and leaves the
-interruption Mac-local if dispatch cannot be completed. See ADR-0052.
+interruption Mac-local if dispatch cannot be completed. See ADR-0053.
 
 There is no variant for arbitrary Tauri or agent-harness calls, recording
 start, note delete, other approvals, unrestricted mode, general filesystem

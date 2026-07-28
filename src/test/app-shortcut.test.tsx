@@ -2137,6 +2137,77 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("button", { name: "Linked devices" })).toBeInTheDocument();
   });
 
+  it("does not publish artifact status from an inactive data partition", async () => {
+    const partitionASession = agentSession("session-partition-a", "Partition A session");
+    const partitionBSession = agentSession("session-partition-b", "Partition B session");
+    mocks.listAgentSessions.mockResolvedValue([partitionASession, partitionBSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: partitionASession.id, profile: "partition-a" },
+      { sessionId: partitionBSession.id, profile: "partition-b" },
+    ]);
+    setCurrentDataPartitionName("partition-b");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
+    mocks.companionPublishAgentEvent.mockClear();
+    mocks.listSessionPartitions.mockClear();
+
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-tool-completed",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 1,
+          method: "tool.completed",
+          data: {
+            itemId: "tool-result-partition-a",
+            callId: "call-partition-a",
+            name: "generate_image",
+            output: [],
+            createdAt: now,
+          },
+        },
+      });
+    });
+
+    await waitFor(() => expect(mocks.listSessionPartitions).toHaveBeenCalled());
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
+
+    setCurrentDataPartitionName("partition-a");
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-active-partition-tool-completed",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 2,
+          method: "tool.completed",
+          data: {
+            itemId: "tool-result-active-partition",
+            callId: "call-active-partition",
+            name: "generate_image",
+            output: [],
+            createdAt: now,
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+        type: "status",
+        data: {
+          storedSessionId: partitionASession.id,
+          status: "running",
+          runId: "run-partition-a",
+        },
+      }),
+    );
+  });
+
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
     const user = userEvent.setup();
     render(<App />);

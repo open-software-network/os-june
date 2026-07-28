@@ -303,6 +303,20 @@ function artifactView(artifact: AgentArtifactDto): AgentArtifact {
   };
 }
 
+async function companionSessionInActivePartition(storedSessionId: string) {
+  const partition = getCurrentDataPartitionName();
+  const [sessions, assignments] = await Promise.all([
+    agentRuntimeBindings.listSessions(),
+    listSessionPartitions(),
+  ]);
+  if (getCurrentDataPartitionName() !== partition) return undefined;
+  return filterAgentSessionsForDataPartition(
+    sessions,
+    sessionPartitionMap(assignments),
+    partition,
+  ).find((session) => session.id === storedSessionId);
+}
+
 export function AgentWorkspace({
   initialSession,
   initialSessionId,
@@ -770,6 +784,21 @@ export function AgentWorkspace({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const publishCompanionStatus = async (
+      storedSessionId: string,
+      status: CompanionAgentStatus,
+      runId?: string,
+    ) => {
+      if (runId && !(await companionSessionInActivePartition(storedSessionId))) return;
+      await companionPublishAgentEvent({
+        type: "status",
+        data: {
+          storedSessionId,
+          status,
+          ...(runId ? { runId } : {}),
+        },
+      });
+    };
     void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
       if (payload.method === "steering.consumed") {
         attemptedQueuedMessageIdsRef.current.delete(payload.data.messageId);
@@ -801,14 +830,9 @@ export function AgentWorkspace({
         }).catch(() => undefined);
       }
       if (companionPairingEnabled && payload.method === "tool.completed") {
-        void companionPublishAgentEvent({
-          type: "status",
-          data: {
-            storedSessionId: payload.sessionId,
-            status: "running",
-            runId: payload.runId,
-          },
-        }).catch(() => undefined);
+        void publishCompanionStatus(payload.sessionId, "running", payload.runId).catch(
+          () => undefined,
+        );
       }
       const companionStatus: CompanionAgentStatus | undefined =
         payload.method === "interruption.requested"
@@ -823,14 +847,11 @@ export function AgentWorkspace({
                   ? "running"
                   : undefined;
       if (companionPairingEnabled && companionStatus) {
-        void companionPublishAgentEvent({
-          type: "status",
-          data: {
-            storedSessionId: payload.sessionId,
-            status: companionStatus,
-            ...(terminal ? { runId: payload.runId } : {}),
-          },
-        }).catch(() => undefined);
+        void publishCompanionStatus(
+          payload.sessionId,
+          companionStatus,
+          terminal ? payload.runId : undefined,
+        ).catch(() => undefined);
       }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
@@ -866,18 +887,6 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!companionPairingEnabled) return;
-    async function companionSessionInActivePartition(storedSessionId: string) {
-      const [sessions, assignments] = await Promise.all([
-        agentRuntimeBindings.listSessions(),
-        listSessionPartitions(),
-      ]);
-      return filterAgentSessionsForDataPartition(
-        sessions,
-        sessionPartitionMap(assignments),
-        getCurrentDataPartitionName(),
-      ).find((session) => session.id === storedSessionId);
-    }
-
     async function rejectUnavailableCompanionSession(operationId: string) {
       await companionCompleteFrontendRequest(operationId, {
         type: "error",
