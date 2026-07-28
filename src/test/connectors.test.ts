@@ -20,6 +20,7 @@ import {
   isCreditableRun,
   missingConnectorPresentationIds,
   providerFromServer,
+  routineAccountRoleDescription,
   routineToolsetsFor,
   routineTrustModeFromToolsets,
   scopesCoverBundles,
@@ -229,6 +230,18 @@ describe("event triggers", () => {
     ).toEqual({ leadMinutes: 30, externalOnly: true });
     const draft = eventTriggerScheduleDraft();
     expect(new Date(draft.schedule).getFullYear()).toBeGreaterThanOrEqual(2099);
+  });
+
+  it("describes the selected account's actual routine role", () => {
+    expect(routineAccountRoleDescription({ source: "email_received" }, "approval")).toBe(
+      "This account receives the trigger.",
+    );
+    expect(routineAccountRoleDescription({ source: "schedule" }, "autonomous")).toBe(
+      "This account performs autonomous actions.",
+    );
+    expect(routineAccountRoleDescription({ source: "email_received" }, "autonomous")).toBe(
+      "This account receives the trigger and performs autonomous actions.",
+    );
   });
 
   it("reads trigger scope requirements from native policy", () => {

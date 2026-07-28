@@ -519,6 +519,20 @@ export type TriggerDraft =
 
 export const DEFAULT_EVENT_LEAD_MINUTES = 30;
 
+/** Explains why a routine persists one Google account choice. */
+export function routineAccountRoleDescription(
+  trigger: TriggerDraft,
+  trustMode: RoutineTrustMode,
+): string {
+  const receivesTrigger = trigger.source !== "schedule";
+  const actsAutonomously = trustMode === "autonomous";
+  if (receivesTrigger && actsAutonomously) {
+    return "This account receives the trigger and performs autonomous actions.";
+  }
+  if (receivesTrigger) return "This account receives the trigger.";
+  return "This account performs autonomous actions.";
+}
+
 /**
  * The connector scope bundle a connector event trigger's daemon must be able to
  * call on the account it subscribes on: a Gmail read to poll for new mail, a

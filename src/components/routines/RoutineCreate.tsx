@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import {
   TRUST_MODE_META,
   isConnectorNotConfiguredError,
+  routineAccountRoleDescription,
   scopesCoverBundles,
   triggerRequiredBundles,
   triggerScopeWarning,
@@ -272,7 +273,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
                   <div className="settings-row-info">
                     <div className="settings-row-title">Google account</div>
                     <div className="settings-row-description">
-                      This account receives the trigger and performs autonomous actions.
+                      {routineAccountRoleDescription(trigger, trustMode)}
                     </div>
                   </div>
                   <div className="settings-row-control">

@@ -182,6 +182,13 @@ fn emit_authorization_url(app: &tauri::AppHandle, auth_url: &str) {
     let _ = emit_authorization_url_with(auth_url, |event, payload| app.emit(event, payload));
 }
 
+fn authorization_browser_launch_error<E>(
+    auth_url: &str,
+    open: impl FnOnce(&str) -> Result<(), E>,
+) -> Option<E> {
+    open(auth_url).err()
+}
+
 /// Bind the loopback listener per the port strategy. For candidates, the
 /// first free port wins; every candidate being taken is reported with the
 /// full list so the user can see which local ports the connect needs.
@@ -241,7 +248,18 @@ pub(crate) async fn loopback_authorize(
     let auth_url = build_auth_url(&redirect_uri, &challenge, &csrf);
 
     emit_authorization_url(app, &auth_url);
-    crate::os_accounts::open_in_browser(&auth_url)?;
+    // The waiting dialog exposes the same URL as a manual fallback. A failed
+    // OS launcher must not tear down the loopback listener before the user can
+    // copy or open that link themselves.
+    if let Some(error) =
+        authorization_browser_launch_error(&auth_url, crate::os_accounts::open_in_browser)
+    {
+        tracing::warn!(
+            error_code = %error.code,
+            provider = provider_label,
+            "connector authorization browser launch failed"
+        );
+    }
 
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
     if let Ok(mut slot) = flow.cancel.lock() {
@@ -758,6 +776,24 @@ mod tests {
                 },
             ))
         );
+    }
+
+    #[test]
+    fn browser_launch_failure_is_nonfatal_for_the_manual_fallback() {
+        let attempted = RefCell::new(None);
+        let error = authorization_browser_launch_error(
+            "https://accounts.google.com/o/oauth2/v2/auth?state=test",
+            |url| {
+                attempted.replace(Some(url.to_string()));
+                Err("launcher unavailable")
+            },
+        );
+
+        assert_eq!(
+            attempted.into_inner().as_deref(),
+            Some("https://accounts.google.com/o/oauth2/v2/auth?state=test")
+        );
+        assert_eq!(error, Some("launcher unavailable"));
     }
 
     #[test]

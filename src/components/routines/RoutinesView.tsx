@@ -454,12 +454,15 @@ export function RoutinesView({
     void loadRoutines();
   }
 
+  async function reloadDetail() {
+    const reloadError = await loadRoutines();
+    setDetailError(reloadError);
+    setDetailErrorRetryable(reloadError !== null);
+  }
+
   function retryDetailLoad() {
     setRefreshSpins((spins) => spins + 1);
-    void loadRoutines().then((reloadError) => {
-      setDetailError(reloadError);
-      setDetailErrorRetryable(reloadError !== null);
-    });
+    void reloadDetail();
   }
 
   const detailRoutine = page.kind === "detail" ? (routinesById.get(page.jobId) ?? null) : null;
@@ -529,6 +532,7 @@ export function RoutinesView({
           error={detailError}
           onBack={() => setPage({ kind: "list" })}
           onSave={(updates) => saveRoutine(detailRoutine.job_id, updates)}
+          onReload={reloadDetail}
           onToggleActive={() => void toggleActive(detailRoutine)}
           onRunNow={() => runNow(detailRoutine)}
           runNowDisabledReason={creditActionsDisabledReason}

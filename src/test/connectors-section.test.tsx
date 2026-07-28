@@ -735,6 +735,26 @@ describe("ConnectorsSection", () => {
     await waitFor(() => expect(mocks.connectorsApplyRuntime).toHaveBeenCalled());
   });
 
+  it("shows the manual authorization link while reconnecting one Google account", async () => {
+    mocks.connectorsList.mockResolvedValue([account({ status: "reconnect_required" })]);
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
+    render(<ConnectorsSection />);
+    await screen.findByText(/alex@example\.com/);
+
+    await userEvent.click(screen.getByRole("button", { name: "Reconnect alex@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reconnect Google account" });
+    act(() => {
+      eventHandlers.get("june://connector-authorization-url")?.({
+        payload: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=reconnect" },
+      });
+    });
+
+    expect(await within(dialog).findByText("Trouble opening your browser?")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/Reconnect alex@example\.com to restore June's access\./),
+    ).toBeVisible();
+  });
+
   it("revokes by default so a disconnect cannot orphan the grant", async () => {
     mocks.connectorsList.mockResolvedValue([account()]);
     render(<ConnectorsSection />);
@@ -1189,20 +1209,30 @@ describe("ConnectorsSection — GitHub", () => {
     expect(within(dialog).getByRole("button", { name: "Connect" })).toBeEnabled();
   });
 
-  it("Linear reconnect does NOT open the connect dialog", async () => {
+  it("Linear reconnect opens the waiting dialog with the manual authorization link", async () => {
     mocks.connectorsList.mockResolvedValue([
       linearAccount({ status: "reconnect_required", selectedTeams: [TEAM_ENG] }),
     ]);
-    mocks.connectorsConnect.mockResolvedValue(linearAccount({ selectedTeams: [TEAM_ENG] }));
+    mocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
     render(<ConnectorsSection />);
     await screen.findByText(/Acme/);
 
     await userEvent.click(screen.getByRole("button", { name: "Reconnect Linear" }));
 
-    // No connect dialog should open for Linear reconnect.
-    await waitFor(() => expect(mocks.connectorsConnect).toHaveBeenCalled());
-    expect(screen.queryByRole("dialog", { name: /reconnect/i })).toBeNull();
-    expect(screen.queryByRole("dialog", { name: /connect linear/i })).toBeNull();
+    const dialog = await screen.findByRole("dialog", { name: "Reconnect Linear workspace" });
+    await waitFor(() =>
+      expect(mocks.connectorsConnect).toHaveBeenCalledWith({
+        scopes: ["linear_read"],
+        loginHint: "linear-acc-1",
+        provider: "linear",
+      }),
+    );
+    act(() => {
+      eventHandlers.get("june://connector-authorization-url")?.({
+        payload: { url: "https://linear.app/oauth/authorize?state=reconnect" },
+      });
+    });
+    expect(await within(dialog).findByText("Trouble opening your browser?")).toBeInTheDocument();
   });
 
   it("shows no team management UI for GitHub", async () => {

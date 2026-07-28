@@ -224,6 +224,39 @@ function googleAccount(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function mockAutonomousEventRoutineWithTwoAccounts() {
+  tauriMocks.routineTrustGet.mockResolvedValue({
+    trustMode: "autonomous",
+    approvalRunCount: 3,
+    autonomousTools: ["create_draft"],
+    autonomousServers: ["june_gmail_auto_abc123"],
+    accountId: "acc-1",
+  });
+  tauriMocks.connectorTriggersList.mockResolvedValue([
+    {
+      id: "trig-1",
+      jobId: "abc123",
+      kind: "email_received",
+      accountId: "acc-1",
+      config: {},
+    },
+  ]);
+  tauriMocks.connectorsList.mockResolvedValue([
+    googleAccount(),
+    googleAccount({ accountId: "acc-2", email: "personal@example.com" }),
+  ]);
+  tauriMocks.routineTrustSet.mockImplementation(
+    async (input: { trustMode: string; autonomousTools?: string[]; accountId?: string }) => ({
+      trustMode: input.trustMode,
+      approvalRunCount: 3,
+      autonomousTools: input.autonomousTools ?? [],
+      autonomousServers: ["june_gmail_auto_abc123"],
+      accountId: input.accountId,
+    }),
+  );
+  mocks.listRoutines.mockResolvedValue([job({ schedule: "2099-01-01T09:00:00Z" })]);
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -970,6 +1003,140 @@ describe("RoutinesView detail", () => {
         config: {},
       }),
     );
+  });
+
+  it("rebinds an autonomous event routine's trigger and grant to the chosen account", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    renderView();
+    await openDetail("Morning summary");
+
+    const accountPicker = await screen.findByRole("button", { name: "Google account" });
+    await userEvent.click(accountPicker);
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        trustMode: "autonomous",
+        autonomousTools: ["create_draft"],
+        accountId: "acc-2",
+      }),
+    );
+    expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
+      jobId: "abc123",
+      kind: "email_received",
+      accountId: "acc-2",
+      config: {},
+    });
+    expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
+    await waitFor(() => expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123"));
+    await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
+    expect(tauriMocks.connectorsApplyRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resumeRoutine.mock.invocationCallOrder[0],
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+  });
+
+  it("restores an autonomous event routine's grant when its account trigger update fails", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    tauriMocks.connectorTriggerSet.mockRejectedValueOnce(new Error("trigger store unavailable"));
+    renderView();
+    await openDetail("Morning summary");
+
+    const accountPicker = await screen.findByRole("button", { name: "Google account" });
+    await userEvent.click(accountPicker);
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("trigger store unavailable")).toBeInTheDocument();
+    expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.routineTrustSet).toHaveBeenNthCalledWith(1, {
+      jobId: "abc123",
+      trustMode: "autonomous",
+      autonomousTools: ["create_draft"],
+      accountId: "acc-2",
+    });
+    expect(tauriMocks.routineTrustSet).toHaveBeenNthCalledWith(2, {
+      jobId: "abc123",
+      trustMode: "autonomous",
+      autonomousTools: ["create_draft"],
+      accountId: "acc-1",
+    });
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
+    expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123");
+    expect(mocks.pauseRoutine.mock.invocationCallOrder[0]).toBeLessThan(
+      tauriMocks.routineTrustSet.mock.invocationCallOrder[0],
+    );
+    expect(tauriMocks.routineTrustSet.mock.invocationCallOrder[0]).toBeLessThan(
+      tauriMocks.connectorTriggerSet.mock.invocationCallOrder[0],
+    );
+    expect(tauriMocks.connectorTriggerSet.mock.invocationCallOrder[0]).toBeLessThan(
+      tauriMocks.routineTrustSet.mock.invocationCallOrder[1],
+    );
+    expect(tauriMocks.connectorsApplyRuntime.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.resumeRoutine.mock.invocationCallOrder[0],
+    );
+    expect(accountPicker).toHaveTextContent("personal@example.com");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("keeps an account-rebound routine paused until its refreshed grant reaches the runtime", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    tauriMocks.connectorsApplyRuntime.mockRejectedValueOnce(new Error("runtime apply failed"));
+    renderView();
+    await openDetail("Morning summary");
+
+    const accountPicker = await screen.findByRole("button", { name: "Google account" });
+    await userEvent.click(accountPicker);
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("runtime apply failed")).toBeInTheDocument();
+    expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.connectorTriggerSet).toHaveBeenCalledWith({
+      jobId: "abc123",
+      kind: "email_received",
+      accountId: "acc-2",
+      config: {},
+    });
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
+    expect(mocks.resumeRoutine).not.toHaveBeenCalled();
+    expect(accountPicker).toHaveTextContent("personal@example.com");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("stays paused when an account rebind cannot remove the old event trigger", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    tauriMocks.connectorTriggerDelete.mockRejectedValueOnce(new Error("trigger delete failed"));
+    renderView();
+    await openDetail("Morning summary");
+
+    const accountPicker = await screen.findByRole("button", { name: "Google account" });
+    await userEvent.click(accountPicker);
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Trigger type" }));
+    await userEvent.click(screen.getByRole("option", { name: "On a schedule" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("trigger delete failed")).toBeInTheDocument();
+    expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.connectorTriggerDelete).toHaveBeenCalledWith("trig-1");
+    expect(tauriMocks.routineTrustSet).toHaveBeenNthCalledWith(1, {
+      jobId: "abc123",
+      trustMode: "autonomous",
+      autonomousTools: ["create_draft"],
+      accountId: "acc-2",
+    });
+    expect(tauriMocks.routineTrustSet).toHaveBeenNthCalledWith(2, {
+      jobId: "abc123",
+      trustMode: "autonomous",
+      autonomousTools: ["create_draft"],
+      accountId: "acc-1",
+    });
+    expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
+    expect(mocks.resumeRoutine).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
   });
 
   it("does not mint trust when an event trigger fails validation", async () => {

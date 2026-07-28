@@ -247,14 +247,22 @@ function NotionConnectorRow({
 }
 
 const CONNECT_TITLES = {
-  google: { connect: "Connect Google account", add: "Add Google access" },
-  linear: { connect: "Connect Linear workspace", add: "Add Linear access" },
+  google: {
+    connect: "Connect Google account",
+    add: "Add Google access",
+    reconnect: "Reconnect Google account",
+  },
+  linear: {
+    connect: "Connect Linear workspace",
+    add: "Add Linear access",
+    reconnect: "Reconnect Linear workspace",
+  },
   github: {
     connect: "Connect GitHub account",
     add: "Add GitHub access",
     reconnect: "Reconnect GitHub account",
   },
-} satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect?: string }>;
+} satisfies Record<OAuthConnectorProvider, { connect: string; add: string; reconnect: string }>;
 
 const CONNECT_TOASTS = {
   google: {
@@ -351,12 +359,16 @@ function accountSubtitle(
 function connectDescription(
   provider: OAuthConnectorProvider,
   target: ConnectorAccount | null,
+  reconnect = false,
 ): string {
   const isLinear = provider === "linear";
   const noun = isLinear ? "workspace" : "account";
-  const lead = target
-    ? `Add to what June may do with ${accountDisplayName(target)}.`
-    : `Pick what June may do with this ${noun}.`;
+  const lead =
+    reconnect && target
+      ? `Reconnect ${accountDisplayName(target)} to restore June's access.`
+      : target
+        ? `Add to what June may do with ${accountDisplayName(target)}.`
+        : `Pick what June may do with this ${noun}.`;
   let contentPhrase: string;
   if (provider === "google") {
     contentPhrase = "selected mail or calendar content";
@@ -408,9 +420,9 @@ export function ConnectorsSection({
   // Its login hint preselects that account/workspace so incremental auth
   // cannot silently land on a different identity.
   const [connectTarget, setConnectTarget] = useState<ConnectorAccount | null>(null);
-  // When true, the connect dialog was opened by a GitHub reconnect click. This
-  // changes the dialog title and suppresses the bundle picker (the user already
-  // chose bundles when they first connected; we reuse them as-is).
+  // Whether the dialog is restoring its target rather than adding access. A
+  // reconnect starts immediately with the account's stored bundles and keeps
+  // the dialog available for provider-specific browser fallbacks.
   const [connectIsReconnect, setConnectIsReconnect] = useState(false);
   const [connecting, setConnecting] = useState(false);
   // Device-code payload for an in-flight GitHub connect (null = not in device
@@ -424,6 +436,14 @@ export function ConnectorsSection({
   // An inline error inside the connect dialog (device-flow specific errors
   // that keep the dialog open so the user can retry).
   const [connectError, setConnectError] = useState<string | null>(null);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(codeCopiedTimerRef.current);
+      window.clearTimeout(authorizationUrlCopiedTimerRef.current);
+    },
+    [],
+  );
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
   // Revoke defaults ON: disconnecting without it leaves the grant alive at
@@ -597,9 +617,8 @@ export function ConnectorsSection({
     return account;
   }
 
-  // Open the connect dialog for a brand-new account of the given provider
-  // (only offered when none is connected), or to add scope to the one
-  // existing account.
+  // Open the connect dialog for a brand-new account. Google offers this beside
+  // existing accounts; the single-account providers offer it only while empty.
   function openConnectNew(provider: OAuthConnectorProvider) {
     if (!policy) return;
     setConnectProvider(provider);
@@ -692,16 +711,19 @@ export function ConnectorsSection({
 
   function copyAuthorizationUrl() {
     if (!authorizationUrl) return;
-    void navigator.clipboard.writeText(authorizationUrl).then(() => {
-      setAuthorizationUrlCopied(true);
-      if (authorizationUrlCopiedTimerRef.current !== undefined) {
-        window.clearTimeout(authorizationUrlCopiedTimerRef.current);
-      }
-      authorizationUrlCopiedTimerRef.current = window.setTimeout(() => {
-        setAuthorizationUrlCopied(false);
-        authorizationUrlCopiedTimerRef.current = undefined;
-      }, 2000);
-    });
+    void navigator.clipboard
+      .writeText(authorizationUrl)
+      .then(() => {
+        setAuthorizationUrlCopied(true);
+        if (authorizationUrlCopiedTimerRef.current !== undefined) {
+          window.clearTimeout(authorizationUrlCopiedTimerRef.current);
+        }
+        authorizationUrlCopiedTimerRef.current = window.setTimeout(() => {
+          setAuthorizationUrlCopied(false);
+          authorizationUrlCopiedTimerRef.current = undefined;
+        }, 2000);
+      })
+      .catch((err) => toast.error(messageFromError(err)));
   }
 
   async function connectNotion() {
@@ -769,73 +791,54 @@ export function ConnectorsSection({
   async function reconnect(account: ConnectorAccount) {
     if (account.provider === "notion" || !policy) return;
     setNotConfigured(null);
-
-    // GitHub uses the device-authorization flow: the device-code panel only
-    // renders inside the connect dialog. Route GitHub reconnects through the
-    // same dialog surface so the user sees the code. The dialog starts the
-    // connect immediately (no extra click needed) using the account's existing
-    // bundles and login hint — the reconnect flag suppresses the bundle picker
-    // and adjusts the title and toast.
-    if (account.provider === "github") {
-      const accountBundles = bundlesFromScopes(policy, account.scopes, account.provider);
-      setConnectProvider("github");
-      setConnectTarget(account);
-      setBundles(accountBundles);
-      setConnectIsReconnect(true);
-      setConnectError(null);
-      setGithubDeviceCode(null);
-      setConnectOpen(true);
-      // Start the connect immediately — the user already clicked Reconnect.
-      setConnecting(true);
-      try {
-        await runConnect({
-          provider: "github",
-          scopes: accountBundles,
-          loginHint: loginHintFor(account),
-        });
-        setConnectOpen(false);
-        setConnectIsReconnect(false);
-        setGithubDeviceCode(null);
-        toast.success(CONNECT_TOASTS.github.reconnect);
-      } catch (err) {
-        const code = errorCode(err);
-        if (isConnectorNotConfiguredError(err)) {
-          setNotConfigured("github");
-          setConnectOpen(false);
-          setConnectIsReconnect(false);
-        } else if (code === "connector_connect_canceled") {
-          setGithubDeviceCode(null);
-        } else if (code === "connector_github_device_expired") {
-          setGithubDeviceCode(null);
-          setConnectError("The code expired before it was approved. Try again.");
-        } else if (code === "connector_github_device_declined") {
-          setGithubDeviceCode(null);
-          setConnectError("GitHub reported the request was declined.");
-        } else {
-          setGithubDeviceCode(null);
-          toast.error(messageFromError(err));
-        }
-      } finally {
-        setConnecting(false);
-      }
-      return;
-    }
-
+    const accountBundles = bundlesFromScopes(policy, account.scopes, account.provider);
+    setConnectProvider(account.provider);
+    setConnectTarget(account);
+    setBundles(accountBundles);
+    setConnectIsReconnect(true);
+    setConnectError(null);
+    setGithubDeviceCode(null);
+    setAuthorizationUrl(null);
+    setAuthorizationUrlCopied(false);
+    // Every reconnect opens its waiting surface before starting. GitHub needs
+    // the device code there; Google and Linear need the manual loopback link.
+    setConnectOpen(true);
     setReconnectingId(account.accountId);
+    setConnecting(true);
     try {
       const updated = await runConnect({
         provider: account.provider,
-        scopes: bundlesFromScopes(policy, account.scopes, account.provider),
+        scopes: accountBundles,
         loginHint: loginHintFor(account),
       });
+      setConnectOpen(false);
+      setConnectIsReconnect(false);
+      setGithubDeviceCode(null);
+      setAuthorizationUrl(null);
       toast.success(CONNECT_TOASTS[account.provider].reconnect);
       if (account.provider === "linear" && updated.selectedTeams.length === 0) {
         openTeamsDialog(updated);
       }
     } catch (err) {
-      if (isConnectorNotConfiguredError(err)) setNotConfigured(account.provider);
-      else toast.error(messageFromError(err));
+      const code = errorCode(err);
+      if (isConnectorNotConfiguredError(err)) {
+        setNotConfigured(account.provider);
+        setConnectOpen(false);
+        setConnectIsReconnect(false);
+      } else if (code === "connector_connect_canceled") {
+        setGithubDeviceCode(null);
+      } else if (code === "connector_github_device_expired") {
+        setGithubDeviceCode(null);
+        setConnectError("The code expired before it was approved. Try again.");
+      } else if (code === "connector_github_device_declined") {
+        setGithubDeviceCode(null);
+        setConnectError("GitHub reported the request was declined.");
+      } else {
+        setGithubDeviceCode(null);
+        toast.error(messageFromError(err));
+      }
     } finally {
+      setConnecting(false);
       setReconnectingId(null);
     }
   }
@@ -1289,8 +1292,8 @@ export function ConnectorsSection({
         open={connectOpen}
         onClose={dismissConnect}
         title={
-          connectIsReconnect && connectProvider === "github" && CONNECT_TITLES.github.reconnect
-            ? CONNECT_TITLES.github.reconnect
+          connectIsReconnect
+            ? CONNECT_TITLES[connectProvider].reconnect
             : connectTarget
               ? CONNECT_TITLES[connectProvider].add
               : CONNECT_TITLES[connectProvider].connect
@@ -1298,7 +1301,7 @@ export function ConnectorsSection({
         description={
           githubDeviceCode && connectProvider === "github"
             ? undefined
-            : connectDescription(connectProvider, connectTarget)
+            : connectDescription(connectProvider, connectTarget, connectIsReconnect)
         }
         footer={
           githubDeviceCode && connectProvider === "github" ? (

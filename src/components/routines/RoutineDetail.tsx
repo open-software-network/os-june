@@ -10,6 +10,7 @@ import {
   TRIGGER_META,
   autonomyRuntimeNeedsRestart,
   eventTriggerScheduleDraft,
+  routineAccountRoleDescription,
   routineToolsetsFor,
   triggerConfigFromDraft,
   triggerScopeWarning,
@@ -83,6 +84,7 @@ type RoutineDetailProps = {
   error: string | null;
   onBack: () => void;
   onSave: (updates: RoutineUpdates) => Promise<void>;
+  onReload: () => Promise<void>;
   onToggleActive: () => void;
   onRunNow: () => Promise<void>;
   runNowDisabledReason?: string;
@@ -105,6 +107,7 @@ export function RoutineDetail({
   error,
   onBack,
   onSave,
+  onReload,
   onToggleActive,
   onRunNow,
   runNowDisabledReason,
@@ -140,6 +143,7 @@ export function RoutineDetail({
   const [menuOpen, setMenuOpen] = useState(false);
   const [tabIndicator, setTabIndicator] = useState({ x: 0, width: 0 });
   const queueTimer = useRef<number>();
+  const accountRebindPausedRef = useRef(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
   const detailsTabRef = useRef<HTMLButtonElement>(null);
   const historyTabRef = useRef<HTMLButtonElement>(null);
@@ -321,6 +325,39 @@ export function RoutineDetail({
     // the trust/grant change back and keep the two in sync.
     const previousTrust = storedTrust;
     const previousBrowserAccess = storedBrowserAccess;
+    const trustAccountChanged = accountChanged && trustMode === "autonomous";
+
+    // An autonomous event routine has two account-bearing records: its trigger
+    // and its grant. Keep it ineligible while those records move so an event
+    // cannot arrive between the two writes and run against the wrong account.
+    let pausedForAccountRebind = accountRebindPausedRef.current;
+    let savedWhilePausedForAccountRebind = false;
+    async function restoreAccountRebindActivity() {
+      if (!pausedForAccountRebind) return true;
+      try {
+        await resumeRoutine(routine.job_id);
+        pausedForAccountRebind = false;
+        accountRebindPausedRef.current = false;
+        if (savedWhilePausedForAccountRebind) {
+          await onReload();
+          savedWhilePausedForAccountRebind = false;
+        }
+        return true;
+      } catch (err) {
+        toast.error(`June could not resume this routine: ${messageFromError(err)}`);
+        return false;
+      }
+    }
+    if (trustAccountChanged && storedTrigger && !paused && !completed) {
+      try {
+        await pauseRoutine(routine.job_id);
+        pausedForAccountRebind = true;
+        accountRebindPausedRef.current = true;
+      } catch (err) {
+        toast.error(messageFromError(err));
+        return;
+      }
+    }
 
     // Whether this save added or removed a per-job autonomy server, which only
     // enters the rendered config when the runtime restarts.
@@ -336,13 +373,13 @@ export function RoutineDetail({
         setStoredBrowserAccess(nextBrowserAccess);
       } catch (err) {
         toast.error(messageFromError(err));
+        await restoreAccountRebindActivity();
         return;
       }
     }
 
     // Trust first: an autonomous grant mints per-job auto server names that
     // the toolset override must reference.
-    const trustAccountChanged = accountChanged && trustMode === "autonomous";
     if (trustChanged || trustAccountChanged) {
       if (!policy) return;
       try {
@@ -381,6 +418,7 @@ export function RoutineDetail({
           }
         }
         toast.error(messageFromError(err));
+        await restoreAccountRebindActivity();
         return;
       }
     } else if (modeChanged || browserAccessChanged) {
@@ -422,6 +460,7 @@ export function RoutineDetail({
 
     try {
       await onSave(updates);
+      savedWhilePausedForAccountRebind = pausedForAccountRebind;
     } catch {
       // The cron job update failed (onSave rejects and has already surfaced the
       // error) after trust was persisted and grants minted or deleted, so the
@@ -431,6 +470,7 @@ export function RoutineDetail({
       // and gate_action parks (not denies) an orphaned grant, so an approval
       // could still let that run act on Google. No trigger row was written yet,
       // so there is nothing else to unwind.
+      let trustRestored = true;
       if (trustChanged || trustAccountChanged) {
         try {
           const restored = await routineTrustSet({
@@ -447,6 +487,7 @@ export function RoutineDetail({
           // a successful autonomous change below.
           if (autoServersChanged) await connectorsApplyRuntime();
         } catch (err) {
+          trustRestored = false;
           toast.error(messageFromError(err));
         }
       }
@@ -462,6 +503,7 @@ export function RoutineDetail({
           toast.error(messageFromError(err));
         }
       }
+      if (trustRestored) await restoreAccountRebindActivity();
       return;
     }
 
@@ -474,10 +516,11 @@ export function RoutineDetail({
     if (triggerChanged || (accountChanged && trigger.source !== "schedule")) {
       try {
         if (trigger.source === "schedule") {
-          // Ensure the routine is active first so a runtime failure leaves the existing event
-          // trigger untouched. Only remove that fallback after the scheduled
-          // job is live again.
-          await resumeRoutine(routine.job_id);
+          // Ordinarily the scheduled job is activated before its event
+          // fallback is removed. An account rebind is already paused, though:
+          // delete the old account's trigger first so it cannot fire against
+          // the new grant in the gap before deletion.
+          if (!pausedForAccountRebind) await resumeRoutine(routine.job_id);
           try {
             if (storedTrigger) {
               await connectorTriggerDelete(storedTrigger.id);
@@ -485,12 +528,14 @@ export function RoutineDetail({
           } catch (deleteError) {
             // The trigger still exists. Restore the previous inactive state so
             // schedule and event sources cannot both fire this routine.
-            try {
-              await pauseRoutine(routine.job_id);
-            } catch (restoreError) {
-              toast.error(
-                `June could not restore the previous inactive state: ${messageFromError(restoreError)}`,
-              );
+            if (!pausedForAccountRebind) {
+              try {
+                await pauseRoutine(routine.job_id);
+              } catch (restoreError) {
+                toast.error(
+                  `June could not restore the previous inactive state: ${messageFromError(restoreError)}`,
+                );
+              }
             }
             throw deleteError;
           }
@@ -506,18 +551,53 @@ export function RoutineDetail({
         }
       } catch (err) {
         toast.error(messageFromError(err));
+        let accountBindingRestored = true;
+        if (trustAccountChanged && storedAccountId) {
+          try {
+            const restored = await routineTrustSet({
+              jobId: routine.job_id,
+              trustMode,
+              autonomousTools,
+              accountId: storedAccountId,
+            });
+            setStoredTrust(restored);
+            // Moving back to the original account rotates the grant token
+            // again. Refresh the runtime before the old trigger can fire.
+            await connectorsApplyRuntime();
+          } catch (restoreError) {
+            accountBindingRestored = false;
+            toast.error(
+              `June could not restore the previous Google account: ${messageFromError(restoreError)}`,
+            );
+          }
+        }
+        // A failed switch to a schedule still has its old event trigger.
+        // Leave the routine paused so schedule and event sources cannot both
+        // dispatch it; retrying Save completes the deletion and resumes it.
+        if (accountBindingRestored && trigger.source !== "schedule") {
+          await restoreAccountRebindActivity();
+        }
         return;
       }
     }
 
-    if (accountChanged) setStoredAccountId(selectedAccountId);
-
     // A new or removed per-job autonomy server only takes effect once the
-    // runtime re-renders its config. Best-effort: it also registers on the
-    // next runtime start.
+    // runtime re-renders its config. An account rebind must finish that refresh
+    // before the routine resumes because the old runtime still holds the
+    // previous account's grant token.
     if (autoServersChanged || browserAccessChanged) {
-      await connectorsApplyRuntime().catch(() => {});
+      try {
+        await connectorsApplyRuntime();
+      } catch (err) {
+        if (pausedForAccountRebind) {
+          toast.error(messageFromError(err));
+          return;
+        }
+      }
     }
+
+    if (accountChanged) setStoredAccountId(selectedAccountId);
+    if (!(await restoreAccountRebindActivity())) return;
   }
 
   async function runNow() {
@@ -745,7 +825,7 @@ export function RoutineDetail({
                     <div className="settings-row-info">
                       <div className="settings-row-title">Google account</div>
                       <div className="settings-row-description">
-                        This account receives the trigger and performs autonomous actions.
+                        {routineAccountRoleDescription(trigger, trustMode)}
                       </div>
                     </div>
                     <div className="settings-row-control">
