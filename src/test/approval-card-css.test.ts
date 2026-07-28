@@ -223,7 +223,7 @@ describe("pending action card styles", () => {
   });
 });
 
-describe("credits notice centering", () => {
+describe("inline notice centering", () => {
   it("centers the tier-card credits notice via an override that outranks the base rule", () => {
     // The base rule aligns notice copy with action-label baselines while
     // wrapped copy grows downward from the first line.
@@ -239,6 +239,14 @@ describe("credits notice centering", () => {
     // Guard the diagnosis: the base really is later in the file, so equal
     // specificity would lose — the compound override is what makes it hold.
     expect(baseIndex).toBeGreaterThan(overrideIndex);
+  });
+
+  it("centers the meeting-note recovery row without changing the shared notice default", () => {
+    expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
+    expect(cssRuleFor(".inline-notice.note-recovery-prompt")).toContain("align-items: center;");
+    expect(cssRuleFor(".note-recovery-prompt .inline-notice-icon")).toContain(
+      "align-self: center;",
+    );
   });
 });
 

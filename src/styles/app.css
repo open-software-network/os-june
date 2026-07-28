@@ -13088,10 +13088,17 @@ button.agent-user-attachment:hover {
   flex-shrink: 0;
 }
 
-/* Layout slot for the recovery prompt — sits in editor-content with
- * spacing below it before the editor body begins. */
-.note-recovery-prompt {
+/* The recovery prompt is a single message/action row, so center the whole
+ * composition rather than inheriting the first-line alignment used by longer
+ * shared notices. The compound selector keeps this consumer decision attached
+ * to the InlineNotice primitive if the flat stylesheet is reordered. */
+.inline-notice.note-recovery-prompt {
+  align-items: center;
   margin: 0 0 var(--sp-5);
+}
+
+.note-recovery-prompt .inline-notice-icon {
+  align-self: center;
 }
 
 .note-transcription-warning {
