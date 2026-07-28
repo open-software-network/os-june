@@ -4,8 +4,8 @@ use crate::{
     domain::types::AppError,
 };
 use june_companion_protocol::{
-    MediaChunk, MediaKind, MediaResultReference, MAX_MEDIA_BYTES, MAX_MEDIA_CHUNK_BYTES,
-    MAX_MEDIA_DIMENSION_PX, MAX_MEDIA_DURATION_MS, MAX_MEDIA_REFERENCES, MAX_MEDIA_TYPE_BYTES,
+    validate_media_type, MediaChunk, MediaKind, MediaResultReference, MAX_MEDIA_BYTES,
+    MAX_MEDIA_CHUNK_BYTES, MAX_MEDIA_DIMENSION_PX, MAX_MEDIA_DURATION_MS, MAX_MEDIA_REFERENCES,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -257,14 +257,6 @@ fn resolved_artifact(
         return None;
     }
     let media_type = artifact.mime_type?.trim().to_ascii_lowercase();
-    if media_type.is_empty()
-        || media_type.len() > MAX_MEDIA_TYPE_BYTES
-        || !media_type
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$&^_.+-/".contains(&byte))
-    {
-        return None;
-    }
     let kind = if media_type.starts_with("image/") {
         MediaKind::Image
     } else if media_type.starts_with("video/") {
@@ -272,6 +264,7 @@ fn resolved_artifact(
     } else {
         return None;
     };
+    validate_media_type(&media_type, kind).ok()?;
     let expected_size_bytes = u64::try_from(artifact.size_bytes?).ok()?;
     if expected_size_bytes == 0 || expected_size_bytes > MAX_MEDIA_BYTES {
         return None;
@@ -606,6 +599,45 @@ fn media_error(message: &str) -> AppError {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn artifact_with_media_type(media_type: &str) -> AgentArtifactDto {
+        AgentArtifactDto {
+            id: "artifact-1".to_string(),
+            session_id: "session-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            item_id: None,
+            provenance: "tool".to_string(),
+            action: "generate_image".to_string(),
+            path: "/tmp/artifact".to_string(),
+            original_path: None,
+            mime_type: Some(media_type.to_string()),
+            size_bytes: Some(1),
+            available: true,
+            created_at: "2026-07-28T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn concrete_media_producer_uses_the_protocol_mime_grammar() {
+        let workspace = Path::new("/tmp");
+        for media_type in ["image/x%25", "image/x'y*z`|~"] {
+            let artifact = resolved_artifact(
+                artifact_with_media_type(media_type),
+                workspace,
+                Some("run-1"),
+            )
+            .expect("valid protocol media type");
+            assert_eq!(artifact.media_type, media_type);
+            assert_eq!(artifact.kind, MediaKind::Image);
+        }
+
+        assert!(resolved_artifact(
+            artifact_with_media_type("image/svg/xml"),
+            workspace,
+            Some("run-1")
+        )
+        .is_none());
+    }
 
     fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(payload.len() + 8);

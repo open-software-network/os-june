@@ -897,8 +897,8 @@ mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
     use june_companion_protocol::{
-        encode_peer_hello, BrowseEntry, Capability, Page, PeerHello, ProtocolError,
-        MAX_PAGE_CURSOR_BYTES,
+        encode_peer_hello, AgentStatus, BrowseEntry, Capability, MediaKind, MediaResultReference,
+        Page, PeerHello, ProtocolError, MAX_PAGE_CURSOR_BYTES,
     };
 
     #[tokio::test]
@@ -1070,6 +1070,34 @@ mod tests {
         assert!(matches!(
             encode_outbound_frame(&frame),
             Err(ProtocolError::InvalidPageSize)
+        ));
+    }
+
+    #[test]
+    fn outbound_boundary_rejects_invalid_media_producer_values() {
+        let frame = Frame::new(
+            Uuid::new_v4(),
+            1,
+            current_time_ms(),
+            Capability::AgentRead,
+            Body::Event(Event::AgentStatus {
+                stored_session_id: "session-1".to_string(),
+                status: AgentStatus::Completed,
+                media: vec![MediaResultReference {
+                    artifact_id: "artifact-1".to_string(),
+                    kind: MediaKind::Image,
+                    media_type: "image/svg/xml".to_string(),
+                    width_px: Some(1),
+                    height_px: Some(1),
+                    duration_ms: None,
+                    size_bytes: 1,
+                }],
+            }),
+        );
+
+        assert!(matches!(
+            encode_outbound_frame(&frame),
+            Err(ProtocolError::InvalidMediaReference)
         ));
     }
 

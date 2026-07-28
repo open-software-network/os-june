@@ -950,9 +950,7 @@ pub struct MediaResultReference {
 impl MediaResultReference {
     fn validate(&self) -> Result<(), ProtocolError> {
         validate_id(&self.artifact_id)?;
-        if !valid_media_type(&self.media_type, self.kind) {
-            return Err(ProtocolError::InvalidMediaReference);
-        }
+        validate_media_type(&self.media_type, self.kind)?;
         if self.size_bytes == 0 || self.size_bytes > MAX_MEDIA_BYTES {
             return Err(ProtocolError::MediaTooLarge);
         }
@@ -1441,27 +1439,32 @@ fn validate_media_references(references: &[MediaResultReference]) -> Result<(), 
     Ok(())
 }
 
-fn valid_media_type(value: &str, kind: MediaKind) -> bool {
+pub fn validate_media_type(value: &str, kind: MediaKind) -> Result<(), ProtocolError> {
     if value.is_empty() || value.len() > MAX_MEDIA_TYPE_BYTES || !value.is_ascii() {
-        return false;
+        return Err(ProtocolError::InvalidMediaReference);
     }
     let Some((top_level, subtype)) = value.split_once('/') else {
-        return false;
+        return Err(ProtocolError::InvalidMediaReference);
     };
     if top_level.is_empty() || subtype.is_empty() || subtype.contains('/') {
-        return false;
+        return Err(ProtocolError::InvalidMediaReference);
     }
     let valid_token = |token: &str| {
         token
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
     };
-    valid_token(top_level)
+    if valid_token(top_level)
         && valid_token(subtype)
         && match kind {
             MediaKind::Image => top_level == "image",
             MediaKind::Video => top_level == "video",
         }
+    {
+        Ok(())
+    } else {
+        Err(ProtocolError::InvalidMediaReference)
+    }
 }
 
 fn valid_sha256(value: &str) -> bool {
