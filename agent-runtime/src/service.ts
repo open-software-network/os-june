@@ -385,6 +385,7 @@ function mergeUsage(earlier: RuntimeUsage, later: RuntimeUsage): RuntimeUsage {
     provider: later.provider ?? earlier.provider,
     privacyLevel: later.privacyLevel ?? earlier.privacyLevel,
     endpoint: later.endpoint ?? earlier.endpoint,
+    resolvedModel: later.resolvedModel ?? earlier.resolvedModel,
   });
 }
 
