@@ -79,6 +79,7 @@ struct McpSessionSlot {
     fingerprint: String,
     next_request_id: u64,
     transport: Option<PersistentMcpTransport>,
+    discovery_pages: BTreeMap<String, Value>,
 }
 
 enum PersistentMcpTransport {
@@ -2042,7 +2043,7 @@ fn discovered_tools_from_result(
                     .get("inputSchema")
                     .or_else(|| tool.get("input_schema"))
                     .cloned()
-                    .unwrap_or_else(|| json!({"type":"object","properties":{}})),
+                    .unwrap_or(Value::Null),
                 annotations: tool
                     .get("annotations")
                     .cloned()
@@ -2099,6 +2100,33 @@ async fn session_request(
             slot.fingerprint = fingerprint;
             slot.next_request_id = 2;
         }
+        let discovery_cache_key = (method == "tools/list")
+            .then(|| serde_json::to_string(&params).ok())
+            .flatten();
+        // A server-initiated elicitation parks the original tools/call inside
+        // this session. A turn retry rebuilds the ephemeral registry before
+        // loading the user's answer; replay the already-validated discovery
+        // page instead of letting that tools/list collide with the parked
+        // call. Managed pagination keys each cached page by its cursor params.
+        let has_pending_elicitation = slot
+            .transport
+            .as_ref()
+            .is_some_and(PersistentMcpTransport::has_pending_elicitation);
+        if has_pending_elicitation {
+            if let Some(cached) = discovery_cache_key
+                .as_ref()
+                .and_then(|key| slot.discovery_pages.get(key))
+            {
+                return Ok(cached.clone());
+            }
+        } else if method == "tools/list"
+            && params.as_object().is_some_and(serde_json::Map::is_empty)
+        {
+            // A non-parked empty-params request starts a fresh discovery
+            // round. Retain only that round's bounded pages; older cursor
+            // values are never needed to resume a future elicitation.
+            slot.discovery_pages.clear();
+        }
         for attempt in 0..2 {
             if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
                 slot.close().await;
@@ -2135,7 +2163,12 @@ async fn session_request(
                 }
             };
             match result {
-                Ok(value) => return Ok(value),
+                Ok(value) => {
+                    if let Some(key) = discovery_cache_key.as_ref() {
+                        slot.discovery_pages.insert(key.clone(), value.clone());
+                    }
+                    return Ok(value);
+                }
                 // Discovery/listing is read-only and can be retried after a
                 // reconnect. A tool call may already have mutated remote
                 // state before its response was lost, so never replay it.
@@ -2179,6 +2212,7 @@ async fn persistent_session(
                 fingerprint: session_fingerprint(server, secrets, sandbox_workspace),
                 next_request_id: 2,
                 transport: None,
+                discovery_pages: BTreeMap::new(),
             }))
         })
         .clone()
@@ -2655,6 +2689,16 @@ impl McpSessionSlot {
             let _ = session.child.wait().await;
         }
         self.transport = None;
+        self.discovery_pages.clear();
+    }
+}
+
+impl PersistentMcpTransport {
+    fn has_pending_elicitation(&self) -> bool {
+        match self {
+            PersistentMcpTransport::Stdio(session) => session.pending.is_some(),
+            PersistentMcpTransport::Http(session) => session.pending.is_some(),
+        }
     }
 }
 
@@ -4117,16 +4161,19 @@ done
         let answer = Arc::new(TokioMutex::new(None::<Value>));
         let answer_ready = Arc::new(Notify::new());
         let tool_calls = Arc::new(AtomicUsize::new(0));
+        let discovery_calls = Arc::new(AtomicUsize::new(0));
         let server_task = tokio::spawn({
             let answer = answer.clone();
             let answer_ready = answer_ready.clone();
             let tool_calls = tool_calls.clone();
+            let discovery_calls = discovery_calls.clone();
             async move {
                 loop {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let answer = answer.clone();
                     let answer_ready = answer_ready.clone();
                     let tool_calls = tool_calls.clone();
+                    let discovery_calls = discovery_calls.clone();
                     tokio::spawn(async move {
                         let mut request = Vec::new();
                         let mut buffer = [0_u8; 4096];
@@ -4187,6 +4234,40 @@ done
                                     )
                                     .await
                                     .unwrap();
+                            }
+                            Some("tools/list") => {
+                                discovery_calls.fetch_add(1, Ordering::SeqCst);
+                                let body = if frame["params"]["cursor"] == json!("page-2") {
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": frame["id"],
+                                        "result": {
+                                            "tools": [{
+                                                "name": "other",
+                                                "inputSchema": {"type": "object"}
+                                            }]
+                                        }
+                                    })
+                                } else {
+                                    json!({
+                                        "jsonrpc": "2.0",
+                                        "id": frame["id"],
+                                        "result": {
+                                            "tools": [{
+                                                "name": "choose",
+                                                "inputSchema": {"type": "object"}
+                                            }],
+                                            "nextCursor": "page-2"
+                                        }
+                                    })
+                                }
+                                .to_string();
+                                let headers = format!(
+                                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nmcp-session-id: elicitation-session\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                                    body.len()
+                                );
+                                stream.write_all(headers.as_bytes()).await.unwrap();
+                                stream.write_all(body.as_bytes()).await.unwrap();
                             }
                             Some("tools/call") => {
                                 tool_calls.fetch_add(1, Ordering::SeqCst);
@@ -4272,7 +4353,23 @@ done
             format!("eliciting-http-{}", Uuid::new_v4()),
             McpTransport::StreamableHttp,
         );
+        server.name = MANAGED_LINEAR_SERVER_NAME.to_string();
         server.url = Some(format!("http://{address}/mcp"));
+        let lifecycle_account = format!("linear-elicit-{}", Uuid::new_v4());
+        let lifecycle_guard = crate::connectors::acquire_linear_lifecycle(&lifecycle_account).await;
+        let lifecycle = lifecycle_guard.snapshot();
+        drop(lifecycle_guard);
+        let discovered =
+            discover_managed_server(&server, &McpSecretBundle::default(), None, &lifecycle)
+                .await
+                .unwrap();
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["choose", "other"]
+        );
         let first = call_server(
             &server,
             &McpSecretBundle::default(),
@@ -4280,10 +4377,23 @@ done
             json!({}),
             None,
             None,
-            None,
+            Some(&lifecycle),
         )
         .await;
         assert!(matches!(first, Err(AgentMcpError::ElicitationRequired(_))));
+        // A resumed turn recreates its registry. Discovery must use the page
+        // cached before the tool call instead of colliding with the parked
+        // elicitation in the persistent session. Both managed cursor pages
+        // must replay without another server request.
+        let rediscovered =
+            discover_managed_server(&server, &McpSecretBundle::default(), None, &lifecycle)
+                .await
+                .unwrap();
+        let mut registry = McpToolRegistry::default();
+        registry
+            .register_managed_linear(&server, rediscovered)
+            .unwrap();
+        assert!(registry.resolve("mcp_linear_choose").is_some());
         let result = call_server(
             &server,
             &McpSecretBundle::default(),
@@ -4291,13 +4401,14 @@ done
             json!({}),
             None,
             Some("Alpha"),
-            None,
+            Some(&lifecycle),
         )
         .await
         .unwrap();
 
         assert_eq!(result["content"][0]["text"], "Alpha selected");
         assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(discovery_calls.load(Ordering::SeqCst), 2);
         assert_eq!(
             answer.lock().await.as_ref().unwrap()["project"],
             json!("Alpha")
@@ -4602,6 +4713,43 @@ done
             }
         );
         assert_eq!(tools[1].annotations, McpToolAnnotations::default());
+    }
+
+    #[test]
+    fn managed_linear_rejects_a_missing_schema_without_changing_custom_tolerance() {
+        let discovered = discovered_tools_from_response(&json!({
+            "result": {
+                "tools": [{
+                    "name": "schema_missing",
+                    "description": "No inputSchema field"
+                }]
+            }
+        }))
+        .unwrap();
+        assert!(discovered[0].input_schema.is_null());
+
+        let mut managed = McpToolRegistry::default();
+        managed
+            .register_managed_linear(&managed_linear_definition(), discovered.clone())
+            .unwrap();
+        assert!(managed.resolve("mcp_linear_schema_missing").is_none());
+
+        let mut custom_server = McpServerDefinition::new("custom", McpTransport::StreamableHttp);
+        custom_server.url = Some("https://example.com/mcp".into());
+        let mut custom = McpToolRegistry::default();
+        custom.register(&custom_server, discovered).unwrap();
+        assert_eq!(
+            custom
+                .resolve("mcp_custom_schema_missing")
+                .unwrap()
+                .descriptor
+                .parameters,
+            json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": true
+            })
+        );
     }
 
     #[tokio::test]
