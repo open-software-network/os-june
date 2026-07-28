@@ -156,6 +156,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       input.runId,
       input.takeSteering,
       input.emit,
+      input.params.resolvedModel,
       persistedState.reasoningWireFormat,
     );
     const stream = (await runner.runner.run(agent, state, {
@@ -308,6 +309,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       usage: {
         ...normalizeUsage(stream.usage),
         ...modelProvider.latestRoute,
+        ...(modelProvider.resolvedModel ? { resolvedModel: modelProvider.resolvedModel } : {}),
       },
       interruptions,
       ...(serializedState === undefined ? {} : { serializedState }),
@@ -331,7 +333,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     takeSteering: EngineRunInput["takeSteering"],
     emit: (event: EngineEvent) => void,
-    reasoningWireFormat?: ReasoningWireFormat,
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): { runner: Runner; modelProvider: RpcChatCompletionsModelProvider } {
     const modelProvider = this.createModelProvider(
       sessionId,
@@ -341,7 +344,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
         onSteeringConsumed: (message) =>
           emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
       },
-      reasoningWireFormat,
+      initialResolvedModel,
+      initialReasoningWireFormat,
     );
     return {
       modelProvider,
@@ -361,7 +365,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
-    reasoningWireFormat?: ReasoningWireFormat,
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): RpcChatCompletionsModelProvider {
     if (!this.initialized) throw new Error("OpenAI Agents engine is not initialized");
     return new RpcChatCompletionsModelProvider(
@@ -375,7 +380,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         }),
       steering,
-      reasoningWireFormat,
+      initialResolvedModel,
+      initialReasoningWireFormat,
     );
   }
 }
