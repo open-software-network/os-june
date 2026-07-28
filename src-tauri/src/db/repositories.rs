@@ -135,6 +135,9 @@ pub struct RoutineTrustRecord {
     /// Durable Google account binding for every connector-aware routine,
     /// including read-only and approval modes that have no autonomy grant.
     pub account_id: Option<String>,
+    /// The autonomous grant/account move has not yet been applied to the live
+    /// runtime and followed by a successful routine resume.
+    pub rebind_pending: bool,
     /// When the routine most recently entered approval mode (RFC 3339), or
     /// `None` if it has never been in approval mode. Approval-run crediting
     /// only counts runs that finished at or after this instant.
@@ -1067,6 +1070,10 @@ impl Repositories {
             .bind(account_id)
             .execute(&mut *tx)
             .await?;
+        query("UPDATE routine_trust SET account_id = NULL WHERE account_id = ?")
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await?;
         query("DELETE FROM connector_accounts WHERE account_id = ?")
             .bind(account_id)
             .execute(&mut *tx)
@@ -1079,7 +1086,7 @@ impl Repositories {
         job_id: &str,
     ) -> Result<Option<RoutineTrustRecord>, sqlx::error::Error> {
         let row = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
              FROM routine_trust WHERE job_id = ?",
         )
         .bind(job_id)
@@ -1099,13 +1106,50 @@ impl Repositories {
         trust_mode: &str,
     ) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
         let rows = query(
-            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, approval_since, updated_at
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
              FROM routine_trust WHERE trust_mode = ?",
         )
         .bind(trust_mode)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(routine_trust_from_row).collect())
+    }
+
+    /// Every durable routine trust row, across modes. Account reconnect uses
+    /// this to repair legacy read-only and approval bindings as well as
+    /// autonomous grants.
+    pub async fn list_routine_trust(&self) -> Result<Vec<RoutineTrustRecord>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT job_id, trust_mode, approval_run_count, autonomous_tools, account_id, rebind_pending, approval_since, updated_at
+             FROM routine_trust",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(routine_trust_from_row).collect())
+    }
+
+    pub async fn routine_enabled_toolsets(
+        &self,
+        job_id: &str,
+    ) -> Result<Vec<String>, sqlx::error::Error> {
+        let row = query("SELECT metadata_json FROM routines WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(Vec::new());
+        };
+        let metadata =
+            serde_json::from_str::<serde_json::Value>(&row.get::<String, _>("metadata_json"))
+                .unwrap_or_default();
+        Ok(metadata
+            .get("enabledToolsets")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect())
     }
 
     /// Set the trust mode (and autonomous tool grants) for a routine,
@@ -1115,6 +1159,20 @@ impl Repositories {
         job_id: &str,
         trust_mode: &str,
         autonomous_tools: &[String],
+    ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
+        self.routine_trust_set_with_account(job_id, trust_mode, autonomous_tools, None)
+            .await
+    }
+
+    /// Atomically set trust policy and an optional resolved Google binding.
+    /// Omitting the binding preserves an existing one; callers clear a
+    /// disconnected account only through the account-deletion cascade.
+    pub async fn routine_trust_set_with_account(
+        &self,
+        job_id: &str,
+        trust_mode: &str,
+        autonomous_tools: &[String],
+        account_id: Option<&str>,
     ) -> Result<RoutineTrustRecord, sqlx::error::Error> {
         let now = timestamp();
         let tools_json = string_vec_to_json(autonomous_tools);
@@ -1138,17 +1196,22 @@ impl Repositories {
                 .and_then(|record| record.approval_since.clone())
         };
         query(
-            "INSERT INTO routine_trust (job_id, trust_mode, approval_run_count, autonomous_tools, approval_since, updated_at)
-             VALUES (?, ?, 0, ?, ?, ?)
+            "INSERT INTO routine_trust (
+                job_id, trust_mode, approval_run_count, autonomous_tools,
+                account_id, approval_since, updated_at
+             )
+             VALUES (?, ?, 0, ?, ?, ?, ?)
              ON CONFLICT(job_id) DO UPDATE SET
                trust_mode = excluded.trust_mode,
                autonomous_tools = excluded.autonomous_tools,
+               account_id = COALESCE(excluded.account_id, routine_trust.account_id),
                approval_since = excluded.approval_since,
                updated_at = excluded.updated_at",
         )
         .bind(job_id)
         .bind(trust_mode)
         .bind(&tools_json)
+        .bind(account_id)
         .bind(&approval_since)
         .bind(&now)
         .execute(&self.pool)
@@ -1172,6 +1235,24 @@ impl Repositories {
         self.routine_trust_get(job_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn routine_trust_set_rebind_pending(
+        &self,
+        job_id: &str,
+        pending: bool,
+    ) -> Result<(), sqlx::error::Error> {
+        let result =
+            query("UPDATE routine_trust SET rebind_pending = ?, updated_at = ? WHERE job_id = ?")
+                .bind(pending)
+                .bind(timestamp())
+                .bind(job_id)
+                .execute(&self.pool)
+                .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
     }
 
     /// Credits one completed approval-mode run toward the autonomy threshold,
@@ -6336,6 +6417,7 @@ fn routine_trust_from_row(row: sqlx_sqlite::SqliteRow) -> RoutineTrustRecord {
         approval_run_count: row.get("approval_run_count"),
         autonomous_tools: string_vec_from_json(&row.get::<String, _>("autonomous_tools")),
         account_id: row.get::<Option<String>, _>("account_id"),
+        rebind_pending: row.get::<i64, _>("rebind_pending") != 0,
         approval_since: row.get::<Option<String>, _>("approval_since"),
         updated_at: row.get("updated_at"),
     }
@@ -8985,6 +9067,10 @@ mod tests {
             .await
             .expect("set grant");
         repos
+            .routine_trust_set_with_account("job-1", "approval", &[], Some("user@example.com"))
+            .await
+            .expect("bind routine");
+        repos
             .set_selected_teams(
                 "user@example.com",
                 &[super::SelectedTeamRecord {
@@ -9032,6 +9118,15 @@ mod tests {
             .await
             .expect("grants")
             .is_empty());
+        assert_eq!(
+            repos
+                .routine_trust_get("job-1")
+                .await
+                .expect("routine trust")
+                .expect("trust row")
+                .account_id,
+            None
+        );
         // Selected teams must not survive either: reconnecting the same
         // workspace should require re-picking teams, not silently inherit the
         // old scope.
@@ -9289,6 +9384,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn routine_trust_and_account_update_is_atomic_and_preserves_binding_on_omission() {
+        let repos = test_repositories().await;
+        let bound = repos
+            .routine_trust_set_with_account(
+                "job-atomic",
+                "read_only",
+                &[],
+                Some("bound@example.test"),
+            )
+            .await
+            .expect("insert trust and binding");
+        assert_eq!(bound.account_id.as_deref(), Some("bound@example.test"));
+
+        let updated = repos
+            .routine_trust_set_with_account("job-atomic", "approval", &[], None)
+            .await
+            .expect("update trust without clearing binding");
+        assert_eq!(updated.trust_mode, "approval");
+        assert_eq!(updated.account_id.as_deref(), Some("bound@example.test"));
+
+        repos
+            .routine_trust_set_rebind_pending("job-atomic", true)
+            .await
+            .expect("mark pending");
+        let pending = repos
+            .routine_trust_set_with_account("job-atomic", "approval", &[], None)
+            .await
+            .expect("ordinary trust update preserves pending marker");
+        assert!(pending.rebind_pending);
+
+        repos
+            .routine_trust_set_rebind_pending("job-atomic", false)
+            .await
+            .expect("clear pending");
+        assert!(
+            !repos
+                .routine_trust_get("job-atomic")
+                .await
+                .expect("read trust")
+                .expect("trust row")
+                .rebind_pending
+        );
+    }
+
+    #[tokio::test]
     async fn list_routine_trust_by_mode_returns_only_that_mode() {
         let repos = test_repositories().await;
         repos
@@ -9326,6 +9466,68 @@ mod tests {
             .expect("list approval");
         assert_eq!(approval.len(), 1);
         assert_eq!(approval[0].job_id, "job-approval");
+    }
+
+    #[tokio::test]
+    async fn all_routine_trust_rows_expose_stored_toolsets_for_binding_backfill() {
+        let repos = test_repositories().await;
+        for (job_id, mode, toolsets) in [
+            ("job-read", "read_only", r#"["june_gmail"]"#),
+            (
+                "job-approval",
+                "approval",
+                r#"["june_gmail","june_gmail_actions"]"#,
+            ),
+            ("job-browser", "approval", r#"["june_browser_routine_job"]"#),
+        ] {
+            query(
+                "INSERT INTO routines (
+                    id, name, prompt, schedule, created_at, updated_at,
+                    metadata_json, tool_catalog_version
+                 ) VALUES (?, ?, 'prompt', '0 9 * * *', 'now', 'now', ?, 1)",
+            )
+            .bind(job_id)
+            .bind(job_id)
+            .bind(format!(r#"{{"enabledToolsets":{toolsets}}}"#))
+            .execute(&repos.pool)
+            .await
+            .expect("routine");
+            repos
+                .routine_trust_set(job_id, mode, &[])
+                .await
+                .expect("trust");
+        }
+
+        let mut ids: Vec<_> = repos
+            .list_routine_trust()
+            .await
+            .expect("all trust")
+            .into_iter()
+            .map(|record| record.job_id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["job-approval", "job-browser", "job-read"]);
+        assert_eq!(
+            repos
+                .routine_enabled_toolsets("job-read")
+                .await
+                .expect("read toolsets"),
+            vec!["june_gmail"]
+        );
+        assert_eq!(
+            repos
+                .routine_enabled_toolsets("job-approval")
+                .await
+                .expect("approval toolsets"),
+            vec!["june_gmail", "june_gmail_actions"]
+        );
+        assert_eq!(
+            repos
+                .routine_enabled_toolsets("job-browser")
+                .await
+                .expect("browser toolsets"),
+            vec!["june_browser_routine_job"]
+        );
     }
 
     #[tokio::test]

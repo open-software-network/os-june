@@ -390,6 +390,7 @@ pub fn run() {
             connectors::commands::notion_connector_list_tools,
             connectors::commands::routine_trust_get,
             connectors::commands::routine_trust_set,
+            connectors::commands::routine_trust_rebind_pending_set,
             connectors::commands::routine_trust_record_run,
             connectors::commands::connector_triggers_list,
             connectors::commands::connector_trigger_set,

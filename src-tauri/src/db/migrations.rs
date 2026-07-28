@@ -1276,6 +1276,18 @@ const MIGRATIONS: &[Migration] = &[
             columns: ROUTINE_GOOGLE_ACCOUNT_COLUMN,
         }],
     },
+    Migration {
+        version: 47,
+        name: "routine_rebind_pending",
+        requirements: &[SchemaRequirement::Column {
+            table: "routine_trust",
+            column: "rebind_pending",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "routine_trust",
+            columns: ROUTINE_REBIND_PENDING_COLUMN,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1289,6 +1301,10 @@ const NOTE_CALENDAR_HTML_LINK_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 const ROUTINE_GOOGLE_ACCOUNT_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "account_id",
     definition: "TEXT",
+}];
+const ROUTINE_REBIND_PENDING_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "rebind_pending",
+    definition: "INTEGER NOT NULL DEFAULT 0",
 }];
 const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "account_user_id",
@@ -2517,6 +2533,36 @@ mod tests {
             .expect("preserved run");
         assert_eq!(row.get::<String, _>("status"), "waiting_for_user");
         assert_eq!(row.get::<Option<String>, _>("run_config_json"), None);
+        assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn routine_rebind_pending_migration_preserves_existing_trust_rows() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..46])
+            .await
+            .expect("migration 46 schema");
+        query(
+            "INSERT INTO routine_trust (
+                job_id, trust_mode, approval_run_count, autonomous_tools,
+                account_id, updated_at
+             ) VALUES ('legacy-routine', 'read_only', 0, '[]', NULL, 'now')",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy trust row");
+
+        run_migrations(&pool)
+            .await
+            .expect("add durable rebind marker");
+
+        let pending: i64 =
+            query("SELECT rebind_pending FROM routine_trust WHERE job_id = 'legacy-routine'")
+                .fetch_one(&pool)
+                .await
+                .expect("preserved trust row")
+                .get("rebind_pending");
+        assert_eq!(pending, 0);
         assert_latest_stamp(&pool).await;
     }
 

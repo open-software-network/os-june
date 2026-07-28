@@ -43,11 +43,13 @@ const USERINFO_ENDPOINT: &str = "https://openidconnect.googleapis.com/v1/userinf
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
-const AUTHORIZATION_URL_EVENT: &str =
-    include_str!("../../../src/lib/connector-authorization-event-name.txt");
+include!(concat!(
+    env!("OUT_DIR"),
+    "/connector_authorization_event.rs"
+));
 
 pub(crate) fn authorization_url_event() -> &'static str {
-    AUTHORIZATION_URL_EVENT.trim()
+    AUTHORIZATION_URL_EVENT
 }
 /// Total refresh attempts (1 initial + retries) on transient upstream
 /// failures; definitive rejections (invalid_grant) never retry.
@@ -69,6 +71,7 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
     })
 }
 
+#[derive(Debug)]
 struct ActiveConnect {
     flow_id: String,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
@@ -79,13 +82,25 @@ struct ActiveConnect {
 /// by the frontend before it invokes Rust, carried on every browser-handoff
 /// event, and checked again when cancellation or cleanup touches the slot.
 /// This prevents an older connect from canceling or clearing a newer one.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ConnectFlow {
     active: std::sync::Mutex<Option<ActiveConnect>>,
 }
 
+#[derive(Debug)]
+pub(super) struct ConnectFlowOwner<'a> {
+    flow: &'a ConnectFlow,
+    flow_id: String,
+}
+
+impl Drop for ConnectFlowOwner<'_> {
+    fn drop(&mut self) {
+        self.flow.finish(&self.flow_id);
+    }
+}
+
 impl ConnectFlow {
-    pub(super) fn begin(&self, flow_id: &str) -> Result<(), AppError> {
+    pub(super) fn begin<'a>(&'a self, flow_id: &str) -> Result<ConnectFlowOwner<'a>, AppError> {
         let mut active = self.active.lock().map_err(|_| {
             AppError::new(
                 "connector_connect_state_unavailable",
@@ -103,7 +118,10 @@ impl ConnectFlow {
             cancel: None,
             cancel_requested: false,
         });
-        Ok(())
+        Ok(ConnectFlowOwner {
+            flow: self,
+            flow_id: flow_id.to_string(),
+        })
     }
 
     pub fn cancel(&self, flow_id: Option<&str>) {
@@ -891,25 +909,26 @@ mod tests {
                 "flowId": "flow-test",
             })
         );
+        assert!(!authorization_url_event().contains(['\r', '\n']));
     }
 
     #[test]
     fn connect_flow_is_single_flight_and_cleanup_is_owner_scoped() {
         let flow = ConnectFlow::default();
-        flow.begin("first").expect("first flow");
+        let first = flow.begin("first").expect("first flow");
         let error = flow.begin("second").expect_err("overlap rejected");
         assert_eq!(error.code, "connector_connect_in_progress");
 
         flow.finish("second");
         assert!(flow.begin("second").is_err(), "stale cleanup kept owner");
-        flow.finish("first");
-        flow.begin("second").expect("slot released by owner");
+        drop(first);
+        flow.begin("second").expect("dropping owner releases slot");
     }
 
     #[tokio::test]
     async fn stale_cancel_cannot_abort_the_current_flow() {
         let flow = ConnectFlow::default();
-        flow.begin("current").expect("current flow");
+        let _owner = flow.begin("current").expect("current flow");
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         flow.register_cancel_sender("current", tx)
             .expect("register owner");
@@ -925,6 +944,21 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), &mut rx)
             .await
             .expect("owner cancel delivered")
+            .expect("cancel sender");
+    }
+
+    #[tokio::test]
+    async fn cancel_before_sender_registration_is_delivered_immediately() {
+        let flow = ConnectFlow::default();
+        let _owner = flow.begin("current").expect("current flow");
+        flow.cancel(Some("current"));
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        flow.register_cancel_sender("current", tx)
+            .expect("register owner");
+        tokio::time::timeout(Duration::from_millis(50), rx)
+            .await
+            .expect("remembered cancel delivered")
             .expect("cancel sender");
     }
 

@@ -347,6 +347,21 @@ fn server_owner_definitions() -> impl Iterator<Item = &'static ConnectorServerDe
         .filter(|definition| definition.kind == ConnectorServerKind::Read)
 }
 
+pub(crate) fn routine_uses_google_toolsets(enabled_toolsets: &[String]) -> bool {
+    enabled_toolsets.iter().any(|toolset| {
+        CONNECTOR_SERVER_DEFINITIONS.iter().any(|definition| {
+            definition.provider == ConnectorProvider::Google
+                && (toolset == definition.id
+                    || definition
+                        .dynamic_prefix
+                        .is_some_and(|prefix| toolset.starts_with(prefix))
+                    || definition
+                        .autonomous_prefix
+                        .is_some_and(|prefix| toolset.starts_with(prefix)))
+        })
+    })
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ActionToolDefinition {
     id: &'static str,
@@ -987,6 +1002,19 @@ mod tests {
         assert_eq!(value["scopeBundles"][0]["id"], "gmail_read");
         assert_eq!(value["actionTools"][0]["server"], JUNE_GMAIL_ACTIONS_SERVER);
         assert_eq!(value["triggers"][0]["requiredBundles"][0], "gmail_read");
+    }
+
+    #[test]
+    fn routine_google_detection_uses_server_ownership_not_trust_mode() {
+        assert!(routine_uses_google_toolsets(&owned(&["june_gmail"])));
+        assert!(routine_uses_google_toolsets(&owned(&["june_gcal_actions"])));
+        assert!(routine_uses_google_toolsets(&owned(&[
+            "june_gmail_auto_job"
+        ])));
+        assert!(!routine_uses_google_toolsets(&owned(&[
+            "june_browser_routine_job"
+        ])));
+        assert!(!routine_uses_google_toolsets(&owned(&["web"])));
     }
 
     #[test]

@@ -21,6 +21,7 @@ import {
   missingConnectorPresentationIds,
   providerFromServer,
   routineAccountRoleDescription,
+  routineUsesGoogle,
   routineToolsetsFor,
   routineTrustModeFromToolsets,
   scopesCoverBundles,
@@ -212,6 +213,14 @@ describe("routine connector toolsets", () => {
     expect(routineTrustModeFromToolsets(policy, ["june_gmail_actions"])).toBe("approval");
     expect(routineTrustModeFromToolsets(policy, ["june_gcal_auto_ab12cd34"])).toBe("autonomous");
   });
+
+  it("identifies Google routines from their enabled toolsets", () => {
+    expect(routineUsesGoogle(policy, ["web", "june_gmail"])).toBe(true);
+    expect(routineUsesGoogle(policy, ["june_gcal_actions"])).toBe(true);
+    expect(routineUsesGoogle(policy, ["june_gmail_auto_ab12cd34"])).toBe(true);
+    expect(routineUsesGoogle(policy, ["june_browser_routine_ab12cd34"])).toBe(false);
+    expect(routineUsesGoogle(policy, ["web"])).toBe(false);
+  });
 });
 
 describe("event triggers", () => {
@@ -234,10 +243,16 @@ describe("event triggers", () => {
 
   it("describes the selected account's actual routine role", () => {
     expect(routineAccountRoleDescription({ source: "email_received" }, "approval")).toBe(
-      "This account receives the trigger.",
+      "This account receives the trigger and is used for actions you approve.",
     );
     expect(routineAccountRoleDescription({ source: "schedule" }, "autonomous")).toBe(
       "This account performs autonomous actions.",
+    );
+    expect(routineAccountRoleDescription({ source: "schedule" }, "approval")).toBe(
+      "This account is used for actions you approve.",
+    );
+    expect(routineAccountRoleDescription({ source: "schedule" }, "read_only")).toBe(
+      "This account is used for Google reads.",
     );
     expect(routineAccountRoleDescription({ source: "email_received" }, "autonomous")).toBe(
       "This account receives the trigger and performs autonomous actions.",

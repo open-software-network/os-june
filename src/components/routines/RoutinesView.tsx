@@ -21,6 +21,7 @@ import {
   isCreditableRun,
   routineToolsetsFor,
   routineTrustModeFromToolsets,
+  routineUsesGoogle,
   triggerConfigFromDraft,
 } from "../../lib/connectors";
 import { useConnectorPolicy } from "../../lib/connector-policy";
@@ -645,7 +646,10 @@ export function RoutinesView({
               needsAccount={(() => {
                 const trust = routineTrustById.get(routine.job_id);
                 return Boolean(
-                  trust && (!trust.accountId || !connectedGoogleIds.has(trust.accountId)),
+                  policy &&
+                    routineUsesGoogle(policy, routine.enabled_toolsets) &&
+                    trust &&
+                    (!trust.accountId || !connectedGoogleIds.has(trust.accountId)),
                 );
               })()}
               busy={busyIds.has(routine.job_id)}

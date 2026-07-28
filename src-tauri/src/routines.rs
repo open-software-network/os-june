@@ -1123,11 +1123,29 @@ async fn unattended_tools(
 ) -> Value {
     let autonomous_tools = routine_autonomous_tools(&repository.pool, routine_id).await;
     let repos = crate::db::repositories::Repositories::new(repository.pool.clone());
-    let bound_google_account =
+    let mut bound_google_account =
         crate::connectors::commands::stored_routine_account_id(&repos, routine_id)
             .await
             .ok()
             .flatten();
+    if bound_google_account.is_none()
+        && crate::connectors::policy::routine_uses_google_toolsets(enabled_toolsets)
+    {
+        if let Some(account_id) =
+            crate::connectors::commands::sole_connected_google_account_id(app).await
+        {
+            match repos
+                .routine_trust_set_account(routine_id, Some(&account_id))
+                .await
+            {
+                Ok(_) => bound_google_account = Some(account_id),
+                Err(error) => tracing::warn!(
+                    error_code = %AppError::from(error).code,
+                    "legacy Google routine binding backfill failed"
+                ),
+            }
+        }
+    }
     let mut tools = base_unattended_tools();
     if let Some(descriptors) = tools.as_array_mut() {
         descriptors.retain(|descriptor| {
@@ -1469,6 +1487,7 @@ mod tests {
                 approval_run_count INTEGER NOT NULL DEFAULT 0,
                 autonomous_tools TEXT NOT NULL DEFAULT '[]',
                 account_id TEXT,
+                rebind_pending INTEGER NOT NULL DEFAULT 0,
                 approval_since TEXT,
                 updated_at TEXT NOT NULL
             )",

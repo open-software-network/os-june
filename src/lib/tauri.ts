@@ -1,5 +1,5 @@
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
-import connectorAuthorizationEventName from "./connector-authorization-event-name.txt?raw";
+import connectorAuthorizationEventName from "../../src-tauri/connector-authorization-event-name.txt?raw";
 import type {
   AgentArtifactDto,
   AgentInterruptionDto,
@@ -1770,13 +1770,16 @@ export type RoutineTrust = {
   approvalRunCount: number;
   /** Connector action tool names the user granted for autonomous runs. */
   autonomousTools: string[];
-  /** Google account stored on the routine's event trigger or autonomous
-   * grant. Null for routines that do not have an account binding yet. */
+  /** Google account stored for the routine's connector access. Null for
+   * routines that do not have an account binding yet. */
   accountId?: string | null;
   /** Per-job auto MCP server names minted for an autonomous grant (e.g.
    * "june_gmail_auto_ab12cd34"). Returned by routine_trust_set; the job's
    * enabled_toolsets swaps the actions servers for these. */
   autonomousServers?: string[];
+  /** The binding/grant move is durable but its runtime refresh and routine
+   * resume have not both completed yet. */
+  rebindPending?: boolean;
 };
 
 export type ConnectorTriggerKind = "email_received" | "event_upcoming";
@@ -2076,6 +2079,17 @@ export async function routineTrustSet(input: {
       trustMode: input.trustMode,
       autonomousTools: input.autonomousTools,
       accountId: input.accountId,
+    },
+  });
+}
+
+/** Durably brackets an autonomous account rebind until the refreshed grant is
+ * live and the paused routine has resumed. */
+export async function routineTrustRebindPendingSet(input: { jobId: string; pending: boolean }) {
+  return invoke<void>("routine_trust_rebind_pending_set", {
+    request: {
+      jobId: input.jobId,
+      pending: input.pending,
     },
   });
 }

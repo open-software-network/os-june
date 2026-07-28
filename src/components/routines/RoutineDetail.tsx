@@ -12,6 +12,7 @@ import {
   eventTriggerScheduleDraft,
   routineAccountRoleDescription,
   routineToolsetsFor,
+  routineUsesGoogle,
   triggerConfigFromDraft,
   triggerScopeWarning,
   type TriggerDraft,
@@ -39,6 +40,7 @@ import {
   connectorsApplyRuntime,
   connectorsList,
   routineTrustGet,
+  routineTrustRebindPendingSet,
   routineTrustSet,
   routineBrowserAccessGet,
   routineBrowserAccessSet,
@@ -138,6 +140,7 @@ export function RoutineDetail({
   const [storedAccountId, setStoredAccountId] = useState<string | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [runtimeApplyError, setRuntimeApplyError] = useState<string | null>(null);
+  const [rebindPending, setRebindPending] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "history">("details");
   // "Run now" only queues the job for the scheduler's next tick, so the
   // confirmation is a short-lived label swap rather than a new run row.
@@ -183,6 +186,11 @@ export function RoutineDetail({
         setStoredTrust(trust);
         setTrustMode(trust.trustMode);
         setAutonomousTools(trust.autonomousTools);
+        setRebindPending(Boolean(trust.rebindPending));
+        if (trust.rebindPending) {
+          accountRebindPausedRef.current = true;
+          setRuntimeApplyError("The Google account update has not reached the runtime yet.");
+        }
       }
       const stored = triggers[0] ?? null;
       setStoredTrigger(stored);
@@ -194,7 +202,7 @@ export function RoutineDetail({
       );
       const defaultAccountId =
         accountId ?? (connectedGoogle.length === 1 ? connectedGoogle[0].accountId : null);
-      setStoredAccountId(defaultAccountId);
+      setStoredAccountId(accountId);
       setSelectedAccountId(defaultAccountId);
     });
     routineBrowserAccessGet(routine.job_id)
@@ -251,9 +259,8 @@ export function RoutineDetail({
   const selectedAccount = googleAccounts.find((entry) => entry.accountId === selectedAccountId);
   const accountPickerRequired =
     trigger.source !== "schedule" ||
-    trustMode !== "read_only" ||
     storedTrigger !== null ||
-    storedTrust !== null;
+    (policy !== null && routineUsesGoogle(policy, routine.enabled_toolsets));
   const accountChanged = accountPickerRequired && selectedAccountId !== storedAccountId;
   const storedTriggerDraft: TriggerDraft = storedTrigger
     ? triggerDraftFromStored(storedTrigger)
@@ -340,12 +347,14 @@ export function RoutineDetail({
     // the trust/grant change back and keep the two in sync.
     const previousTrust = storedTrust;
     const previousBrowserAccess = storedBrowserAccess;
-    const trustAccountChanged = accountChanged && trustMode === "autonomous";
+    const bindingChanged = accountChanged && accountPickerRequired;
+    const autonomousAccountChanged = bindingChanged && trustMode === "autonomous";
+    const rebindWasPending = rebindPending || autonomousAccountChanged;
 
-    // An autonomous event routine has two account-bearing records: its trigger
-    // and its grant. Keep it ineligible while those records move so an event
-    // cannot arrive between the two writes and run against the wrong account.
-    let pausedForAccountRebind = accountRebindPausedRef.current;
+    // An autonomous connector-aware routine may have two account-bearing
+    // records: its trigger and its grant. Keep it ineligible while those
+    // records move so no run can use the wrong account between the writes.
+    let pausedForAccountRebind = accountRebindPausedRef.current || rebindPending;
     let savedWhilePausedForAccountRebind = false;
     async function restoreAccountRebindActivity() {
       if (!pausedForAccountRebind) return true;
@@ -359,16 +368,47 @@ export function RoutineDetail({
         }
         return true;
       } catch (err) {
-        toast.error(`June could not resume this routine: ${messageFromError(err)}`);
+        const message = `June could not resume this routine: ${messageFromError(err)}`;
+        setRuntimeApplyError(message);
+        toast.error(message);
         return false;
       }
     }
-    if (trustAccountChanged && storedTrigger && !paused && !completed) {
+    async function clearAccountRebindPending() {
+      if (!rebindWasPending) return true;
+      try {
+        await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: false });
+        setRebindPending(false);
+        setStoredTrust((current) => (current ? { ...current, rebindPending: false } : current));
+        return true;
+      } catch (err) {
+        const message = messageFromError(err);
+        setRuntimeApplyError(message);
+        toast.error(message);
+        return false;
+      }
+    }
+    if (autonomousAccountChanged && !rebindPending) {
+      try {
+        await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: true });
+        setRebindPending(true);
+      } catch (err) {
+        toast.error(messageFromError(err));
+        return;
+      }
+    }
+    if (autonomousAccountChanged && !paused && !completed) {
       try {
         await pauseRoutine(routine.job_id);
         pausedForAccountRebind = true;
         accountRebindPausedRef.current = true;
       } catch (err) {
+        try {
+          await routineTrustRebindPendingSet({ jobId: routine.job_id, pending: false });
+          setRebindPending(false);
+        } catch (restoreError) {
+          toast.error(messageFromError(restoreError));
+        }
         toast.error(messageFromError(err));
         return;
       }
@@ -388,14 +428,16 @@ export function RoutineDetail({
         setStoredBrowserAccess(nextBrowserAccess);
       } catch (err) {
         toast.error(messageFromError(err));
-        await restoreAccountRebindActivity();
+        if (await restoreAccountRebindActivity()) {
+          await clearAccountRebindPending();
+        }
         return;
       }
     }
 
     // Trust first: an autonomous grant mints per-job auto server names that
     // the toolset override must reference.
-    if (trustChanged || trustAccountChanged) {
+    if (trustChanged || bindingChanged) {
       if (!policy) return;
       try {
         const previousServers = storedTrust?.autonomousServers ?? [];
@@ -419,7 +461,7 @@ export function RoutineDetail({
             trustMode: stored.trustMode,
             previousTools,
             nextTools: stored.autonomousTools ?? [],
-          }) || trustAccountChanged;
+          }) || autonomousAccountChanged;
       } catch (err) {
         if (browserAccessChanged && previousBrowserAccess) {
           try {
@@ -433,7 +475,9 @@ export function RoutineDetail({
           }
         }
         toast.error(messageFromError(err));
-        await restoreAccountRebindActivity();
+        if (await restoreAccountRebindActivity()) {
+          await clearAccountRebindPending();
+        }
         return;
       }
     } else if (modeChanged || browserAccessChanged) {
@@ -486,7 +530,7 @@ export function RoutineDetail({
       // could still let that run act on Google. No trigger row was written yet,
       // so there is nothing else to unwind.
       let trustRestored = true;
-      if (trustChanged || trustAccountChanged) {
+      if (trustChanged || bindingChanged) {
         try {
           const restored = await routineTrustSet({
             jobId: routine.job_id,
@@ -518,7 +562,9 @@ export function RoutineDetail({
           toast.error(messageFromError(err));
         }
       }
-      if (trustRestored) await restoreAccountRebindActivity();
+      if (trustRestored && (await restoreAccountRebindActivity())) {
+        await clearAccountRebindPending();
+      }
       return;
     }
 
@@ -567,7 +613,7 @@ export function RoutineDetail({
       } catch (err) {
         toast.error(messageFromError(err));
         let accountBindingRestored = true;
-        if (trustAccountChanged && storedAccountId) {
+        if (bindingChanged && storedAccountId) {
           try {
             const restored = await routineTrustSet({
               jobId: routine.job_id,
@@ -578,7 +624,7 @@ export function RoutineDetail({
             setStoredTrust(restored);
             // Moving back to the original account rotates the grant token
             // again. Refresh the runtime before the old trigger can fire.
-            await connectorsApplyRuntime();
+            if (autonomousAccountChanged) await connectorsApplyRuntime();
           } catch (restoreError) {
             accountBindingRestored = false;
             toast.error(
@@ -590,7 +636,9 @@ export function RoutineDetail({
         // Leave the routine paused so schedule and event sources cannot both
         // dispatch it; retrying Save completes the deletion and resumes it.
         if (accountBindingRestored && trigger.source !== "schedule") {
-          await restoreAccountRebindActivity();
+          if (await restoreAccountRebindActivity()) {
+            await clearAccountRebindPending();
+          }
         }
         return;
       }
@@ -600,7 +648,7 @@ export function RoutineDetail({
     // runtime re-renders its config. An account rebind must finish that refresh
     // before the routine resumes because the old runtime still holds the
     // previous account's grant token.
-    if (autoServersChanged || browserAccessChanged) {
+    if (autoServersChanged || browserAccessChanged || rebindWasPending) {
       try {
         await connectorsApplyRuntime();
       } catch (err) {
@@ -614,8 +662,9 @@ export function RoutineDetail({
       }
     }
 
-    if (accountChanged) setStoredAccountId(selectedAccountId);
     if (!(await restoreAccountRebindActivity())) return;
+    if (!(await clearAccountRebindPending())) return;
+    if (accountChanged) setStoredAccountId(selectedAccountId);
     setRuntimeApplyError(null);
   }
 
@@ -685,7 +734,7 @@ export function RoutineDetail({
               type="button"
               className="primary-action primary-solid"
               disabled={
-                !dirty ||
+                !(dirty || rebindPending) ||
                 !prompt.trim() ||
                 saving ||
                 busy ||

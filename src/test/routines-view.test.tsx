@@ -61,6 +61,7 @@ const tauriMocks = vi.hoisted(() => ({
   routineTrustGet: vi.fn(),
   routineTrustRecordRun: vi.fn(),
   routineTrustSet: vi.fn(),
+  routineTrustRebindPendingSet: vi.fn(),
   routineBrowserAccessGet: vi.fn(),
   routineBrowserAccessSet: vi.fn(),
   connectorTriggersList: vi.fn(),
@@ -189,6 +190,7 @@ beforeEach(() => {
       : { enabled: false },
   );
   tauriMocks.routineTrustRecordRun.mockResolvedValue(null);
+  tauriMocks.routineTrustRebindPendingSet.mockResolvedValue(undefined);
   tauriMocks.routineTrustSet.mockImplementation(
     async (input: { trustMode: string; autonomousTools?: string[] }) => ({
       trustMode: input.trustMode,
@@ -270,7 +272,12 @@ function mockAutonomousEventRoutineWithTwoAccounts() {
       accountId: input.accountId,
     }),
   );
-  mocks.listRoutines.mockResolvedValue([job({ schedule: "2099-01-01T09:00:00Z" })]);
+  mocks.listRoutines.mockResolvedValue([
+    job({
+      schedule: "2099-01-01T09:00:00Z",
+      enabled_toolsets: ["june_gmail", "june_gmail_auto_abc123"],
+    }),
+  ]);
 }
 
 afterEach(() => {
@@ -638,6 +645,11 @@ describe("RoutinesView connector templates", () => {
   });
 
   it("shows the manual authorization link while connecting from a routine template", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
     tauriMocks.connectorsList.mockResolvedValue([]);
     tauriMocks.connectorsConnect.mockReturnValue(new Promise(() => {}));
     mocks.listRoutines.mockResolvedValue([]);
@@ -660,6 +672,9 @@ describe("RoutinesView connector templates", () => {
 
     await userEvent.click(await screen.findByText("Trouble opening your browser?"));
     expect(screen.getByLabelText("Authorization link")).toHaveValue(authorizationUrl);
+    await userEvent.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(writeText).toHaveBeenCalledWith(authorizationUrl);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open again" })).toBeEnabled();
   });
 
@@ -672,7 +687,7 @@ describe("RoutinesView connector templates", () => {
       autonomousServers: [],
       accountId: null,
     });
-    mocks.listRoutines.mockResolvedValue([job()]);
+    mocks.listRoutines.mockResolvedValue([job({ enabled_toolsets: ["june_gmail"] })]);
     renderView();
     await openDetail("Morning summary");
 
@@ -1008,18 +1023,94 @@ describe("RoutinesView detail", () => {
     });
   });
 
-  it("does not mark a legacy unbound routine dirty when one account is the safe default", async () => {
+  it("persists the sole-account default for a legacy unbound Google routine", async () => {
     tauriMocks.connectorsList.mockResolvedValue([googleAccount()]);
-    tauriMocks.routineTrustGet.mockResolvedValue(null);
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "read_only",
+      approvalRunCount: 0,
+      autonomousTools: [],
+      autonomousServers: [],
+      accountId: null,
+    });
     tauriMocks.connectorTriggersList.mockResolvedValue([]);
-    mocks.listRoutines.mockResolvedValue([job()]);
+    mocks.listRoutines.mockResolvedValue([job({ enabled_toolsets: ["web", "june_gmail"] })]);
     renderView();
 
     await openDetail("Morning summary");
 
     await waitFor(() => expect(tauriMocks.connectorsList).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "Google account" })).toHaveTextContent(
+      "alex@example.com",
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        trustMode: "read_only",
+        autonomousTools: undefined,
+        accountId: "acc-1",
+      }),
+    );
+  });
+
+  it("persists a scheduled approval routine's selected Google account", async () => {
+    tauriMocks.connectorsList.mockResolvedValue([
+      googleAccount(),
+      googleAccount({ accountId: "acc-2", email: "personal@example.com" }),
+    ]);
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "approval",
+      approvalRunCount: 1,
+      autonomousTools: [],
+      autonomousServers: [],
+      accountId: null,
+    });
+    mocks.listRoutines.mockResolvedValue([
+      job({ enabled_toolsets: ["web", "june_gmail", "june_gmail_actions"] }),
+    ]);
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Google account" }));
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(tauriMocks.routineTrustSet).toHaveBeenCalledWith({
+        jobId: "abc123",
+        trustMode: "approval",
+        autonomousTools: undefined,
+        accountId: "acc-2",
+      }),
+    );
+  });
+
+  it("does not require a Google account for an approval-mode browser routine", async () => {
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "approval",
+      approvalRunCount: 1,
+      autonomousTools: [],
+      autonomousServers: [],
+      accountId: null,
+    });
+    mocks.listRoutines.mockResolvedValue([
+      job({ enabled_toolsets: ["web", "june_browser_routine_abc123"] }),
+    ]);
+    renderView();
+
+    const list = await screen.findByRole("list", { name: "Routines" });
+    expect(within(list).queryByText("Needs an account")).toBeNull();
+    const instructions = await openDetail("Morning summary");
     expect(screen.queryByRole("button", { name: "Google account" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    await userEvent.clear(instructions);
+    await userEvent.type(instructions, "Browse the status page.");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mocks.updateRoutine).toHaveBeenCalledWith("abc123", {
+        prompt: "Browse the status page.",
+      }),
+    );
   });
 
   it("marks an unbound autonomous routine as needing an account in the list", async () => {
@@ -1034,7 +1125,7 @@ describe("RoutinesView detail", () => {
       googleAccount(),
       googleAccount({ accountId: "acc-2", email: "personal@example.com" }),
     ]);
-    mocks.listRoutines.mockResolvedValue([job()]);
+    mocks.listRoutines.mockResolvedValue([job({ enabled_toolsets: ["june_gmail"] })]);
     renderView();
 
     const list = await screen.findByRole("list", { name: "Routines" });
@@ -1159,6 +1250,14 @@ describe("RoutinesView detail", () => {
     });
     expect(mocks.pauseRoutine).toHaveBeenCalledWith("abc123");
     await waitFor(() => expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123"));
+    expect(tauriMocks.routineTrustRebindPendingSet).toHaveBeenNthCalledWith(1, {
+      jobId: "abc123",
+      pending: true,
+    });
+    expect(tauriMocks.routineTrustRebindPendingSet).toHaveBeenLastCalledWith({
+      jobId: "abc123",
+      pending: false,
+    });
     await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
     expect(tauriMocks.connectorsApplyRuntime.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.resumeRoutine.mock.invocationCallOrder[0],
@@ -1230,8 +1329,86 @@ describe("RoutinesView detail", () => {
     });
     expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1);
     expect(mocks.resumeRoutine).not.toHaveBeenCalled();
+    expect(tauriMocks.routineTrustRebindPendingSet).toHaveBeenLastCalledWith({
+      jobId: "abc123",
+      pending: true,
+    });
     expect(accountPicker).toHaveTextContent("personal@example.com");
     expect(screen.getByRole("button", { name: "Retry save" })).toBeEnabled();
+  });
+
+  it("recovers a persisted pending rebind after reopening the paused routine", async () => {
+    tauriMocks.routineTrustGet.mockResolvedValue({
+      trustMode: "autonomous",
+      approvalRunCount: 3,
+      autonomousTools: ["create_draft"],
+      autonomousServers: ["june_gmail_auto_abc123"],
+      accountId: "acc-2",
+      rebindPending: true,
+    });
+    tauriMocks.connectorsList.mockResolvedValue([
+      googleAccount({ accountId: "acc-2", email: "personal@example.com" }),
+    ]);
+    mocks.listRoutines.mockResolvedValue([
+      job({
+        state: "paused",
+        schedule: "2099-01-01T09:00:00Z",
+        enabled_toolsets: ["june_gmail", "june_gmail_auto_abc123"],
+      }),
+    ]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(await screen.findByRole("button", { name: "Retry save" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry save" }));
+
+    await waitFor(() => expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalledTimes(1));
+    expect(mocks.resumeRoutine).toHaveBeenCalledWith("abc123");
+    expect(tauriMocks.routineTrustRebindPendingSet).toHaveBeenLastCalledWith({
+      jobId: "abc123",
+      pending: false,
+    });
+  });
+
+  it("keeps rebind retry available when resume fails after runtime apply", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    mocks.resumeRoutine.mockRejectedValueOnce(new Error("resume failed"));
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Google account" }));
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect((await screen.findAllByText(/resume failed/)).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Retry save" })).toBeEnabled();
+    expect(tauriMocks.routineTrustRebindPendingSet).not.toHaveBeenCalledWith({
+      jobId: "abc123",
+      pending: false,
+    });
+  });
+
+  it("ignores a second save click while account rebind setup is in flight", async () => {
+    mockAutonomousEventRoutineWithTwoAccounts();
+    let finishPause: () => void = () => {};
+    mocks.pauseRoutine.mockReturnValue(
+      new Promise((resolve) => {
+        finishPause = () => resolve({});
+      }),
+    );
+    renderView();
+    await openDetail("Morning summary");
+
+    await userEvent.click(await screen.findByRole("button", { name: "Google account" }));
+    await userEvent.click(screen.getByRole("option", { name: "personal@example.com" }));
+    const save = screen.getByRole("button", { name: "Save" });
+    fireEvent.click(save);
+    fireEvent.click(save);
+
+    await waitFor(() => expect(mocks.pauseRoutine).toHaveBeenCalledTimes(1));
+    expect(tauriMocks.routineTrustSet).not.toHaveBeenCalled();
+    await act(async () => finishPause());
+    await waitFor(() => expect(tauriMocks.routineTrustSet).toHaveBeenCalledTimes(1));
   });
 
   it("stays paused when an account rebind cannot remove the old event trigger", async () => {

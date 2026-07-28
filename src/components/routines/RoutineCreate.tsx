@@ -30,6 +30,7 @@ import {
   type RoutineTrustMode,
 } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
+import { CopyStateIcon } from "../ui/CopyStateIcon";
 import { InlineNotice } from "../ui/InlineNotice";
 import { Select } from "../ui/Select";
 import { GrowingTextarea } from "./GrowingTextarea";
@@ -48,7 +49,7 @@ export type RoutineCreateInput = {
   autonomousTools: string[];
   /** The "When" choice: a schedule, or a connector event trigger. */
   trigger: TriggerDraft;
-  /** Explicit Google account selected for an event trigger or autonomous grant. */
+  /** Explicit Google account selected for this connector-aware routine. */
   triggerAccountId?: string;
   /** Set when installing a connector template, so the create flow knows to
    * persist trust and queue the immediate first run. */
@@ -91,8 +92,10 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [authorizationUrlCopied, setAuthorizationUrlCopied] = useState(false);
   const connectFlowRef = useRef<string | null>(null);
   const authorizationListenerReadyRef = useRef(false);
+  const authorizationCopiedTimerRef = useRef<number>();
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +124,7 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
       });
     return () => {
       cancelled = true;
+      window.clearTimeout(authorizationCopiedTimerRef.current);
       authorizationListenerReadyRef.current = false;
       if (connectFlowRef.current) void connectorsCancelConnect(connectFlowRef.current);
       unlisten?.();
@@ -221,6 +225,21 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
       if (connectFlowRef.current === flowId) connectFlowRef.current = null;
       setConnectBusy(false);
     }
+  }
+
+  function copyAuthorizationUrl() {
+    if (!authorizationUrl) return;
+    void navigator.clipboard
+      .writeText(authorizationUrl)
+      .then(() => {
+        setAuthorizationUrlCopied(true);
+        window.clearTimeout(authorizationCopiedTimerRef.current);
+        authorizationCopiedTimerRef.current = window.setTimeout(
+          () => setAuthorizationUrlCopied(false),
+          2000,
+        );
+      })
+      .catch((error) => setConnectError(messageFromError(error)));
   }
 
   function submit() {
@@ -334,12 +353,23 @@ export function RoutineCreate({ template, creating, error, onBack, onCreate }: R
             <summary>Trouble opening your browser?</summary>
             <div className="connector-authorization-fallback-body">
               <label htmlFor="routine-authorization-url">Authorization link</label>
-              <input
-                id="routine-authorization-url"
-                className="text-input"
-                value={authorizationUrl}
-                readOnly
-              />
+              <div className="connector-authorization-url-row">
+                <input
+                  id="routine-authorization-url"
+                  className="text-input"
+                  value={authorizationUrl}
+                  readOnly
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  aria-live="polite"
+                  onClick={copyAuthorizationUrl}
+                >
+                  <CopyStateIcon copied={authorizationUrlCopied} />
+                  {authorizationUrlCopied ? "Copied" : "Copy link"}
+                </button>
+              </div>
               <button
                 type="button"
                 className="btn btn-secondary connector-authorization-open"

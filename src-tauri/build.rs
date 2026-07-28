@@ -2,6 +2,7 @@ const SYSTEM_AUDIO_MIN_MACOS_VERSION_FILE: &str = "system-audio-min-macos-versio
 const DICTATION_HELPER_MIN_MACOS_VERSION: &str = "14.0";
 
 fn main() {
+    generate_connector_authorization_event();
     println!("cargo:rerun-if-changed=tauri.conf.json");
     println!("cargo:rerun-if-changed=Entitlements.plist");
     println!("cargo:rerun-if-changed=icons/icon.icns");
@@ -28,6 +29,29 @@ fn main() {
     ensure_bundled_extension_dir();
     ensure_nm_shim_placeholder();
     tauri_build::build();
+}
+
+fn generate_connector_authorization_event() {
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
+    );
+    let source = manifest_dir.join("connector-authorization-event-name.txt");
+    println!("cargo:rerun-if-changed={}", source.display());
+    let raw = std::fs::read_to_string(&source).unwrap_or_else(|error| {
+        panic!("connector authorization event should be readable: {error}")
+    });
+    let event = raw.trim();
+    assert!(
+        !event.is_empty() && !event.chars().any(char::is_whitespace),
+        "connector authorization event must be one non-empty token"
+    );
+    let generated = format!("pub(crate) const AUTHORIZATION_URL_EVENT: &str = {event:?};\n");
+    let output = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR should be set"))
+        .join("connector_authorization_event.rs");
+    if std::fs::read_to_string(&output).ok().as_deref() != Some(generated.as_str()) {
+        std::fs::write(output, generated)
+            .expect("generated connector authorization event should be writable");
+    }
 }
 
 /// Swift-backed dependencies emit their runtime search paths from dependency

@@ -485,6 +485,26 @@ export function routineTrustModeFromToolsets(
   return null;
 }
 
+/** Whether a routine's stored tool catalog can call a Google connector.
+ * Trust rows are deliberately not consulted: browser-only and other
+ * non-Google routines may still carry approval policy. */
+export function routineUsesGoogle(
+  policy: ConnectorPolicyCatalog,
+  enabledToolsets: string[] | undefined,
+): boolean {
+  const toolsets = enabledToolsets ?? [];
+  const googleServers = new Set(
+    policy.servers.filter((server) => server.provider === "google").map((server) => server.id),
+  );
+  const googlePrefixes = policy.serverOwnerPrefixes
+    .filter((definition) => definition.provider === "google")
+    .map((definition) => definition.prefix);
+  return toolsets.some(
+    (toolset) =>
+      googleServers.has(toolset) || googlePrefixes.some((prefix) => toolset.startsWith(prefix)),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Event triggers
 // ---------------------------------------------------------------------------
@@ -529,8 +549,13 @@ export function routineAccountRoleDescription(
   if (receivesTrigger && actsAutonomously) {
     return "This account receives the trigger and performs autonomous actions.";
   }
-  if (receivesTrigger) return "This account receives the trigger.";
-  return "This account performs autonomous actions.";
+  if (receivesTrigger && trustMode === "approval") {
+    return "This account receives the trigger and is used for actions you approve.";
+  }
+  if (receivesTrigger) return "This account receives the trigger and is used for Google reads.";
+  if (actsAutonomously) return "This account performs autonomous actions.";
+  if (trustMode === "approval") return "This account is used for actions you approve.";
+  return "This account is used for Google reads.";
 }
 
 /**

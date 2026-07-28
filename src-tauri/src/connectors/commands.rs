@@ -67,7 +67,7 @@ pub async fn connectors_connect(
         .filter(|flow_id| !flow_id.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| super::random_b64url(18));
-    flow.begin(&flow_id)?;
+    let flow_owner = flow.begin(&flow_id)?;
     let result = match provider {
         ConnectorProvider::Google => {
             begin_connect(
@@ -104,25 +104,36 @@ pub async fn connectors_connect(
             "Notion uses its dedicated connect flow.",
         )),
     };
-    flow.finish(&flow_id);
+    drop(flow_owner);
     let account = result?;
     if provider != ConnectorProvider::Google {
         return Ok(account);
     }
 
-    // Re-mint autonomous grants for routines that still declare autonomous
-    // trust. Preserve a healthy stored binding. A legacy or disconnected
-    // binding defaults only when exactly one connected Google account exists;
-    // otherwise it remains visibly unresolved in the routine UI. Best-effort
-    // and per routine: a re-mint failure must not fail the connect.
+    // Repair bindings for every routine whose durable tool catalog uses
+    // Google, then re-mint grants for the autonomous subset. Preserve a
+    // healthy stored binding. A legacy or disconnected binding defaults only
+    // when exactly one connected Google account exists; otherwise it remains
+    // visibly unresolved in the routine UI. Best-effort and per routine: a
+    // repair failure must not fail the connect.
     let repos = crate::commands::repositories(&app).await?;
-    match repos.list_routine_trust_by_mode("autonomous").await {
+    match repos.list_routine_trust().await {
         Ok(records) => {
             for record in records {
+                let toolsets = match repos.routine_enabled_toolsets(&record.job_id).await {
+                    Ok(toolsets) => toolsets,
+                    Err(error) => {
+                        tracing::warn!(error_code = %AppError::from(error).code, "routine toolset lookup on connect failed");
+                        continue;
+                    }
+                };
+                if !policy::routine_uses_google_toolsets(&toolsets) {
+                    continue;
+                }
                 let stored_account = match stored_routine_account_id(&repos, &record.job_id).await {
                     Ok(account_id) => account_id,
                     Err(error) => {
-                        tracing::warn!(error_code = %error.code, "autonomous routine account lookup on connect failed");
+                        tracing::warn!(error_code = %error.code, "routine account lookup on connect failed");
                         None
                     }
                 };
@@ -142,7 +153,7 @@ pub async fn connectors_connect(
                             .routine_trust_set_account(&record.job_id, Some(&account_id))
                             .await
                         {
-                            tracing::warn!(error_code = %AppError::from(error).code, "autonomous routine account default failed");
+                            tracing::warn!(error_code = %AppError::from(error).code, "routine account default failed");
                             None
                         } else {
                             Some(account_id)
@@ -151,16 +162,18 @@ pub async fn connectors_connect(
                     None => None,
                 };
                 let Some(account_id) = account_id else {
-                    tracing::warn!(job_id = %record.job_id, "autonomous routine has no unambiguous Google account");
+                    tracing::warn!(job_id = %record.job_id, "Google routine has no unambiguous account");
                     continue;
                 };
-                if let Err(error) = mint_autonomy_grants(&repos, &record, &account_id).await {
-                    tracing::warn!(error_code = %error.code, "re-mint autonomous grants on connect failed");
+                if record.trust_mode == "autonomous" {
+                    if let Err(error) = mint_autonomy_grants(&repos, &record, &account_id).await {
+                        tracing::warn!(error_code = %error.code, "re-mint autonomous grants on connect failed");
+                    }
                 }
             }
         }
         Err(error) => {
-            tracing::warn!(error_code = %AppError::from(error).code, "autonomous routine lookup on connect failed");
+            tracing::warn!(error_code = %AppError::from(error).code, "routine lookup on connect failed");
         }
     }
 
@@ -350,14 +363,14 @@ pub struct RoutineTrustDto {
     pub trust_mode: String,
     pub approval_run_count: i64,
     pub autonomous_tools: Vec<String>,
-    /// Google account already bound to this routine's event trigger or
-    /// autonomous grant. Absent for plain/legacy routines with no stored
-    /// account choice.
+    /// Google account already bound to this routine's connector access.
+    /// Absent for plain/legacy routines with no stored account choice.
     pub account_id: Option<String>,
     /// Names of the per-job auto MCP servers minted for the current
     /// autonomous grants (`june_<provider>_auto_<jobid8>`), sorted. Empty
     /// unless the routine is autonomous with granted mutating tools.
     pub autonomous_servers: Vec<String>,
+    pub rebind_pending: bool,
 }
 
 #[tauri::command]
@@ -435,11 +448,13 @@ pub async fn routine_trust_set(
             .map(|record| record.autonomous_tools)
             .unwrap_or_default()
     });
-    repos
-        .routine_trust_set(&request.job_id, &request.trust_mode, &autonomous_tools)
-        .await?;
     let record = repos
-        .routine_trust_set_account(&request.job_id, account_id.as_deref())
+        .routine_trust_set_with_account(
+            &request.job_id,
+            &request.trust_mode,
+            &autonomous_tools,
+            account_id.as_deref(),
+        )
         .await?;
     // Autonomy grant minting is the choke point for session-blind
     // attribution: an autonomous routine gets a per-provider grant (token +
@@ -457,6 +472,25 @@ pub async fn routine_trust_set(
         Vec::new()
     };
     Ok(trust_dto(record, servers, account_id))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutineTrustRebindPendingRequest {
+    pub job_id: String,
+    pub pending: bool,
+}
+
+#[tauri::command]
+pub async fn routine_trust_rebind_pending_set(
+    app: tauri::AppHandle,
+    request: RoutineTrustRebindPendingRequest,
+) -> Result<(), AppError> {
+    let repos = crate::commands::repositories(&app).await?;
+    repos
+        .routine_trust_set_rebind_pending(&request.job_id, request.pending)
+        .await?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -504,6 +538,7 @@ fn trust_dto(
         autonomous_tools: record.autonomous_tools,
         account_id,
         autonomous_servers,
+        rebind_pending: record.rebind_pending,
     }
 }
 
@@ -536,7 +571,7 @@ pub(crate) async fn stored_routine_account_id(
         .find(|account_id| !account_id.is_empty()))
 }
 
-async fn sole_connected_google_account_id(app: &tauri::AppHandle) -> Option<String> {
+pub(crate) async fn sole_connected_google_account_id(app: &tauri::AppHandle) -> Option<String> {
     let mut account_ids = list_google_accounts(app)
         .await
         .ok()?
@@ -1109,6 +1144,7 @@ mod tests {
             approval_run_count: 3,
             autonomous_tools: vec!["send_email".to_string()],
             account_id: Some("first@example.com".to_string()),
+            rebind_pending: false,
             approval_since: None,
             updated_at: "2026-07-28T00:00:00Z".to_string(),
         };
