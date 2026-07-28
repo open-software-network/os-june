@@ -379,8 +379,8 @@ describe("meeting start transcription event", () => {
         "meeting-request-1",
         "microphonePlusSystem",
       );
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     });
-    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
