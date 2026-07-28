@@ -101,6 +101,30 @@ pub(crate) fn discovery_for_app(app: &AppHandle) -> Result<ObsidianDiscovery, Ap
     Ok(discovery_from_config(&config))
 }
 
+/// Returns the canonical absolute path of the currently connected and available
+/// Obsidian vault, or `None` when disconnected or unavailable. Reads
+/// `obsidian.json` and validates at invocation time so vault changes and
+/// disconnects affect the next host tool call. The returned path is the
+/// raw canonical form (matching `Path::canonicalize()`) so it can be used
+/// for component-wise containment checks in path resolution.
+pub(crate) fn current_vault_root(app: &AppHandle) -> Option<PathBuf> {
+    let config = read_config_optional(app).ok().flatten()?;
+    let path = Path::new(&config.vault_path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_dir() {
+        return None;
+    }
+    let obsidian_dir = canonical.join(".obsidian");
+    let metadata = std::fs::symlink_metadata(&obsidian_dir).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    Some(canonical)
+}
+
 fn discovery_from_config(config: &ObsidianConfig) -> ObsidianDiscovery {
     let name = vault_name(&config.vault_path);
     match validate_vault_path(Path::new(&config.vault_path)) {
