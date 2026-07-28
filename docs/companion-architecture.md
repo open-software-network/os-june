@@ -74,17 +74,20 @@ part of the desktop companion controller.
 ## Authority and availability
 
 The Mac is authoritative. The phone cannot run June's local agent harness,
-start a recording, approve tools, read arbitrary filesystem contents, or use
-provider keys. A linked device can list bounded metadata only inside roots the
-signed-in Mac user explicitly grants, and a selected file reaches June only
-through the normal agent attachment path. The companion cannot download Mac
-file contents. It can select only Auto or a model in the bounded recommended
-set currently available from the desktop's live catalog. A model change made
-during a run is staged for the next run and cannot alter the in-flight provider
-request.
-When the Mac is offline, control fails immediately and the UI says offline.
-No control ciphertext is queued. The encrypted mobile cache only renders the
-last successful snapshot while locked/offline and is not synchronization.
+start a recording, read arbitrary filesystem contents, or use provider keys. A
+linked device can list bounded metadata only inside roots the signed-in Mac user
+explicitly grants, and a selected file reaches June only through the normal
+agent attachment path. The companion cannot download Mac file contents. It can
+select only Auto or a model in the bounded recommended set currently available
+from the desktop's live catalog. A model change made during a run is staged for
+the next run and cannot alter the in-flight provider request. When the desktop's
+default-off remote-approval setting is enabled, a linked companion may approve
+one exact, expiring Computer use interruption under ADR-0052; it receives no
+standing grant and cannot widen the Rust desktop policy. All other tool
+approvals stay on the Mac. When the Mac is offline, control fails immediately
+and the UI says offline. No control ciphertext is queued. The encrypted mobile
+cache only renders the last successful snapshot while locked/offline and is
+not synchronization.
 
 The first transport is relay-only. The interface leaves room for a future
 Network.framework/Bonjour or ICE/TURN implementation without changing the

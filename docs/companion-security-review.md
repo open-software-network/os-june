@@ -22,6 +22,10 @@
 - Confirm desktop capability equality, no generic executor, note CAS, durable
   pre-dispatch mutation reservations, separate completed/pending retention
   bounds, sequence reset only after handshake, and immediate online revocation.
+- Confirm Computer use remote approvals are default-off, bound to one tool-call
+  id and stored session, expire and deny after 60 seconds, serialize local and
+  remote resolution, create no task-scoped app grant, and cannot bypass Rust
+  target or action policy.
 - Confirm APNs payload is content-free and correctness does not depend on wake.
 - Confirm production runs one companion relay replica until shared pairing,
   routing, and revocation propagation have an independent review.

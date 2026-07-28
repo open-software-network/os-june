@@ -67,11 +67,6 @@ and APNs signing material.
 - Media history and fetch recheck current data-partition membership after
   awaited artifact or file work. If the user switches partitions during a
   fetch, the already-read chunk is discarded rather than released.
-- The mobile bundle has no OS Accounts client, callback, account token, OS
-  Accounts App API key, provider key, APNs signing key, relay secret, or
-  prebuilt bearer token. Pairing never copies the Desktop account session.
-- The desktop controller has no generic executor. The Hermes Gateway remains
-  behind the existing control plane.
 - `modelEdit` permits a linked phone to change the privacy and credit-price
   characteristics of the next agent run. Desktop limits that authority to Auto
   plus its live recommended generation set, returns canonical privacy and
@@ -82,6 +77,16 @@ and APNs signing material.
   desktop data partition immediately before the synchronous staging write. A
   change during an active run cannot cancel or reroute that run; it applies at
   the next run boundary.
+- A remote Computer use approval is additionally bound to one SDK tool-call
+  id, stored session id, 60-second desktop registry entry, unique operation id,
+  and monotonic Noise sequence. The first local or remote decision wins. A
+  phone approval supplies one invocation permit only; it cannot create the
+  broker's task-scoped app grant or bypass a Rust policy denial.
+- The mobile bundle has no OS Accounts client, callback, account token, OS
+  Accounts App API key, provider key, APNs signing key, relay secret, or
+  prebuilt bearer token. Pairing never copies the Desktop account session.
+- The desktop controller has no generic executor. The agent harness and
+  Computer use driver remain behind their existing Rust control planes.
 
 ## Accepted risks
 
@@ -96,6 +101,7 @@ approved root remain sensitive even without file contents. An attacker already
 able to replace files on the Mac can race metadata checks; June revalidates at
 agent-send time, while a fully compromised endpoint remains outside the
 companion boundary.
+
 Saving a verified result to Photos creates a durable phone-controlled copy
 whose retention can outlive both the desktop artifact and June Companion's
 encrypted snapshot cache. A cached open desktop handle can temporarily keep a

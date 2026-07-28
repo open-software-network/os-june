@@ -61,9 +61,9 @@ The only grants are notes read/edit, agent read/chat/cancel, model read/edit,
 generated-media read, safe settings read/edit, existing-recording
 state/pause/resume/stop, app focus, and self-device read/revoke. Linked devices
 may also receive the separate `filesUpload` and `filesBrowse` grants described
-below. Model discovery and current-session reads require `modelRead`; changing
-a session's next-run model requires `modelEdit`. Body-to-capability equality is
-validated before dispatch.
+below, plus one-shot Computer use approval. Model discovery and current-session
+reads require `modelRead`; changing a session's next-run model requires
+`modelEdit`. Body-to-capability equality is validated before dispatch.
 
 The encrypted `deviceGetSelf` result may include the Desktop's user-facing
 device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
@@ -73,14 +73,14 @@ the additive field, and new companions retain their generic Mac fallback when
 an older Desktop omits it.
 
 Agent session and message reads go through typed frontend intents backed by
-the current Hermes session APIs. The companion receives the same sanitized
-display text as June Desktop: machine context, provider routing details,
-reasoning, tool calls/results, approvals, secrets, and artifact paths stay on
-the Mac. The always-mounted app shell serves reads even when the Agent screen
-is closed. Send and cancel intents wake the existing Agent workspace.
+June's current agent-runtime session APIs. The companion receives the same
+sanitized display text as June Desktop: machine context, provider routing
+details, reasoning, tool calls/results, approvals, secrets, and media internals
+stay on the Mac. The always-mounted app shell serves reads even when the Agent
+screen is closed. Send and cancel intents wake the existing Agent workspace.
 Wire session identifiers are qualified explicitly: agent data uses
 `storedSessionId`, while active-recording snapshots and controls use
-`recordingSessionId`. The companion protocol does not expose a Hermes runtime
+`recordingSessionId`. The companion protocol does not expose an agent-runtime
 session id.
 
 Model control uses the `modelsList`, `sessionModelGet`, and `sessionModelSet`
@@ -143,12 +143,6 @@ after awaited inspection or file IO; a partition switch discards the result.
 Fetch resolution always combines the stored session id with the opaque
 artifact id and never accepts a phone-supplied path.
 
-There is no variant for arbitrary Tauri/Hermes calls, recording start, note
-delete, approvals, unrestricted mode, general filesystem access, shell, credentials,
-connectors, updates, account deletion, or adding a device. The bounded browse
-variants below are not a general filesystem capability and do not return file
-contents.
-
 ## Attachments and granted Mac roots
 
 Phone attachments use `uploadBegin`, `uploadChunk`, and `uploadCommit` under
@@ -178,6 +172,33 @@ The maximum 32 KiB chunk expands to 43,692 base64 characters. A worst-case
 request frame encodes to 43,988 bytes, leaving 1,068 bytes below the 44 KiB
 plaintext ceiling. Existing Noise and relay-envelope ceilings therefore remain
 unchanged.
+
+`computerUseApprove` is limited to the existing `computer_use` agent-runtime
+approval interruption. A pending event carries a request id, stored session id,
+bounded action and description, optional target app/URL, and a 60-second
+deadline. Approve/deny repeats both ids. Status events report approved, denied,
+executing, succeeded, failed, expired, or cancelled. Desktop binds the request
+id to the distinct SDK tool-call id rather than assuming equality. Before
+publishing, Desktop resolves the exact process, window, and app identity; a
+contradictory app/window selector, changed target, or target that is not yet
+verifiable keeps the interruption desktop-local. Permit consumption compares
+that exact target again and falls back to the Mac-local authorization surface
+on mismatch. It consumes one app-authorization decision; a second decision in
+the same action remains desktop-local, and the permit never becomes a task or
+app grant. Desktop never truncates approval fields to fit those bounds: an
+oversized action, description, app, or URL keeps the interruption
+desktop-local. The default-off Linked devices toggle, Computer/Browser use
+experiment, authenticated live peer advertising `computerUseApprove`, active
+link, and Rust broker policy all gate it. The authoritative expiry uses a
+monotonic deadline; wall-clock values are display metadata. Auto-deny retries
+bounded transient failures, then retires the remote request and leaves the
+interruption Mac-local if dispatch cannot be completed. See ADR-0052.
+
+There is no variant for arbitrary Tauri or agent-harness calls, recording
+start, note delete, other approvals, unrestricted mode, general filesystem
+access, shell, credentials, connectors, updates, account deletion, or adding a
+device. The bounded browse variants above are not a general filesystem
+capability and do not return file contents.
 
 ## Idempotency and reconnect
 
