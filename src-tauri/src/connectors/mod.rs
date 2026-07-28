@@ -29,9 +29,13 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex as StdMutex, OnceLock},
+    future::Future,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex, OnceLock,
+    },
 };
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 pub use notion::NotionConnectFlow;
 pub use oauth::ConnectFlow;
@@ -353,6 +357,68 @@ fn linear_loopback_ports_from(override_value: &str) -> Vec<u16> {
 /// parallel refreshes for the same account must never race (one would burn a
 /// consumed token and force a reconnect).
 static REFRESH_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>> = OnceLock::new();
+static LINEAR_LIFECYCLES: OnceLock<StdMutex<HashMap<String, Arc<LinearLifecycleState>>>> =
+    OnceLock::new();
+
+struct LinearLifecycleState {
+    gate: Arc<AsyncMutex<()>>,
+    epoch: AtomicU64,
+}
+
+pub(crate) struct LinearLifecycleGuard {
+    state: Arc<LinearLifecycleState>,
+    _guard: OwnedMutexGuard<()>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LinearLifecycleSnapshot {
+    state: Arc<LinearLifecycleState>,
+    epoch: u64,
+}
+
+impl LinearLifecycleGuard {
+    pub(crate) fn bump_epoch(&self) -> u64 {
+        self.state.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub(crate) fn snapshot(&self) -> LinearLifecycleSnapshot {
+        LinearLifecycleSnapshot {
+            state: self.state.clone(),
+            epoch: self.state.epoch.load(Ordering::SeqCst),
+        }
+    }
+}
+
+impl LinearLifecycleSnapshot {
+    pub(crate) fn is_current(&self) -> bool {
+        self.state.epoch.load(Ordering::SeqCst) == self.epoch
+    }
+}
+
+fn linear_lifecycle_for(account_id: &str) -> Arc<LinearLifecycleState> {
+    let lifecycles = LINEAR_LIFECYCLES.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut lifecycles = lifecycles
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    lifecycles
+        .entry(account_id.to_string())
+        .or_insert_with(|| {
+            Arc::new(LinearLifecycleState {
+                gate: Arc::new(AsyncMutex::new(())),
+                epoch: AtomicU64::new(0),
+            })
+        })
+        .clone()
+}
+
+pub(crate) async fn acquire_linear_lifecycle(account_id: &str) -> LinearLifecycleGuard {
+    let state = linear_lifecycle_for(account_id);
+    let guard = state.gate.clone().lock_owned().await;
+    LinearLifecycleGuard {
+        state,
+        _guard: guard,
+    }
+}
 
 fn refresh_lock_for(account_id: &str) -> Arc<AsyncMutex<()>> {
     let locks = REFRESH_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
@@ -511,12 +577,6 @@ pub async fn linear_access_token(
     app: &tauri::AppHandle,
     account_id: &str,
 ) -> Result<String, AppError> {
-    let stored = store::load_tokens(ConnectorProvider::Linear, account_id)
-        .await?
-        .ok_or_else(linear_not_connected_error)?;
-    if access_token_is_fresh(stored.expires_at_unix, now_unix()) {
-        return Ok(stored.access_token.clone());
-    }
     refresh_linear_access_token_with_freshness_gate(app, account_id, true).await
 }
 
@@ -1153,6 +1213,7 @@ pub async fn begin_connect_linear(
     // Escalation/reconnect short-circuit: an existing, healthy workspace
     // that already holds every wanted scope needs no new consent.
     if let Some(account_id) = reconnect_account_id {
+        let lifecycle = acquire_linear_lifecycle(account_id).await;
         if let Some(record) = repos.get_connector_account(account_id).await? {
             let already_granted = policy::missing_scopes(&record.scopes, bundles).is_empty();
             if record.provider == ConnectorProvider::Linear.as_str()
@@ -1162,6 +1223,7 @@ pub async fn begin_connect_linear(
                 return account_dto(&repos, record).await;
             }
         }
+        drop(lifecycle);
     }
 
     let requested = policy::requested_linear_scopes(bundles);
@@ -1181,6 +1243,13 @@ pub async fn begin_connect_linear(
             ));
         }
     }
+
+    // Final credential and index writes share the same lifecycle boundary as
+    // token refresh, managed MCP eligibility, session creation, and
+    // disconnect. The browser authorization above remains outside the lock.
+    let lifecycle = acquire_linear_lifecycle(&workspace_id).await;
+    let refresh_lock = refresh_lock_for(&workspace_id);
+    let _refresh_guard = refresh_lock.lock().await;
 
     // Same single-account rationale as the Google guard above, scoped to the
     // Linear provider: every Linear surface resolves "the connected
@@ -1254,6 +1323,7 @@ pub async fn begin_connect_linear(
 
     // The old bearer must stop owning a live hosted MCP session before the
     // replacement credential becomes eligible for discovery or dispatch.
+    lifecycle.bump_epoch();
     crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
     store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
 
@@ -1569,6 +1639,21 @@ fn merge_revocation_confirmation(
     }
 }
 
+/// Delete the secret custody record before deleting its non-secret account
+/// index. Keeping this ordering in one tested boundary preserves the
+/// Settings retry action when secure-storage cleanup fails.
+async fn delete_custody_then_account<C, I>(
+    custody_cleanup: C,
+    account_cleanup: I,
+) -> Result<(), AppError>
+where
+    C: Future<Output = Result<(), AppError>>,
+    I: Future<Output = Result<(), AppError>>,
+{
+    custody_cleanup.await?;
+    account_cleanup.await
+}
+
 pub async fn disconnect(
     app: &tauri::AppHandle,
     account_id: &str,
@@ -1602,11 +1687,26 @@ pub async fn disconnect(
         ],
     };
     let disconnects_linear = providers.contains(&ConnectorProvider::Linear);
+    let linear_lifecycle = if disconnects_linear {
+        Some(acquire_linear_lifecycle(account_id).await)
+    } else {
+        None
+    };
+
+    // Advance Linear's eligibility boundary before touching custody. Any
+    // managed request that captured the previous epoch now fails closed at
+    // the session network boundary. Retiring under the lifecycle gate also
+    // prevents a session from escaping a point-in-time retirement sweep.
+    if let Some(lifecycle) = linear_lifecycle.as_ref() {
+        lifecycle.bump_epoch();
+        crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
+    }
+    let refresh_lock = refresh_lock_for(account_id);
+    let refresh_guard = refresh_lock.lock().await;
 
     // Capture any credentials needed for best-effort provider revocation
-    // before making the account locally unavailable. Remote revoke requests
-    // can be slow, and must not leave a window where a new runtime dispatch
-    // can still discover the account and start another hosted MCP session.
+    // while refresh and disconnect are serialized. Remote revoke requests
+    // remain outside both local lifecycle locks.
     let mut revoke_tokens = Vec::new();
     if revoke_grant {
         for &provider in providers {
@@ -1616,17 +1716,29 @@ pub async fn disconnect(
         }
     }
 
-    repos.delete_connector_account(account_id).await?;
-    if disconnects_linear {
-        crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
-    }
-    emit_connectors_changed(app);
+    // Keep the account row and its Settings retry action until local custody
+    // removal succeeds. A Keychain failure returns with the row intact.
+    delete_custody_then_account(
+        async {
+            for &provider in providers {
+                store::delete_tokens(provider, account_id).await?;
+            }
+            Ok(())
+        },
+        async {
+            repos
+                .delete_connector_account(account_id)
+                .await
+                .map_err(AppError::from)
+        },
+    )
+    .await?;
 
-    // Local custody is part of the availability boundary too, so remove it
-    // before waiting on any provider network call.
-    for &provider in providers {
-        store::delete_tokens(provider, account_id).await?;
-    }
+    // Slow provider revocation must not block another local lifecycle
+    // operation. The account is already unavailable and custody is gone.
+    drop(refresh_guard);
+    drop(linear_lifecycle);
+    emit_connectors_changed(app);
 
     let mut provider_revocation_confirmed = None;
     if revoke_grant {
@@ -1935,6 +2047,105 @@ mod tests {
             merge_revocation_confirmation(Some(false), Some(true)),
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn linear_lifecycle_serializes_boundaries_and_invalidates_old_snapshots() {
+        let account_id = format!("linear-lifecycle-{}", uuid::Uuid::new_v4());
+        let first = acquire_linear_lifecycle(&account_id).await;
+        let stale = first.snapshot();
+        let acquired = Arc::new(tokio::sync::Notify::new());
+        let acquired_waiter = acquired.clone();
+        let waiter_account_id = account_id.clone();
+        let waiter = tokio::spawn(async move {
+            let next = acquire_linear_lifecycle(&waiter_account_id).await;
+            acquired_waiter.notify_one();
+            next.snapshot()
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), acquired.notified())
+                .await
+                .is_err()
+        );
+        first.bump_epoch();
+        assert!(!stale.is_current());
+        drop(first);
+
+        let current = waiter.await.unwrap();
+        assert!(current.is_current());
+    }
+
+    #[tokio::test]
+    async fn linear_disconnect_waits_for_refresh_before_deleting_custody() {
+        let account_id = format!("linear-refresh-disconnect-{}", uuid::Uuid::new_v4());
+        let lifecycle = acquire_linear_lifecycle(&account_id).await;
+        let stale = lifecycle.snapshot();
+        drop(lifecycle);
+
+        let token_present = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let refresh_started = Arc::new(tokio::sync::Notify::new());
+        let finish_refresh = Arc::new(tokio::sync::Notify::new());
+
+        let refresh_account_id = account_id.clone();
+        let refresh_token_present = token_present.clone();
+        let refresh_started_signal = refresh_started.clone();
+        let finish_refresh_waiter = finish_refresh.clone();
+        let refresh = tokio::spawn(async move {
+            let lock = refresh_lock_for(&refresh_account_id);
+            let _guard = lock.lock().await;
+            refresh_started_signal.notify_one();
+            finish_refresh_waiter.notified().await;
+            // Model a rotated credential being persisted at refresh commit.
+            refresh_token_present.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        refresh_started.notified().await;
+
+        let disconnect_account_id = account_id.clone();
+        let disconnect_token_present = token_present.clone();
+        let lifecycle_advanced = Arc::new(tokio::sync::Notify::new());
+        let lifecycle_advanced_signal = lifecycle_advanced.clone();
+        let disconnect = tokio::spawn(async move {
+            let lifecycle = acquire_linear_lifecycle(&disconnect_account_id).await;
+            lifecycle.bump_epoch();
+            lifecycle_advanced_signal.notify_one();
+            let lock = refresh_lock_for(&disconnect_account_id);
+            let _guard = lock.lock().await;
+            // This is the local custody delete in disconnect. It must run
+            // after an in-flight refresh finishes its final store.
+            disconnect_token_present.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        lifecycle_advanced.notified().await;
+
+        assert!(!stale.is_current());
+        assert!(!disconnect.is_finished());
+        finish_refresh.notify_one();
+        refresh.await.unwrap();
+        disconnect.await.unwrap();
+        assert!(!token_present.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn custody_failure_keeps_account_index_retryable() {
+        let account_deleted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let account_deleted_signal = account_deleted.clone();
+
+        let result = delete_custody_then_account(
+            async {
+                Err(AppError::new(
+                    "connector_keychain_delete_failed",
+                    "injected failure",
+                ))
+            },
+            async move {
+                account_deleted_signal.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap_err().code, "connector_keychain_delete_failed");
+        assert!(!account_deleted.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

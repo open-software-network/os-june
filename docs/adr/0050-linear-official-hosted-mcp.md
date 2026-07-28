@@ -82,3 +82,13 @@ For approval classification, an absent `destructiveHint` does not override an
 explicit `readOnlyHint: true`. The tool may run without approval in that case.
 An absent or false `readOnlyHint`, or the conflicting combination
 `readOnlyHint: true` and `destructiveHint: true`, still requires approval.
+
+## 2026-07-28 lifecycle addendum
+
+Linear account eligibility, token refresh, managed MCP session creation, and
+disconnect share a per-account lifecycle epoch. Connect and disconnect advance
+the epoch so a request that captured older eligibility cannot start a later
+network operation. Refresh and local custody deletion are serialized.
+Disconnect removes custody before deleting the account index, preserving the
+Settings retry path if secure-storage cleanup fails. Slow provider revocation
+remains best-effort and runs after local lifecycle locks are released.

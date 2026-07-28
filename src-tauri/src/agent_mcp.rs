@@ -1596,7 +1596,8 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
             .ok_or(AgentMcpError::ToolUnavailable)?;
         if registered.server_id == MANAGED_LINEAR_SERVER_ID {
             let app = app.ok_or(AgentMcpError::ToolUnavailable)?;
-            let Some((server, secrets)) = managed_linear_connection(app, false).await? else {
+            let Some((server, secrets, lifecycle)) = managed_linear_connection(app, false).await?
+            else {
                 return Err(AgentMcpError::ToolUnavailable);
             };
             // Never replay a hosted Linear tools/call request. A timeout,
@@ -1608,6 +1609,7 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
                 arguments,
                 sandboxed.then_some(workspace).flatten(),
                 elicitation_answer,
+                Some(&lifecycle),
             )
             .await;
         }
@@ -1623,6 +1625,7 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
             arguments.clone(),
             sandboxed.then_some(workspace).flatten(),
             elicitation_answer,
+            None,
         )
         .await;
         if matches!(first, Err(AgentMcpError::Unauthorized)) && !secret.oauth.is_empty() {
@@ -1634,6 +1637,7 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
                 arguments,
                 sandboxed.then_some(workspace).flatten(),
                 elicitation_answer,
+                None,
             )
             .await;
         }
@@ -1690,7 +1694,14 @@ fn managed_linear_definition() -> McpServerDefinition {
 async fn managed_linear_connection(
     app: &AppHandle,
     force_refresh: bool,
-) -> Result<Option<(McpServerDefinition, McpSecretBundle)>, AgentMcpError> {
+) -> Result<
+    Option<(
+        McpServerDefinition,
+        McpSecretBundle,
+        crate::connectors::LinearLifecycleSnapshot,
+    )>,
+    AgentMcpError,
+> {
     let account = crate::connectors::list_runtime_accounts(app)
         .await
         .map_err(|_| AgentMcpError::Storage)?
@@ -1702,6 +1713,26 @@ async fn managed_linear_connection(
     let Some(account) = account else {
         return Ok(None);
     };
+    let lifecycle = crate::connectors::acquire_linear_lifecycle(&account.account_id).await;
+    let still_connected = crate::connectors::list_runtime_accounts(app)
+        .await
+        .map_err(|_| AgentMcpError::Storage)?
+        .into_iter()
+        .any(|candidate| {
+            candidate.provider == crate::connectors::ConnectorProvider::Linear
+                && candidate.account_id == account.account_id
+                && candidate.status == crate::connectors::ConnectorAccountStatus::Connected
+        });
+    if !still_connected {
+        return Ok(None);
+    }
+    // Capture eligibility while the account row is stable, then release the
+    // lifecycle gate before token refresh can perform network I/O. Disconnect
+    // advances this epoch before waiting on the shared refresh lock, so an
+    // overlapping refresh either finishes before custody deletion or observes
+    // missing custody; either way this snapshot becomes stale before MCP I/O.
+    let snapshot = lifecycle.snapshot();
+    drop(lifecycle);
     let token = if force_refresh {
         crate::connectors::force_refresh_linear_access_token(app, &account.account_id).await
     } else {
@@ -1715,24 +1746,25 @@ async fn managed_linear_connection(
     secrets
         .headers
         .insert("Authorization".to_string(), format!("Bearer {token}"));
-    Ok(Some((managed_linear_definition(), secrets)))
+    Ok(Some((managed_linear_definition(), secrets, snapshot)))
 }
 
 async fn discover_managed_linear(
     app: &AppHandle,
     sandbox_workspace: Option<&std::path::Path>,
 ) -> Result<Option<(McpServerDefinition, Vec<McpDiscoveredTool>)>, AgentMcpError> {
-    let Some((server, secrets)) = managed_linear_connection(app, false).await? else {
+    let Some((server, secrets, lifecycle)) = managed_linear_connection(app, false).await? else {
         return Ok(None);
     };
-    match discover_managed_server(&server, &secrets, sandbox_workspace).await {
+    match discover_managed_server(&server, &secrets, sandbox_workspace, &lifecycle).await {
         Ok(tools) => Ok(Some((server, tools))),
         Err(AgentMcpError::Unauthorized) => {
             retire_server_sessions(MANAGED_LINEAR_SERVER_ID).await;
-            let Some((server, refreshed)) = managed_linear_connection(app, true).await? else {
+            let Some((server, refreshed, lifecycle)) = managed_linear_connection(app, true).await?
+            else {
                 return Ok(None);
             };
-            discover_managed_server(&server, &refreshed, sandbox_workspace)
+            discover_managed_server(&server, &refreshed, sandbox_workspace, &lifecycle)
                 .await
                 .map(|tools| Some((server, tools)))
         }
@@ -1884,6 +1916,7 @@ async fn discover_server(
         json!({}),
         sandbox_workspace,
         None,
+        None,
     )
     .await?;
     discovered_tools_from_response(&value)
@@ -1944,6 +1977,7 @@ async fn discover_managed_server(
     server: &McpServerDefinition,
     secrets: &McpSecretBundle,
     sandbox_workspace: Option<&std::path::Path>,
+    lifecycle: &crate::connectors::LinearLifecycleSnapshot,
 ) -> Result<Vec<McpDiscoveredTool>, AgentMcpError> {
     discover_managed_tools_with(|params| {
         session_request(
@@ -1953,6 +1987,7 @@ async fn discover_managed_server(
             params,
             sandbox_workspace,
             None,
+            Some(lifecycle),
         )
     })
     .await
@@ -2024,6 +2059,7 @@ async fn call_server(
     arguments: Value,
     sandbox_workspace: Option<&std::path::Path>,
     elicitation_answer: Option<&str>,
+    linear_lifecycle: Option<&crate::connectors::LinearLifecycleSnapshot>,
 ) -> Result<Value, AgentMcpError> {
     let value = session_request(
         server,
@@ -2032,6 +2068,7 @@ async fn call_server(
         json!({"name":tool_name,"arguments":arguments}),
         sandbox_workspace,
         elicitation_answer,
+        linear_lifecycle,
     )
     .await?;
     value.get("result").cloned().ok_or(AgentMcpError::Protocol)
@@ -2043,11 +2080,19 @@ async fn session_request(
     params: Value,
     sandbox_workspace: Option<&std::path::Path>,
     elicitation_answer: Option<&str>,
+    linear_lifecycle: Option<&crate::connectors::LinearLifecycleSnapshot>,
 ) -> Result<Value, AgentMcpError> {
+    if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
+        return Err(AgentMcpError::ToolUnavailable);
+    }
     let deadline = Duration::from_millis(server.safety.timeout_ms);
     let result = timeout(deadline, async move {
         let shared = persistent_session(server, secrets, sandbox_workspace).await;
         let mut slot = shared.lock().await;
+        if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
+            slot.close().await;
+            return Err(AgentMcpError::ToolUnavailable);
+        }
         let fingerprint = session_fingerprint(server, secrets, sandbox_workspace);
         if slot.fingerprint != fingerprint {
             slot.close().await;
@@ -2055,6 +2100,10 @@ async fn session_request(
             slot.next_request_id = 2;
         }
         for attempt in 0..2 {
+            if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
+                slot.close().await;
+                return Err(AgentMcpError::ToolUnavailable);
+            }
             if slot.transport.is_none() {
                 slot.transport = Some(start_transport(server, secrets, sandbox_workspace).await?);
             }
@@ -3930,10 +3979,10 @@ done
 
             let tools = discover_server(&server, &secrets, None).await.unwrap();
             assert_eq!(tools[0].name, "increment");
-            let first = call_server(&server, &secrets, "increment", json!({}), None, None)
+            let first = call_server(&server, &secrets, "increment", json!({}), None, None, None)
                 .await
                 .unwrap();
-            let second = call_server(&server, &secrets, "increment", json!({}), None, None)
+            let second = call_server(&server, &secrets, "increment", json!({}), None, None, None)
                 .await
                 .unwrap();
 
@@ -4037,10 +4086,10 @@ done
         server.url = Some(format!("http://{address}/mcp"));
         let secrets = McpSecretBundle::default();
         discover_server(&server, &secrets, None).await.unwrap();
-        let first = call_server(&server, &secrets, "increment", json!({}), None, None)
+        let first = call_server(&server, &secrets, "increment", json!({}), None, None, None)
             .await
             .unwrap();
-        let second = call_server(&server, &secrets, "increment", json!({}), None, None)
+        let second = call_server(&server, &secrets, "increment", json!({}), None, None, None)
             .await
             .unwrap();
 
@@ -4231,6 +4280,7 @@ done
             json!({}),
             None,
             None,
+            None,
         )
         .await;
         assert!(matches!(first, Err(AgentMcpError::ElicitationRequired(_))));
@@ -4241,6 +4291,7 @@ done
             json!({}),
             None,
             Some("Alpha"),
+            None,
         )
         .await
         .unwrap();
@@ -4303,11 +4354,12 @@ done
             let secrets = McpSecretBundle::default();
 
             discover_server(&server, &secrets, None).await.unwrap();
-            let first = call_server(&server, &secrets, "instance", json!({}), None, None)
+            let first = call_server(&server, &secrets, "instance", json!({}), None, None, None)
                 .await
                 .unwrap();
-            let second = call_server(&server, &secrets, "instance", json!({}), None, None).await;
-            let third = call_server(&server, &secrets, "instance", json!({}), None, None)
+            let second =
+                call_server(&server, &secrets, "instance", json!({}), None, None, None).await;
+            let third = call_server(&server, &secrets, "instance", json!({}), None, None, None)
                 .await
                 .unwrap();
 
@@ -4359,7 +4411,8 @@ done
                     "tools/call",
                     json!({"name":"hang","arguments":{}}),
                     None,
-                    None
+                    None,
+                    None,
                 )
                 .await,
                 Err(AgentMcpError::TimedOut)
@@ -4445,6 +4498,7 @@ done
                 json!({}),
                 None,
                 None,
+                None,
             )
             .await;
             assert!(matches!(first, Err(AgentMcpError::ElicitationRequired(_))));
@@ -4455,6 +4509,7 @@ done
                 json!({}),
                 None,
                 Some("Alpha"),
+                None,
             )
             .await
             .unwrap();
@@ -4587,6 +4642,70 @@ done
             vec!["first", "second"]
         );
         assert_eq!(requests, vec![json!({}), json!({"cursor": "page-2"})]);
+    }
+
+    #[tokio::test]
+    async fn stale_linear_lifecycle_cannot_start_a_managed_session() {
+        let account_id = format!("linear-session-{}", Uuid::new_v4());
+        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+        let stale = lifecycle.snapshot();
+        lifecycle.bump_epoch();
+        drop(lifecycle);
+        let server = managed_linear_definition();
+
+        let result = session_request(
+            &server,
+            &McpSecretBundle::default(),
+            "tools/list",
+            json!({}),
+            None,
+            None,
+            Some(&stale),
+        )
+        .await;
+
+        assert!(matches!(result, Err(AgentMcpError::ToolUnavailable)));
+        retire_server_sessions(&server.id).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_change_while_waiting_for_session_slot_blocks_transport_start() {
+        let account_id = format!("linear-session-slot-{}", Uuid::new_v4());
+        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+        let snapshot = lifecycle.snapshot();
+        drop(lifecycle);
+        let server = managed_linear_definition();
+        let secrets = McpSecretBundle::default();
+        let shared = persistent_session(&server, &secrets, None).await;
+        let slot = shared.lock().await;
+
+        let request_server = server.clone();
+        let request_snapshot = snapshot.clone();
+        let request = tokio::spawn(async move {
+            session_request(
+                &request_server,
+                &McpSecretBundle::default(),
+                "tools/list",
+                json!({}),
+                None,
+                None,
+                Some(&request_snapshot),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!request.is_finished());
+
+        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+        lifecycle.bump_epoch();
+        drop(lifecycle);
+        drop(slot);
+
+        assert!(matches!(
+            request.await.unwrap(),
+            Err(AgentMcpError::ToolUnavailable)
+        ));
+        retire_server_sessions(&server.id).await;
     }
 
     #[tokio::test]
