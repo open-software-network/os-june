@@ -63,35 +63,123 @@ pub(crate) fn http_client() -> &'static reqwest::Client {
     })
 }
 
-/// Cancel slot for an in-flight connect, mirroring `os_accounts::LoginFlow`.
-/// Managed as Tauri state; `connectors_cancel_connect` drains it.
+#[derive(Default)]
+struct ConnectFlowState {
+    active: bool,
+    canceled: bool,
+    completed: bool,
+    cancel_sender: Option<tokio::sync::oneshot::Sender<()>>,
+}
+
+/// Operation-wide cancellation state for an in-flight connect.
+///
+/// Cancellation stays latched from command start through token exchange,
+/// identity resolution, and persistence. The sender only wakes whichever
+/// browser/device waiter is active; clearing it must not clear the latch.
 #[derive(Default)]
 pub struct ConnectFlow {
-    cancel: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    state: std::sync::Mutex<ConnectFlowState>,
+}
+
+pub struct ConnectOperation<'a> {
+    flow: &'a ConnectFlow,
 }
 
 impl ConnectFlow {
+    pub(crate) fn begin_operation(&self) -> Result<ConnectOperation<'_>, AppError> {
+        if let Ok(mut state) = self.state.lock() {
+            if state.active {
+                return Err(AppError::new(
+                    "connector_connect_in_progress",
+                    "Another connector is already waiting for authorization.",
+                ));
+            }
+            state.active = true;
+            state.canceled = false;
+            state.completed = false;
+            state.cancel_sender = None;
+        }
+        Ok(ConnectOperation { flow: self })
+    }
+
     pub fn cancel(&self) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            if let Some(sender) = slot.take() {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.active || state.completed {
+                return;
+            }
+            state.canceled = true;
+            if let Some(sender) = state.cancel_sender.take() {
                 let _ = sender.send(());
             }
         }
+    }
+
+    pub(crate) fn ensure_not_canceled(&self, provider_label: &str) -> Result<(), AppError> {
+        let canceled = self
+            .state
+            .lock()
+            .map(|state| state.canceled)
+            .unwrap_or(false);
+        if canceled {
+            return Err(AppError::new(
+                "connector_connect_canceled",
+                format!("Connecting to {provider_label} was canceled."),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Linearize successful finalization against Cancel. Once this succeeds,
+    /// a later cancel is a no-op because persistence has already completed;
+    /// when cancellation won the race, the caller still owns the active
+    /// operation and can restore its snapshots before returning.
+    pub(crate) fn complete_operation(&self, provider_label: &str) -> Result<(), AppError> {
+        let mut state = self.state.lock().map_err(|_| {
+            AppError::new(
+                "connector_connect_state_failed",
+                "Could not finalize the connector authorization state.",
+            )
+        })?;
+        if state.canceled {
+            return Err(AppError::new(
+                "connector_connect_canceled",
+                format!("Connecting to {provider_label} was canceled."),
+            ));
+        }
+        state.completed = true;
+        state.cancel_sender = None;
+        Ok(())
     }
 
     /// Register a cancel sender for an in-flight device-flow poll. Sibling
     /// modules (e.g. `github`) call this so the shared cancel signal works
     /// without accessing the private `cancel` field directly.
     pub(super) fn register_cancel_sender(&self, tx: tokio::sync::oneshot::Sender<()>) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            *slot = Some(tx);
+        if let Ok(mut state) = self.state.lock() {
+            if state.canceled {
+                let _ = tx.send(());
+            } else {
+                state.cancel_sender = Some(tx);
+            }
         }
     }
 
-    /// Clear the cancel slot after a device-flow poll completes or is aborted.
+    /// Clear only the waiter after a device-flow poll completes or is aborted.
+    /// The operation-wide cancellation latch remains set until the command
+    /// finishes, so later token and persistence stages still observe it.
     pub(super) fn clear_cancel_sender(&self) {
-        if let Ok(mut slot) = self.cancel.lock() {
-            *slot = None;
+        if let Ok(mut state) = self.state.lock() {
+            state.cancel_sender = None;
+        }
+    }
+}
+
+impl Drop for ConnectOperation<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.flow.state.lock() {
+            state.active = false;
+            state.completed = false;
+            state.cancel_sender = None;
         }
     }
 }
@@ -215,11 +303,15 @@ pub(crate) async fn loopback_authorize(
     let redirect_uri = format!("http://127.0.0.1:{port}/callback");
     let auth_url = build_auth_url(&redirect_uri, &challenge, &csrf);
 
-    crate::os_accounts::open_in_browser(&auth_url)?;
-
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    if let Ok(mut slot) = flow.cancel.lock() {
-        *slot = Some(cancel_tx);
+    flow.register_cancel_sender(cancel_tx);
+    if let Err(error) = flow.ensure_not_canceled(provider_label) {
+        flow.clear_cancel_sender();
+        return Err(error);
+    }
+    if let Err(error) = crate::os_accounts::open_in_browser(&auth_url) {
+        flow.clear_cancel_sender();
+        return Err(error);
     }
     let outcome = tokio::select! {
         result = tokio::time::timeout(CONNECT_TIMEOUT, await_callback(&listener, &csrf, provider_label)) => {
@@ -235,10 +327,9 @@ pub(crate) async fn loopback_authorize(
             format!("Connecting to {provider_label} was canceled."),
         )),
     };
-    if let Ok(mut slot) = flow.cancel.lock() {
-        *slot = None;
-    }
+    flow.clear_cancel_sender();
     let code = outcome?;
+    flow.ensure_not_canceled(provider_label)?;
 
     Ok(LoopbackAuthorization {
         code,
@@ -707,6 +798,49 @@ pub(crate) fn random_b64url(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_before_waiter_registration_stays_latched() {
+        let flow = ConnectFlow::default();
+        let _operation = flow.begin_operation().expect("operation starts");
+
+        flow.cancel();
+        let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel();
+        flow.register_cancel_sender(cancel_tx);
+        flow.clear_cancel_sender();
+
+        assert!(cancel_rx.try_recv().is_ok());
+        let error = flow
+            .ensure_not_canceled("Linear")
+            .expect_err("clearing the waiter must not clear cancellation");
+        assert_eq!(error.code, "connector_connect_canceled");
+    }
+
+    #[test]
+    fn completed_operation_resets_cancellation_for_the_next_connect() {
+        let flow = ConnectFlow::default();
+        {
+            let _operation = flow.begin_operation().expect("first operation starts");
+            flow.cancel();
+            assert!(flow.ensure_not_canceled("Linear").is_err());
+            assert!(flow.begin_operation().is_err());
+        }
+
+        let _operation = flow.begin_operation().expect("next operation starts");
+        assert!(flow.ensure_not_canceled("Linear").is_ok());
+    }
+
+    #[test]
+    fn completed_operation_wins_over_a_late_cancel() {
+        let flow = ConnectFlow::default();
+        let _operation = flow.begin_operation().expect("operation starts");
+
+        flow.complete_operation("Linear")
+            .expect("finalization succeeds");
+        flow.cancel();
+
+        assert!(flow.ensure_not_canceled("Linear").is_ok());
+    }
 
     #[test]
     fn auth_url_carries_native_app_flow_params() {

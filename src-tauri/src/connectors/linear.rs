@@ -160,6 +160,7 @@ pub async fn authorize(
         },
     )
     .await?;
+    flow.ensure_not_canceled("Linear")?;
 
     let tokens = exchange_code(
         client_id,
@@ -168,7 +169,9 @@ pub async fn authorize(
         &authorization.redirect_uri,
     )
     .await?;
+    flow.ensure_not_canceled("Linear")?;
     let identity = fetch_identity(&tokens.access_token).await?;
+    flow.ensure_not_canceled("Linear")?;
     Ok(LinearAuthorizedGrant { tokens, identity })
 }
 

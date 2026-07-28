@@ -1175,6 +1175,69 @@ fn linear_account_metadata_json(identity: &linear::LinearIdentity) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
+async fn restore_linear_connect_state_with<RestoreTokens, RestoreTokensFuture>(
+    repos: &crate::db::repositories::Repositories,
+    workspace_id: &str,
+    previous_record: Option<&crate::db::repositories::ConnectorAccountRecord>,
+    restore_tokens: RestoreTokens,
+) -> Result<(), AppError>
+where
+    RestoreTokens: FnOnce() -> RestoreTokensFuture,
+    RestoreTokensFuture: Future<Output = Result<(), AppError>>,
+{
+    let token_result = restore_tokens().await;
+
+    // Always attempt both halves. Keychain and SQLite cannot share a
+    // transaction, but a failure restoring one must not prevent the other
+    // from returning to its pre-connect state.
+    let account_result = match previous_record {
+        Some(record) => repos
+            .upsert_connector_account(
+                &record.account_id,
+                &record.provider,
+                &record.email,
+                &record.scopes,
+                &record.status,
+                &record.metadata,
+            )
+            .await
+            .map_err(AppError::from),
+        None => repos
+            .delete_connector_account(workspace_id)
+            .await
+            .map_err(AppError::from),
+    };
+
+    match (token_result, account_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(token_error), Err(account_error)) => Err(AppError::new(
+            "connector_connect_rollback_failed",
+            format!(
+                "Could not fully restore the connector after cancellation (custody: {}; account: {}).",
+                token_error.code, account_error.code
+            ),
+        )),
+    }
+}
+
+async fn restore_linear_connect_state(
+    repos: &crate::db::repositories::Repositories,
+    workspace_id: &str,
+    previous_tokens: Option<&store::StoredConnectorTokens>,
+    previous_record: Option<&crate::db::repositories::ConnectorAccountRecord>,
+) -> Result<(), AppError> {
+    restore_linear_connect_state_with(repos, workspace_id, previous_record, || async {
+        match previous_tokens {
+            Some(tokens) => {
+                store::store_tokens(ConnectorProvider::Linear, workspace_id, tokens).await
+            }
+            None => store::delete_tokens(ConnectorProvider::Linear, workspace_id).await,
+        }
+    })
+    .await
+}
+
 /// Run the full Linear connect flow (browser consent, loopback callback,
 /// code exchange, identity resolution, custody write, DB index upsert) for
 /// the requested scope bundles. The account is keyed by WORKSPACE id, not
@@ -1205,6 +1268,7 @@ pub async fn begin_connect_linear(
     }
     let client_id = require_linear_client_id()?;
     let repos = crate::commands::repositories(app).await?;
+    flow.ensure_not_canceled("Linear")?;
 
     let reconnect_account_id = reconnect_account_id
         .map(str::trim)
@@ -1220,6 +1284,7 @@ pub async fn begin_connect_linear(
                 && already_granted
                 && record.status == ConnectorAccountStatus::Connected.as_str()
             {
+                flow.ensure_not_canceled("Linear")?;
                 return account_dto(&repos, record).await;
             }
         }
@@ -1228,6 +1293,7 @@ pub async fn begin_connect_linear(
 
     let requested = policy::requested_linear_scopes(bundles);
     let grant = linear::authorize(flow, &client_id, &requested, &linear_loopback_ports()).await?;
+    flow.ensure_not_canceled("Linear")?;
     let identity = grant.identity;
     let workspace_id = identity.workspace_id.clone();
 
@@ -1250,12 +1316,21 @@ pub async fn begin_connect_linear(
     let lifecycle = acquire_linear_lifecycle(&workspace_id).await;
     let refresh_lock = refresh_lock_for(&workspace_id);
     let _refresh_guard = refresh_lock.lock().await;
+    flow.ensure_not_canceled("Linear")?;
 
     // Same single-account rationale as the Google guard above, scoped to the
     // Linear provider: every Linear surface resolves "the connected
     // workspace", so a second, distinct workspace is refused. Compared by
     // workspace id (the account id), never email.
     let existing_accounts = repos.list_connector_accounts().await?;
+    flow.ensure_not_canceled("Linear")?;
+    let previous_record = existing_accounts
+        .iter()
+        .find(|record| {
+            record.provider == ConnectorProvider::Linear.as_str()
+                && record.account_id.eq_ignore_ascii_case(&workspace_id)
+        })
+        .cloned();
     if let Some(existing_id) = conflicting_existing_account(
         existing_accounts
             .iter()
@@ -1292,6 +1367,11 @@ pub async fn begin_connect_linear(
         .filter(|scopes| !scopes.is_empty())
         .unwrap_or_else(|| requested.iter().map(|scope| scope.to_string()).collect());
 
+    // Snapshot custody before changing it so a cancellation that lands while
+    // persistence is pending can restore the pre-connect state.
+    let previous_tokens = store::load_tokens(ConnectorProvider::Linear, &workspace_id).await?;
+    flow.ensure_not_canceled("Linear")?;
+
     // Scope escalation on an existing grant can omit the refresh token; keep
     // the one already in custody then (mirrors the Google fallback).
     let refresh_token = match grant
@@ -1301,8 +1381,8 @@ pub async fn begin_connect_linear(
         .filter(|token| !token.is_empty())
     {
         Some(token) => token.to_string(),
-        None => store::load_tokens(ConnectorProvider::Linear, &workspace_id)
-            .await?
+        None => previous_tokens
+            .as_ref()
             .map(|existing| existing.refresh_token.clone())
             .ok_or_else(|| {
                 AppError::new(
@@ -1321,27 +1401,9 @@ pub async fn begin_connect_linear(
         email: identity.user_email.clone(),
     };
 
-    // The old bearer must stop owning a live hosted MCP session before the
-    // replacement credential becomes eligible for discovery or dispatch.
-    lifecycle.bump_epoch();
-    crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
-    store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
-
-    let metadata_json = linear_account_metadata_json(&identity);
-    repos
-        .upsert_connector_account(
-            &workspace_id,
-            ConnectorProvider::Linear.as_str(),
-            &identity.user_email,
-            &granted_scopes,
-            ConnectorAccountStatus::Connected.as_str(),
-            &metadata_json,
-        )
-        .await?;
-    emit_connectors_changed(app);
-
-    // On a reconnect the previous team selection survives (the rows were
-    // never deleted); a fresh connect has none until the user picks teams.
+    // Read the response-only projection before the first write. From this
+    // point onward every await is followed by a cancellation check and, once
+    // custody changes, a rollback to these snapshots.
     let selected_teams = repos
         .list_selected_teams(&workspace_id)
         .await?
@@ -1352,6 +1414,79 @@ pub async fn begin_connect_linear(
             name: team.team_name,
         })
         .collect();
+    flow.ensure_not_canceled("Linear")?;
+
+    // The old bearer must stop owning a live hosted MCP session before the
+    // replacement credential becomes eligible for discovery or dispatch.
+    lifecycle.bump_epoch();
+    crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
+    flow.ensure_not_canceled("Linear")?;
+    store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
+    if let Err(canceled) = flow.ensure_not_canceled("Linear") {
+        if let Err(error) = restore_linear_connect_state(
+            &repos,
+            &workspace_id,
+            previous_tokens.as_ref(),
+            previous_record.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(
+                error_code = %error.code,
+                "failed to restore Linear state after canceled credential write"
+            );
+        }
+        emit_connectors_changed(app);
+        return Err(canceled);
+    }
+
+    let metadata_json = linear_account_metadata_json(&identity);
+    if let Err(error) = repos
+        .upsert_connector_account(
+            &workspace_id,
+            ConnectorProvider::Linear.as_str(),
+            &identity.user_email,
+            &granted_scopes,
+            ConnectorAccountStatus::Connected.as_str(),
+            &metadata_json,
+        )
+        .await
+    {
+        let connect_error = AppError::from(error);
+        if let Err(rollback_error) = restore_linear_connect_state(
+            &repos,
+            &workspace_id,
+            previous_tokens.as_ref(),
+            previous_record.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(
+                error_code = %rollback_error.code,
+                "failed to restore Linear state after account persistence error"
+            );
+        }
+        return Err(connect_error);
+    }
+    if let Err(canceled) = flow.complete_operation("Linear") {
+        if let Err(error) = restore_linear_connect_state(
+            &repos,
+            &workspace_id,
+            previous_tokens.as_ref(),
+            previous_record.as_ref(),
+        )
+        .await
+        {
+            tracing::error!(
+                error_code = %error.code,
+                "failed to restore Linear state after canceled account write"
+            );
+        }
+        emit_connectors_changed(app);
+        return Err(canceled);
+    }
+    emit_connectors_changed(app);
+
     Ok(ConnectorAccount {
         account_id: workspace_id,
         provider: ConnectorProvider::Linear,
@@ -1991,6 +2126,171 @@ pub async fn journal_action_resolved(app: &tauri::AppHandle, action_id: &str, st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx_sqlite::SqlitePoolOptions;
+
+    async fn rollback_test_repositories() -> crate::db::repositories::Repositories {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        crate::db::repositories::Repositories::new(pool)
+    }
+
+    fn rollback_test_tokens(marker: &str, scopes: &[&str]) -> store::StoredConnectorTokens {
+        store::StoredConnectorTokens {
+            access_token: format!("{marker}-access"),
+            refresh_token: format!("{marker}-refresh"),
+            expires_at_unix: 4_102_444_800,
+            scopes: scopes.iter().map(|scope| (*scope).to_string()).collect(),
+            email: "actor@example.com".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn fresh_connect_cancellation_removes_new_custody_and_account() {
+        let repos = rollback_test_repositories().await;
+        let workspace_id = "fresh-canceled-workspace";
+        let new_scopes = vec!["linear_read".to_string(), "linear_write".to_string()];
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                "actor@example.com",
+                &new_scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                r#"{"workspaceName":"New workspace"}"#,
+            )
+            .await
+            .expect("simulate new account write");
+        let custody = Arc::new(StdMutex::new(Some(rollback_test_tokens(
+            "new",
+            &["linear_read", "linear_write"],
+        ))));
+
+        let flow = ConnectFlow::default();
+        let _operation = flow.begin_operation().expect("operation starts");
+        flow.cancel();
+        let canceled = flow
+            .ensure_not_canceled("Linear")
+            .expect_err("cancel wins before finalization");
+
+        let custody_to_restore = Arc::clone(&custody);
+        restore_linear_connect_state_with(&repos, workspace_id, None, move || async move {
+            *custody_to_restore.lock().expect("custody lock") = None;
+            Ok(())
+        })
+        .await
+        .expect("fresh state rolls back");
+
+        assert_eq!(canceled.code, "connector_connect_canceled");
+        assert!(custody.lock().expect("custody lock").is_none());
+        assert!(repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("account lookup")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn reconnect_cancellation_restores_previous_state_without_cascading_related_rows() {
+        let repos = rollback_test_repositories().await;
+        let workspace_id = "reconnect-canceled-workspace";
+        let previous_scopes = vec!["linear_read".to_string()];
+        let previous_metadata = r#"{"workspaceName":"Previous workspace"}"#;
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                "previous@example.com",
+                &previous_scopes,
+                ConnectorAccountStatus::ReconnectRequired.as_str(),
+                previous_metadata,
+            )
+            .await
+            .expect("seed previous account");
+        let team = selected_team("engineering");
+        repos
+            .set_selected_teams(workspace_id, std::slice::from_ref(&team))
+            .await
+            .expect("seed selected team");
+        let previous_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("previous account lookup")
+            .expect("previous account");
+        let previous_tokens = rollback_test_tokens("previous", &["linear_read"]);
+        let custody = Arc::new(StdMutex::new(Some(rollback_test_tokens(
+            "new",
+            &["linear_read", "linear_write"],
+        ))));
+
+        let new_scopes = vec!["linear_read".to_string(), "linear_write".to_string()];
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                "new@example.com",
+                &new_scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                r#"{"workspaceName":"New workspace"}"#,
+            )
+            .await
+            .expect("simulate replacement account write");
+
+        let flow = ConnectFlow::default();
+        let _operation = flow.begin_operation().expect("operation starts");
+        flow.cancel();
+        let canceled = flow
+            .complete_operation("Linear")
+            .expect_err("cancel wins during persistence");
+
+        let custody_to_restore = Arc::clone(&custody);
+        let tokens_to_restore = previous_tokens.clone();
+        restore_linear_connect_state_with(
+            &repos,
+            workspace_id,
+            Some(&previous_record),
+            move || async move {
+                *custody_to_restore.lock().expect("custody lock") = Some(tokens_to_restore);
+                Ok(())
+            },
+        )
+        .await
+        .expect("reconnect state rolls back");
+
+        assert_eq!(canceled.code, "connector_connect_canceled");
+        {
+            let custody_guard = custody.lock().expect("custody lock");
+            let restored_tokens = custody_guard.as_ref().expect("restored custody");
+            assert_eq!(restored_tokens.access_token, previous_tokens.access_token);
+            assert_eq!(restored_tokens.refresh_token, previous_tokens.refresh_token);
+            assert_eq!(restored_tokens.scopes, previous_tokens.scopes);
+        }
+
+        let restored_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("restored account lookup")
+            .expect("restored account");
+        assert_eq!(restored_record.email, "previous@example.com");
+        assert_eq!(restored_record.scopes, previous_scopes);
+        assert_eq!(
+            restored_record.status,
+            ConnectorAccountStatus::ReconnectRequired.as_str()
+        );
+        assert_eq!(restored_record.metadata, previous_metadata);
+        assert_eq!(
+            repos
+                .list_selected_teams(workspace_id)
+                .await
+                .expect("selected teams"),
+            vec![team]
+        );
+    }
 
     #[test]
     fn provider_and_status_serialize_snake_case() {

@@ -56,6 +56,7 @@ pub async fn connectors_connect(
     let provider = parse_provider(request.provider.as_deref())?;
     let bundles = parse_bundles(&request.scopes)?;
     validate_bundle_providers(&bundles, provider)?;
+    let _operation = flow.begin_operation()?;
     let account = match provider {
         ConnectorProvider::Google => {
             begin_connect(&app, &flow, &bundles, request.login_hint.as_deref()).await?
