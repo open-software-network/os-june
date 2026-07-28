@@ -3067,7 +3067,8 @@ fn helper_event_serializes_with_commands(event_type: Option<&str>) -> bool {
     matches!(
         event_type,
         Some(
-            "audio_level"
+            "listening_started"
+                | "audio_level"
                 | "recording_discarded"
                 | "finalizing_transcript"
                 | "final_transcript"
@@ -3082,7 +3083,8 @@ fn helper_event_requires_take_match(event_type: Option<&str>) -> bool {
     matches!(
         event_type,
         Some(
-            "finalizing_transcript"
+            "listening_started"
+                | "finalizing_transcript"
                 | "final_transcript"
                 | "paste_target"
                 | "paste_completed"
@@ -8134,6 +8136,24 @@ mod tests {
     fn indicator_ignores_unrelated_events() {
         assert_eq!(indicator_action_for_event(Some("permission_status")), None);
         assert_eq!(indicator_action_for_event(None), None);
+    }
+
+    #[test]
+    fn listening_start_is_ordered_and_correlated_with_its_start_command() {
+        assert!(helper_event_serializes_with_commands(Some(
+            "listening_started"
+        )));
+        assert!(helper_event_requires_take_match(Some("listening_started")));
+
+        let mut controller = ShortcutActivationController::default();
+        controller.prepare_helper_start("take-b");
+        assert!(controller.matches_helper_take("take-b", None));
+
+        assert_eq!(
+            controller.finish_start_for_auth_failure("take-b"),
+            Some(false)
+        );
+        assert!(!controller.matches_helper_take("take-b", None));
     }
 
     fn test_policy() -> RespawnPolicy {
