@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { Editor } from "@tiptap/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
@@ -1102,14 +1103,12 @@ describe("NoteEditor", () => {
         })}
       />,
     );
-    const manualText = editor.querySelector("p")?.firstChild;
-    if (!manualText) throw new Error("Expected the focused manual note text");
-    const caret = document.createRange();
-    caret.setStart(manualText, manualText.textContent?.length ?? 0);
-    caret.collapse(true);
-    window.getSelection()?.removeAllRanges();
-    window.getSelection()?.addRange(caret);
-    await user.type(editor, " written live", { skipClick: true });
+    // Move ProseMirror's state selection, not only the DOM range. In jsdom,
+    // installing a browser Range does not update the editor transaction.
+    const tiptapEditor = (editor as HTMLElement & { editor?: Editor }).editor;
+    if (!tiptapEditor) throw new Error("Expected the mounted Tiptap editor");
+    tiptapEditor.commands.focus("end");
+    await user.keyboard(" written live");
     fireEvent.blur(editor);
 
     expect(onContentChange).toHaveBeenLastCalledWith(

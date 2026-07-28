@@ -206,7 +206,9 @@ pub async fn dispatch_tool(
         "computer_use" => {
             Ok(crate::computer_use::handle_proxy_action(&context.app, arguments).await)
         }
-        "notion_call" | "notion_action" => notion_tool(context, name, &arguments).await,
+        name if crate::connectors::notion::runtime_name_to_provider(name).is_some() => {
+            notion_tool(context, name, &arguments).await
+        }
         name if matches!(
             name,
             "start_session"
@@ -1084,21 +1086,64 @@ async fn run_shell(context: &ToolContext, arguments: &Value) -> Result<Value, Ap
 
 async fn notion_tool(
     context: &ToolContext,
-    kind: &str,
+    runtime_name: &str,
     arguments: &Value,
 ) -> Result<Value, AppError> {
-    let tool_name = required_string(arguments, "toolName")?.to_string();
-    let tool_arguments = arguments
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let Some((tool_name, action)) =
+        crate::connectors::notion::runtime_name_to_provider(runtime_name)
+    else {
+        return Err(AppError::new(
+            "notion_tool_not_allowed",
+            "That Notion tool is not enabled.",
+        ));
+    };
+    let tool_arguments = arguments.clone();
     let request = crate::connectors::notion::NotionHostedToolCallRequest {
-        tool_name,
-        arguments: tool_arguments,
+        tool_name: tool_name.to_string(),
+        arguments: tool_arguments.clone(),
         deadline_unix_ms: None,
     };
-    let result = if kind == "notion_action" {
-        crate::connectors::notion::call_hosted_action_tool_approved(&context.app, request).await?
+    let result = if action {
+        let call_id = context.call_id.as_deref().ok_or_else(|| {
+            AppError::new(
+                "notion_action_binding_missing",
+                "The approved Notion action has no call identity.",
+            )
+        })?;
+        let row = query("SELECT payload_json FROM agent_items WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.status') = 'resolved' AND json_extract(payload_json, '$.approved') = 1 ORDER BY created_at DESC LIMIT 1")
+            .bind(&context.run_id).bind(call_id).fetch_optional(&context.repository.pool).await?
+            .ok_or_else(|| AppError::new("notion_action_binding_missing", "The approved Notion action binding is unavailable."))?;
+        let payload: Value = serde_json::from_str(&row.get::<String, _>("payload_json"))
+            .map_err(|error| AppError::new("notion_action_binding_invalid", error.to_string()))?;
+        let digest = payload
+            .get("approvalBinding")
+            .and_then(|binding| binding.get("digest"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                AppError::new(
+                    "notion_action_binding_missing",
+                    "The approved Notion action binding is unavailable.",
+                )
+            })?;
+        let revision = crate::connectors::notion::capture_execution_revision(
+            &context.app,
+            runtime_name,
+            &tool_arguments,
+            &context.run_id,
+            call_id,
+            digest,
+        )
+        .await?;
+        let consumed = query("UPDATE agent_items SET payload_json = json_set(payload_json, '$.executionState', 'consumed') WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.status') = 'resolved' AND json_extract(payload_json, '$.approved') = 1 AND COALESCE(json_extract(payload_json, '$.executionState'), 'unconsumed') = 'unconsumed'")
+            .bind(&context.run_id).bind(call_id).execute(&context.repository.pool).await?.rows_affected();
+        if consumed != 1 {
+            return Err(AppError::new(
+                "notion_action_binding_consumed",
+                "This approved Notion action was already invoked.",
+            ));
+        }
+        crate::connectors::notion::call_hosted_action_tool_approved(&context.app, request, revision)
+            .await?
     } else {
         crate::connectors::notion::call_hosted_tool(&context.app, request).await?
     };

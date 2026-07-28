@@ -4,8 +4,35 @@ import {
   sidebarContextMenuAnchorIsVisible,
   sidebarContextMenuGeometryFromStyles,
 } from "../components/sidebar/sidebar-context-menu";
+import appCss from "../styles/app.css?raw";
+
+function cssRuleFor(selector: string) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(appCss);
+  if (!match) throw new Error(`Missing CSS rule for ${selector}`);
+  const openIndex = match.index + match[0].length - 1;
+  let depth = 0;
+  for (let index = openIndex; index < appCss.length; index += 1) {
+    if (appCss[index] === "{") depth += 1;
+    if (appCss[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return appCss.slice(openIndex + 1, index);
+    }
+  }
+  throw new Error(`Unclosed CSS rule for ${selector}`);
+}
+
 describe("sidebar overflow containment", () => {
   const menuGeometry = { viewportInset: 8, anchorGap: 4 };
+
+  it("keeps full-bleed dividers inside the vertical menu scrollport", () => {
+    expect(cssRuleFor(".sidebar-context-menu")).toContain("padding-inline: 0;");
+    expect(cssRuleFor(".sidebar-context-menu-scroll")).toContain("padding-inline: var(--sp-1);");
+    expect(cssRuleFor(".sidebar-context-menu-scroll")).toContain("overflow-y: auto;");
+    expect(cssRuleFor(".context-menu-separator")).toContain(
+      "margin: var(--sp-1) calc(var(--sp-1) * -1);",
+    );
+  });
 
   it("keeps a menu below its trigger when it fits", () => {
     expect(

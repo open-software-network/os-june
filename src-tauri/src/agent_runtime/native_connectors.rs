@@ -155,13 +155,22 @@ const CAPABILITIES: &[Capability] = &[
 /// team changes cannot leave an old tool available in a later run.
 pub async fn descriptors(app: &AppHandle) -> Result<Vec<Value>, AppError> {
     let accounts = connectors::list_runtime_accounts(app).await?;
-    Ok(descriptors_from_accounts(&accounts))
+    let mut descriptors = descriptors_from_accounts(&accounts);
+    match crate::connectors::notion::runtime_descriptors(app).await {
+        Ok(notion_descriptors) => descriptors.extend(notion_descriptors),
+        Err(error) => tracing::warn!(
+            code = %error.code,
+            "notion tool discovery failed; continuing without notion tools"
+        ),
+    }
+    Ok(descriptors)
 }
 
 pub fn routine_tool_allowed(
     name: &str,
     enabled_toolsets: &[String],
     autonomous_tools: &[String],
+    trust_mode: Option<&str>,
 ) -> bool {
     use crate::connectors::policy::{
         JUNE_GCAL_ACTIONS_SERVER, JUNE_GCAL_SERVER, JUNE_GITHUB_ACTIONS_SERVER, JUNE_GITHUB_SERVER,
@@ -174,6 +183,16 @@ pub fn routine_tool_allowed(
             .any(|value| value.starts_with(prefix))
     };
     match name {
+        "notion-search"
+        | "notion-fetch"
+        | "notion-query-data-sources"
+        | "notion-query-database-view"
+        | "notion-get-comments"
+        | "notion-get-enhanced-markdown-specification"
+        | "notion-get-view-configuration-dsl" => has("june_notion"),
+        "notion-create-pages" | "notion-update-page" => {
+            has("june_notion_actions") && trust_mode == Some("approval")
+        }
         "search_threads" | "read_thread" | "list_unread" => has(JUNE_GMAIL_SERVER),
         "create_draft" | "send_email" | "modify_labels" | "archive" => {
             has(JUNE_GMAIL_ACTIONS_SERVER)
@@ -1076,6 +1095,56 @@ mod tests {
             .any(|tool| tool["name"] == "list_repositories"));
         assert!(!catalog.iter().any(|tool| tool["name"] == "list_projects"));
         assert!(!catalog.iter().any(|tool| tool["name"] == "create_event"));
+    }
+
+    #[test]
+    fn notion_routine_toolset_matrix_never_grants_autonomy() {
+        let reads = vec!["june_notion".to_string()];
+        let actions = vec!["june_notion_actions".to_string()];
+        let autonomous = vec!["notion-create-pages".to_string()];
+        assert!(routine_tool_allowed("notion-search", &reads, &[], None));
+        assert!(!routine_tool_allowed(
+            "notion-create-pages",
+            &reads,
+            &autonomous,
+            Some("approval")
+        ));
+        assert!(routine_tool_allowed(
+            "notion-create-pages",
+            &actions,
+            &[],
+            Some("approval")
+        ));
+        assert!(!routine_tool_allowed(
+            "notion-create-pages",
+            &actions,
+            &[],
+            Some("autonomous")
+        ));
+        assert!(!routine_tool_allowed(
+            "notion-create-pages",
+            &actions,
+            &[],
+            Some("read_only")
+        ));
+        assert!(!routine_tool_allowed(
+            "notion-create-pages",
+            &actions,
+            &[],
+            None
+        ));
+        assert!(!routine_tool_allowed(
+            "notion-search",
+            &actions,
+            &[],
+            Some("approval")
+        ));
+        assert!(!routine_tool_allowed(
+            "notion-update-page",
+            &[],
+            &autonomous,
+            Some("approval")
+        ));
     }
     #[test]
     fn mutation_descriptors_require_sdk_approval_and_keep_provider_choices_bounded() {

@@ -10303,11 +10303,14 @@ button.agent-user-attachment:hover {
 .sidebar-context-menu {
   --scroll-fade-size: var(--sp-6);
 
+  padding-inline: 0;
   max-height: calc(100vh - var(--sp-6));
   overflow: hidden;
 }
 
 .sidebar-context-menu-scroll {
+  /* Full-bleed separators expand into this padding without widening the scrollport. */
+  padding-inline: var(--sp-1);
   max-height: calc(100vh - var(--sp-6) - 2 * var(--sp-1) - 2 * var(--border-width));
   overflow-y: auto;
 }

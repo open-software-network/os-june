@@ -399,6 +399,45 @@ async fn handle_runtime_request(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            if name == "__june_notion_action_preflight" {
+                let runtime_name = arguments
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::new("agent_protocol_invalid", "Notion tool name is required.")
+                    })?;
+                let tool_arguments = arguments
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let call_id = params
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        AppError::new("agent_protocol_invalid", "Notion call id is required.")
+                    })?;
+                let preflight = crate::connectors::notion::preflight_runtime_action(
+                    app,
+                    runtime_name,
+                    &tool_arguments,
+                    &frame.run_id,
+                    call_id,
+                )
+                .await?;
+                if let Some(row) = sqlx::query::query("SELECT payload_json FROM agent_items WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? ORDER BY created_at DESC LIMIT 1")
+                    .bind(&frame.run_id).bind(call_id).fetch_optional(&repository.pool).await?
+                {
+                    use sqlx::row::Row;
+                    let payload: Value = serde_json::from_str(&row.get::<String, _>("payload_json")).map_err(|error| AppError::new("notion_action_binding_invalid", error.to_string()))?;
+                    let binding = payload.get("approvalBinding").ok_or_else(|| AppError::new("notion_action_binding_missing", "The Notion approval binding is unavailable."))?;
+                    if binding.get("digest").and_then(Value::as_str) != Some(&preflight.digest) {
+                        return Err(AppError::new("notion_action_binding_mismatch", "The approved Notion action or connection changed. Please try again."));
+                    }
+                }
+                return serde_json::to_value(preflight).map_err(|error| {
+                    AppError::new("agent_connector_response_invalid", error.to_string())
+                });
+            }
             if name == "__june_model_chat_completions" {
                 if !model_scopes.lock().await.contains(&frame.run_id) {
                     return Err(AppError::new(
@@ -760,8 +799,12 @@ async fn persist_and_emit_event(
                         .get("toolName")
                         .and_then(Value::as_str)
                         .unwrap_or("unknown_tool");
-                    let command = approval_command(tool_name, params.get("arguments"));
-                    json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
+                    if let Some(presentation) = params.get("approvalPresentation") {
+                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": presentation.get("title").cloned().unwrap_or_else(|| json!("Approval required")), "description": presentation.get("description").cloned().unwrap_or_else(|| json!("Review this Notion action.")), "command": presentation.get("command").cloned().unwrap_or_else(|| json!(tool_name)), "preview": presentation.get("preview").cloned().unwrap_or(Value::Null), "approvalBinding": params.get("approvalBinding").cloned().unwrap_or(Value::Null), "allowAlways": false })
+                    } else {
+                        let command = approval_command(tool_name, params.get("arguments"));
+                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
+                    }
                 }
             };
             data = json!({ "itemId": persistence_external_id, "interruption": interruption });
@@ -843,6 +886,11 @@ async fn persist_and_emit_event(
             repository
                 .update_run_status(&frame.run_id, "completed", None, None, None)
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             None
         }
         "run.cancelled" => {
@@ -850,6 +898,11 @@ async fn persist_and_emit_event(
             repository
                 .update_run_status(&frame.run_id, "cancelled", None, None, None)
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             None
         }
         "run.failed" => {
@@ -866,6 +919,11 @@ async fn persist_and_emit_event(
                     )),
                 )
                 .await?;
+            if let Err(error) =
+                crate::routines::mark_agent_run_terminal(&repository.pool, &frame.run_id).await
+            {
+                tracing::warn!(agent_run_id = %frame.run_id, error_code = %error.code, "routine terminal projection failed");
+            }
             Some(AgentItemPayload::Error(data.clone()))
         }
         _ => None,

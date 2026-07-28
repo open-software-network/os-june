@@ -473,7 +473,7 @@ describe("ConnectorsSection", () => {
     await userEvent.click(screen.getByRole("button", { name: "Disconnect Notion" }));
 
     await waitFor(() => expect(mocks.notionConnectorDisconnect).toHaveBeenCalled());
-    expect(mocks.connectorsApplyRuntime).toHaveBeenCalled();
+    expect(mocks.connectorsApplyRuntime).not.toHaveBeenCalled();
     expect(mocks.notionConnectorConnect).not.toHaveBeenCalled();
   });
 

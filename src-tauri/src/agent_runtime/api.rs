@@ -976,6 +976,22 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .unwrap_or("approval")
         .to_string();
+    let resolution_kind = request
+        .resolution
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response kind is required.",
+            )
+        })?;
+    if resolution_kind != interruption_kind {
+        return Err(AppError::new(
+            "agent_interruption_resolution_invalid",
+            "The interruption response does not match the pending request.",
+        ));
+    }
     let clarification_answer = request
         .resolution
         .get("answer")
@@ -987,13 +1003,22 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let choice = request.resolution.get("choice").and_then(Value::as_str);
+    let approved = match interruption_kind.as_str() {
+        "clarification" if clarification_answer.is_some() => true,
+        "secret" if secret_value.is_some() && choice == Some("once") => true,
+        "secret" if secret_value.is_none() && choice == Some("deny") => false,
+        "approval" if matches!(choice, Some("once" | "session" | "always")) => true,
+        "approval" if choice == Some("deny") => false,
+        _ => {
+            return Err(AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response is invalid.",
+            ));
+        }
+    };
     let approval_choice = approval_choice_from_resolution(&interruption_kind, &request.resolution)
         .map(str::to_string);
-    let approved = clarification_answer.is_some()
-        || secret_value.is_some()
-        || approval_choice
-            .as_deref()
-            .is_some_and(|choice| choice != "deny");
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
@@ -1078,6 +1103,7 @@ pub async fn resolve_agent_interruption(
     } else {
         None
     };
+    let resolution_nonce = uuid::Uuid::new_v4().to_string();
     settle_interruption_payload(
         &mut interruption,
         &interruption_kind,
@@ -1086,6 +1112,8 @@ pub async fn resolve_agent_interruption(
         secret_ref.as_deref(),
         &chrono::Utc::now().to_rfc3339(),
     );
+    interruption["approved"] = json!(approved);
+    interruption["resolutionNonce"] = json!(resolution_nonce);
     let resolved_interruption_json = interruption.to_string();
     let resolution_time = chrono::Utc::now().to_rfc3339();
     // Persist the visible resolution and reset sequencing as one unit. The
@@ -1719,8 +1747,6 @@ async fn tool_descriptors(
         ,{ "name": "request_clarification", "description": "Pause and ask the user a question when their answer is required to continue.", "parameters": { "type": "object", "properties": { "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["question", "choices"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_secret", "description": "Securely request a secret from the user. The result is an opaque one-use reference for a safety-controlled tool, never the secret value.", "parameters": { "type": "object", "properties": { "reason": { "type": "string" } }, "required": ["reason"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "computer_use", "description": "Operate the attended computer-use session through June's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
-        ,{ "name": "notion_call", "description": "Call an enabled read-only Notion tool through June's connected account.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false } }
-        ,{ "name": "notion_action", "description": "Call an enabled Notion action through June's approval broker.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false }, "requiresApproval": true }
     ]);
     let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
         crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),

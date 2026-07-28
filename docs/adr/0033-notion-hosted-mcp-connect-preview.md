@@ -222,3 +222,16 @@ This addendum supersedes the earlier requirement for a literal preview label.
 The settings row instead uses persistent, privacy-accurate copy stating that
 selected-resource scope is unverified and may extend beyond selected pages. It
 must not imply selected-page-only access.
+
+## Addendum: 2026-07-27 connector custody and conversation retention
+
+Notion credentials, dynamic-registration material, and any connector-specific
+discovery or session caches remain outside SQLite. They stay in Keychain or
+ephemeral process memory according to this ADR; a separate connector cache must
+not become a second durable content store.
+
+Content intentionally returned by a Notion tool into an agent conversation is
+different from connector custody. It may be retained in June's local
+conversation history under ADR-0038, just like other tool results used in a
+conversation. Disconnect removes connector credentials and future access, but
+does not rewrite or redact prior conversations.

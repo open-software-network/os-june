@@ -29,6 +29,7 @@ export type RuntimeToolDescriptor = {
   parameters: JsonObject;
   strict?: boolean;
   requiresApproval?: boolean;
+  notionAction?: boolean;
 };
 
 export type RuntimeSkillDescriptor = {
@@ -98,6 +99,15 @@ export type RuntimeInterruption =
       kind: "approval";
       toolName: string;
       arguments: JsonValue;
+      approvalPresentation?: {
+        title: string;
+        description: string;
+        command: string;
+        preview: string;
+      };
+      approvalBinding?: {
+        digest: string;
+      };
     }
   | {
       id: string;

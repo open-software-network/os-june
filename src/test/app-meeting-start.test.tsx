@@ -1,6 +1,9 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// This suite verifies native meeting event orchestration, not workspace chunk loading.
+// Preload the lazy editor module so transform latency cannot consume assertion timeouts.
+import "../components/note-editor/NoteEditor";
 import { App } from "../app/App";
 import {
   AGENT_RECORDER_REQUEST_EVENT,
@@ -379,8 +382,8 @@ describe("meeting start transcription event", () => {
         "meeting-request-1",
         "microphonePlusSystem",
       );
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     });
-    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
