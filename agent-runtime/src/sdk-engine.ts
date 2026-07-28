@@ -8,7 +8,10 @@ import {
 } from "@openai/agents";
 import { readFile } from "node:fs/promises";
 import { formatHistoryForSummary } from "./compaction.js";
-import { RpcChatCompletionsModelProvider } from "./rpc-model-provider.js";
+import {
+  RpcChatCompletionsModelProvider,
+  type ReasoningWireFormat,
+} from "./rpc-model-provider.js";
 import { REQUEST_CLARIFICATION_TOOL } from "./types.js";
 import type { JsonObject, JsonValue } from "./types.js";
 import { errorMessage, sanitizeForLog } from "./sanitize.js";
@@ -48,6 +51,7 @@ const CONTEXT_SUMMARY_POLICY =
 const CONTEXT_SUMMARY_MAX_TOKENS = 2_048;
 const CONTEXT_SUMMARY_CONTEXT_UTILIZATION = 0.75;
 const CONSERVATIVE_SUMMARY_CHARS_PER_TOKEN = 2;
+const SERIALIZED_STATE_ENVELOPE_VERSION = 1;
 
 export class OpenAIAgentsEngine implements AgentEngine {
   readonly invokeHostTool: HostToolInvoker;
@@ -129,7 +133,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
 
   async resume(input: EngineResumeInput): Promise<EngineResult> {
     const agent = this.createAgent(input.params, input.sessionId, input.runId, input.emit);
-    const state = await RunState.fromString(agent, input.params.serializedState);
+    const persistedState = parseSerializedState(input.params.serializedState);
+    const state = await RunState.fromString(agent, persistedState.sdkState);
     const interruptions = state.getInterruptions();
     for (const resolution of input.params.resolutions) {
       const interruption = interruptions.find((candidate) => interruptionId(candidate) === resolution.interruptionId);
@@ -150,6 +155,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
       input.runId,
       input.takeSteering,
       input.emit,
+      input.params.resolvedModel,
+      persistedState.reasoningWireFormat,
     );
     const stream = (await runner.runner.run(agent, state, {
       stream: true,
@@ -243,7 +250,10 @@ export class OpenAIAgentsEngine implements AgentEngine {
     if (stream.error) throw stream.error;
 
     const interruptions = stream.interruptions.map(runtimeInterruptionFromSdk);
-    const serializedState = interruptions.length > 0 ? stream.state.toString() : undefined;
+    const serializedState =
+      interruptions.length > 0
+        ? serializeState(stream.state.toString(), modelProvider.reasoningWireFormat)
+        : undefined;
     const history = sdkHistoryToRuntime(stream.history);
     return {
       ...(typeof stream.finalOutput === "string" ? { finalOutput: stream.finalOutput } : {}),
@@ -251,6 +261,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       usage: {
         ...normalizeUsage(stream.usage),
         ...modelProvider.latestRoute,
+        ...(modelProvider.resolvedModel ? { resolvedModel: modelProvider.resolvedModel } : {}),
       },
       interruptions,
       ...(serializedState === undefined ? {} : { serializedState }),
@@ -274,12 +285,20 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     takeSteering: EngineRunInput["takeSteering"],
     emit: (event: EngineEvent) => void,
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): { runner: Runner; modelProvider: RpcChatCompletionsModelProvider } {
-    const modelProvider = this.createModelProvider(sessionId, runId, {
-      takeSteering,
-      onSteeringConsumed: (message) =>
-        emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
-    });
+    const modelProvider = this.createModelProvider(
+      sessionId,
+      runId,
+      {
+        takeSteering,
+        onSteeringConsumed: (message) =>
+          emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
+      },
+      initialResolvedModel,
+      initialReasoningWireFormat,
+    );
     return {
       modelProvider,
       runner: new Runner({
@@ -298,6 +317,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): RpcChatCompletionsModelProvider {
     if (!this.initialized) throw new Error("OpenAI Agents engine is not initialized");
     return new RpcChatCompletionsModelProvider(
@@ -311,8 +332,45 @@ export class OpenAIAgentsEngine implements AgentEngine {
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         }),
       steering,
+      initialResolvedModel,
+      initialReasoningWireFormat,
     );
   }
+}
+
+function serializeState(sdkState: string, reasoningWireFormat?: ReasoningWireFormat): string {
+  return JSON.stringify({
+    juneVersion: SERIALIZED_STATE_ENVELOPE_VERSION,
+    sdkState,
+    ...(reasoningWireFormat === undefined ? {} : { reasoningWireFormat }),
+  });
+}
+
+function parseSerializedState(serializedState: string): {
+  sdkState: string;
+  reasoningWireFormat?: ReasoningWireFormat;
+} {
+  try {
+    const envelope = JSON.parse(serializedState) as unknown;
+    if (
+      isRecord(envelope) &&
+      envelope.juneVersion === SERIALIZED_STATE_ENVELOPE_VERSION &&
+      typeof envelope.sdkState === "string"
+    ) {
+      const reasoningWireFormat =
+        envelope.reasoningWireFormat === "reasoning" ||
+        envelope.reasoningWireFormat === "reasoning_content"
+          ? envelope.reasoningWireFormat
+          : undefined;
+      return {
+        sdkState: envelope.sdkState,
+        ...(reasoningWireFormat === undefined ? {} : { reasoningWireFormat }),
+      };
+    }
+  } catch {
+    // Older interruptions stored the raw SDK state string.
+  }
+  return { sdkState: serializedState };
 }
 
 async function historyToSdkInput(history: RuntimeHistoryItem[]): Promise<unknown[]> {
