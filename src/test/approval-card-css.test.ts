@@ -3,7 +3,7 @@ import appCss from "../styles/app.css?raw";
 
 function cssRuleFor(selector: string) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(appCss);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;
@@ -223,7 +223,7 @@ describe("pending action card styles", () => {
   });
 });
 
-describe("credits notice centering", () => {
+describe("inline notice centering", () => {
   it("centers the tier-card credits notice via an override that outranks the base rule", () => {
     // The base rule aligns notice copy with action-label baselines while
     // wrapped copy grows downward from the first line.

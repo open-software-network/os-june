@@ -24,6 +24,7 @@ export function useDictationEvents(dependencies: UseDictationEventsDependencies)
       dictationWorkflowActiveRef.current = nextDictationWorkflowActive(
         dictationWorkflowActiveRef.current,
         helperEvent.type,
+        helperEvent.payload?.preserveActiveTake === true,
       );
       if (helperEvent.type === "final_transcript") {
         // T3 of the referral delight nudge: a dictation landed (often while

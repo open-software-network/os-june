@@ -128,6 +128,31 @@ describe("HoverTip", () => {
     expect(tooltip).toHaveAttribute("data-state", "open");
   });
 
+  it("does not trap Tab on a tip with a single focusable once focus is inside", () => {
+    render(
+      <HoverTip
+        tip={
+          <div>
+            Details
+            <button type="button">Only action</button>
+          </div>
+        }
+        interactive
+      >
+        <button type="button">Change model</button>
+      </HoverTip>,
+    );
+
+    const anchorButton = screen.getByRole("button", { name: "Change model" });
+    fireEvent.focus(anchorButton);
+    const tipButton = screen.getByRole("button", { name: "Only action" });
+
+    // A Tab bubbling up from inside the tip must proceed natively, not get
+    // re-intercepted back to the first (and only) tip focusable.
+    const intercepted = !fireEvent.keyDown(tipButton, { key: "Tab" });
+    expect(intercepted).toBe(false);
+  });
+
   it("remeasures interactive tips when portaled content resizes", () => {
     window.innerHeight = 240;
     window.innerWidth = 1000;

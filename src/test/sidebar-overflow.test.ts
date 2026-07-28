@@ -4,41 +4,8 @@ import {
   sidebarContextMenuAnchorIsVisible,
   sidebarContextMenuGeometryFromStyles,
 } from "../components/sidebar/sidebar-context-menu";
-import appCss from "../styles/app.css?raw";
-import tokensCss from "../styles/tokens.css?raw";
-
-function cssRuleFor(selector: string) {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
-  if (!match) throw new Error(`Missing CSS rule for ${selector}`);
-  const openIndex = match.index + match[0].length - 1;
-  const closeIndex = appCss.indexOf("}", openIndex);
-  return appCss.slice(openIndex + 1, closeIndex);
-}
-
 describe("sidebar overflow containment", () => {
   const menuGeometry = { viewportInset: 8, anchorGap: 4 };
-
-  it("lets completed sessions shrink without displacing the account footer", () => {
-    expect(cssRuleFor(".sidebar-completed-section")).toContain("flex: 0 1 auto;");
-    expect(cssRuleFor(".sidebar-completed-section")).toContain("overflow: hidden;");
-    expect(cssRuleFor(".sidebar-completed-section .notes-nav.sidebar-completed-list")).toContain(
-      "min-height: 0;",
-    );
-    expect(cssRuleFor(".sidebar-agent-section")).toContain(
-      "flex: 1 0 var(--sidebar-active-section-min-h);",
-    );
-    expect(cssRuleFor(".sidebar-agent-section")).toContain(
-      "min-height: var(--sidebar-active-section-min-h);",
-    );
-    expect(cssRuleFor(".sidebar-agent-section")).toContain("overflow: hidden;");
-    expect(cssRuleFor(".agent-sidebar-row .note-row-main")).toContain(
-      "min-height: var(--control-sm);",
-    );
-    expect(tokensCss).toMatch(
-      /var\(--sidebar-section-title-h\)\s*\+\s*var\(--sp-1\)\s*\+\s*var\(--control-sm\)/,
-    );
-  });
 
   it("keeps a menu below its trigger when it fits", () => {
     expect(

@@ -197,6 +197,17 @@ non-focusable dictation HUD.
 On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
+**Dictation take**:
+One helper-owned dictation capture from `listening_started` until its text is
+delivered or the capture is discarded. June gives each take an opaque
+identity before asking the helper to start; a helper paired with an older
+coordinator mints the identity itself. The identity lets June cancel pending
+dictation transcription, cleanup, history, and delivery without affecting a
+newer take. Cancellation is terminal; a late result never regains delivery
+authority.
+_Avoid_: recording session (that is note-backed), utterance (that identifies a
+metered June API request, not the user-visible capture lifecycle).
+
 **Paste target**:
 The destination where a finished dictation transcript is delivered. For native
 paste, it is the exact app window pinned when recording stops and never
@@ -300,12 +311,19 @@ per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
 
-**Completed session**:
-An agent session the user has marked done. Completion is **June-owned local
-state** keyed by the stored session id and set only by June; completed sessions
-move out of the active sidebar list into a distinct Completed section. See
-[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md).
-_Avoid_: archived (the product action is completion).
+**Archived session**:
+An agent session the user has archived out of the live lists (the product
+verb is **archive**; renamed from "completed" 2026-07-27). The mark is
+**June-owned local state** keyed by the stored session id, persisted as
+`completed_sessions(session_id, completed_at)`, and set only by June.
+Archived sessions leave the sidebar entirely and surface under the sessions
+page's Archived status filter. Distinct from both the runtime session
+*status* `completed` (the agent finished running) and Hermes' `archived`
+flag (a runtime read-filter June never writes). See
+[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md),
+including its 2026-07-27 addendum.
+_Avoid_: completed (in user-facing copy; internal persistence names keep
+completed_at), "archived" for the Hermes flag without saying Hermes.
 
 **Agent run**:
 The user-initiated execution that starts with `run.start` and ends with a

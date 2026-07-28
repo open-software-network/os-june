@@ -38,6 +38,26 @@ pub struct Repositories {
     pub pool: SqlitePool,
 }
 
+pub struct PendingDictationHistoryItem {
+    transaction: sqlx::transaction::Transaction<'static, Sqlite>,
+    item: DictationHistoryItemDto,
+}
+
+impl PendingDictationHistoryItem {
+    pub async fn commit(mut self) -> Result<DictationHistoryItemDto, sqlx::error::Error> {
+        query("DELETE FROM dictation_history WHERE created_at < ?")
+            .bind(dictation_history_cutoff_timestamp())
+            .execute(&mut *self.transaction)
+            .await?;
+        self.transaction.commit().await?;
+        Ok(self.item)
+    }
+
+    pub async fn rollback(self) -> Result<(), sqlx::error::Error> {
+        self.transaction.rollback().await
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionDeviceRecord {
     pub id: String,
@@ -2164,7 +2184,7 @@ impl Repositories {
         let mut note_query = QueryBuilder::<Sqlite>::new(
             "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
-                    calendar_event_end_at, calendar_account_email
+                    calendar_event_end_at, calendar_account_email, calendar_event_html_link
              FROM notes WHERE id = ",
         );
         note_query.push_bind(note_id);
@@ -2243,7 +2263,7 @@ impl Repositories {
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
                  calendar_event_start_at = ?, calendar_event_end_at = ?,
-                 calendar_account_email = ?,
+                 calendar_account_email = ?, calendar_event_html_link = ?,
                  revision = revision + CASE
                      WHEN ? = 1 AND title = ? AND title != ? THEN 1
                      ELSE 0
@@ -2259,6 +2279,7 @@ impl Repositories {
         .bind(&event.start_at)
         .bind(&event.end_at)
         .bind(&event.account_email)
+        .bind(&event.html_link)
         .bind(i64::from(expected_title.trim().is_empty()))
         .bind(expected_title)
         .bind(&event.title)
@@ -2814,6 +2835,22 @@ impl Repositories {
         language: Option<String>,
         provider: &str,
     ) -> Result<Option<DictationHistoryItemDto>, sqlx::error::Error> {
+        let pending = self
+            .stage_dictation_history_item(profile, text, language, provider)
+            .await?;
+        match pending {
+            Some(pending) => pending.commit().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn stage_dictation_history_item(
+        &self,
+        data_partition: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+    ) -> Result<Option<PendingDictationHistoryItem>, sqlx::error::Error> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(None);
@@ -2825,6 +2862,7 @@ impl Repositories {
             provider: provider.to_string(),
             created_at: timestamp(),
         };
+        let mut transaction = self.pool.begin().await?;
         query(
             "INSERT INTO dictation_history (id, text, language, provider, profile, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -2833,12 +2871,11 @@ impl Repositories {
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
-        .bind(profile)
+        .bind(data_partition)
         .bind(&item.created_at)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.prune_old_dictation_history().await?;
-        Ok(Some(item))
+        Ok(Some(PendingDictationHistoryItem { transaction, item }))
     }
 
     pub async fn list_dictation_history(
@@ -6244,6 +6281,12 @@ fn note_calendar_event_from_row(row: &sqlx_sqlite::SqliteRow) -> Option<NoteCale
             .try_get::<Option<String>, _>("calendar_account_email")
             .ok()
             .flatten()?,
+        // Nullable by design: events matched before the column shipped have no
+        // stored link, and the frontend falls back to constructing one.
+        html_link: row
+            .try_get::<Option<String>, _>("calendar_event_html_link")
+            .ok()
+            .flatten(),
     })
 }
 
@@ -6513,6 +6556,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn staged_dictation_history_is_visible_only_after_commit() {
+        let repos = test_repositories().await;
+        let rolled_back = repos
+            .stage_dictation_history_item(
+                "default",
+                "cancelled transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage cancelled history")
+            .expect("non-empty transcript");
+        rolled_back.rollback().await.expect("rollback history");
+
+        let count_after_rollback: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count rolled back history")
+            .get("count");
+        assert_eq!(count_after_rollback, 0);
+
+        let committed = repos
+            .stage_dictation_history_item(
+                "default",
+                "delivered transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage delivered history")
+            .expect("non-empty transcript");
+        committed.commit().await.expect("commit history");
+
+        let count_after_commit: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count committed history")
+            .get("count");
+        assert_eq!(count_after_commit, 1);
+    }
+
+    #[tokio::test]
     async fn create_note_with_id_replays_the_same_note() {
         let repos = test_repositories().await;
 
@@ -6595,6 +6680,9 @@ mod tests {
             start_at: "2026-07-20T14:00:00Z".to_string(),
             end_at: "2026-07-20T14:30:00Z".to_string(),
             account_email: "june@example.com".to_string(),
+            // Round-trips through the equality assertions below, covering the
+            // calendar_event_html_link column.
+            html_link: Some("https://www.google.com/calendar/event?eid=ZXZlbnQtMQ".to_string()),
         };
 
         repos

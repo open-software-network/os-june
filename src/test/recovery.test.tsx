@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { NoteRecoveryPrompt } from "../components/recorder/NoteRecoveryPrompt";
@@ -13,6 +13,13 @@ const recovery: RecoverableRecordingDto = {
   bytesFound: 4096,
 };
 
+function rectList(lineTops: number[]): DOMRectList {
+  const rects = lineTops.map((top) => ({ height: 24, top, width: 200 }));
+  return Object.assign(rects, {
+    item: (index: number) => rects[index] ?? null,
+  }) as unknown as DOMRectList;
+}
+
 describe("NoteRecoveryPrompt", () => {
   it("surfaces recoverable recordings with recover and discard actions", async () => {
     const user = userEvent.setup();
@@ -20,6 +27,9 @@ describe("NoteRecoveryPrompt", () => {
     const onDiscard = vi.fn();
     render(<NoteRecoveryPrompt recovery={recovery} onRecover={onRecover} onDiscard={onDiscard} />);
 
+    expect(screen.getByLabelText("Recoverable recording")).not.toHaveClass(
+      "note-recovery-prompt-blocked",
+    );
     expect(screen.getByText(/recording was interrupted/i)).toBeInTheDocument();
     expect(screen.getByText(/4\.0 KB/)).toBeInTheDocument();
 
@@ -28,5 +38,62 @@ describe("NoteRecoveryPrompt", () => {
 
     expect(onRecover).toHaveBeenCalledWith("session-1");
     expect(onDiscard).toHaveBeenCalledWith("session-1");
+  });
+
+  it("marks a funding-blocked recovery prompt as the wrapped layout variant", () => {
+    const recoverBlockedReason =
+      "Add credits before recovering this recording. Your saved audio will stay available.";
+
+    render(
+      <NoteRecoveryPrompt
+        recovery={recovery}
+        onRecover={vi.fn()}
+        onDiscard={vi.fn()}
+        recoverBlockedReason={recoverBlockedReason}
+      />,
+    );
+
+    const prompt = screen.getByLabelText("Recoverable recording");
+    expect(prompt).toHaveClass("note-recovery-prompt", "note-recovery-prompt-blocked");
+    expect(prompt).not.toHaveClass("note-recovery-prompt-single-line");
+    expect(screen.getByRole("button", { name: "Recover" })).toBeDisabled();
+    expect(screen.getByText(recoverBlockedReason)).toBeInTheDocument();
+  });
+
+  it("centers only while the unblocked body occupies one rendered line", () => {
+    let lineTops = [10];
+    let resizeCallback: ResizeObserverCallback | undefined;
+    const disconnect = vi.fn();
+    vi.spyOn(Range.prototype, "getClientRects").mockImplementation(() => rectList(lineTops));
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback;
+        }
+        observe() {}
+        disconnect() {
+          disconnect();
+        }
+      },
+    );
+
+    const { unmount } = render(
+      <NoteRecoveryPrompt recovery={recovery} onRecover={vi.fn()} onDiscard={vi.fn()} />,
+    );
+
+    const prompt = screen.getByLabelText("Recoverable recording");
+    expect(prompt).toHaveClass("note-recovery-prompt-single-line");
+
+    lineTops = [10, 34];
+    act(() => resizeCallback?.([], {} as ResizeObserver));
+    expect(prompt).not.toHaveClass("note-recovery-prompt-single-line");
+
+    lineTops = [10];
+    act(() => resizeCallback?.([], {} as ResizeObserver));
+    expect(prompt).toHaveClass("note-recovery-prompt-single-line");
+
+    unmount();
+    expect(disconnect).toHaveBeenCalledOnce();
   });
 });
