@@ -540,7 +540,7 @@ impl UploadBeginRequest {
             return Err(ProtocolError::InvalidIdentifier);
         }
         validate_file_name(&self.name)?;
-        validate_media_type(self.media_type.as_deref())?;
+        validate_attachment_media_type(self.media_type.as_deref())?;
         if self.size_bytes == 0 || self.size_bytes > MAX_UPLOAD_BYTES {
             return Err(ProtocolError::UploadTooLarge);
         }
@@ -774,7 +774,7 @@ impl AttachmentReference {
             return Err(ProtocolError::InvalidAttachmentReferences);
         }
         validate_file_name(&self.name)?;
-        validate_media_type(self.media_type.as_deref())
+        validate_attachment_media_type(self.media_type.as_deref())
     }
 }
 
@@ -1377,7 +1377,7 @@ fn validate_optional_nonempty_text(value: Option<&str>, max: usize) -> Result<()
     }
 }
 
-fn validate_media_type(value: Option<&str>) -> Result<(), ProtocolError> {
+fn validate_attachment_media_type(value: Option<&str>) -> Result<(), ProtocolError> {
     let Some(value) = value else {
         return Ok(());
     };
