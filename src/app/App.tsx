@@ -74,6 +74,7 @@ import {
   companionSessionModelSelection,
   companionStoredModelId,
 } from "../lib/companion-models";
+import { companionSessionInActivePartition } from "../lib/companion-partition";
 import {
   AGENT_SESSION_MODEL_CHANGED_EVENT,
   type AgentSessionModelChangedDetail,
@@ -1062,11 +1063,13 @@ export function App() {
   });
 
   const companionScopedSessions = useCallback(async () => {
+    const partition = getCurrentDataPartitionName();
     const [sessions, partitions] = await Promise.all([
       listAgentSessions(),
       refreshSessionPartitions(),
     ]);
-    const fresh = dataPartitionScopedAgentSessions(sessions, partitions);
+    if (getCurrentDataPartitionName() !== partition) return [];
+    const fresh = filterAgentSessionsForDataPartition(sessions, partitions, partition);
     const currentById = new Map(
       agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
     );
@@ -1076,7 +1079,7 @@ export function App() {
     });
     scoped.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     return scoped;
-  }, [dataPartitionScopedAgentSessions, refreshSessionPartitions]);
+  }, [refreshSessionPartitions]);
 
   const openCompanionAgentSession = useCallback(
     async (storedSessionId?: string | null) => {
@@ -1135,13 +1138,9 @@ export function App() {
     const publishModelChange = (event: Event) => {
       const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
       if (!detail?.sessionId || !detail.storedModel) return;
-      void Promise.all([
-        listVeniceModels("generation"),
-        providerModelSettings(),
-        companionScopedSessions(),
-      ])
-        .then(([catalog, settings, sessions]) => {
-          const session = sessions.find((candidate) => candidate.id === detail.sessionId);
+      void Promise.all([listVeniceModels("generation"), providerModelSettings()])
+        .then(async ([catalog, settings]) => {
+          const session = await companionSessionInActivePartition(detail.sessionId);
           if (!session) return;
           const currentStoredModel = loadSessionModels()[session.id] ?? session.model;
           if (currentStoredModel !== detail.storedModel) return;
@@ -1161,7 +1160,7 @@ export function App() {
     };
     window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
     return () => window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
-  }, [companionPairingEnabled, companionScopedSessions]);
+  }, [companionPairingEnabled]);
 
   useEffect(() => {
     if (!companionPairingEnabled) return;

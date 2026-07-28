@@ -51,7 +51,6 @@ import {
   dictationHelperCommand,
   juneHomeChat,
   type JuneHomeChatResponse,
-  listSessionPartitions,
   listVeniceModels,
   providerModelSettings,
   setCostQuality as setProviderCostQuality,
@@ -122,10 +121,7 @@ import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker
 import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
-import {
-  filterAgentSessionsForDataPartition,
-  sessionPartitionMap,
-} from "../../lib/session-partition-filter";
+import { companionSessionInActivePartition } from "../../lib/companion-partition";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
@@ -301,20 +297,6 @@ function artifactView(artifact: AgentArtifactDto): AgentArtifact {
     rootLabel: "June workspace",
     size: artifact.sizeBytes,
   };
-}
-
-async function companionSessionInActivePartition(storedSessionId: string) {
-  const partition = getCurrentDataPartitionName();
-  const [sessions, assignments] = await Promise.all([
-    agentRuntimeBindings.listSessions(),
-    listSessionPartitions(),
-  ]);
-  if (getCurrentDataPartitionName() !== partition) return undefined;
-  return filterAgentSessionsForDataPartition(
-    sessions,
-    sessionPartitionMap(assignments),
-    partition,
-  ).find((session) => session.id === storedSessionId);
 }
 
 export function AgentWorkspace({
@@ -789,7 +771,7 @@ export function AgentWorkspace({
       status: CompanionAgentStatus,
       runId?: string,
     ) => {
-      if (runId && !(await companionSessionInActivePartition(storedSessionId))) return;
+      if (!(await companionSessionInActivePartition(storedSessionId)) || disposed) return;
       await companionPublishAgentEvent({
         type: "status",
         data: {
@@ -797,6 +779,13 @@ export function AgentWorkspace({
           status,
           ...(runId ? { runId } : {}),
         },
+      });
+    };
+    const publishCompanionDelta = async (storedSessionId: string, text: string) => {
+      if (!(await companionSessionInActivePartition(storedSessionId)) || disposed) return;
+      await companionPublishAgentEvent({
+        type: "delta",
+        data: { storedSessionId, text },
       });
     };
     void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
@@ -824,10 +813,7 @@ export function AgentWorkspace({
         );
       }
       if (companionPairingEnabled && payload.method === "message.delta" && payload.data.delta) {
-        void companionPublishAgentEvent({
-          type: "delta",
-          data: { storedSessionId: payload.sessionId, text: payload.data.delta },
-        }).catch(() => undefined);
+        void publishCompanionDelta(payload.sessionId, payload.data.delta).catch(() => undefined);
       }
       if (companionPairingEnabled && payload.method === "tool.completed") {
         void publishCompanionStatus(payload.sessionId, "running", payload.runId).catch(

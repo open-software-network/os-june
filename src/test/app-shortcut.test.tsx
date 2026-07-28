@@ -28,6 +28,7 @@ import type {
   RecordingSessionDto,
   RecordingSourceReadinessDto,
   VeniceModelDto,
+  VeniceModelsResponse,
 } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -793,6 +794,44 @@ describe("App shortcuts", () => {
         },
       }),
     );
+  });
+
+  it("drops a staged model event when the data partition changes during catalog loading", async () => {
+    const partitionASession = agentSession("session-model-partition-a", "Partition A model");
+    const partitionBSession = agentSession("session-model-partition-b", "Partition B model");
+    mocks.listAgentSessions.mockResolvedValue([partitionASession, partitionBSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: partitionASession.id, profile: "partition-a" },
+      { sessionId: partitionBSession.id, profile: "partition-b" },
+    ]);
+    setCurrentDataPartitionName("partition-a");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    mocks.companionPublishAgentEvent.mockClear();
+    mocks.listVeniceModels.mockClear();
+    const catalog = deferred<VeniceModelsResponse>();
+    mocks.listVeniceModels.mockReturnValueOnce(catalog.promise);
+
+    await act(async () => {
+      rememberSessionModel(partitionASession.id, "kimi-k2-6");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    setCurrentDataPartitionName("partition-b");
+    await act(async () => {
+      catalog.resolve({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+      });
+      await catalog.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
   });
 
   it("rejects uncurated companion model writes", async () => {
@@ -2103,6 +2142,12 @@ describe("App shortcuts", () => {
     mocks.listeners.clear();
     mocks.listen.mockClear();
     mocks.companionPairingEnabled = true;
+    mocks.listAgentSessions.mockResolvedValue([
+      agentSession("session-companion", "Companion session"),
+    ]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: "session-companion", profile: "default" },
+    ]);
     render(<App />);
 
     await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
@@ -2117,13 +2162,15 @@ describe("App shortcuts", () => {
         },
       });
     });
-    expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
-      type: "delta",
-      data: {
-        storedSessionId: "session-companion",
-        text: "Visible companion update",
-      },
-    });
+    await waitFor(() =>
+      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+        type: "delta",
+        data: {
+          storedSessionId: "session-companion",
+          text: "Visible companion update",
+        },
+      }),
+    );
     expect(
       appSettingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices"),
     ).toBe(true);
@@ -2137,7 +2184,7 @@ describe("App shortcuts", () => {
     expect(await screen.findByRole("button", { name: "Linked devices" })).toBeInTheDocument();
   });
 
-  it("does not publish artifact status from an inactive data partition", async () => {
+  it("does not publish any agent event from an inactive data partition", async () => {
     const partitionASession = agentSession("session-partition-a", "Partition A session");
     const partitionBSession = agentSession("session-partition-b", "Partition B session");
     mocks.listAgentSessions.mockResolvedValue([partitionASession, partitionBSession]);
@@ -2156,10 +2203,37 @@ describe("App shortcuts", () => {
       mocks.listeners.get("june://agent-runtime-event")?.({
         payload: {
           protocolVersion: 1,
-          eventId: "event-partition-a-tool-completed",
+          eventId: "event-partition-a-delta",
           sessionId: partitionASession.id,
           runId: "run-partition-a",
           sequence: 1,
+          method: "message.delta",
+          data: {
+            itemId: "message-partition-a",
+            role: "assistant",
+            delta: "Private partition A text",
+            createdAt: now,
+          },
+        },
+      });
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-run-started",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 2,
+          method: "run.started",
+          data: { startedAt: now, model: "auto" },
+        },
+      });
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-tool-completed",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 3,
           method: "tool.completed",
           data: {
             itemId: "tool-result-partition-a",
@@ -2172,40 +2246,14 @@ describe("App shortcuts", () => {
       });
     });
 
-    await waitFor(() => expect(mocks.listSessionPartitions).toHaveBeenCalled());
-    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
-
-    setCurrentDataPartitionName("partition-a");
-    act(() => {
-      mocks.listeners.get("june://agent-runtime-event")?.({
-        payload: {
-          protocolVersion: 1,
-          eventId: "event-active-partition-tool-completed",
-          sessionId: partitionASession.id,
-          runId: "run-partition-a",
-          sequence: 2,
-          method: "tool.completed",
-          data: {
-            itemId: "tool-result-active-partition",
-            callId: "call-active-partition",
-            name: "generate_image",
-            output: [],
-            createdAt: now,
-          },
-        },
-      });
-    });
-
     await waitFor(() =>
-      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
-        type: "status",
-        data: {
-          storedSessionId: partitionASession.id,
-          status: "running",
-          runId: "run-partition-a",
-        },
-      }),
+      expect(mocks.listSessionPartitions.mock.calls.length).toBeGreaterThanOrEqual(3),
     );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {
