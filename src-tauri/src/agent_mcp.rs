@@ -332,6 +332,20 @@ impl McpServerDefinition {
         }
         Ok(())
     }
+
+    fn validate_custom(&self) -> Result<(), AgentMcpError> {
+        self.validate()?;
+        self.validate_custom_id()
+    }
+
+    fn validate_custom_id(&self) -> Result<(), AgentMcpError> {
+        if self.id.trim() == MANAGED_LINEAR_SERVER_ID {
+            return Err(AgentMcpError::InvalidDefinition(
+                "server id is reserved for managed Linear".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Values held only in keychain. `env` is supplied to a stdio process and
@@ -1072,7 +1086,7 @@ impl AgentMcpRepository {
         Ok(())
     }
     pub async fn create(&self, definition: &McpServerDefinition) -> Result<(), AgentMcpError> {
-        definition.validate()?;
+        definition.validate_custom()?;
         let now = now();
         let result = query("INSERT INTO agent_mcp_servers (id, name, enabled, transport, command, args_json, url, secret_ref, metadata_json, tool_visibility_json, safety_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&definition.id).bind(definition.name.trim()).bind(definition.enabled as i64).bind(definition.transport.as_db())
@@ -1088,7 +1102,7 @@ impl AgentMcpRepository {
         }
     }
     pub async fn replace(&self, definition: &McpServerDefinition) -> Result<(), AgentMcpError> {
-        definition.validate()?;
+        definition.validate_custom()?;
         let result = query("UPDATE agent_mcp_servers SET name = ?, enabled = ?, transport = ?, command = ?, args_json = ?, url = ?, secret_ref = ?, metadata_json = ?, tool_visibility_json = ?, safety_json = ?, updated_at = ? WHERE id = ?")
             .bind(definition.name.trim()).bind(definition.enabled as i64).bind(definition.transport.as_db()).bind(&definition.command)
             .bind(json_text(&definition.args)?).bind(&definition.url).bind(&definition.secret_ref).bind(json_text(&definition.metadata)?)
@@ -1250,6 +1264,7 @@ impl McpToolRegistry {
         server: &McpServerDefinition,
         discovered: Vec<McpDiscoveredTool>,
     ) -> Result<(), AgentMcpError> {
+        server.validate_custom_id()?;
         self.register_with_approval(server, discovered, |server, tool| {
             server.safety.requires_approval
                 || server
@@ -1533,13 +1548,18 @@ impl<S: McpSecretStore> AgentMcpSubsystem<S> {
         app: Option<&AppHandle>,
     ) -> Result<Vec<RuntimeToolDescriptorJson>, AgentMcpError> {
         let mut next = McpToolRegistry::default();
-        for server in self
-            .repository
-            .list()
-            .await?
-            .into_iter()
-            .filter(|server| server_available(server, sandboxed, workspace))
-        {
+        for server in self.repository.list().await? {
+            if server.id.trim() == MANAGED_LINEAR_SERVER_ID {
+                tracing::warn!(
+                    error_code = "agent_mcp_server_id_reserved",
+                    server_id = %server.id,
+                    "Skipping a custom MCP server with a reserved managed id"
+                );
+                continue;
+            }
+            if !server_available(&server, sandboxed, workspace) {
+                continue;
+            }
             let secret = self.load_server_secrets(&server, false).await?;
             let mut discovered =
                 discover_server(&server, &secret, sandboxed.then_some(workspace).flatten()).await;
@@ -3300,7 +3320,7 @@ pub async fn update_agent_mcp_server(
     let existing = repository.get(&id).await.map_err(app_error)?;
     let replacement_secrets = input.secrets.clone();
     let mut definition = input.into_definition(Some(&existing));
-    definition.validate().map_err(app_error)?;
+    definition.validate_custom().map_err(app_error)?;
     let mut legacy_oauth = definition
         .metadata
         .get("legacyAuth")
@@ -3585,7 +3605,7 @@ pub fn parse_legacy_mcp_config(input: &str) -> Result<LegacyMcpImport, AgentMcpE
             definition.secret_ref = Some(reference.clone());
             secrets.push((reference, bundle));
         }
-        if let Err(error) = definition.validate() {
+        if let Err(error) = definition.validate_custom() {
             let requested_enabled = definition.enabled;
             definition.enabled = false;
             if !definition.metadata.is_object() {
@@ -3865,6 +3885,46 @@ mod tests {
             restarted.create(&duplicate).await,
             Err(AgentMcpError::DuplicateServer)
         ));
+    }
+
+    #[tokio::test]
+    async fn custom_servers_cannot_claim_the_managed_linear_id() {
+        let repo = repository().await;
+        let mut custom = McpServerDefinition::new("custom linear", McpTransport::Stdio);
+        custom.id = MANAGED_LINEAR_SERVER_ID.into();
+        custom.command = Some("node".into());
+
+        assert!(matches!(
+            repo.create(&custom).await,
+            Err(AgentMcpError::InvalidDefinition(_))
+        ));
+        assert!(repo.list().await.unwrap().is_empty());
+
+        let mut registry = McpToolRegistry::default();
+        assert!(matches!(
+            registry.register(&custom, Vec::new()),
+            Err(AgentMcpError::InvalidDefinition(_))
+        ));
+        assert!(managed_linear_definition().validate().is_ok());
+
+        query(
+            "INSERT INTO agent_mcp_servers
+             (id, name, enabled, transport, command, args_json, url, secret_ref,
+              metadata_json, tool_visibility_json, safety_json, created_at, updated_at)
+             VALUES
+             ('builtin:linear', 'legacy collision', 1, 'stdio', 'must-not-spawn', '[]',
+              NULL, NULL, '{}', '{}', '{}', '2026-01-01T00:00:00Z',
+              '2026-01-01T00:00:00Z')",
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+        let subsystem = AgentMcpSubsystem::new(repo, MemorySecrets::default());
+        assert!(subsystem
+            .refresh_registry_for(false)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
