@@ -39,7 +39,7 @@ pub enum FrontendIntent {
     AgentSend {
         stored_session_id: Option<String>,
         message: String,
-        attachments: Vec<String>,
+        attachments: Vec<super::files::ResolvedAttachment>,
         attachment_reference_ids: Vec<uuid::Uuid>,
     },
     MediaFetch {
@@ -304,7 +304,7 @@ impl Controller {
                 limit: page.limit,
             }),
             Body::AgentSend(request) => {
-                let attachments = super::files::resolve_attachment_paths(
+                let attachments = super::files::resolve_attachments(
                     app,
                     repositories,
                     account_user_id,

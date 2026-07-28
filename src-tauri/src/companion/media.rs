@@ -85,17 +85,31 @@ async fn projections(
     run_id: Option<&str>,
 ) -> Result<Vec<CompanionMediaProjection>, AppError> {
     let artifacts = resolve_media_artifacts(repositories, stored_session_id, run_id).await?;
+    Ok(inspect_projections(artifacts).await)
+}
+
+async fn inspect_projections(
+    artifacts: Vec<ResolvedMediaArtifact>,
+) -> Vec<CompanionMediaProjection> {
     let mut projections = Vec::with_capacity(artifacts.len());
     for artifact in artifacts {
-        if let Some(reference) = inspect_reference(artifact.clone()).await? {
-            projections.push(CompanionMediaProjection {
+        match inspect_reference(artifact.clone()).await {
+            Ok(Some(reference)) => projections.push(CompanionMediaProjection {
                 run_id: artifact.run_id,
                 created_at: artifact.created_at,
                 reference,
-            });
+            }),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(
+                    artifact_id = artifact.id,
+                    code = %error.code,
+                    "skipping unavailable companion media artifact"
+                );
+            }
         }
     }
-    Ok(projections)
+    projections
 }
 
 pub async fn resolve_fetch_artifact(
@@ -783,5 +797,42 @@ mod tests {
         assert_eq!(first.sha256, second.sha256);
         assert_eq!(first.total_size_bytes, source.len() as u64);
         assert_eq!(second.offset_bytes, MAX_MEDIA_CHUNK_BYTES as u64);
+    }
+
+    #[tokio::test]
+    async fn unavailable_artifact_does_not_hide_a_valid_media_projection() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid_path = directory.path().join("valid.png");
+        // A complete 1x1 transparent PNG.
+        std::fs::write(
+            &valid_path,
+            [
+                137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0,
+                1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 8, 215, 99, 96, 0,
+                0, 0, 2, 0, 1, 226, 33, 188, 51, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+            ],
+        )
+        .unwrap();
+        let valid_size = std::fs::metadata(&valid_path).unwrap().len();
+        let artifact = |id: &str, path: PathBuf, size| ResolvedMediaArtifact {
+            id: id.to_string(),
+            session_id: "session-1".to_string(),
+            run_id: Some("run-1".to_string()),
+            created_at: "2026-07-28T00:00:00Z".to_string(),
+            path,
+            workspace_path: directory.path().to_path_buf(),
+            media_type: "image/png".to_string(),
+            kind: MediaKind::Image,
+            expected_size_bytes: size,
+        };
+
+        let projections = inspect_projections(vec![
+            artifact("missing", directory.path().join("missing.png"), 1),
+            artifact("valid", valid_path, valid_size),
+        ])
+        .await;
+
+        assert_eq!(projections.len(), 1);
+        assert_eq!(projections[0].reference.artifact_id, "valid");
     }
 }

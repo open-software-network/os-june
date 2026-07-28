@@ -2578,9 +2578,6 @@ impl CompanionAuthorizationPermit {
         if !self.available.swap(false, Ordering::AcqRel) {
             return crate::companion::ComputerUsePermitOutcome::Unavailable;
         }
-        let Some(target) = target else {
-            return crate::companion::ComputerUsePermitOutcome::Unavailable;
-        };
         crate::companion::take_computer_use_remote_permit(
             app,
             &self.stored_session_id,
@@ -2696,13 +2693,11 @@ pub(crate) async fn companion_approval_target(
             Ok(Some(CompanionApprovalTarget::from_context(&current)))
         }
         "list_apps" | "wait" => Ok(None),
-        // LaunchServices resolves the actual application identity only after
-        // launch. Remote approval cannot truthfully authorize that pre-launch
-        // name, so open_app remains desktop-local.
-        "open_app" => Err(AppError::new(
-            "companion_computer_use_target_unverified",
-            "Opening an app requires approval on this Mac so June can verify the launched app.",
-        )),
+        // LaunchServices resolves the application identity only after launch.
+        // Treat this as an explicitly targetless decision: the approval card
+        // describes opening the selected app without echoing a model-supplied
+        // name, and the permit can only match another targetless decision.
+        "open_app" => Ok(None),
         _ => Err(AppError::new(
             "computer_use_action_invalid",
             "Computer use received an unknown action.",

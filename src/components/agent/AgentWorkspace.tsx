@@ -938,10 +938,12 @@ export function AgentWorkspace({
               return;
             }
             const preparedPrompt = preparePromptForSession(authorizedSession.id, message);
+            const stagedModel = loadSessionModels()[authorizedSession.id];
+            const submittedModel = stagedModel ?? authorizedSession.model;
             await agentRuntimeBindings.startRun({
               sessionId: authorizedSession.id,
               prompt: preparedPrompt.text,
-              model: authorizedSession.model,
+              model: submittedModel,
               reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
                 | "minimal"
                 | "medium"
@@ -949,9 +951,11 @@ export function AgentWorkspace({
               safetyMode: authorizedSession.safetyMode,
               workspacePath: authorizedSession.workspacePath,
               enabledSkillIds,
-              attachments,
+              attachments: attachments.map((attachment) => attachment.path),
+              attachmentMetadata: attachments.map(({ name, mediaType }) => ({ name, mediaType })),
             });
-            await companionConsumeAttachments(attachmentReferenceIds);
+            clearSessionModelIfApplied(authorizedSession.id, submittedModel);
+            await companionConsumeAttachments(attachmentReferenceIds).catch(() => undefined);
             projectContextSignaturesBySessionId.set(
               authorizedSession.id,
               preparedPrompt.contextSignature,

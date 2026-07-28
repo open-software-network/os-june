@@ -48,6 +48,14 @@ pub struct StartRunRequest {
     pub enabled_skill_ids: Vec<String>,
     #[serde(default)]
     pub attachments: Vec<String>,
+    #[serde(default)]
+    pub attachment_metadata: Vec<AttachmentMetadataInput>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentMetadataInput {
+    pub name: String,
+    pub media_type: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -550,8 +558,12 @@ pub async fn start_agent_run(
     .bind(&session.id)
     .execute(&repository.pool)
     .await?;
-    let prepared_attachments =
-        prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
+    let prepared_attachments = prepare_attachments(
+        &request.attachments,
+        &request.attachment_metadata,
+        std::path::Path::new(&workspace),
+    )
+    .await?;
     let available_skills = agent_skill_catalog(&app, &repository).await?;
     let requested_skills = request
         .enabled_skill_ids
@@ -2020,10 +2032,17 @@ async fn inherit_session_profile(
 
 async fn prepare_attachments(
     source_paths: &[String],
+    supplied_metadata: &[AttachmentMetadataInput],
     workspace: &std::path::Path,
 ) -> Result<Vec<MessageAttachmentPayload>, AppError> {
     if source_paths.is_empty() {
         return Ok(Vec::new());
+    }
+    if !supplied_metadata.is_empty() && supplied_metadata.len() != source_paths.len() {
+        return Err(AppError::new(
+            "agent_attachment_invalid",
+            "Attachment metadata does not match the selected files.",
+        ));
     }
     let destination_root = workspace.join("attachments");
     tokio::fs::create_dir_all(&destination_root)
@@ -2031,7 +2050,7 @@ async fn prepare_attachments(
         .map_err(io_error)?;
     let canonical_workspace = workspace.canonicalize().map_err(io_error)?;
     let mut attachments = Vec::with_capacity(source_paths.len());
-    for source_path in source_paths {
+    for (index, source_path) in source_paths.iter().enumerate() {
         let source = PathBuf::from(source_path)
             .canonicalize()
             .map_err(io_error)?;
@@ -2041,10 +2060,17 @@ async fn prepare_attachments(
                 "Attachment source is not a file.",
             ));
         }
-        let name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
+        let name = supplied_metadata
+            .get(index)
+            .map(|metadata| metadata.name.trim())
+            .or_else(|| source.file_name().and_then(|value| value.to_str()))
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 255
+                    && !value
+                        .chars()
+                        .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+            })
             .ok_or_else(|| {
                 AppError::new(
                     "agent_attachment_invalid",
@@ -2066,7 +2092,10 @@ async fn prepare_attachments(
             id: uuid::Uuid::new_v4().to_string(),
             name,
             path: destination.to_string_lossy().into_owned(),
-            mime_type: attachment_mime_type(&destination).map(str::to_string),
+            mime_type: supplied_metadata
+                .get(index)
+                .and_then(|metadata| metadata.media_type.clone())
+                .or_else(|| attachment_mime_type(&destination).map(str::to_string)),
             size_bytes: metadata.len() as i64,
             available: true,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -2302,7 +2331,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attachments_are_copied_into_the_session_workspace_and_added_to_context() {
+    async fn supplied_attachment_name_and_media_type_survive_workspace_copy() {
         let source_directory = tempfile::tempdir().expect("source directory");
         let workspace = tempfile::tempdir().expect("workspace");
         let source = source_directory.path().join("brief.md");
@@ -2310,14 +2339,23 @@ mod tests {
             .await
             .expect("source attachment");
 
-        let attachments =
-            prepare_attachments(&[source.to_string_lossy().into_owned()], workspace.path())
-                .await
-                .expect("prepared attachments");
+        let attachments = prepare_attachments(
+            &[source.to_string_lossy().into_owned()],
+            &[AttachmentMetadataInput {
+                name: "launch-brief.custom".to_string(),
+                media_type: Some("application/x-june-brief".to_string()),
+            }],
+            workspace.path(),
+        )
+        .await
+        .expect("prepared attachments");
 
         assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].name, "brief.md");
-        assert_eq!(attachments[0].mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(attachments[0].name, "launch-brief.custom");
+        assert_eq!(
+            attachments[0].mime_type.as_deref(),
+            Some("application/x-june-brief")
+        );
         assert!(PathBuf::from(&attachments[0].path).starts_with(workspace.path()));
         assert_eq!(
             tokio::fs::read_to_string(&attachments[0].path)
@@ -2327,7 +2365,7 @@ mod tests {
         );
         let input = message_with_attachment_context("Summarize this.", &attachments);
         assert!(input.starts_with("[June attachment manifest v1]"));
-        assert!(input.contains("brief.md"));
+        assert!(input.contains("launch-brief.custom"));
         assert!(input.contains(&attachments[0].path));
         assert!(input.ends_with("Summarize this."));
     }

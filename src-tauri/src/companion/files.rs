@@ -5,6 +5,7 @@ use june_companion_protocol::{
     Page, PageRequest, UploadBeginRequest, UploadChunkRequest, UploadProgress, MAX_BROWSE_ROOTS,
     MAX_PAGE_SIZE, MAX_UPLOAD_BYTES,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{query::query, row::Row};
 use std::{
@@ -41,8 +42,19 @@ pub(super) struct BrowseReference {
     account_user_id: String,
     device_id: String,
     root_id: Uuid,
-    relative_path: String,
+    materialized_path: PathBuf,
+    name: String,
+    media_type: Option<String>,
     expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedAttachment {
+    pub path: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +68,13 @@ struct UploadRecord {
     state: UploadState,
     attachment_reference_id: Option<Uuid>,
     expires_at_ms: u64,
+}
+
+#[derive(Debug)]
+struct MaterializedBrowseAttachment {
+    path: PathBuf,
+    name: String,
+    media_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,14 +184,25 @@ pub(super) async fn revoke_root(
     .bind(root_id.to_string())
     .execute(&repositories.pool)
     .await?;
+    let mut directories = Vec::new();
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
         .browse_references
         .lock()
     {
         references.retain(|_, reference| {
-            reference.account_user_id != account_user_id || reference.root_id != root_id
+            let retain =
+                reference.account_user_id != account_user_id || reference.root_id != root_id;
+            if !retain {
+                if let Some(directory) = reference.materialized_path.parent() {
+                    directories.push(directory.to_path_buf());
+                }
+            }
+            retain
         });
+    }
+    for directory in directories {
+        let _ = fs::remove_dir_all(directory).await;
     }
     Ok(())
 }
@@ -293,25 +323,21 @@ pub(super) async fn stat_file(
     relative_path: &str,
 ) -> Result<BrowseFile, AppError> {
     let root = root_record(repositories, account_user_id, root_id).await?;
-    let path = resolve_granted_path(&root, relative_path, ExpectedKind::File)?;
-    let metadata = fs::metadata(&path).await.map_err(browse_io_error)?;
-    if metadata.len() == 0 || metadata.len() > MAX_UPLOAD_BYTES {
-        return Err(AppError::new(
-            "companion_file_limit_exceeded",
-            "This file is not within the companion attachment size limit.",
-        ));
-    }
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| {
-            AppError::new(
-                "companion_browse_invalid",
-                "This file name cannot be shown in June Companion.",
-            )
-        })?
-        .to_string();
     let reference_id = Uuid::new_v4();
+    let materialized = materialize_browse_attachment(
+        app,
+        account_user_id,
+        device_id,
+        reference_id,
+        &root,
+        relative_path,
+    )
+    .await?;
+    let metadata = fs::metadata(&materialized.path)
+        .await
+        .map_err(browse_io_error)?;
+    let name = materialized.name;
+    let media_type = materialized.media_type;
     let expires_at_ms = now_ms().saturating_add(duration_ms(BROWSE_REFERENCE_LIFETIME));
     {
         let runtime = app.state::<super::CompanionRuntime>();
@@ -330,6 +356,12 @@ pub(super) async fn stat_file(
             })
             .count();
         if device_count >= MAX_BROWSE_REFERENCES_PER_DEVICE {
+            let _ = std::fs::remove_dir_all(
+                materialized
+                    .path
+                    .parent()
+                    .unwrap_or(materialized.path.as_path()),
+            );
             return Err(AppError::new(
                 "companion_reference_limit_exceeded",
                 "Use or discard an earlier file selection before choosing another one.",
@@ -341,7 +373,9 @@ pub(super) async fn stat_file(
                 account_user_id: account_user_id.to_string(),
                 device_id: device_id.to_string(),
                 root_id,
-                relative_path: relative_path.to_string(),
+                materialized_path: materialized.path,
+                name: name.clone(),
+                media_type: media_type.clone(),
                 expires_at_ms,
             },
         );
@@ -359,7 +393,7 @@ pub(super) async fn stat_file(
             reference_id,
             source: AttachmentSource::MacFile,
             name,
-            media_type: attachment_media_type(&path).map(str::to_string),
+            media_type,
             size_bytes: metadata.len(),
             expires_at_ms,
         },
@@ -638,14 +672,14 @@ pub(super) async fn commit_upload(
     Ok(upload_progress(record))
 }
 
-pub(super) async fn resolve_attachment_paths(
+pub(super) async fn resolve_attachments(
     app: &AppHandle,
     repositories: &Repositories,
     account_user_id: &str,
     device_id: &str,
     reference_ids: &[Uuid],
-) -> Result<Vec<String>, AppError> {
-    let mut paths = Vec::with_capacity(reference_ids.len());
+) -> Result<Vec<ResolvedAttachment>, AppError> {
+    let mut attachments = Vec::with_capacity(reference_ids.len());
     for reference_id in reference_ids {
         if let Some(record) =
             upload_by_reference(repositories, account_user_id, device_id, *reference_id).await?
@@ -667,7 +701,11 @@ pub(super) async fn resolve_attachment_paths(
                     "This phone attachment is no longer available.",
                 ));
             }
-            paths.push(path.to_string_lossy().into_owned());
+            attachments.push(ResolvedAttachment {
+                path: path.to_string_lossy().into_owned(),
+                name: record.name,
+                media_type: record.media_type,
+            });
             continue;
         }
 
@@ -695,8 +733,7 @@ pub(super) async fn resolve_attachment_paths(
                 "This file selection belongs to another linked device.",
             ));
         }
-        let root = root_record(repositories, account_user_id, browse.root_id).await?;
-        let path = resolve_granted_path(&root, &browse.relative_path, ExpectedKind::File)?;
+        let path = browse.materialized_path;
         let metadata = fs::metadata(&path).await.map_err(browse_io_error)?;
         if metadata.len() == 0 || metadata.len() > MAX_UPLOAD_BYTES {
             return Err(AppError::new(
@@ -704,9 +741,13 @@ pub(super) async fn resolve_attachment_paths(
                 "This file is not within the companion attachment size limit.",
             ));
         }
-        paths.push(path.to_string_lossy().into_owned());
+        attachments.push(ResolvedAttachment {
+            media_type: browse.media_type,
+            path: path.to_string_lossy().into_owned(),
+            name: browse.name,
+        });
     }
-    Ok(paths)
+    Ok(attachments)
 }
 
 pub(super) async fn consume_attachments(
@@ -715,6 +756,7 @@ pub(super) async fn consume_attachments(
     account_user_id: &str,
     reference_ids: &[Uuid],
 ) -> Result<(), AppError> {
+    let mut browse_directories = Vec::new();
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
         .browse_references
@@ -725,9 +767,16 @@ pub(super) async fn consume_attachments(
                 .get(reference_id)
                 .is_some_and(|reference| reference.account_user_id == account_user_id)
             {
-                references.remove(reference_id);
+                if let Some(reference) = references.remove(reference_id) {
+                    if let Some(directory) = reference.materialized_path.parent() {
+                        browse_directories.push(directory.to_path_buf());
+                    }
+                }
             }
         }
+    }
+    for directory in browse_directories {
+        let _ = fs::remove_dir_all(directory).await;
     }
     for reference_id in reference_ids {
         let row = query(
@@ -784,25 +833,48 @@ pub(super) async fn cleanup_device_uploads(
             delete_upload_record(repositories, account_user_id, device_id, &reservation_id).await;
         }
     }
+    let mut browse_directories = Vec::new();
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
         .browse_references
         .lock()
     {
         references.retain(|_, reference| {
-            reference.account_user_id != account_user_id || reference.device_id != device_id
+            let retain =
+                reference.account_user_id != account_user_id || reference.device_id != device_id;
+            if !retain {
+                if let Some(directory) = reference.materialized_path.parent() {
+                    browse_directories.push(directory.to_path_buf());
+                }
+            }
+            retain
         });
+    }
+    for directory in browse_directories {
+        let _ = fs::remove_dir_all(directory).await;
     }
 }
 
 fn prune_expired_browse_references(app: &AppHandle) {
+    let mut directories = Vec::new();
     if let Ok(mut references) = app
         .state::<super::CompanionRuntime>()
         .browse_references
         .lock()
     {
         let now = now_ms();
-        references.retain(|_, reference| reference.expires_at_ms >= now);
+        references.retain(|_, reference| {
+            let retain = reference.expires_at_ms >= now;
+            if !retain {
+                if let Some(directory) = reference.materialized_path.parent() {
+                    directories.push(directory.to_path_buf());
+                }
+            }
+            retain
+        });
+    }
+    for directory in directories {
+        let _ = std::fs::remove_dir_all(directory);
     }
 }
 
@@ -959,6 +1031,142 @@ fn resolve_granted_path(
         return Err(path_invalid());
     }
     Ok(canonical)
+}
+
+async fn materialize_browse_attachment(
+    app: &AppHandle,
+    account_user_id: &str,
+    device_id: &str,
+    reference_id: Uuid,
+    root: &BrowseRootRecord,
+    relative_path: &str,
+) -> Result<MaterializedBrowseAttachment, AppError> {
+    let destination_directory =
+        browse_attachment_directory(app, account_user_id, device_id, reference_id)?;
+    let root = root.clone();
+    let relative_path = relative_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        materialize_browse_attachment_blocking(&root, &relative_path, &destination_directory)
+    })
+    .await
+    .map_err(|_| {
+        AppError::new(
+            "companion_browse_unavailable",
+            "June could not preserve this file selection.",
+        )
+    })?
+}
+
+#[cfg(unix)]
+fn materialize_browse_attachment_blocking(
+    root: &BrowseRootRecord,
+    relative_path: &str,
+    destination_directory: &Path,
+) -> Result<MaterializedBrowseAttachment, AppError> {
+    use std::{
+        ffi::CString,
+        fs::OpenOptions as StdOpenOptions,
+        io::copy,
+        os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        },
+    };
+
+    let mut current = StdOpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&root.canonical_path)
+        .map_err(browse_io_error)?;
+    let root_metadata = current.metadata().map_err(browse_io_error)?;
+    if !root_metadata.is_dir()
+        || root_metadata.dev().to_string() != root.volume_device_id
+        || root_metadata.ino().to_string() != root.directory_file_id
+    {
+        return Err(root_changed());
+    }
+
+    let components = Path::new(relative_path)
+        .components()
+        .map(|component| {
+            let Component::Normal(component) = component else {
+                return Err(path_invalid());
+            };
+            let name = component.to_str().ok_or_else(path_invalid)?;
+            if invalid_visible_name(name) {
+                return Err(path_invalid());
+            }
+            CString::new(name).map_err(|_| path_invalid())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let name = components
+        .last()
+        .and_then(|component| component.to_str().ok())
+        .ok_or_else(path_invalid)?
+        .to_string();
+    for (index, component) in components.iter().enumerate() {
+        let final_component = index + 1 == components.len();
+        let flags = libc::O_RDONLY
+            | libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | if final_component {
+                0
+            } else {
+                libc::O_DIRECTORY
+            };
+        // SAFETY: current is an open directory descriptor, component is a
+        // NUL-terminated single path component, and the returned descriptor is
+        // immediately owned by File.
+        let descriptor = unsafe { libc::openat(current.as_raw_fd(), component.as_ptr(), flags) };
+        if descriptor < 0 {
+            return Err(browse_io_error(std::io::Error::last_os_error()));
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        current = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    }
+    let metadata = current.metadata().map_err(browse_io_error)?;
+    if !metadata.is_file() {
+        return Err(path_invalid());
+    }
+    if metadata.len() == 0 || metadata.len() > MAX_UPLOAD_BYTES {
+        return Err(AppError::new(
+            "companion_file_limit_exceeded",
+            "This file is not within the companion attachment size limit.",
+        ));
+    }
+
+    std::fs::create_dir_all(destination_directory).map_err(browse_io_error)?;
+    std::fs::set_permissions(
+        destination_directory,
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .map_err(browse_io_error)?;
+    let destination = destination_directory.join("content");
+    let mut output = StdOpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&destination)
+        .map_err(browse_io_error)?;
+    copy(&mut current, &mut output).map_err(browse_io_error)?;
+    output.sync_all().map_err(browse_io_error)?;
+    Ok(MaterializedBrowseAttachment {
+        media_type: attachment_media_type(Path::new(&name)).map(str::to_string),
+        path: destination,
+        name,
+    })
+}
+
+#[cfg(not(unix))]
+fn materialize_browse_attachment_blocking(
+    _root: &BrowseRootRecord,
+    _relative_path: &str,
+    _destination_directory: &Path,
+) -> Result<MaterializedBrowseAttachment, AppError> {
+    Err(AppError::new(
+        "companion_root_identity_unavailable",
+        "June cannot securely preserve this file selection on this platform.",
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1224,6 +1432,23 @@ fn upload_directory(
         .join(reservation_id.to_string()))
 }
 
+fn browse_attachment_directory(
+    app: &AppHandle,
+    account_user_id: &str,
+    device_id: &str,
+    reference_id: Uuid,
+) -> Result<PathBuf, AppError> {
+    let device_id = parse_uuid(device_id)?;
+    let account_digest = format!("{:x}", Sha256::digest(account_user_id.as_bytes()));
+    Ok(app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("storage_unavailable", error.to_string()))?
+        .join("companion")
+        .join("browse-attachments")
+        .join(&account_digest[..32])
+        .join(device_id.to_string())
+        .join(reference_id.to_string()))
+}
+
 fn upload_staging_path(
     app: &AppHandle,
     account_user_id: &str,
@@ -1446,6 +1671,38 @@ mod tests {
         root.directory_file_id.push_str("-different");
         let error = resolve_granted_path(&root, "", ExpectedKind::Directory).unwrap_err();
         assert_eq!(error.code, "companion_root_not_found");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn browse_materialization_rejects_a_symlink_swap_after_stat() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("Shared");
+        let folder = root_path.join("folder");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(folder.join("brief.md"), "approved").unwrap();
+        std::fs::write(outside.join("brief.md"), "secret").unwrap();
+        let root = test_browse_root(&root_path);
+
+        assert!(
+            resolve_granted_path(&root, "folder/brief.md", ExpectedKind::File).is_ok(),
+            "the reference was valid when stat created it"
+        );
+        std::fs::rename(&folder, root_path.join("original-folder")).unwrap();
+        symlink(&outside, &folder).unwrap();
+
+        let stage = directory.path().join("stage");
+        let error =
+            materialize_browse_attachment_blocking(&root, "folder/brief.md", &stage).unwrap_err();
+        assert!(matches!(
+            error.code.as_str(),
+            "companion_browse_unavailable" | "companion_browse_invalid"
+        ));
+        assert!(!stage.join("content").exists());
     }
 
     #[tokio::test]

@@ -1542,7 +1542,7 @@ impl ComputerUseApprovalRegistry {
         &mut self,
         tool_call_id: &str,
         stored_session_id: &str,
-        resolved_target: &crate::computer_use::CompanionApprovalTarget,
+        resolved_target: Option<&crate::computer_use::CompanionApprovalTarget>,
     ) -> ComputerUsePermitTake {
         let Some(entry) = self.requests.values_mut().find(|entry| {
             entry.tool_call_id == tool_call_id
@@ -1561,7 +1561,7 @@ impl ComputerUseApprovalRegistry {
         entry.remote_permit_armed = false;
         let request_id = entry.request.request_id.clone();
         let stored_session_id = entry.request.stored_session_id.clone();
-        if entry.published_target.as_ref() != Some(resolved_target) {
+        if entry.published_target.as_ref() != resolved_target {
             entry.phase = ComputerUseApprovalPhase::Resolved;
             return ComputerUsePermitTake::TargetMismatch {
                 request_id,
@@ -1694,7 +1694,7 @@ pub(crate) fn take_computer_use_remote_permit(
     app: &AppHandle,
     stored_session_id: &str,
     tool_call_id: &str,
-    resolved_target: &crate::computer_use::CompanionApprovalTarget,
+    resolved_target: Option<&crate::computer_use::CompanionApprovalTarget>,
 ) -> ComputerUsePermitOutcome {
     if !computer_use_approvals_enabled(app) {
         return ComputerUsePermitOutcome::Unavailable;
@@ -2405,7 +2405,9 @@ mod tests {
             desktop.take_remote_permit(
                 "tool-call-1",
                 "session-1",
-                &crate::computer_use::CompanionApprovalTarget::fixture("TextEdit", 100),
+                Some(&crate::computer_use::CompanionApprovalTarget::fixture(
+                    "TextEdit", 100,
+                )),
             ),
             ComputerUsePermitTake::Unavailable
         );
@@ -2433,22 +2435,22 @@ mod tests {
         let other = crate::computer_use::CompanionApprovalTarget::fixture("Mail", 200);
         assert!(registry.complete_resolution("call-1", "session-1", true, true));
         assert_eq!(
-            registry.take_remote_permit("tool-call-1", "other-session", &published),
+            registry.take_remote_permit("tool-call-1", "other-session", Some(&published)),
             ComputerUsePermitTake::Unavailable
         );
         assert!(matches!(
-            registry.take_remote_permit("tool-call-1", "session-1", &published),
+            registry.take_remote_permit("tool-call-1", "session-1", Some(&published)),
             ComputerUsePermitTake::Consumed { .. }
         ));
         assert_eq!(
-            registry.take_remote_permit("tool-call-1", "session-1", &published),
+            registry.take_remote_permit("tool-call-1", "session-1", Some(&published)),
             ComputerUsePermitTake::Unavailable
         );
 
         let mut mismatch = approval_registry();
         assert!(mismatch.complete_resolution("call-1", "session-1", true, true));
         assert!(matches!(
-            mismatch.take_remote_permit("tool-call-1", "session-1", &other),
+            mismatch.take_remote_permit("tool-call-1", "session-1", Some(&other)),
             ComputerUsePermitTake::TargetMismatch { .. }
         ));
         assert_eq!(
@@ -2461,7 +2463,37 @@ mod tests {
         let replacement_process =
             crate::computer_use::CompanionApprovalTarget::fixture_with_pid("TextEdit", 200, 100);
         assert!(matches!(
-            reused_window.take_remote_permit("tool-call-1", "session-1", &replacement_process,),
+            reused_window.take_remote_permit(
+                "tool-call-1",
+                "session-1",
+                Some(&replacement_process),
+            ),
+            ComputerUsePermitTake::TargetMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn targetless_open_app_permit_matches_only_a_targetless_decision() {
+        let mut targetless = approval_registry();
+        targetless
+            .requests
+            .get_mut("call-1")
+            .unwrap()
+            .published_target = None;
+        assert!(targetless.complete_resolution("call-1", "session-1", true, true));
+        assert!(matches!(
+            targetless.take_remote_permit("tool-call-1", "session-1", None),
+            ComputerUsePermitTake::Consumed { .. }
+        ));
+        assert_eq!(
+            targetless.take_remote_permit("tool-call-1", "session-1", None),
+            ComputerUsePermitTake::Unavailable
+        );
+
+        let mut targetful = approval_registry();
+        assert!(targetful.complete_resolution("call-1", "session-1", true, true));
+        assert!(matches!(
+            targetful.take_remote_permit("tool-call-1", "session-1", None),
             ComputerUsePermitTake::TargetMismatch { .. }
         ));
     }

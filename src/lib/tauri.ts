@@ -2488,7 +2488,7 @@ export type CompanionFrontendIntent =
       data: {
         storedSessionId?: string;
         message: string;
-        attachments: string[];
+        attachments: Array<{ path: string; name: string; mediaType?: string }>;
         attachmentReferenceIds: string[];
       };
     }

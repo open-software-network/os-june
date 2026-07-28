@@ -1260,7 +1260,13 @@ describe("App shortcuts", () => {
             data: {
               storedSessionId: target.id,
               message: "Read the attached brief",
-              attachments: ["/tmp/companion/content"],
+              attachments: [
+                {
+                  path: "/tmp/companion/content",
+                  name: "photo.png",
+                  mediaType: "image/png",
+                },
+              ],
               attachmentReferenceIds: ["00000000-0000-0000-0000-000000000003"],
             },
           },
@@ -1273,6 +1279,7 @@ describe("App shortcuts", () => {
         expect.objectContaining({
           sessionId: target.id,
           attachments: ["/tmp/companion/content"],
+          attachmentMetadata: [{ name: "photo.png", mediaType: "image/png" }],
         }),
       ),
     );
@@ -1286,6 +1293,76 @@ describe("App shortcuts", () => {
         data: { storedSessionId: target.id },
       },
     );
+  });
+
+  it("applies and clears a companion-staged model at the companion run boundary", async () => {
+    const target = agentSession("session-staged-companion", "Staged model session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    rememberSessionModel(target.id, "model-staged-by-phone");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-staged-model-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Use the staged model",
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: target.id,
+          model: "model-staged-by-phone",
+        }),
+      ),
+    );
+    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({});
+  });
+
+  it("reports acceptance when attachment cleanup fails after run dispatch", async () => {
+    const target = agentSession("session-cleanup-failure", "Cleanup failure session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    mocks.companionConsumeAttachments.mockRejectedValueOnce(new Error("cleanup failed"));
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-cleanup-failure",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Dispatch once",
+              attachmentReferenceIds: ["00000000-0000-0000-0000-000000000004"],
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-cleanup-failure",
+        {
+          type: "agentAccepted",
+          data: { storedSessionId: target.id },
+        },
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledTimes(1);
   });
 
   it("prepares companion sends with current project context and clearing markers", async () => {
