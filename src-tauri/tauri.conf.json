@@ -127,7 +127,8 @@
       "icons/icon.png"
     ],
     "resources": {
-      "../extension/dist": "native/extension"
+      "../extension/dist": "native/extension",
+      "resources/agent-skills": "native/agent-skills"
     }
   }
 }
