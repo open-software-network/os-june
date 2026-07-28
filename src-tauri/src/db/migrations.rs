@@ -6,6 +6,10 @@ use sqlx_sqlite::{SqlitePool, SqliteTransaction};
 
 const SCHEMA_MIGRATIONS_TABLE: &str = "schema_migrations";
 
+const LEGACY_PENDING_COMPANION_MESSAGE: &str =
+    "This request may already have reached June. Check your Mac before trying a different request.";
+const OUTCOME_UNKNOWN_COMPANION_MESSAGE: &str = "This request may already have reached June. Check your Mac, then choose the action again only if it is still needed.";
+
 #[derive(Clone, Copy)]
 struct ColumnDefinition {
     name: &'static str,
@@ -212,6 +216,20 @@ const FOLDER_LOCAL_PATH_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "local_path",
     definition: "TEXT",
 }];
+const RECORDING_ORIGIN_COLUMNS: &[ColumnDefinition] = &[
+    ColumnDefinition {
+        name: "recording_origin",
+        definition: "TEXT NOT NULL DEFAULT 'other'",
+    },
+    ColumnDefinition {
+        name: "meeting_app_bundle_families",
+        definition: "TEXT NOT NULL DEFAULT '[]'",
+    },
+    ColumnDefinition {
+        name: "auto_finish_eligible",
+        definition: "INTEGER NOT NULL DEFAULT 0",
+    },
+];
 
 // IMPORTANT: positions in this catalog are shipped schema versions. They must
 // follow the order in which changes reached users, not SQL filename prefixes:
@@ -1162,7 +1180,90 @@ const MIGRATIONS: &[Migration] = &[
             columns: AGENT_RUN_CONFIG_COLUMN,
         }],
     },
+    Migration {
+        version: 41,
+        name: "companion_devices",
+        requirements: &[SchemaRequirement::Table("companion_devices")],
+        steps: &[
+            // Compare-and-swap revision for remote-safe note edits: linked
+            // devices must never overwrite newer local edits (ADR-0048).
+            MigrationStep::EnsureColumns {
+                table: "notes",
+                columns: NOTE_REVISION_COLUMN,
+            },
+            MigrationStep::Sql(include_str!("../../migrations/030_companion.sql")),
+        ],
+    },
+    Migration {
+        version: 42,
+        name: "companion_account_scope",
+        requirements: &[SchemaRequirement::Column {
+            table: "companion_devices",
+            column: "account_user_id",
+        }],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "companion_devices",
+                columns: COMPANION_ACCOUNT_USER_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/031_companion_account_scope.sql"
+            )),
+        ],
+    },
+    Migration {
+        version: 43,
+        name: "companion_operation_state",
+        requirements: &[SchemaRequirement::Table("companion_account_state")],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "companion_operations",
+                columns: COMPANION_OPERATION_STATE_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/032_companion_operation_state.sql"
+            )),
+        ],
+    },
+    // Renumbered from 32 when main advanced past it — positions here are
+    // shipped schema versions, so the branch's migration appends after
+    // everything main has already stamped (ADR-0037: append-only).
+    Migration {
+        version: 44,
+        name: "meeting_recording_origin",
+        requirements: &[
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "recording_origin",
+            },
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "meeting_app_bundle_families",
+            },
+            SchemaRequirement::Column {
+                table: "recording_sessions",
+                column: "auto_finish_eligible",
+            },
+        ],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "recording_sessions",
+            columns: RECORDING_ORIGIN_COLUMNS,
+        }],
+    },
 ];
+
+const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "revision",
+    definition: "INTEGER NOT NULL DEFAULT 1",
+}];
+const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "account_user_id",
+    definition: "TEXT NOT NULL DEFAULT ''",
+}];
+const COMPANION_OPERATION_STATE_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "operation_state",
+    definition: "TEXT NOT NULL DEFAULT 'completed'",
+}];
 
 struct AppliedMigration {
     version: i64,
@@ -1235,7 +1336,62 @@ impl SchemaSnapshot {
 }
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    run_migration_catalog(pool, MIGRATIONS).await
+    run_migration_catalog(pool, MIGRATIONS).await?;
+    // Prerelease companion builds recorded outcome-unknown mutations as
+    // retryable 'completed' busy responses. Rewriting them to non-retryable
+    // pending reservations must survive re-runs, so it stays outside the
+    // one-shot catalog and matches nothing once every legacy row is rewritten.
+    migrate_legacy_companion_reservations(pool).await
+}
+
+async fn migrate_legacy_companion_reservations(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::error::Error> {
+    use june_companion_protocol::{FailureCode, ResultPayload};
+
+    let rows = query(
+        "SELECT device_id, operation_id, response
+         FROM companion_operations
+         WHERE operation_state = 'completed'
+           AND instr(CAST(response AS TEXT), ?) > 0",
+    )
+    .bind(LEGACY_PENDING_COMPANION_MESSAGE)
+    .fetch_all(pool)
+    .await?;
+    for row in rows {
+        let encoded: Vec<u8> = row.get("response");
+        let Ok(mut response) =
+            serde_json::from_slice::<june_companion_protocol::Response>(&encoded)
+        else {
+            continue;
+        };
+        let ResultPayload::Error(failure) = &mut response.result else {
+            continue;
+        };
+        if failure.code != FailureCode::Busy
+            || !failure.retryable
+            || failure.message != LEGACY_PENDING_COMPANION_MESSAGE
+        {
+            continue;
+        }
+        failure.code = FailureCode::OutcomeUnknown;
+        failure.message = OUTCOME_UNKNOWN_COMPANION_MESSAGE.to_string();
+        failure.retryable = false;
+        let Ok(encoded) = serde_json::to_vec(&response) else {
+            continue;
+        };
+        query(
+            "UPDATE companion_operations
+             SET operation_state = 'pending', response = ?
+             WHERE device_id = ? AND operation_id = ?",
+        )
+        .bind(encoded)
+        .bind(row.get::<String, _>("device_id"))
+        .bind(row.get::<String, _>("operation_id"))
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 async fn run_migration_catalog(

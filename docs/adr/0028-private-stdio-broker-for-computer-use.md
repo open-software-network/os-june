@@ -313,3 +313,5 @@ retains the initialized no-authority driver as the next attended task's prewarm.
 Explicit Stop, grant revocation, readiness loss, and shutdown still invalidate
 its epoch and terminate it. Authorization, target validation, rollout, plan,
 model, billing, and approval behavior remain unchanged.
+
+2026-07-27 addendum: ADR-0040 supersedes this ADR's public `june_computer_use` MCP-server integration shape; the brokered-helper isolation pattern and Computer use product scope remain binding.

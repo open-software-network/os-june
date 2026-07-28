@@ -1,4 +1,4 @@
-import { type SidebarView } from "../components/sidebar/Sidebar";
+import type { SidebarView } from "../components/sidebar/Sidebar";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import type { NotesAction } from "./state/app-state";

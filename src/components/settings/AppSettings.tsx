@@ -130,6 +130,7 @@ import { DEFAULT_VIDEO_MODEL, VIDEO_MODELS } from "../../lib/video-models";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { AgentMcpServersSection } from "./AgentMcpServersSection";
 import { ConnectorsSection } from "./ConnectorsSection";
+import { LinkedDevicesSection } from "./LinkedDevicesSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
 import { MemorySettingsSection } from "./MemorySettingsSection";
 import { MicTestControl, type MicTestState } from "./MicTestControl";
@@ -318,6 +319,7 @@ export type SettingsTab =
   | "agent"
   | "memory"
   | "connectors"
+  | "linked-devices"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -331,8 +333,13 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "memory", label: "Memory" },
   { id: "connectors", label: "Plugins" },
+  { id: "linked-devices", label: "Linked devices" },
   { id: "about", label: "About" },
 ];
+
+export function appSettingsTabsForCompanionPairing(companionPairingEnabled: boolean) {
+  return SETTINGS_TABS.filter((tab) => companionPairingEnabled || tab.id !== "linked-devices");
+}
 
 /**
  * The shared settings page header (Codex-app style): a large serif page title
@@ -546,9 +553,9 @@ export function AppSettings({
   }, [detailPinned, onDetailPinnedChange]);
   // Never leave the host thinking a detail scroller is active after unmount.
   useEffect(() => () => onDetailPinnedChange?.(false), [onDetailPinnedChange]);
-  const settingsTabs = account.localDev
-    ? SETTINGS_TABS.filter((tab) => tab.id !== "billing")
-    : SETTINGS_TABS;
+  const settingsTabs = appSettingsTabsForCompanionPairing(
+    experimentalFlags.companionPairingEnabled,
+  ).filter((tab) => !(account.localDev && tab.id === "billing"));
   const capabilities = useDictationCapabilities();
   const macLikePlatform = capabilities.platform === "macos";
   const systemAudioSupportedPlatform = capabilities.systemAudio || isSystemAudioSupportedPlatform();
@@ -1625,6 +1632,7 @@ export function AppSettings({
     void setExperimentalFlags({
       unlocked: true,
       browser_use: experimentalFlags.browser_use,
+      companion_pairing: experimentalFlags.companion_pairing,
     })
       .then(() => toast("Experiments are unlocked"))
       .catch((error) => setExperimentalError(messageFromError(error)))
@@ -1633,13 +1641,18 @@ export function AppSettings({
       });
   }
 
-  async function updateExperimentalFlags(update: { unlocked?: boolean; browser_use?: boolean }) {
+  async function updateExperimentalFlags(update: {
+    unlocked?: boolean;
+    browser_use?: boolean;
+    companion_pairing?: boolean;
+  }) {
     setExperimentalOperation("flags");
     setExperimentalError(undefined);
     try {
       await setExperimentalFlags({
         unlocked: update.unlocked ?? experimentalFlags.unlocked,
         browser_use: update.browser_use ?? experimentalFlags.browser_use,
+        companion_pairing: update.companion_pairing ?? experimentalFlags.companion_pairing,
       });
     } catch (error) {
       setExperimentalError(messageFromError(error));
@@ -2610,6 +2623,10 @@ export function AppSettings({
           </>
         ) : null}
 
+        {activeTab === "linked-devices" && experimentalFlags.companionPairingEnabled ? (
+          <LinkedDevicesSection />
+        ) : null}
+
         {activeTab === "about" ? (
           <section className="settings-group" aria-labelledby="about-heading">
             <SettingsPageHeader
@@ -2835,6 +2852,30 @@ export function AppSettings({
                         aria-label="Enable experimental Browser use"
                         onCheckedChange={(browser_use) =>
                           void updateExperimentalFlags({ browser_use })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <div className="settings-row-info">
+                      <h3 className="settings-row-title">Companion pairing</h3>
+                      <p className="settings-row-description">
+                        {experimentalFlags.companion_pairing ===
+                        experimentalFlags.companionPairingEnabled
+                          ? "Enable Linked devices and the June Companion runtime on this install. Changes apply after June restarts."
+                          : experimentalFlags.companionPairingEnabled
+                            ? "Companion pairing remains available until June restarts. It is saved as off for the next launch."
+                            : "Companion pairing is saved as on and will become available after June restarts."}
+                      </p>
+                    </div>
+                    <div className="settings-row-control">
+                      <Switch
+                        checked={experimentalFlags.companion_pairing}
+                        disabled={experimentalOperation !== undefined}
+                        aria-label="Enable experimental Companion pairing"
+                        onCheckedChange={(companion_pairing) =>
+                          void updateExperimentalFlags({ companion_pairing })
                         }
                       />
                     </div>

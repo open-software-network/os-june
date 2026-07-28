@@ -34,7 +34,7 @@ const LEVEL_TICK_MS = 90;
 const HELP = [
   "Dictation pill demo states (HUD window):",
   '  __dictationHud("listening")     pill listens with a live waveform',
-  '  __dictationHud("transcribing")  stopped, braille processing texture',
+  '  __dictationHud("transcribing")  stopped, collapsed to the dot spinner',
   '  __dictationHud("pasting")       pasting into the previous app',
   '  __dictationHud("error")         a visible failure (shakes, lingers ~1.8s)',
   '  __dictationHud("silent")        nothing recorded — pill just dissolves',

@@ -59,6 +59,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     handleEnableMicrophone,
     handleEnableSystemAudio,
     handleFinishRecording,
+    handleKeepRecordingAfterMeetingEnd,
     handleFlushNote,
     handleFoldersImported,
     handleNewAgentSession,
@@ -88,11 +89,13 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     handleSourceModeChange,
     handleStartBundleChat,
     handleStartRecording,
+    handleStopNowAfterMeetingEnd,
     handleToggleSessionCompleted,
     handleTopUp,
     handleUpdateNote,
     homeStoredSessionId,
     memoryFolderFilter,
+    meetingEndCountdown,
     microphoneBlocked,
     microphoneStatus,
     noteDetailScrollRef,
@@ -134,6 +137,21 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
     takeNewTabIntent,
     topUpLabel,
   } = dependencies;
+
+  const resolveAgentSessionProjectContext = (sessionId: string) => {
+    const folder =
+      sessionId === activeAgentSessionId
+        ? activeAgentSessionFolder
+        : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
+    return folder
+      ? {
+          id: folder.id,
+          name: folder.name,
+          instructions: folder.instructions,
+          localPath: folder.localPath,
+        }
+      : undefined;
+  };
 
   return activeView === "settings" ? (
     <AppSettingsRoute
@@ -240,6 +258,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       fundingTier={fundingTierOf(fundingAccount)}
       topUpLabel={topUpLabel}
       onTopUp={handleTopUp}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
     />
   ) : activeView === "agent" ? (
     // The origin crumbs render inside the workspace's own sticky
@@ -264,20 +283,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
       topUpLabel={topUpLabel}
       onTopUp={handleTopUp}
       sessionInProject={Boolean(activeAgentSessionFolder)}
-      resolveSessionProjectContext={(sessionId) => {
-        const folder =
-          sessionId === activeAgentSessionId
-            ? activeAgentSessionFolder
-            : selectSessionProjectContext(state.folders, sessionFolders[sessionId]);
-        return folder
-          ? {
-              id: folder.id,
-              name: folder.name,
-              instructions: folder.instructions,
-              localPath: folder.localPath,
-            }
-          : undefined;
-      }}
+      resolveSessionProjectContext={resolveAgentSessionProjectContext}
       projectContext={
         agentProjectContextFolder
           ? {
@@ -560,6 +566,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
           transcriptScrollRef={noteDetailScrollRef}
           folders={state.folders}
           recordingStatus={selectedNoteId === recordingNoteId ? state.recordingStatus : undefined}
+          meetingEndCountdown={selectedNoteId === recordingNoteId ? meetingEndCountdown : null}
           recordingDisabled={Boolean(state.recordingStatus && selectedNoteId !== recordingNoteId)}
           recordingBlockedReason={fundingRequired ? RECORDING_FUNDING_DISABLED_REASON : undefined}
           fundingNotice={
@@ -597,6 +604,8 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
           onPauseRecording={(sessionId) => void handlePauseRecording(sessionId)}
           onResumeRecording={(sessionId) => void handleResumeRecording(sessionId)}
           onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
+          onKeepRecordingAfterMeetingEnd={handleKeepRecordingAfterMeetingEnd}
+          onStopNowAfterMeetingEnd={handleStopNowAfterMeetingEnd}
           onRetry={async () => {
             if (!selectedNote) return;
             if (fundingRequired) {

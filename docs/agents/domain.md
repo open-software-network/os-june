@@ -10,7 +10,7 @@ This is a **single-context** repo: one glossary covers the React frontend
 
 - **`CONTEXT.md`** at the repo root — the canonical glossary / ubiquitous
   language. Glossary sections: Platform, Notes, Audio & recording, Agent
-  runtime, AI work & billing, Desktop shell & updates. The `_Avoid_`
+  runtime, AI work & billing, Desktop shell & updates, June companion. The `_Avoid_`
   lines are **binding**. Its **Flagged ambiguities** section is the quick
   disambiguation table for the six overloaded terms: proxy, transcribe,
   credits, session id, "the model", channel — check it before naming anything.
@@ -28,6 +28,7 @@ This is a **single-context** repo: one glossary covers the React frontend
 | Agent harness, runtime protocol, sandboxing, sessions | 0038 (June-owned OpenAI Agents SDK harness), 0039 (Routines and MCP) |
 | Model picker, capabilities, pricing | 0007 (capabilities from live Venice catalog, never `traits`) |
 | Image generation / editing | 0008 (`/image` fast path + LLM tools) |
+| June companion trust, native UI, pairing, relay, and mutation recovery | 0041-0048 (read the supersession chain through 0048) |
 
 ## Don't conflate the three doc families
 

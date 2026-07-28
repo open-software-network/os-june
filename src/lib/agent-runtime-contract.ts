@@ -80,6 +80,9 @@ export type AgentReasoningItemDto = AgentItemBase & {
 export type AgentContextSummaryItemDto = AgentItemBase & {
   kind: "context_summary";
   text: string;
+  metadata?: {
+    fallback?: boolean;
+  };
 };
 
 export type AgentSteeringItemDto = AgentItemBase & {
@@ -306,7 +309,11 @@ export type AgentRuntimeBindings = {
   deleteSession(sessionId: string): Promise<void>;
   listItems(sessionId: string): Promise<AgentItemDto[]>;
   startRun(input: StartAgentRunRequest): Promise<AgentRunDto>;
-  steerRun(runId: string, messageId: string, text: string): Promise<{ accepted: boolean }>;
+  steerRun(
+    runId: string,
+    messageId: string,
+    text: string,
+  ): Promise<{ accepted: boolean; reason?: string }>;
   cancelRun(runId: string): Promise<void>;
   retryRun(runId: string): Promise<AgentRunDto>;
   resolveInterruption(input: ResolveAgentInterruptionRequest): Promise<AgentRunDto>;

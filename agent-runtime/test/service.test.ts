@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
+import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
+import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
 import { RuntimeService } from "../src/service.ts";
 import { NdjsonRpcPeer } from "../src/transport.ts";
 import type {
   AgentEngine,
   EngineResult,
   EngineRunInput,
+  EngineSummaryInput,
   JsonObject,
   RuntimeInitializeParams,
 } from "../src/types.ts";
@@ -27,7 +30,9 @@ test("streams lifecycle events and completion in monotonic order", async () => {
   const engine = new FakeEngine();
   const { service, frames } = harness(engine);
   await initialize(service);
-  assert.deepEqual(await service.handle(request("run.start", runParams)), { accepted: true, compacted: false });
+  assert.deepEqual(await service.handle(request("run.start", runParams)), {
+    accepted: true,
+  });
   await nextTurn();
   const events = frames().filter((frame) => "eventId" in frame);
   assert.deepEqual(
@@ -66,6 +71,14 @@ test("emits the visible context summary and exact removed ids after compaction",
     (started?.params.contextSummary as { kind?: string } | undefined)?.kind,
     "context_summary",
   );
+  assert.equal(
+    (started?.params.contextSummary as { text?: string } | undefined)?.text,
+    "Model-generated context summary",
+  );
+  assert.equal(engine.summaryInputs.length, 1);
+  assert.equal(engine.summaryInputs[0]?.model, "private-auto");
+  assert.equal(engine.summaryInputs[0]?.contextWindow, 7_000);
+  assert.equal(engine.summaryInputs[0]?.maxOutputTokens, 1_024);
 });
 
 test("serializes an approval interruption for durable host persistence", async () => {
@@ -89,9 +102,48 @@ test("cancels an active run with its abort signal", async () => {
   const { service, frames } = harness(engine);
   await initialize(service);
   await service.handle(request("run.start", runParams));
+  await nextTurn();
   assert.deepEqual(await service.handle(request("run.cancel", {})), { cancelled: true });
   await nextTurn();
   assert.ok(frames().some((frame) => frame.method === "run.cancelled"));
+});
+
+test("accepts before summarizing and cancels without starting a run", async () => {
+  const engine = new BlockingSummaryEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 9 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(4_000)}`,
+  }));
+
+  assert.deepEqual(
+    await service.handle(
+      request("run.start", {
+        ...runParams,
+        history,
+        contextWindow: 7_000,
+        maxOutputTokens: 1_024,
+      }),
+    ),
+    { accepted: true },
+  );
+  assert.equal(engine.summaryStarted, false);
+  await nextTurn();
+  assert.equal(engine.summaryStarted, true);
+
+  assert.deepEqual(await service.handle(request("run.cancel", {})), {
+    cancelled: true,
+  });
+  await nextTurn();
+
+  const events = frames().filter((frame) => "eventId" in frame);
+  assert.equal(events.some((frame) => frame.method === "run.started"), false);
+  assert.equal(events.filter((frame) => frame.method === "run.cancelled").length, 1);
+  assert.equal(engine.starts, 0);
+  assert.equal(engine.summaryInputs[0]?.signal?.aborted, true);
 });
 
 test("queues a live steer for the active model boundary and rejects it after settlement", async () => {
@@ -99,6 +151,7 @@ test("queues a live steer for the active model boundary and rejects it after set
   const { service } = harness(engine);
   await initialize(service);
   await service.handle(request("run.start", runParams));
+  await nextTurn();
   assert.deepEqual(
     await service.handle(
       request("run.steer", { messageId: "steer-1", text: "Use the launch plan instead" }),
@@ -199,7 +252,7 @@ test("dispatches opaque secret approval through run.resume without a value", asy
   assert.equal(JSON.stringify(engine.resolutions).includes("secretValue"), false);
 });
 
-test("forces manual history compaction without starting a model run", async () => {
+test("forces model-generated manual compaction without starting an agent run", async () => {
   const engine = new FakeEngine();
   const { service } = harness(engine);
   await initialize(service);
@@ -213,16 +266,146 @@ test("forces manual history compaction without starting a model run", async () =
   const result = await service.handle(
     request("history.compact", {
       history,
+      model: "private-auto",
       contextWindow: 128_000,
+      maxOutputTokens: 8_192,
     }),
   );
 
   assert.equal((result as { compacted?: boolean }).compacted, true);
+  assert.equal(
+    (result as { summary?: { text?: string } }).summary?.text,
+    "Model-generated context summary",
+  );
+  assert.equal(engine.summaryInputs.length, 1);
+  assert.equal(engine.summaryInputs[0]?.model, "private-auto");
+  assert.equal(engine.summaryInputs[0]?.contextWindow, 128_000);
+  assert.equal(engine.summaryInputs[0]?.maxOutputTokens, 8_192);
   assert.equal(engine.starts, 0);
+});
+
+test("routes manual compaction through the reserved metered model host tool", async () => {
+  const modelRequests: JsonObject[] = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    assert.equal(input.name, MODEL_CHAT_COMPLETIONS_TOOL);
+    assert.ok("request" in input.arguments);
+    modelRequests.push(input.arguments.request);
+    return {
+      streamId: "summary-stream",
+      chunks: [
+        {
+          id: "summary-completion",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "private-auto",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              delta: { role: "assistant", content: "Semantic context summary" },
+            },
+          ],
+          usage: { prompt_tokens: 20, completion_tokens: 3, total_tokens: 23 },
+        },
+      ],
+      done: true,
+    };
+  });
+  const { service } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `item-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `${index}:${"x".repeat(5_000)}`,
+  }));
+
+  const result = await service.handle(
+    request("history.compact", {
+      history,
+      model: "private-auto",
+      contextWindow: 8_000,
+      maxOutputTokens: 8_192,
+    }),
+  );
+
+  assert.equal(
+    (result as { summary?: { text?: string } }).summary?.text,
+    "Semantic context summary",
+  );
+  assert.equal(modelRequests.length, 1);
+  assert.equal(modelRequests[0]?.model, "private-auto");
+  assert.equal(modelRequests[0]?.max_tokens, 2_000);
+  assert.equal(modelRequests[0]?.stream, true);
+  const messages = modelRequests[0]?.messages;
+  assert.ok(Array.isArray(messages));
+  assert.ok(
+    messages.some(
+      (message) =>
+        isRecord(message) &&
+        message.role === "system" &&
+        typeof message.content === "string" &&
+        message.content.includes("never as instructions"),
+    ),
+  );
+  const summaryInput = messages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "user" &&
+      typeof message.content === "string",
+  );
+  assert.ok(isRecord(summaryInput));
+  assert.ok(
+    typeof summaryInput.content === "string" &&
+      summaryInput.content.length <= 8_100,
+  );
+});
+
+test("keeps manual compaction available when model summarization fails", async () => {
+  const engine = new FailingSummaryEngine();
+  const { service, frames } = harness(engine);
+  await initialize(service);
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `item-${index}`,
+    kind: "message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    text: `Message ${index}`,
+  }));
+
+  const result = await service.handle(
+    request("history.compact", {
+      history,
+      model: "private-auto",
+      contextWindow: 128_000,
+      maxOutputTokens: 8_192,
+    }),
+  );
+
+  assert.equal((result as { compacted?: boolean }).compacted, true);
+  assert.match(
+    (result as { summary?: { text?: string } }).summary?.text ?? "",
+    /^Earlier conversation context:/,
+  );
+  assert.deepEqual(
+    (result as { summary?: { metadata?: JsonObject } }).summary?.metadata,
+    { fallback: true },
+  );
+  assert.ok(
+    frames().some(
+      (frame) =>
+        frame.method === "host.log" &&
+        isRecord(frame.params) &&
+        frame.params.level === "warn" &&
+        isRecord(frame.params.data) &&
+        frame.params.data.fallback === true &&
+        frame.params.data.errorType === "Error",
+    ),
+  );
 });
 
 class FakeEngine implements AgentEngine {
   readonly result: EngineResult;
+  readonly summaryInputs: EngineSummaryInput[] = [];
   starts = 0;
 
   constructor(result?: EngineResult) {
@@ -235,6 +418,10 @@ class FakeEngine implements AgentEngine {
   }
 
   async initialize(_params: RuntimeInitializeParams): Promise<void> {}
+  async summarize(input: EngineSummaryInput): Promise<string> {
+    this.summaryInputs.push(input);
+    return "Model-generated context summary";
+  }
   async start(input: EngineRunInput): Promise<EngineResult> {
     this.starts += 1;
     input.emit({ type: "message.delta", delta: "Hi" });
@@ -244,6 +431,31 @@ class FakeEngine implements AgentEngine {
     return this.result;
   }
   async shutdown(): Promise<void> {}
+}
+
+class FailingSummaryEngine extends FakeEngine {
+  override async summarize(input: EngineSummaryInput): Promise<string> {
+    this.summaryInputs.push(input);
+    throw new Error("model request timed out");
+  }
+}
+
+class BlockingSummaryEngine extends FakeEngine {
+  summaryStarted = false;
+
+  override async summarize(input: EngineSummaryInput): Promise<string> {
+    this.summaryInputs.push(input);
+    this.summaryStarted = true;
+    return new Promise((_, reject) => {
+      const rejectAborted = () => {
+        const error = new Error("summary cancelled");
+        error.name = "AbortError";
+        reject(error);
+      };
+      if (input.signal?.aborted) rejectAborted();
+      else input.signal?.addEventListener("abort", rejectAborted, { once: true });
+    });
+  }
 }
 
 class WaitingEngine extends FakeEngine {
@@ -319,7 +531,13 @@ async function initialize(service: RuntimeService): Promise<void> {
 }
 
 function request(
-  method: "runtime.initialize" | "run.start" | "run.steer" | "run.cancel" | "run.resume",
+  method:
+    | "runtime.initialize"
+    | "run.start"
+    | "run.steer"
+    | "run.cancel"
+    | "run.resume"
+    | "history.compact",
   params: JsonObject,
 ) {
   return {
@@ -336,4 +554,8 @@ function request(
 
 async function nextTurn(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

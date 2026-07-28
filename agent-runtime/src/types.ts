@@ -13,6 +13,7 @@ export type RuntimeHistoryItem = {
   callId?: string;
   groupId?: string;
   payload?: JsonValue;
+  metadata?: JsonObject;
   attachments?: RuntimeAttachmentDescriptor[];
   estimatedTokens?: number;
 };
@@ -178,6 +179,16 @@ export type EngineResumeInput = {
   takeSteering: () => SteeringMessage[];
 };
 
+export type EngineSummaryInput = {
+  sessionId: string;
+  runId: string;
+  model: string;
+  history: RuntimeHistoryItem[];
+  contextWindow: number;
+  maxOutputTokens?: number;
+  signal?: AbortSignal;
+};
+
 export type SteeringMessage = {
   messageId: string;
   text: string;
@@ -193,6 +204,7 @@ export type EngineResult = {
 
 export interface AgentEngine {
   initialize(params: RuntimeInitializeParams): Promise<void>;
+  summarize(input: EngineSummaryInput): Promise<string>;
   start(input: EngineRunInput): Promise<EngineResult>;
   resume(input: EngineResumeInput): Promise<EngineResult>;
   shutdown(): Promise<void>;

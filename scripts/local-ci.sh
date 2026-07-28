@@ -43,13 +43,24 @@ changed_files="$(git diff --name-only "$base_sha"...HEAD)"
 
 needs_frontend=false
 needs_rust_macos=false
+needs_companion=false
 
 if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|biome\.json$|extension/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|tsconfig\.json$|vite\.config\.ts$)'; then
   needs_frontend=true
 fi
 
-if printf '%s\n' "$changed_files" | grep -Eq '^(src-tauri/|\.github/workflows/desktop\.yml$)'; then
+if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
   needs_rust_macos=true
+fi
+
+if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
+  needs_companion=true
+fi
+
+if [[ "$needs_companion" == "true" ]]; then
+  make companion-fmt-check
+  make companion-lint
+  make companion-test
 fi
 
 if [[ "$needs_frontend" == "true" ]]; then

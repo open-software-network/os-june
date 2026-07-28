@@ -38,7 +38,7 @@ pub struct ToolCancellationRegistry {
 
 type CancellationSenders = std::collections::HashMap<String, Vec<(u64, oneshot::Sender<()>)>>;
 
-struct ToolCancellationRegistration {
+pub(crate) struct ToolCancellationRegistration {
     receiver: oneshot::Receiver<()>,
     inner: std::sync::Arc<std::sync::Mutex<CancellationSenders>>,
     run_id: String,
@@ -64,7 +64,7 @@ impl Drop for ToolCancellationRegistration {
 }
 
 impl ToolCancellationRegistry {
-    async fn register(&self, run_id: &str) -> ToolCancellationRegistration {
+    pub(crate) async fn register(&self, run_id: &str) -> ToolCancellationRegistration {
         let (send, receive) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.inner
@@ -94,12 +94,18 @@ impl ToolCancellationRegistry {
     }
 
     #[cfg(test)]
-    fn registration_count(&self, run_id: &str) -> usize {
+    pub(crate) fn registration_count(&self, run_id: &str) -> usize {
         self.inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(run_id)
             .map_or(0, Vec::len)
+    }
+}
+
+impl ToolCancellationRegistration {
+    pub(crate) async fn cancelled(&mut self) {
+        let _ = (&mut self.receiver).await;
     }
 }
 

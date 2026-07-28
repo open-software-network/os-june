@@ -67,3 +67,24 @@ decision.
   gain when both ends are June.
 - In-process engines without a broker. Rejected for untrusted-input parsers;
   loses the isolation the original plans placed behind the artifact broker.
+
+## Addendum - earlier MCP-server decisions (2026-07-27)
+
+This addendum explicitly supersedes only the June-managed MCP-server
+integration portions of ADR-0017, ADR-0028, and ADR-0034:
+
+- ADR-0017's app-owned `june_browser` MCP contract is retired. Its Browser use
+  and Computer use product scope and Rust broker policy remain binding.
+- ADR-0028's public `june_computer_use` MCP server and Hermes-facing wiring are
+  retired. Its Computer use product scope and brokered-helper isolation pattern
+  remain binding, including the signed private stdio helper, provenance checks,
+  grants, rollout control, and broker policy.
+- ADR-0034's `june_obsidian` MCP registration and loopback adapter are retired.
+  Its Obsidian vault-discovery product scope, June-owned configuration, and
+  current-state discovery semantics remain binding.
+
+The current implementation already records this shape in
+`src-tauri/src/agent_runtime/tools.rs`: `computer_use` dispatches through the
+Rust Computer use broker, and `get_obsidian_vault` dispatches directly to
+June-owned Obsidian discovery. These capabilities stay in the agent loop as
+host tools. They are not exposed through June-managed MCP servers.

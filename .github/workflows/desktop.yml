@@ -19,6 +19,8 @@ on:
       - "scripts/**"
       - "src/**"
       - "src-tauri/**"
+      - "crates/june-companion-crypto/**"
+      - "crates/june-companion-protocol/**"
       - "tsconfig.json"
       - "vite.config.ts"
   push:
@@ -38,6 +40,8 @@ on:
       - "scripts/**"
       - "src/**"
       - "src-tauri/**"
+      - "crates/june-companion-crypto/**"
+      - "crates/june-companion-protocol/**"
       - "tsconfig.json"
       - "vite.config.ts"
 
@@ -120,6 +124,7 @@ jobs:
     outputs:
       frontend: ${{ steps.diff.outputs.frontend }}
       rust: ${{ steps.diff.outputs.rust }}
+      companion: ${{ steps.diff.outputs.companion }}
       desktop_bundle: ${{ steps.diff.outputs.desktop_bundle }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -135,6 +140,7 @@ jobs:
             || ! git cat-file -e "$BASE" 2>/dev/null; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "companion=true" >> "$GITHUB_OUTPUT"
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -146,12 +152,17 @@ jobs:
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(src-tauri/|\.github/workflows/desktop\.yml$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
+            echo "companion=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "companion=false" >> "$GITHUB_OUTPUT"
+          fi
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|crates/june-companion-(crypto|protocol)/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
@@ -178,6 +189,49 @@ jobs:
 
       - name: Cargo fmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+  companion-rust:
+    name: Companion crates format, clippy, and tests
+    needs: changes
+    if: needs.changes.outputs.companion == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: companion-cargo-registry-${{ runner.os }}-${{ hashFiles('crates/june-companion-*/Cargo.lock') }}
+          restore-keys: |
+            companion-cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo targets
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            crates/june-companion-crypto/target
+            crates/june-companion-protocol/target
+          key: companion-cargo-target-${{ runner.os }}-${{ hashFiles('crates/june-companion-*/Cargo.lock') }}
+          restore-keys: |
+            companion-cargo-target-${{ runner.os }}-
+
+      - name: Cargo fmt
+        run: make companion-fmt-check
+
+      - name: Clippy
+        run: make companion-lint
+
+      - name: Cargo test
+        run: make companion-test
 
   rust:
     name: Tauri Rust clippy and tests

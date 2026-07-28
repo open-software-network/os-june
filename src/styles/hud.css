@@ -1,13 +1,16 @@
 @import "./tokens.css";
 @import "./fonts.css";
+@import "./dot-spinner.css";
 
 /*
  * Dictation HUD.
  *
  * Forced dark regardless of system theme — the HUD is a transient overlay
  * that needs to read consistently against any wallpaper or app behind it.
- * Layout: [drag handle] [audio viz] [stop button], inside a compact
- * frostless CSS surface.
+ * Layout: [cancel] [audio viz] [stop button], inside a compact frostless
+ * CSS surface. The whole pill is a drag surface (hud.ts starts the native
+ * drag from any press that isn't on a control), so there is no dedicated
+ * drag handle.
  *
  * The native window is transparent and slightly larger than the pill so the
  * compact HUD shadow can paint into its gutter. This matches the agent HUD:
@@ -54,7 +57,7 @@ body {
   margin: 0;
   overflow: hidden;
   background: transparent;
-  /* Only the pill itself is interactive; transparent gutter is click-through. */
+  /* Only the pill's DOM controls participate in hit testing. */
   pointer-events: none;
   user-select: none;
 }
@@ -66,8 +69,15 @@ body {
   --hud-bg: color-mix(in oklch, var(--popover) 92%, transparent);
   --hud-border: var(--border);
   --hud-bar: var(--foreground);
-  --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
+  --hud-cancel: color-mix(in oklch, var(--foreground) 58%, transparent);
   --hud-stop-bg: color-mix(in oklch, var(--foreground) 5%, transparent);
+  /* The meeting card's record chip, tuned for the dark glass. The app's
+   * --warm-* pair mixes the surface toward --card, which muddies on this
+   * near-black glass and lets the chip's hue drift away from its label's
+   * white-lifted mix. Deriving both sides from the same lifts the mark uses
+   * (--attention) keeps chip and label in one hue family. */
+  --hud-record-bg: color-mix(in oklch, var(--brand) 30%, var(--popover));
+  --hud-record-fg: var(--attention);
   /* Pin hover to a foreground-tinted overlay so the highlight reads the
    * same regardless of OS color scheme — --accent here would leak the
    * light-mode (near-white) value into the always-dark HUD. */
@@ -86,6 +96,9 @@ body {
   box-shadow: var(--shadow-hud);
   color: var(--foreground);
   pointer-events: auto;
+  /* The pill itself is the drag surface. Controls override with their own
+   * pointer cursor inside their bounds. */
+  cursor: grab;
   /* Paced for the exit dissolve — must track EXIT_TRANSITION_MS in hud.ts
    * so the content fade and the native window alpha land together. */
   transition:
@@ -103,45 +116,6 @@ body {
 .hud.is-morphing > * {
   opacity: 0;
   transition-duration: 60ms;
-}
-
-/* Push the drag handle hard left so the audio viz + stop button cluster
- * sits flush on the right, with the bars centered in their own share of
- * the panel rather than the geometric middle of the whole pill. */
-.hud > .hud-handle {
-  margin-right: auto;
-}
-
-/* Drag handle. Drag starts from hud.ts with startDragging(); the explicit
- * pointer path is more reliable than data-tauri-drag-region on the
- * non-activating macOS panel. */
-.hud-handle {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  color: var(--hud-handle);
-  cursor: grab;
-  overflow: hidden;
-  contain: paint;
-}
-
-.hud-handle:active {
-  cursor: grabbing;
-}
-
-.hud-handle svg {
-  position: relative;
-  z-index: 1;
-  display: block;
-  pointer-events: none;
-}
-
-.hud-handle:focus-visible {
-  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
-  outline-offset: 1px;
 }
 
 /* Audio visualisation -------------------------------------------------- */
@@ -191,19 +165,92 @@ body {
   transition: height 22ms linear;
 }
 
-.hud-braille {
+/* Esc tooltip ----------------------------------------------------------- */
+
+/* A small keycap beside the cancel X, teaching the shortcut. macOS uses a
+ * separate native click-through panel; this in-DOM version is the browser and
+ * non-macOS fallback. Its slot is reserved before the pill appears so hover
+ * never resizes the visible window. The reveal is debounced independently;
+ * the X's background still responds immediately. */
+.hud-esc-tip {
   position: absolute;
-  inset: 0;
+  /* The X button's horizontal center: pill padding + half its control box. */
+  left: calc(var(--sp-1) + var(--sp-5));
+  z-index: 1;
   display: none;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  font-family: var(--font-mono);
-  font-size: var(--fs-lg);
-  line-height: 1;
-  letter-spacing: 1px;
+  padding: var(--sp-1) var(--sp-2);
+  border: var(--border-width) solid var(--hud-border);
+  border-radius: var(--r-sm);
+  background: var(--hud-bg);
+  box-shadow: var(--shadow-hud);
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    visibility 0s var(--t-fast);
+}
+
+.hud[data-state="listening"] .hud-esc-tip {
+  display: block;
+}
+
+.hud[data-tip-placement="below"] .hud-esc-tip,
+.hud:not([data-tip-placement="above"]) .hud-esc-tip {
+  top: 100%;
+  margin-top: var(--sp-2);
+  transform: translate(-50%, calc(0px - var(--sp-1)));
+}
+
+.hud[data-tip-placement="above"] .hud-esc-tip {
+  bottom: 100%;
+  margin-bottom: var(--sp-2);
+  transform: translate(-50%, var(--sp-1));
+}
+
+.hud.hud-esc-tip-open .hud-esc-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out),
+    visibility 0s;
+}
+
+/* Processing spinner ---------------------------------------------------- */
+
+/* After stop the pill collapses to just June's dot mark ticking over while
+ * dictation transcription runs; the box matches the compact HUD controls so
+ * the collapsed pill is a tidy control-lg square. */
+.hud-spinner {
+  display: none;
+  place-items: center;
+  width: var(--control-hud);
+  height: var(--control-hud);
   color: var(--foreground);
-  transform: translateY(-1px);
+}
+
+.hud-spinner .dot-spinner {
+  --spinner-color: currentColor;
+  /* The shared cycle begins at its quiet reset frame. This spinner appears
+   * only after stop, so enter one medium beat into the same cycle: the first
+   * visible frame already has a live crest instead of a dull resting mark. */
+  --june-phase: var(--t-med);
+}
+
+/* WebKit can leave descendant keyframes uninstantiated when this spinner first
+ * changes from display:none to grid. hud.ts holds this class for one forced
+ * layout after the processing state is visible, then removes it to start the
+ * shared dot animations from a real rendered frame. */
+.hud-spinner.hud-spinner-reset .dot-spinner > span {
+  animation: none;
 }
 
 /* Error reveal (Wispr-style): the pill itself stays put and a glass layer
@@ -405,8 +452,8 @@ body {
   padding: 0 var(--sp-4) 0 var(--sp-3);
   border: 0;
   border-radius: var(--r-pill);
-  background: var(--warm-soft);
-  color: var(--warm-strong);
+  background: var(--hud-record-bg);
+  color: var(--hud-record-fg);
   cursor: pointer;
   font: inherit;
   font-size: var(--fs-sm);
@@ -420,7 +467,7 @@ body {
  * .hud-stop); the bare :hover covers the standalone browser page. */
 .hud-meeting-start.is-hovered,
 .hud-meeting-start:hover {
-  background: color-mix(in oklch, var(--warm-soft) 84%, var(--warm-strong));
+  background: color-mix(in oklch, var(--hud-record-bg) 86%, var(--attention));
 }
 
 .hud-meeting-start:active {
@@ -478,16 +525,21 @@ body {
   transform: translateY(0.5px);
 }
 
-/* Stop button ---------------------------------------------------------- */
-.hud-stop {
+/* Listening action buttons --------------------------------------------- */
+
+/* The stop square submits; the cancel X (in the drag handle's old spot)
+ * discards. They share the compact HUD control footprint and native-driven
+ * hover treatment. */
+.hud-stop,
+.hud-cancel {
   position: relative;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: var(--control-hud);
+  height: var(--control-hud);
   padding: 0;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--r-sm);
   background: var(--hud-stop-bg);
   color: var(--foreground);
   cursor: pointer;
@@ -495,7 +547,16 @@ body {
   contain: paint;
 }
 
-.hud-stop::before {
+/* Quieter than stop: cancel is the secondary action, so its glyph rests at
+ * the old handle's muted tone and only lifts to full under hover. */
+.hud-cancel {
+  background: transparent;
+  color: var(--hud-cancel);
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.hud-stop::before,
+.hud-cancel::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -508,11 +569,17 @@ body {
 /* Hover is driven by the native polling thread via the `.is-hovered` class.
  * No `:hover` selector — WebKit can latch :hover state when the panel is
  * briefly key and not release it, which manifests as auto-highlighting. */
-.hud-stop.is-hovered::before {
+.hud-stop.is-hovered::before,
+.hud-cancel.is-hovered::before {
   opacity: 1;
 }
 
-.hud-stop:focus-visible {
+.hud-cancel.is-hovered {
+  color: var(--foreground);
+}
+
+.hud-stop:focus-visible,
+.hud-cancel:focus-visible {
   outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
   outline-offset: 1px;
 }
@@ -526,15 +593,22 @@ body {
   background: var(--foreground);
 }
 
+.hud-cancel svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+}
+
 .hud-stop,
-.hud-handle {
+.hud-cancel {
   -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
 }
 
 .hud-stop *,
-.hud-handle * {
+.hud-cancel * {
   -webkit-user-drag: none;
 }
 
@@ -555,10 +629,11 @@ body {
 .hud[data-state="meeting"],
 .hud[data-state="exiting"][data-exit-state="meeting"] {
   /* Same frostless CSS surface as the compact pill, with meeting-specific
-   * layout inside the transparent shadow gutter. */
+   * layout inside the transparent shadow gutter. The card body is a drag
+   * surface like the pill, so no grabber occupies the left edge. */
   gap: 0;
   height: 54px;
-  padding: 0 var(--sp-4) 0 0;
+  padding: 0 var(--sp-4);
 }
 
 /* Entrance fallback for the standalone browser page only — in the app the
@@ -569,34 +644,12 @@ body {
   animation: hud-meeting-enter var(--t-slow) var(--ease-out);
 }
 
-/* The drag affordance is a single quiet grabber line spanning the card's
- * left edge — still the drag handle. */
-.hud[data-state="meeting"] > .hud-handle,
-.hud[data-state="exiting"][data-exit-state="meeting"] > .hud-handle {
-  width: 20px;
-  height: 100%;
-  margin-right: 0;
-  border-radius: 0;
-}
-
-.hud[data-state="meeting"] .hud-handle svg,
-.hud[data-state="exiting"][data-exit-state="meeting"] .hud-handle svg {
-  display: none;
-}
-
-.hud[data-state="meeting"] .hud-handle::before,
-.hud[data-state="exiting"][data-exit-state="meeting"] .hud-handle::before {
-  content: "";
-  width: 2px;
-  height: 22px;
-  border-radius: var(--r-pill);
-  background: color-mix(in oklch, var(--foreground) 28%, transparent);
-}
-
 .hud[data-state="meeting"] .hud-viz,
 .hud[data-state="meeting"] .hud-stop,
+.hud[data-state="meeting"] .hud-cancel,
 .hud[data-state="exiting"][data-exit-state="meeting"] .hud-viz,
-.hud[data-state="exiting"][data-exit-state="meeting"] .hud-stop {
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-stop,
+.hud[data-state="exiting"][data-exit-state="meeting"] .hud-cancel {
   display: none;
 }
 
@@ -616,8 +669,8 @@ body {
   display: inline-flex;
 }
 
-/* Error pill (the fixed anchor): the compact handle + error-icon pill that
- * the message layer draws out of. It uses the agent HUD's clean dark glass
+/* Error pill (the fixed anchor): the compact error-icon pill that the
+ * message layer draws out of. It uses the agent HUD's clean dark glass
  * with no native vibrancy rim. The "not allowed" wobble is native
  * (dictation_hud_shake jiggles the window itself). */
 .hud[data-state="error"],
@@ -627,20 +680,28 @@ body {
   padding: 4px var(--sp-2);
 }
 
-/* The pill is its own centered cluster now, so the handle drops the
- * push-everything-right margin. */
-.hud[data-state="error"] > .hud-handle,
-.hud.hud-error-exit[data-state="exiting"] > .hud-handle {
-  margin-right: 0;
+/* Processing: everything collapses down to the June dot spinner. The pill
+ * becomes a 32px square, centered where the wide pill's middle was (the
+ * native resize is center-anchored). */
+.hud[data-state="transcribing"],
+.hud[data-state="pasting"],
+.hud[data-state="exiting"][data-exit-state="transcribing"],
+.hud[data-state="exiting"][data-exit-state="pasting"] {
+  justify-content: center;
+}
+
+.hud[data-state="transcribing"] .hud-spinner,
+.hud[data-state="pasting"] .hud-spinner,
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-spinner,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-spinner {
+  display: grid;
 }
 
 .hud[data-state="transcribing"] .hud-viz,
 .hud[data-state="pasting"] .hud-viz,
 .hud[data-state="exiting"][data-exit-state="transcribing"] .hud-viz,
 .hud[data-state="exiting"][data-exit-state="pasting"] .hud-viz {
-  /* Braille replaces the bars + stop-button footprint while the handle
-   * stays available for moving the HUD. */
-  width: 88px;
+  display: none;
 }
 
 /* The audio viz gives way entirely to the message body. */
@@ -652,28 +713,67 @@ body {
   display: none;
 }
 
-.hud[data-state="transcribing"] .hud-bars,
-.hud[data-state="pasting"] .hud-bars,
-.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-bars,
-.hud[data-state="exiting"][data-exit-state="pasting"] .hud-bars {
-  display: none;
-}
-
-.hud[data-state="transcribing"] .hud-braille,
-.hud[data-state="pasting"] .hud-braille,
-.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-braille,
-.hud[data-state="exiting"][data-exit-state="pasting"] .hud-braille {
-  display: flex;
-}
-
-/* Stop button only matters while we're still capturing audio. */
+/* Stop + cancel only matter while we're still capturing audio. */
 .hud[data-state="transcribing"] .hud-stop,
 .hud[data-state="pasting"] .hud-stop,
 .hud[data-state="error"] .hud-stop,
 .hud[data-state="exiting"][data-exit-state="transcribing"] .hud-stop,
 .hud[data-state="exiting"][data-exit-state="pasting"] .hud-stop,
-.hud.hud-error-exit[data-state="exiting"] .hud-stop {
+.hud.hud-error-exit[data-state="exiting"] .hud-stop,
+.hud[data-state="transcribing"] .hud-cancel,
+.hud[data-state="pasting"] .hud-cancel,
+.hud[data-state="error"] .hud-cancel,
+.hud[data-state="exiting"][data-exit-state="transcribing"] .hud-cancel,
+.hud[data-state="exiting"][data-exit-state="pasting"] .hud-cancel,
+.hud.hud-error-exit[data-state="exiting"] .hud-cancel {
   display: none;
+}
+
+/* Stop collapse --------------------------------------------------------- */
+
+/* The shell width tweens down around the incoming spinner (hud.ts drives
+ * the from/to widths inline; the transition uses the shared --t-slow token)
+ * while the waveform ghosts out in place. The transparent native frame
+ * holds the larger listening size until the motion settles, so it can never
+ * clip the pill mid-flight. Placed after the state rules so the ghost's
+ * display wins the equal-specificity fight with transcribing's display:
+ * none. */
+.hud.hud-collapse {
+  overflow: hidden;
+  transition: width var(--t-slow) var(--ease-out);
+}
+
+.hud.hud-collapse .hud-viz {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  transform: translate(-50%, -50%);
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity var(--t-fast) var(--ease-out);
+}
+
+.hud.hud-collapse .hud-spinner {
+  display: grid;
+  opacity: 0;
+  transform: scale(0.8);
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.hud.hud-collapse-active .hud-viz {
+  opacity: 0;
+}
+
+/* The spinner blooms in with the ghosting waveform while the shell tightens
+ * around it. collapseToSpinner forces one layout with the base collapse styles
+ * before adding this active class, so the first stop has a real painted start
+ * frame instead of attaching an animation to a newly displayable element. */
+.hud.hud-collapse-active .hud-spinner {
+  opacity: 1;
+  transform: scale(1);
 }
 
 /* Rapid fade exit. Triggered by setting data-state="exiting" before the
@@ -693,6 +793,7 @@ body {
  * into the window. */
 .hud.hud-snap,
 .hud.hud-snap > * {
+  /* biome-ignore lint/complexity/noImportantStyles: measurement must override every in-flight descendant transition */
   transition: none !important;
 }
 
@@ -727,6 +828,9 @@ body {
   .hud > *,
   .hud-stop,
   .hud-stop::before,
+  .hud-cancel,
+  .hud-cancel::before,
+  .hud-esc-tip,
   .hud-bar::before {
     transition: none;
   }
@@ -735,4 +839,12 @@ body {
   .hud-meeting-mark::before {
     animation: none;
   }
+}
+
+/* Push the cancel X hard left so the audio viz + stop button cluster sits
+ * flush on the right, with the bars centered in their own share of the
+ * panel rather than the geometric middle of the whole pill. Kept after the
+ * base and reduced-motion rules to avoid a descending-specificity cascade. */
+.hud > .hud-cancel {
+  margin-right: auto;
 }

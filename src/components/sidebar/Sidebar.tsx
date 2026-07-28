@@ -24,6 +24,7 @@ import { IconPin } from "central-icons/IconPin";
 import { IconCircleCheck } from "central-icons/IconCircleCheck";
 import { IconArrowUndoUp } from "central-icons/IconArrowUndoUp";
 import { IconPlugin1 } from "central-icons/IconPlugin1";
+import { IconPhone } from "central-icons/IconPhone";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconProjects } from "central-icons/IconProjects";
 import { IconSettingsGear4 } from "central-icons/IconSettingsGear4";
@@ -37,6 +38,7 @@ import {
   type RefObject,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -78,6 +80,7 @@ import {
 } from "../../lib/tauri";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 import { useCurrentDataPartitionName } from "../../lib/data-partition";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
 import {
   sessionMatchesDataPartition,
   sessionPartitionMap,
@@ -85,7 +88,7 @@ import {
 } from "../../lib/session-partition-filter";
 import { JuneMark } from "../account/AccountGate";
 import { OPEN_REFERRAL_DIALOG_EVENT } from "../referral/ReferralNudge";
-import { SETTINGS_TABS, type SettingsTab } from "../settings/settings-config";
+import { settingsTabsForCompanionPairing, type SettingsTab } from "../settings/settings-config";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { CopyLinkField } from "../ui/CopyLinkField";
 import { Dialog } from "../ui/Dialog";
@@ -101,6 +104,11 @@ import {
   type DateFormatPreference,
 } from "../../lib/date-format";
 import { buildSidebarSessionLists } from "./sidebar-session-lists";
+import {
+  positionSidebarContextMenu,
+  sidebarContextMenuAnchorIsVisible,
+  sidebarContextMenuGeometryFromStyles,
+} from "./sidebar-context-menu";
 
 const NO_AGENT_SESSIONS: AgentSessionDto[] = [];
 
@@ -171,8 +179,8 @@ type SidebarProps = {
 };
 
 type MenuState =
-  | { kind: "note"; noteId: string; right: number; top: number }
-  | { kind: "agent-session"; sessionId: string; right: number; top: number };
+  | { kind: "note"; noteId: string; anchor: HTMLElement }
+  | { kind: "agent-session"; sessionId: string; anchor: HTMLElement };
 
 type CommandPromptItem = {
   id: string;
@@ -291,7 +299,10 @@ const SETTINGS_SIDEBAR_GROUPS: {
   },
   {
     title: "App",
-    items: [{ id: "about", label: "About", icon: <IconCircleInfo size={16} /> }],
+    items: [
+      { id: "linked-devices", label: "Linked devices", icon: <IconPhone size={16} /> },
+      { id: "about", label: "About", icon: <IconCircleInfo size={16} /> },
+    ],
   },
 ];
 
@@ -359,6 +370,7 @@ export function Sidebar({
   const searchShortcut = primaryShortcutLabel("K");
   const newSessionShortcut = primaryShortcutLabel("N");
   const inSettings = activeView === "settings";
+  const { companionPairingEnabled } = useExperimentalFlags();
   const [allAgentSessions, setAgentSessions] = useState<AgentSessionDto[]>([]);
   // Chats belong to the data partition they were created under (ADR 0031).
   // The sidebar filters its list through the session-to-partition map and re-filters
@@ -653,27 +665,29 @@ export function Sidebar({
       // Appearance carry their row-level terms so "theme" or "account"
       // still finds the right tab.
       ...(normalized
-        ? SETTINGS_TABS.filter(
-            (tab) =>
-              !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
-          ).map(
-            (tab): CommandPromptItem => ({
-              id: `quick:settings-${tab.id}`,
-              label: `Settings -> ${tab.label}`,
-              icon: <IconSettingsGear4 size={15} />,
-              searchText: normalizeCommandQuery(
-                tab.id === "general"
-                  ? "settings general account permissions privacy"
-                  : tab.id === "appearance"
-                    ? "settings appearance theme accent text size dark light mode"
-                    : `settings ${tab.label}`,
-              ),
-              action: () => {
-                onSettingsTabChange?.(tab.id);
-                onChangeView("settings");
-              },
-            }),
-          )
+        ? settingsTabsForCompanionPairing(companionPairingEnabled)
+            .filter(
+              (tab) =>
+                !HIDDEN_SETTINGS_TABS.has(tab.id) && !(account.localDev && tab.id === "billing"),
+            )
+            .map(
+              (tab): CommandPromptItem => ({
+                id: `quick:settings-${tab.id}`,
+                label: `Settings -> ${tab.label}`,
+                icon: <IconSettingsGear4 size={15} />,
+                searchText: normalizeCommandQuery(
+                  tab.id === "general"
+                    ? "settings general account permissions privacy"
+                    : tab.id === "appearance"
+                      ? "settings appearance theme accent text size dark light mode"
+                      : `settings ${tab.label}`,
+                ),
+                action: () => {
+                  onSettingsTabChange?.(tab.id);
+                  onChangeView("settings");
+                },
+              }),
+            )
         : []),
     ].filter(matches);
 
@@ -727,6 +741,7 @@ export function Sidebar({
     account.signedIn,
     agentSessions,
     commandQuery,
+    companionPairingEnabled,
     homeEnabled,
     notes,
     onChangeView,
@@ -992,20 +1007,18 @@ export function Sidebar({
     };
   }, []);
 
-  // Right-aligns the popover with the overflow button and parks it just
-  // below — keeps it tucked next to the trigger rather than flying off to
-  // the right. Clicking the same button again toggles it closed.
+  // Right-aligns the popover with the overflow button. The menu measures and
+  // flips itself above this anchor when there is not enough viewport below.
+  // Clicking the same button again toggles it closed.
   function openMenuForNote(noteId: string, anchor: HTMLElement) {
     if (menu?.kind === "note" && menu.noteId === noteId) {
       setMenu(null);
       return;
     }
-    const rect = anchor.getBoundingClientRect();
     setMenu({
       kind: "note",
       noteId,
-      right: window.innerWidth - rect.right,
-      top: rect.bottom + 4,
+      anchor,
     });
   }
 
@@ -1014,12 +1027,10 @@ export function Sidebar({
       setMenu(null);
       return;
     }
-    const rect = anchor.getBoundingClientRect();
     setMenu({
       kind: "agent-session",
       sessionId,
-      right: window.innerWidth - rect.right,
-      top: rect.bottom + 4,
+      anchor,
     });
   }
 
@@ -1100,6 +1111,7 @@ export function Sidebar({
       {inSettings ? (
         <SettingsSidebarNav
           activeTab={settingsTab}
+          companionPairingEnabled={companionPairingEnabled}
           localDev={account.localDev === true}
           onSelectTab={(tab) => onSettingsTabChange?.(tab)}
           onBack={() => (onExitSettings ? onExitSettings() : onChangeView("notes"))}
@@ -1427,8 +1439,7 @@ export function Sidebar({
       {menu?.kind === "note" ? (
         <NoteContextMenu
           noteId={menu.noteId}
-          right={menu.right}
-          top={menu.top}
+          anchor={menu.anchor}
           notes={notes}
           onOpenMoveDialog={onOpenMoveDialog}
           onRemoveNoteFromFolder={onRemoveNoteFromFolder}
@@ -1441,8 +1452,7 @@ export function Sidebar({
           pinned={pinnedAgentSessionIds.has(menuAgentSession.id)}
           completed={Boolean(completedSessionIds[menuAgentSession.id])}
           deleting={deletingAgentSessionIds.has(menuAgentSession.id)}
-          right={menu.right}
-          top={menu.top}
+          anchor={menu.anchor}
           folderId={sessionFolderIds?.[menuAgentSession.id]?.[0]}
           onTogglePinned={() => togglePinnedAgentSession(menuAgentSession.id)}
           onToggleCompleted={
@@ -1697,11 +1707,13 @@ function buildSidebarDevStateSessions(): AgentSessionDto[] {
 
 function SettingsSidebarNav({
   activeTab,
+  companionPairingEnabled,
   localDev,
   onSelectTab,
   onBack,
 }: {
   activeTab: SettingsTab;
+  companionPairingEnabled: boolean;
   localDev: boolean;
   onSelectTab: (tab: SettingsTab) => void;
   onBack: () => void;
@@ -1712,7 +1724,10 @@ function SettingsSidebarNav({
   const groups = SETTINGS_SIDEBAR_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter(
-      (item) => !HIDDEN_SETTINGS_TABS.has(item.id) && !(localDev && item.id === "billing"),
+      (item) =>
+        !HIDDEN_SETTINGS_TABS.has(item.id) &&
+        !(localDev && item.id === "billing") &&
+        (companionPairingEnabled || item.id !== "linked-devices"),
     ),
   })).filter((group) => group.items.length > 0);
 
@@ -2274,8 +2289,7 @@ function AgentSessionContextMenu({
   pinned,
   completed,
   deleting,
-  right,
-  top,
+  anchor,
   folderId,
   onTogglePinned,
   onToggleCompleted,
@@ -2288,8 +2302,7 @@ function AgentSessionContextMenu({
   pinned: boolean;
   completed: boolean;
   deleting: boolean;
-  right: number;
-  top: number;
+  anchor: HTMLElement;
   folderId?: string;
   onTogglePinned: () => void;
   onToggleCompleted?: () => void;
@@ -2300,12 +2313,7 @@ function AgentSessionContextMenu({
   onClose: () => void;
 }) {
   return (
-    <div
-      className="context-menu"
-      style={{ right, top }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-    >
+    <SidebarContextMenu anchor={anchor} onClose={onClose}>
       <button
         type="button"
         role="menuitem"
@@ -2381,7 +2389,7 @@ function AgentSessionContextMenu({
         <IconTrashCan size={14} />
         Delete session
       </button>
-    </div>
+    </SidebarContextMenu>
   );
 }
 
@@ -2404,8 +2412,7 @@ function formatSessionTime(iso: string, dateFormat: DateFormatPreference): strin
 
 function NoteContextMenu({
   noteId,
-  right,
-  top,
+  anchor,
   notes,
   onOpenMoveDialog,
   onRemoveNoteFromFolder,
@@ -2413,8 +2420,7 @@ function NoteContextMenu({
   onClose,
 }: {
   noteId: string;
-  right: number;
-  top: number;
+  anchor: HTMLElement;
   notes: NoteListItemDto[];
   onOpenMoveDialog: (noteId: string) => void;
   onRemoveNoteFromFolder: (noteId: string, folderId: string) => void;
@@ -2426,12 +2432,7 @@ function NoteContextMenu({
   const hasFolder = Boolean(currentFolderId);
 
   return (
-    <div
-      className="context-menu"
-      style={{ right, top }}
-      role="menu"
-      onClick={(event) => event.stopPropagation()}
-    >
+    <SidebarContextMenu anchor={anchor} onClose={onClose}>
       <button
         type="button"
         role="menuitem"
@@ -2469,7 +2470,112 @@ function NoteContextMenu({
         <IconTrashCan size={14} />
         Delete note
       </button>
-    </div>
+    </SidebarContextMenu>
+  );
+}
+
+function SidebarContextMenu({
+  anchor,
+  children,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const fade = useScrollFade(scrollerRef);
+  const [position, setPosition] = useState<{ right: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const sidebar = anchor.closest<HTMLElement>(".sidebar");
+    const appShell = anchor.closest<HTMLElement>(".app-shell");
+
+    function updatePosition() {
+      const menu = menuRef.current;
+      if (!menu) return;
+      if (
+        !anchor.isConnected ||
+        sidebar?.dataset.collapsed === "true" ||
+        appShell?.dataset.sidebar === "collapsed" ||
+        appShell?.dataset.sidebarPreview === "collapsed"
+      ) {
+        onClose();
+        return;
+      }
+      const viewport = { width: window.innerWidth, height: window.innerHeight };
+      const anchorRect = anchor.getBoundingClientRect();
+      const scrollport = anchor.closest<HTMLElement>(".notes-nav");
+      const clippingBoundaries = scrollport ? [scrollport.getBoundingClientRect()] : [];
+      if (!sidebarContextMenuAnchorIsVisible(anchorRect, viewport, clippingBoundaries)) {
+        onClose();
+        return;
+      }
+      const { width, height } = menu.getBoundingClientRect();
+      const geometry = sidebarContextMenuGeometryFromStyles(
+        window.getComputedStyle(document.documentElement),
+      );
+      const next = positionSidebarContextMenu(anchorRect, { width, height }, viewport, geometry);
+      setPosition((current) =>
+        current?.right === next.right && current.top === next.top ? current : next,
+      );
+    }
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    const ownerObserver = new MutationObserver(updatePosition);
+    if (sidebar) {
+      ownerObserver.observe(sidebar, {
+        attributes: true,
+        attributeFilter: ["data-collapsed"],
+        childList: true,
+        subtree: true,
+      });
+    }
+    if (appShell) {
+      ownerObserver.observe(appShell, {
+        attributes: true,
+        attributeFilter: ["data-sidebar", "data-sidebar-preview", "style"],
+      });
+    }
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(updatePosition);
+    if (sidebar) resizeObserver?.observe(sidebar);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+      ownerObserver.disconnect();
+      resizeObserver?.disconnect();
+    };
+  }, [anchor, onClose]);
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="context-menu sidebar-context-menu scroll-fade"
+      role="menu"
+      {...fade.props}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") event.stopPropagation();
+      }}
+      style={
+        position
+          ? { right: position.right, top: position.top }
+          : {
+              right: 0,
+              top: 0,
+              visibility: "hidden",
+            }
+      }
+    >
+      <div ref={scrollerRef} className="sidebar-context-menu-scroll">
+        {children}
+      </div>
+    </div>,
+    document.body,
   );
 }
 

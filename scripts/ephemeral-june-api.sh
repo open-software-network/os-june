@@ -148,7 +148,8 @@ cmd_up() {
     --sbom=false \
     -t "$image" \
     --push \
-    june-api
+    --file june-api/Dockerfile \
+    .
 
   local rendered env_file
   rendered="$(mktemp)"

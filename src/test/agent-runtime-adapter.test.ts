@@ -238,6 +238,7 @@ describe("agent runtime adapter", () => {
           createdAt: "2026-07-22T12:00:00Z",
           kind: "context_summary",
           text: "Earlier conversation context: Old question",
+          metadata: { fallback: true },
         },
       },
     };
@@ -245,6 +246,7 @@ describe("agent runtime adapter", () => {
     const next = applyAgentRuntimeEvent(projection, started);
 
     expect(next.items.map((item) => item.id)).toEqual(["summary-1", "recent-assistant"]);
+    expect(next.items[0]).toMatchObject({ metadata: { fallback: true } });
     expect(agentItemsToChatTurns(next.items)[0]).toMatchObject({
       role: "system",
       parts: [{ type: "context", text: "Earlier conversation context: Old question" }],

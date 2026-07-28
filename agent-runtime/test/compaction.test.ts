@@ -49,6 +49,8 @@ test("keeps system instructions, recent turns, and complete tool groups", async 
   assert.equal(result.compacted, true);
   assert.ok(result.history.some((item) => item.id === "system"));
   assert.equal(result.summary?.text, "Summary of 18 items");
+  assert.equal(result.summary?.role, "user");
+  assert.deepEqual(result.summary?.metadata, { fallback: false });
   assert.ok(result.history.some((item) => item.id === "tool-call-9"));
   assert.ok(result.history.some((item) => item.id === "tool-result-9"));
   for (let index = 0; index < 10; index += 1) {
@@ -166,4 +168,36 @@ test("deterministic summaries retain bounded tool calls and results", async () =
   assert.ok(result.summary?.text?.includes("search_files call-old"));
   assert.ok(result.summary?.text?.includes("quarterly plan"));
   assert.ok(result.summary?.text?.includes("roadmap.md"));
+});
+
+test("falls back to deterministic context when model summarization times out", async () => {
+  let fallbackError: unknown;
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    id: `message-${index}`,
+    kind: "message" as const,
+    role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+    text: `Message ${index} ${index < 2 ? "x".repeat(8_000) : ""}<end-${index}>`,
+  }));
+
+  const result = await compactHistory({
+    history,
+    contextWindow: 8_000,
+    maxOutputTokens: 4_096,
+    force: true,
+    summarize: async () => {
+      throw new Error("model request timed out");
+    },
+    onFallback: (error) => {
+      fallbackError = error;
+    },
+  });
+
+  assert.equal(result.compacted, true);
+  assert.match(result.summary?.text ?? "", /^Earlier conversation context:/);
+  assert.match(result.summary?.text ?? "", /\[earlier context truncated\]/);
+  assert.equal(result.summary?.text?.includes("user: Message 0"), false);
+  assert.equal(result.summary?.text?.includes("<end-0>"), false);
+  assert.ok(result.summary?.text?.includes("<end-1>"));
+  assert.deepEqual(result.summary?.metadata, { fallback: true });
+  assert.match(String(fallbackError), /model request timed out/);
 });

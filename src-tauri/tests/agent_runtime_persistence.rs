@@ -228,6 +228,7 @@ async fn compaction_replaces_old_items_with_one_ordered_visible_summary() {
             &session.id,
             &run.id,
             "Earlier conversation context",
+            None,
             &[first.id.clone(), second.id.clone()],
         )
         .await
@@ -248,6 +249,7 @@ async fn compaction_replaces_old_items_with_one_ordered_visible_summary() {
             &session.id,
             &run.id,
             "Duplicate",
+            None,
             &[first.id, second.id],
         )
         .await

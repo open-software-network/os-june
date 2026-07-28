@@ -10,6 +10,7 @@ pub mod browser;
 mod browser_broker;
 pub mod claude_projects;
 pub mod commands;
+pub mod companion;
 pub mod computer_use;
 mod computer_use_cursor;
 mod computer_use_permission_drag;
@@ -215,6 +216,15 @@ pub fn run() {
             june_api::june_home_chat,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
+            companion::companion_begin_pairing,
+            companion::companion_pairing_status,
+            companion::companion_approve_pairing,
+            companion::companion_list_devices,
+            companion::companion_rename_device,
+            companion::companion_revoke_device,
+            companion::companion_complete_frontend_request,
+            companion::companion_cancel_frontend_request,
+            companion::companion_publish_agent_event,
             commands::create_note,
             commands::list_notes,
             commands::get_note,
@@ -293,9 +303,11 @@ pub fn run() {
             dictation::set_dictation_language,
             dictation::dictation_helper_command,
             dictation::dictation_hud_set_stop_bounds,
+            dictation::dictation_hud_set_cancel_bounds,
             dictation::dictation_hud_set_dismiss_bounds,
             dictation::dictation_hud_set_record_bounds,
             dictation::dictation_hud_preferred_error_placement,
+            dictation::dictation_hud_set_tooltip_visible,
             dictation::dictation_hud_set_size,
             dictation::dictation_hud_set_alpha,
             dictation::dictation_hud_show,
@@ -308,13 +320,21 @@ pub fn run() {
             agent_hud::agent_hud_hide,
             agent_hud::agent_hud_set_layout,
             agent_hud::agent_hud_open_agent,
+            agent_hud::agent_hud_main_focused,
             notifications::send_app_notification,
             notifications::agent_open_ready,
             meeting_detection::queue_meeting_start_request,
             meeting_detection::pending_meeting_start_request,
             meeting_detection::acknowledge_meeting_start_request,
+            meeting_detection::pending_meeting_end_status,
+            meeting_detection::pending_meeting_end_finish_request,
+            meeting_detection::queue_meeting_end_finish_request,
+            meeting_detection::keep_meeting_recording,
+            meeting_detection::acknowledge_meeting_end_finish_request,
+            meeting_detection::debug_force_meeting_end_countdown,
             meeting_hud::meeting_hud_latest_status,
             meeting_hud::meeting_hud_reopen,
+            meeting_hud::meeting_hud_set_end_prompt_expanded,
             providers::provider_model_settings,
             providers::profile_model_overrides,
             providers::set_profile_model_overrides,
@@ -399,6 +419,7 @@ pub fn run() {
         .manage(Arc::new(browser_broker::BrowserBroker::default()))
         .manage(computer_use::ComputerUseState::default())
         .manage(shutdown::ShutdownCoordinator::default())
+        .manage(companion::CompanionRuntime::default())
         .manage(os_accounts::LoginFlow::default())
         .manage(extension_host::ExtensionHost::default())
         .manage(connectors::ConnectFlow::default())
@@ -418,6 +439,9 @@ pub fn run() {
             notifications::setup(app);
             meeting_detection::setup(app);
             extension_host::setup(app);
+            // Companion pairing is restart-required: setup latches the
+            // persisted experiment for every native and frontend boundary.
+            companion::setup(app.handle());
             routines::start_scheduler(app.handle());
             // Poll Google for the events routines subscribe to (email arrivals
             // and upcoming meetings) and wake the matching durable routine.

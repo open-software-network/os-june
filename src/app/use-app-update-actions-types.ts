@@ -1,5 +1,5 @@
-import { type JuneUpdate } from "../lib/updater";
-import { type UpdateInstallProgress, type UpdatePromptPayload } from "./update-decision";
+import type { JuneUpdate } from "../lib/updater";
+import type { UpdateInstallProgress, UpdatePromptPayload } from "./update-decision";
 import type * as React from "react";
 
 export type UseAppUpdateActionsDependencies = {

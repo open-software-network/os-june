@@ -51,5 +51,5 @@ CLAUDE.local.md
 .ephemeral-june-api.json*
 
 # Local agent working files: task briefs and review/report scratch
-.briefs/
-.reviews/
+.briefs
+.reviews

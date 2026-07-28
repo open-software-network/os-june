@@ -42,6 +42,8 @@ pub struct ListNotesResponse {
     pub items: Vec<NoteListItemDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    #[serde(skip)]
+    pub(crate) item_cursors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +112,8 @@ pub struct NoteListItemDto {
     pub folder_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Monotonic compare-and-swap revision for remote-safe edits.
+    pub revision: u64,
     pub duration_ms: Option<i64>,
 }
 
@@ -123,6 +127,8 @@ pub struct NoteDto {
     pub folder_ids: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// Monotonic compare-and-swap revision for remote-safe edits.
+    pub revision: u64,
     pub duration_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_event: Option<NoteCalendarEventDto>,
@@ -433,6 +439,38 @@ pub struct StartMeetingRecordingRequest {
     pub request_id: String,
     #[serde(default)]
     pub source_mode: Option<RecordingSourceMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingOrigin {
+    Other,
+    MeetingPrompt,
+}
+
+impl RecordingOrigin {
+    pub fn as_db(self) -> &'static str {
+        match self {
+            Self::Other => "other",
+            Self::MeetingPrompt => "meeting_prompt",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingOriginMetadata {
+    pub origin: RecordingOrigin,
+    pub meeting_app_bundle_families: Vec<String>,
+    pub auto_finish_eligible: bool,
+}
+
+impl Default for RecordingOriginMetadata {
+    fn default() -> Self {
+        Self {
+            origin: RecordingOrigin::Other,
+            meeting_app_bundle_families: Vec::new(),
+            auto_finish_eligible: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

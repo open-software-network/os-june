@@ -41,11 +41,16 @@ import type {
 } from "../../lib/agent-runtime-contract";
 import {
   agentRuntimeBindings,
+  companionCompleteFrontendRequest,
+  companionPublishAgentEvent,
+  type CompanionAgentStatus,
+  type CompanionFrontendRequest,
   assignSessionToProfile,
   downloadAgentArtifact,
   dictationHelperCommand,
   juneHomeChat,
   type JuneHomeChatResponse,
+  listSessionPartitions,
   listVeniceModels,
   providerModelSettings,
   setCostQuality as setProviderCostQuality,
@@ -54,12 +59,21 @@ import {
 import { shouldBlockTextOnFunding } from "../../lib/account-gate";
 import { dispatchAgentSessionStatus, dispatchAgentSessionsChanged } from "../../lib/agent-events";
 import { messageFromError } from "../../lib/errors";
+import { useExperimentalFlags } from "../../lib/experimental-flags";
+import {
+  COMPANION_FRONTEND_QUEUE_EVENT,
+  registerCompanionFrontendConsumer,
+  takeCompanionFrontendRequests,
+} from "../../lib/companion-frontend-router";
 import { persistAgentDefaultModel } from "../../lib/agent-default-model";
 import { agentModelSelection, agentRunModelId } from "../../lib/agent-model-selection";
 import {
+  clearQueuedAgentFollowUpSteering,
   loadQueuedAgentFollowUps,
+  mergeQueuedAgentFollowUp,
   reconcileConsumedAgentFollowUp,
   saveQueuedAgentFollowUps,
+  type QueuedAgentFollowUp,
   type QueuedAgentFollowUps,
 } from "../../lib/agent-follow-up-queue";
 import {
@@ -105,6 +119,10 @@ import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker
 import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
+import {
+  filterAgentSessionsForDataPartition,
+  sessionPartitionMap,
+} from "../../lib/session-partition-filter";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
@@ -130,6 +148,7 @@ import {
   resolveJuneHomeThreadSessionId,
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
+  withJuneHomeLatestTaskIntent,
   type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
@@ -139,7 +158,9 @@ import {
   compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   homeConversationContextFromTurns,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
@@ -218,6 +239,58 @@ function titleFromPrompt(prompt: string) {
   return normalized.length > 52 ? `${normalized.slice(0, 51).trimEnd()}…` : normalized;
 }
 
+function queuedAttachmentStatus(attachments: readonly string[]) {
+  const count = attachments.length;
+  return `${count} attachment${count === 1 ? "" : "s"} queued for next turn`;
+}
+
+function queuedFollowUpStatus(queued: QueuedAgentFollowUp, failed: boolean) {
+  const withAttachmentStatus = (status: string) =>
+    queued.attachments.length ? `${status}. ${queuedAttachmentStatus(queued.attachments)}` : status;
+  if (failed) {
+    return withAttachmentStatus(
+      queued.delivery === "attachments"
+        ? "Couldn't send queued attachments"
+        : "Couldn't send queued follow-up",
+    );
+  }
+  if (queued.delivery === "attachments") {
+    return queuedAttachmentStatus(queued.attachments);
+  }
+  if (queued.steering) {
+    const steeringStatus =
+      queued.steering === "accepted" ? "Steering active run" : "Sending to active run";
+    return withAttachmentStatus(steeringStatus);
+  }
+  return withAttachmentStatus("Queued follow-up");
+}
+
+function queuedFollowUpText(queued: QueuedAgentFollowUp) {
+  if (queued.delivery !== "attachments") return queued.prompt;
+  return queued.attachments.map((path) => path.split(/[\\/]/).pop() || path).join(", ");
+}
+
+function withQueuedSteering(
+  queued: QueuedAgentFollowUps,
+  sessionId: string,
+  messageId: string,
+  steering: QueuedAgentFollowUp["steering"],
+) {
+  const current = queued[sessionId];
+  if (
+    !current ||
+    current.messageId !== messageId ||
+    current.delivery === "attachments" ||
+    current.steering === steering
+  ) {
+    return queued;
+  }
+  const nextFollowUp = { ...current };
+  if (steering) nextFollowUp.steering = steering;
+  else delete nextFollowUp.steering;
+  return { ...queued, [sessionId]: nextFollowUp };
+}
+
 function artifactView(artifact: AgentArtifactDto): AgentArtifact {
   return {
     name: artifact.name,
@@ -239,8 +312,10 @@ export function AgentWorkspace({
   onMoveSessionToProject,
   sessionInProject = false,
   projectContext,
+  resolveSessionProjectContext,
   creditActionsDisabledReason,
 }: AgentWorkspaceProps = {}) {
+  const { companionPairingEnabled } = useExperimentalFlags();
   const initialAgentSession = initialSession;
   const pendingRequestRef = useRef(pendingNewSessionRequest());
   const [sessions, setSessions] = useState<AgentSessionDto[]>(
@@ -288,6 +363,8 @@ export function AgentWorkspace({
   const [safetyMode, setSafetyMode] = useState<AgentSafetyMode>(
     initialAgentSession?.safetyMode ?? "sandboxed",
   );
+  const safetyModeRef = useRef(safetyMode);
+  safetyModeRef.current = safetyMode;
   const [draft, setDraft] = useState(pendingRequestRef.current?.prompt ?? "");
   const [draftRevision, setDraftRevision] = useState(0);
   const draftRef = useRef(draft);
@@ -358,8 +435,26 @@ export function AgentWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(0);
+  const [submittedScrollRevision, setSubmittedScrollRevision] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  const projectContextRef = useRef(projectContext);
+  projectContextRef.current = projectContext;
+  const resolveSessionProjectContextRef = useRef(resolveSessionProjectContext);
+  resolveSessionProjectContextRef.current = resolveSessionProjectContext;
+  const preparePromptForSession = useCallback((storedSessionId: string, prompt: string) => {
+    const targetProjectContext =
+      resolveSessionProjectContextRef.current?.(storedSessionId) ??
+      (selectedIdRef.current === storedSessionId ? projectContextRef.current : undefined);
+    return prepareProjectPrompt(
+      prompt,
+      targetProjectContext,
+      projectContextSignaturesBySessionId.get(storedSessionId),
+    );
+  }, []);
+  const requestSubmittedMessageScroll = useCallback(() => {
+    setSubmittedScrollRevision((revision) => revision + 1);
+  }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
   );
@@ -444,6 +539,7 @@ export function AgentWorkspace({
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? projection.session;
+  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const running = projection.run?.status === "running" || projection.run?.status === "queued";
   const waiting = projection.run?.status === "waiting_for_user";
   const turns = useMemo(() => agentItemsToChatTurns(projection.items), [projection.items]);
@@ -669,13 +765,44 @@ export function AgentWorkspace({
           next.delete(payload.data.messageId);
           return next;
         });
-        updateQueuedFollowUps((current) => {
-          const queued = current[payload.sessionId];
-          if (queued?.messageId !== payload.data.messageId) return current;
-          const next = { ...current };
-          delete next[payload.sessionId];
-          return next;
-        });
+        updateQueuedFollowUps((current) =>
+          reconcileConsumedAgentFollowUp(current, payload.sessionId, [
+            `steering:${payload.data.messageId}`,
+          ]),
+        );
+      }
+      const terminal =
+        payload.method === "run.completed" ||
+        payload.method === "run.cancelled" ||
+        payload.method === "run.failed";
+      if (terminal) {
+        updateQueuedFollowUps((current) =>
+          clearQueuedAgentFollowUpSteering(current, payload.sessionId),
+        );
+      }
+      if (companionPairingEnabled && payload.method === "message.delta" && payload.data.delta) {
+        void companionPublishAgentEvent({
+          type: "delta",
+          data: { storedSessionId: payload.sessionId, text: payload.data.delta },
+        }).catch(() => undefined);
+      }
+      const companionStatus: CompanionAgentStatus | undefined =
+        payload.method === "interruption.requested"
+          ? "waitingForUser"
+          : payload.method === "run.completed"
+            ? "completed"
+            : payload.method === "run.cancelled"
+              ? "cancelled"
+              : payload.method === "run.failed"
+                ? "failed"
+                : payload.method === "run.started"
+                  ? "running"
+                  : undefined;
+      if (companionPairingEnabled && companionStatus) {
+        void companionPublishAgentEvent({
+          type: "status",
+          data: { storedSessionId: payload.sessionId, status: companionStatus },
+        }).catch(() => undefined);
       }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
@@ -695,11 +822,7 @@ export function AgentWorkspace({
                   ? "failed"
                   : "running",
       });
-      if (
-        payload.method === "run.completed" ||
-        payload.method === "run.cancelled" ||
-        payload.method === "run.failed"
-      ) {
+      if (terminal) {
         setSubmitting(false);
         void Promise.all([hydrate(payload.sessionId), refreshSessions()]);
       }
@@ -711,7 +834,151 @@ export function AgentWorkspace({
       disposed = true;
       unlisten?.();
     };
-  }, [hydrate, refreshSessions, updateQueuedFollowUps]);
+  }, [companionPairingEnabled, hydrate, refreshSessions, updateQueuedFollowUps]);
+
+  useEffect(() => {
+    if (!companionPairingEnabled) return;
+    async function companionSessionInActivePartition(storedSessionId: string) {
+      const [sessions, assignments] = await Promise.all([
+        agentRuntimeBindings.listSessions(),
+        listSessionPartitions(),
+      ]);
+      return filterAgentSessionsForDataPartition(
+        sessions,
+        sessionPartitionMap(assignments),
+        getCurrentDataPartitionName(),
+      ).find((session) => session.id === storedSessionId);
+    }
+
+    async function rejectUnavailableCompanionSession(operationId: string) {
+      await companionCompleteFrontendRequest(operationId, {
+        type: "error",
+        data: {
+          code: "not_found",
+          message: "That agent session is no longer available.",
+          retryable: false,
+        },
+      });
+    }
+
+    async function handleCompanionRequest(payload: CompanionFrontendRequest) {
+      try {
+        switch (payload.intent.type) {
+          case "agentSessionsList":
+          case "agentMessagesList":
+            return;
+          case "agentSend": {
+            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            let session: AgentSessionDto | undefined;
+            let createdSessionPartition: string | undefined;
+            if (requestedStoredSessionId) {
+              session = await companionSessionInActivePartition(requestedStoredSessionId).catch(
+                () => undefined,
+              );
+              if (!session) {
+                await rejectUnavailableCompanionSession(payload.operationId);
+                return;
+              }
+            } else {
+              createdSessionPartition = getCurrentDataPartitionName();
+              session = await agentRuntimeBindings.createSession({
+                title: titleFromPrompt(message),
+                model: DEFAULT_MODEL,
+                safetyMode: "sandboxed",
+                profile: createdSessionPartition,
+              });
+              void refreshSessions().catch(() => undefined);
+            }
+            const enabledSkillIds = (await agentRuntimeBindings.listSkills())
+              .filter((skill) => skill.enabled)
+              .map((skill) => skill.id);
+            const authorizedSession = requestedStoredSessionId
+              ? await companionSessionInActivePartition(session.id).catch(() => undefined)
+              : createdSessionPartition === getCurrentDataPartitionName()
+                ? session
+                : undefined;
+            if (!authorizedSession) {
+              await rejectUnavailableCompanionSession(payload.operationId);
+              return;
+            }
+            const preparedPrompt = preparePromptForSession(authorizedSession.id, message);
+            await agentRuntimeBindings.startRun({
+              sessionId: authorizedSession.id,
+              prompt: preparedPrompt.text,
+              model: authorizedSession.model,
+              reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
+                | "minimal"
+                | "medium"
+                | "high",
+              safetyMode: authorizedSession.safetyMode,
+              workspacePath: authorizedSession.workspacePath,
+              enabledSkillIds,
+              attachments: [],
+            });
+            projectContextSignaturesBySessionId.set(
+              authorizedSession.id,
+              preparedPrompt.contextSignature,
+            );
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "agentAccepted",
+              data: { storedSessionId: authorizedSession.id },
+            });
+            return;
+          }
+          case "agentCancel": {
+            const { storedSessionId } = payload.intent.data;
+            if (
+              !(await companionSessionInActivePartition(storedSessionId).catch(() => undefined))
+            ) {
+              await rejectUnavailableCompanionSession(payload.operationId);
+              return;
+            }
+            const run = await agentRuntimeBindings.getLatestRun?.(storedSessionId);
+            if (
+              run &&
+              (run.status === "queued" ||
+                run.status === "running" ||
+                run.status === "waiting_for_user")
+            ) {
+              if (
+                !(await companionSessionInActivePartition(storedSessionId).catch(() => undefined))
+              ) {
+                await rejectUnavailableCompanionSession(payload.operationId);
+                return;
+              }
+              await agentRuntimeBindings.cancelRun(run.id);
+            }
+            await companionCompleteFrontendRequest(payload.operationId, { type: "accepted" });
+            return;
+          }
+        }
+      } catch (error) {
+        await companionCompleteFrontendRequest(payload.operationId, {
+          type: "error",
+          data: {
+            code: "internal",
+            message: messageFromError(error),
+            retryable: true,
+          },
+        }).catch(() => undefined);
+      }
+    }
+
+    function consumeQueuedRequests() {
+      for (const request of takeCompanionFrontendRequests()) {
+        void handleCompanionRequest(request);
+      }
+    }
+
+    const unregisterConsumer = registerCompanionFrontendConsumer();
+    window.addEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    consumeQueuedRequests();
+    return () => {
+      unregisterConsumer();
+      window.removeEventListener(COMPANION_FRONTEND_QUEUE_EVENT, consumeQueuedRequests);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companionPairingEnabled, preparePromptForSession, refreshSessions]);
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -719,6 +986,13 @@ export function AgentWorkspace({
       scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
     }
   }, [projection.items]);
+
+  useLayoutEffect(() => {
+    if (submittedScrollRevision === 0) return;
+    const scroller = scrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [submittedScrollRevision]);
 
   useEffect(() => {
     if (
@@ -772,7 +1046,7 @@ export function AgentWorkspace({
     // state lets the greeting and suggestions settle underneath the input.
     // The focused new-session hero is inline and remains the only mode that
     // intentionally needs no fixed-composer clearance.
-    if ((!homeMode && (newSessionMode || !selectedSession)) || !scroller || !composer) {
+    if (heroMode || !scroller || !composer) {
       setComposerClearance(0);
       return;
     }
@@ -792,7 +1066,7 @@ export function AgentWorkspace({
       observer?.disconnect();
       window.removeEventListener("resize", measure);
     };
-  }, [homeMode, newSessionMode, selectedSession]);
+  }, [heroMode]);
 
   useLayoutEffect(() => {
     const shell = document.querySelector(".app-shell");
@@ -814,8 +1088,14 @@ export function AgentWorkspace({
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const queuedSubmission = queuedSubmissionSnapshotRef.current;
-    if (queuedSubmission && queuedSubmission.sessionId !== selectedIdRef.current) {
+    const clearQueuedSubmissionAttempt = () => {
       queuedSubmissionSnapshotRef.current = undefined;
+      if (queuedSubmission) {
+        attemptedQueuedMessageIdsRef.current.delete(queuedSubmission.messageId);
+      }
+    };
+    if (queuedSubmission && queuedSubmission.sessionId !== selectedIdRef.current) {
+      clearQueuedSubmissionAttempt();
       return;
     }
     const recoveredSubmission = recoverableSubmissionSnapshotRef.current;
@@ -824,27 +1104,65 @@ export function AgentWorkspace({
       recoveredSubmission?.prompt ??
       draftRef.current
     ).trim();
-    if (!prompt || waiting || submitting || textActionsDisabledReason) return;
+    if (!prompt || waiting || submitting || textActionsDisabledReason) {
+      clearQueuedSubmissionAttempt();
+      return;
+    }
     if (running) {
+      const submittedAttachments = queuedSubmission?.attachments ?? attachments;
+      const submittedModel = queuedSubmission?.model ?? agentRunModelId(model, costQuality);
+      const submittedThinkingLevel = queuedSubmission?.thinkingLevel ?? thinkingLevel;
+      clearQueuedSubmissionAttempt();
       const ownerSessionId = selectedIdRef.current;
       if (!ownerSessionId) return;
       const messageId = crypto.randomUUID();
       updateQueuedFollowUps((current) => ({
         ...current,
-        [ownerSessionId]: {
+        [ownerSessionId]: mergeQueuedAgentFollowUp(current[ownerSessionId], {
           messageId,
           prompt,
-          attachments,
-          model: agentRunModelId(model, costQuality),
-          thinkingLevel,
-        },
+          attachments: submittedAttachments,
+          model: submittedModel,
+          thinkingLevel: submittedThinkingLevel,
+          delivery: "follow_up",
+          steering: "pending",
+        }),
       }));
       setComposerDraft("");
       setAttachments([]);
-      if (attachments.length === 0 && projection.run) {
+      requestSubmittedMessageScroll();
+      if (projection.run) {
+        const activeRunId = projection.run.id;
         void agentRuntimeBindings
-          .steerRun(projection.run.id, messageId, prompt)
-          .catch(() => undefined);
+          .steerRun(activeRunId, messageId, prompt)
+          .then((result) => {
+            if (result.accepted) {
+              updateQueuedFollowUps((current) =>
+                withQueuedSteering(current, ownerSessionId, messageId, "accepted"),
+              );
+              return;
+            }
+            // biome-ignore lint/suspicious/noConsole: steering fallback needs a non-sensitive diagnostic
+            console.warn("Live steering was rejected; queued the full follow-up instead.", {
+              reason: result.reason ?? "unknown",
+              runId: activeRunId,
+              messageId,
+            });
+            updateQueuedFollowUps((current) =>
+              withQueuedSteering(current, ownerSessionId, messageId, undefined),
+            );
+          })
+          .catch((cause: unknown) => {
+            // biome-ignore lint/suspicious/noConsole: steering fallback needs a non-sensitive diagnostic
+            console.warn("Live steering failed; queued the full follow-up instead.", {
+              reason: messageFromError(cause),
+              runId: activeRunId,
+              messageId,
+            });
+            updateQueuedFollowUps((current) =>
+              withQueuedSteering(current, ownerSessionId, messageId, undefined),
+            );
+          });
       }
       return;
     }
@@ -954,6 +1272,7 @@ export function AgentWorkspace({
           session: activeSession,
           items: [...current.items, optimistic],
         }));
+        requestSubmittedMessageScroll();
       }
       if (
         !queuedSnapshot &&
@@ -967,11 +1286,7 @@ export function AgentWorkspace({
       const enabledSkillIds = (await agentRuntimeBindings.listSkills())
         .filter((skill) => skill.enabled)
         .map((skill) => skill.id);
-      const preparedPrompt = prepareProjectPrompt(
-        prompt,
-        projectContext,
-        projectContextSignaturesBySessionId.get(activeSession.id),
-      );
+      const preparedPrompt = preparePromptForSession(activeSession.id, prompt);
       const run = await agentRuntimeBindings.startRun({
         sessionId: activeSession.id,
         prompt: preparedPrompt.text,
@@ -1270,15 +1585,18 @@ export function AgentWorkspace({
         priorDirectTurns,
         readHomeTaskHandoffs(storedSessionId),
       );
+      const greetingReply = homeConversationGreetingReply(message);
+      const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      requestSubmittedMessageScroll();
 
-      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+      if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {
           id: `home:direct:assistant:${suffix}`,
           role: "assistant",
           createdAt: new Date().toISOString(),
           status: "complete",
-          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+          parts: [{ type: "text", text: directConversationReply, status: "complete" }],
         };
         const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
         homeDirectTurnsRef.current = nextTurns;
@@ -1358,9 +1676,20 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
-        const toolCallId = response.task ? `direct:${suffix}` : undefined;
+        const latestHandoffs = readHomeTaskHandoffs(storedSessionId as string);
+        const rejectedStaleTask = Boolean(
+          response.task && isHomeTaskReplayWithoutNewIntent(response.task, message, latestHandoffs),
+        );
+        const responseTask =
+          rejectedStaleTask || !response.task
+            ? undefined
+            : {
+                ...response.task,
+                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+              };
+        const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
-          response.task && toolCallId
+          responseTask && toolCallId
             ? {
                 id: streamingTurnId,
                 role: "assistant",
@@ -1384,7 +1713,9 @@ export function AgentWorkspace({
                 parts: [
                   {
                     type: "text",
-                    text: response.content?.trim() || streamedContent.trim() || "I'm here.",
+                    text: rejectedStaleTask
+                      ? "I'm here. What can I help with?"
+                      : response.content?.trim() || streamedContent.trim() || "I'm here.",
                     status: "complete",
                   },
                 ],
@@ -1397,9 +1728,9 @@ export function AgentWorkspace({
         homeDirectTurnsRef.current = nextTurns;
         setHomeDirectTurns(nextTurns);
         setHomeStreamingReply(null);
-        if (response.task && toolCallId) {
+        if (responseTask && toolCallId) {
           void startHomeTask(
-            response.task,
+            responseTask,
             toolCallId,
             conversation,
             storedSessionId as string,
@@ -1625,7 +1956,6 @@ export function AgentWorkspace({
     await refreshSessions();
   }
 
-  const heroMode = !homeMode && newSessionMode && !selectedSession && !pendingInitialTurn;
   const sessionActionsAvailable = Boolean(selectedId && selectedSession);
   const homeConversationTurns = useMemo(
     () =>
@@ -1812,6 +2142,7 @@ export function AgentWorkspace({
       running={running}
       submitting={submitting}
       disabledReason={textActionsDisabledReason}
+      notice={!heroMode ? error : undefined}
       hero={heroMode}
       showModelPicker={!homeMode}
     />
@@ -1875,11 +2206,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Home conversation">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline" data-home="true">
                 {homeConversationTurns.map((turn, index) => {
                   const previous = index > 0 ? homeConversationTurns[index - 1] : undefined;
@@ -2000,11 +2326,6 @@ export function AgentWorkspace({
             style={{ "--agent-composer-clearance": `${composerClearance}px` } as CSSProperties}
           >
             <main className="agent-main" aria-label="Agent task details">
-              {error ? (
-                <div className="agent-composer-notice" role="alert">
-                  {error}
-                </div>
-              ) : null}
               <div className="agent-timeline">
                 {visibleTurns.map((turn) => (
                   <AgentChatTurnRow
@@ -2046,14 +2367,25 @@ export function AgentWorkspace({
               {queuedFollowUp ? (
                 <div className="agent-follow-up-row" role="status">
                   <span className="agent-follow-up-copy">
-                    <span className="agent-follow-up-announcement">Queued follow-up</span>
-                    <span className="agent-follow-up-text">{queuedFollowUp.prompt}</span>
+                    <span className="agent-follow-up-text">
+                      {queuedFollowUpText(queuedFollowUp)}
+                    </span>
+                    <span className="agent-follow-up-status">
+                      {queuedFollowUpStatus(
+                        queuedFollowUp,
+                        failedQueuedMessageIds.has(queuedFollowUp.messageId),
+                      )}
+                    </span>
                   </span>
                   <span className="agent-follow-up-actions">
                     {failedQueuedMessageIds.has(queuedFollowUp.messageId) ? (
                       <button
                         type="button"
-                        aria-label="Retry queued follow-up"
+                        aria-label={
+                          queuedFollowUp.delivery === "attachments"
+                            ? "Retry queued attachments"
+                            : "Retry queued follow-up"
+                        }
                         disabled={
                           running || waiting || submitting || Boolean(textActionsDisabledReason)
                         }
@@ -2073,7 +2405,11 @@ export function AgentWorkspace({
                     ) : null}
                     <button
                       type="button"
-                      aria-label="Remove queued follow-up"
+                      aria-label={
+                        queuedFollowUp.delivery === "attachments"
+                          ? "Remove queued attachments"
+                          : "Remove queued follow-up"
+                      }
                       onClick={() => {
                         if (!selectedId) return;
                         attemptedQueuedMessageIdsRef.current.delete(queuedFollowUp.messageId);
@@ -2332,6 +2668,7 @@ function AgentComposer({
   running,
   submitting,
   disabledReason,
+  notice,
   hero = false,
   showModelPicker = true,
 }: {
@@ -2359,6 +2696,7 @@ function AgentComposer({
   running: boolean;
   submitting: boolean;
   disabledReason?: string;
+  notice?: string;
   hero?: boolean;
   showModelPicker?: boolean;
 }) {
@@ -2481,6 +2819,11 @@ function AgentComposer({
           }
         />
       )}
+      {notice ? (
+        <div className="agent-composer-notice" role="alert">
+          {notice}
+        </div>
+      ) : null}
       <div className="agent-composer-box">
         {attachments.length ? (
           <div className="agent-composer-attachments">
@@ -2585,7 +2928,7 @@ function AgentComposer({
                   <button
                     type="submit"
                     className="agent-composer-send"
-                    aria-label="Queue follow-up"
+                    aria-label="Steer active run"
                   >
                     <IconArrowUp size={18} />
                   </button>

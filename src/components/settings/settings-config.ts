@@ -9,6 +9,7 @@ export type SettingsTab =
   | "agent"
   | "memory"
   | "connectors"
+  | "linked-devices"
   | "about";
 
 export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
@@ -22,5 +23,10 @@ export const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: "agent", label: "Agent" },
   { id: "memory", label: "Memory" },
   { id: "connectors", label: "Plugins" },
+  { id: "linked-devices", label: "Linked devices" },
   { id: "about", label: "About" },
 ];
+
+export function settingsTabsForCompanionPairing(companionPairingEnabled: boolean) {
+  return SETTINGS_TABS.filter((tab) => companionPairingEnabled || tab.id !== "linked-devices");
+}

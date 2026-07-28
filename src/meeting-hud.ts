@@ -13,9 +13,11 @@ import {
 import { meterLevelForSources, visualPeakScale } from "./lib/recorder-levels";
 import {
   RECORDING_TELEMETRY_EVENT,
+  type MeetingEndStatus,
   type RecordingStatusDto,
   type RecordingTelemetryDto,
 } from "./lib/tauri";
+import { MEETING_END_STATE_EVENT } from "./lib/events";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
 import { createHudLifecycle } from "./lib/hud-lifecycle";
@@ -26,9 +28,25 @@ const lifecycle = createHudLifecycle();
 // Recolor this HUD window to the selected accent and keep it live-synced.
 lifecycle.trackUnlisten(subscribeBrand());
 
-const appWindow = getCurrentWindow();
+// Absent on the standalone browser page (no Tauri bridge), where the demo
+// driver exercises the pill — getCurrentWindow() throws there. Same guard as
+// hud.ts.
+const appWindow = (() => {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return undefined;
+  }
+})();
 const pill = document.querySelector<HTMLDivElement>("#mhud");
 const bars = Array.from(document.querySelectorAll<HTMLElement>(".mhud-bar"));
+const meetingEndKeep = document.querySelector<HTMLButtonElement>("#mhud-end-keep");
+const meetingEndStop = document.querySelector<HTMLButtonElement>("#mhud-end-stop");
+const meetingEndSeconds = document.querySelector<HTMLElement>("#mhud-end-seconds");
+
+/** Must track MEETING_END_COUNTDOWN_MS in meeting_detection.rs — the status
+ * event only carries the deadline, not the countdown's full length. */
+const MEETING_END_COUNTDOWN_MS = 15_000;
 
 lifecycle.addCleanup(installNativeContextMenuGuard());
 
@@ -46,6 +64,13 @@ const meter = createBarMeter(
 const TELEMETRY_WINDOW_PEAKS = 6;
 
 let recording = false;
+let meetingEndStatus: MeetingEndStatus | null = null;
+let meetingEndTick: number | undefined;
+let meetingEndEventRevision = 0;
+
+lifecycle.addCleanup(() => {
+  if (meetingEndTick !== undefined) window.clearInterval(meetingEndTick);
+});
 
 function applyStatus(status: RecordingStatusDto | RecordingTelemetryDto) {
   const paused = status.state === "paused";
@@ -64,6 +89,65 @@ function applyStatus(status: RecordingStatusDto | RecordingTelemetryDto) {
   const recent = level.recentPeaks;
   const raw = recent.length > 0 ? Math.max(...recent.slice(-TELEMETRY_WINDOW_PEAKS)) : level.peak;
   meter.pushLevel(visualPeakScale(raw));
+}
+
+function updateMeetingEndDrain() {
+  if (!meetingEndStop || meetingEndStatus?.phase !== "countdown") return;
+  const expiresAt = meetingEndStatus.expiresAtMs ?? Date.now();
+  const remainingMs = Math.max(0, expiresAt - Date.now());
+  meetingEndStop.style.setProperty(
+    "--meeting-end-remaining",
+    String(Math.min(1, remainingMs / MEETING_END_COUNTDOWN_MS)),
+  );
+  if (meetingEndSeconds) {
+    meetingEndSeconds.textContent = `${Math.ceil(remainingMs / 1_000)}s`;
+  }
+}
+
+function applyMeetingEndStatus(status: MeetingEndStatus | null) {
+  meetingEndStatus = status;
+  const countdown = status?.phase === "countdown";
+  if (meetingEndTick !== undefined) {
+    window.clearInterval(meetingEndTick);
+    meetingEndTick = undefined;
+  }
+  if (pill) {
+    // Mode swaps snap: the native window resize is instant, so a width tween
+    // in either direction would slide the tint out from under the frost.
+    pill.classList.add("mhud-snap");
+    if (countdown) {
+      pill.dataset.mode = "meeting-end";
+      pill.removeAttribute("role");
+      pill.removeAttribute("tabindex");
+      pill.setAttribute("aria-label", "Meeting ended");
+    } else {
+      delete pill.dataset.mode;
+      pill.setAttribute("role", "button");
+      pill.setAttribute("tabindex", "0");
+      pill.setAttribute("aria-label", "Recording. Click to open June");
+    }
+    // Let the snapped state paint before the transition comes back (same
+    // two-frame dance as applyZone).
+    lifecycle.requestAnimationFrame(() => {
+      lifecycle.requestAnimationFrame(() => pill.classList.remove("mhud-snap"));
+    });
+  }
+  meetingEndKeep?.toggleAttribute("disabled", !countdown);
+  meetingEndStop?.toggleAttribute("disabled", !countdown);
+  if (countdown) {
+    // Snap the drain to the current remaining fraction (no sweep from a
+    // stale value when a countdown restarts), then step it once a second —
+    // the 1s linear transition in CSS carries it smoothly between ticks.
+    meetingEndStop?.classList.add("mhud-end-drain-snap");
+    updateMeetingEndDrain();
+    lifecycle.requestAnimationFrame(() => {
+      lifecycle.requestAnimationFrame(() =>
+        meetingEndStop?.classList.remove("mhud-end-drain-snap"),
+      );
+    });
+    meetingEndTick = window.setInterval(updateMeetingEndDrain, 1_000);
+  }
+  void invoke("meeting_hud_set_end_prompt_expanded", { expanded: countdown }).catch(() => {});
 }
 
 // Orientation triad: parked in the left or right third of the screen the pill
@@ -130,6 +214,7 @@ document.addEventListener(
   "pointerdown",
   (event) => {
     if (event.button !== 0) return;
+    if (pill?.dataset.mode === "meeting-end") return;
     pressStart = { x: event.screenX, y: event.screenY };
     dragging = false;
   },
@@ -146,7 +231,7 @@ document.addEventListener(
       dragging = true;
       // Native drag takes over the gesture; pointerup won't fire on the element,
       // so `dragging` stays true and suppresses the click below.
-      void appWindow.startDragging().catch(() => {});
+      void appWindow?.startDragging().catch(() => {});
     }
   },
   { signal: lifecycle.signal },
@@ -156,7 +241,7 @@ document.addEventListener(
   "pointerup",
   (event) => {
     if (event.button !== 0) return;
-    const wasClick = !!pressStart && !dragging;
+    const wasClick = pill?.dataset.mode !== "meeting-end" && !!pressStart && !dragging;
     pressStart = undefined;
     if (wasClick) reopenJune();
   },
@@ -166,10 +251,45 @@ document.addEventListener(
 document.addEventListener(
   "keydown",
   (event) => {
+    if (pill?.dataset.mode === "meeting-end") return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       reopenJune();
     }
+  },
+  { signal: lifecycle.signal },
+);
+
+meetingEndKeep?.addEventListener(
+  "click",
+  (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sessionId = meetingEndStatus?.sessionId;
+    if (!sessionId || meetingEndStatus?.phase !== "countdown") return;
+    meetingEndKeep.disabled = true;
+    meetingEndStop?.toggleAttribute("disabled", true);
+    void invoke("keep_meeting_recording", { sessionId }).catch(() => {
+      meetingEndKeep.disabled = false;
+      meetingEndStop?.toggleAttribute("disabled", false);
+    });
+  },
+  { signal: lifecycle.signal },
+);
+
+meetingEndStop?.addEventListener(
+  "click",
+  (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const sessionId = meetingEndStatus?.sessionId;
+    if (!sessionId || meetingEndStatus?.phase !== "countdown") return;
+    meetingEndStop.disabled = true;
+    meetingEndKeep?.toggleAttribute("disabled", true);
+    void invoke("queue_meeting_end_finish_request", { sessionId }).catch(() => {
+      meetingEndStop.disabled = false;
+      meetingEndKeep?.toggleAttribute("disabled", false);
+    });
   },
   { signal: lifecycle.signal },
 );
@@ -183,6 +303,13 @@ lifecycle.trackUnlisten(
 lifecycle.trackUnlisten(
   listen<{ vertical: boolean; animate: boolean }>("meeting-hud-zone", (event) => {
     if (event.payload) applyZone(event.payload);
+  }),
+);
+
+lifecycle.trackUnlisten(
+  listen<MeetingEndStatus | null>(MEETING_END_STATE_EVENT, (event) => {
+    meetingEndEventRevision += 1;
+    applyMeetingEndStatus(event.payload ?? null);
   }),
 );
 
@@ -207,6 +334,15 @@ if (import.meta.env.DEV) {
     },
     { signal: lifecycle.signal },
   );
+
+  window.addEventListener(
+    MEETING_END_STATE_EVENT,
+    (event) => {
+      meetingEndEventRevision += 1;
+      applyMeetingEndStatus((event as CustomEvent<MeetingEndStatus | null>).detail ?? null);
+    },
+    { signal: lifecycle.signal },
+  );
 }
 
 resetBars();
@@ -224,5 +360,14 @@ if (import.meta.env.DEV) {
 void invoke<RecordingStatusDto | null>("meeting_hud_latest_status")
   .then((status) => {
     if (status) applyStatus(status);
+  })
+  .catch(() => {});
+
+const revisionBeforeInitialMeetingEndRead = meetingEndEventRevision;
+void invoke<MeetingEndStatus | null>("pending_meeting_end_status")
+  .then((status) => {
+    if (meetingEndEventRevision === revisionBeforeInitialMeetingEndRead) {
+      applyMeetingEndStatus(status);
+    }
   })
   .catch(() => {});

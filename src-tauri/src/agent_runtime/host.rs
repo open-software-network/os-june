@@ -6,7 +6,7 @@ use super::{
 use crate::domain::types::AppError;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 pub const AGENT_RUNTIME_EVENT: &str = "june://agent-runtime-event";
 const RUNTIME_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const HISTORY_COMPACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>>;
 
 #[derive(Default)]
@@ -32,6 +33,7 @@ pub struct AgentRuntimeHost {
     startup: Mutex<()>,
     request_sequence: AtomicI64,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: Arc<Mutex<HashSet<String>>>,
     cancellations: ToolCancellationRegistry,
 }
 
@@ -104,6 +106,7 @@ impl AgentRuntimeHost {
             stdin.clone(),
             pending.clone(),
             self.model_streams.clone(),
+            self.model_scopes.clone(),
             self.cancellations.clone(),
         );
         tauri::async_runtime::spawn(async move {
@@ -166,29 +169,54 @@ impl AgentRuntimeHost {
         );
         let (send, receive) = oneshot::channel();
         let pending = runtime.pending.clone();
+        if opens_model_scope(method) {
+            self.model_scopes.lock().await.insert(run_id.to_string());
+        }
         pending.lock().await.insert(id.clone(), send);
         if let Err(error) = write_frame(&runtime.stdin, &frame).await {
             pending.lock().await.remove(&id);
+            if opens_model_scope(method) {
+                self.cancel_run_streams(run_id).await;
+            }
             return Err(error);
         }
         drop(guard);
-        match tokio::time::timeout(RUNTIME_CONTROL_TIMEOUT, receive).await {
-            Ok(response) => response.map_err(|_| {
-                AppError::new("agent_runtime_disconnected", "Agent runtime disconnected.")
-            })?,
-            Err(_) => {
-                pending.lock().await.remove(&id);
-                Err(AppError::new(
-                    "agent_runtime_request_timed_out",
-                    "The local agent runtime did not respond in time.",
-                ))
-            }
+        self.await_request_response(
+            &pending,
+            &id,
+            receive,
+            runtime_request_timeout(method),
+            run_id,
+            opens_model_scope(method),
+        )
+        .await
+    }
+
+    async fn await_request_response(
+        &self,
+        pending: &PendingRequests,
+        id: &str,
+        receive: oneshot::Receiver<Result<Value, AppError>>,
+        timeout: std::time::Duration,
+        run_id: &str,
+        cancel_scope_on_error: bool,
+    ) -> Result<Value, AppError> {
+        let response = await_runtime_response(pending, id, receive, timeout).await;
+        if response.is_err()
+            && (cancel_scope_on_error
+                || response
+                    .as_ref()
+                    .is_err_and(|error| error.code == "agent_runtime_request_timed_out"))
+        {
+            self.cancel_run_streams(run_id).await;
         }
+        response
     }
 
     pub async fn shutdown(&self) {
         let _startup = self.startup.lock().await;
         crate::agent_mcp::shutdown_sessions().await;
+        cancel_all_model_scopes(&self.model_streams, &self.model_scopes, &self.cancellations).await;
         let mut guard = self.inner.lock().await;
         let Some(mut runtime) = guard.take() else {
             return;
@@ -207,11 +235,45 @@ impl AgentRuntimeHost {
     }
 
     pub async fn cancel_run_streams(&self, run_id: &str) {
-        self.model_streams
-            .lock()
-            .await
-            .retain(|_, stream| stream.run_id != run_id);
-        self.cancellations.cancel(run_id).await;
+        cancel_model_scope(
+            &self.model_streams,
+            &self.model_scopes,
+            &self.cancellations,
+            run_id,
+        )
+        .await;
+    }
+}
+
+fn opens_model_scope(method: &str) -> bool {
+    matches!(method, "run.start" | "run.resume" | "history.compact")
+}
+
+fn runtime_request_timeout(method: &str) -> std::time::Duration {
+    if method == "history.compact" {
+        HISTORY_COMPACTION_TIMEOUT
+    } else {
+        RUNTIME_CONTROL_TIMEOUT
+    }
+}
+
+async fn await_runtime_response(
+    pending: &PendingRequests,
+    id: &str,
+    receive: oneshot::Receiver<Result<Value, AppError>>,
+    timeout: std::time::Duration,
+) -> Result<Value, AppError> {
+    match tokio::time::timeout(timeout, receive).await {
+        Ok(response) => response.map_err(|_| {
+            AppError::new("agent_runtime_disconnected", "Agent runtime disconnected.")
+        })?,
+        Err(_) => {
+            pending.lock().await.remove(id);
+            Err(AppError::new(
+                "agent_runtime_request_timed_out",
+                "The local agent runtime did not respond in time.",
+            ))
+        }
     }
 }
 
@@ -222,6 +284,7 @@ fn spawn_stdout_reader(
     stdin: Arc<Mutex<ChildStdin>>,
     pending: PendingRequests,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: Arc<Mutex<HashSet<String>>>,
     cancellations: ToolCancellationRegistry,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -259,11 +322,24 @@ fn spawn_stdout_reader(
                 if let Err(error) = persist_and_emit_event(&app, &repository, &frame).await {
                     tracing::warn!(%error.message, "Failed to persist agent event");
                 }
+                if matches!(
+                    frame.method.as_deref(),
+                    Some("run.completed" | "run.cancelled" | "run.failed")
+                ) {
+                    cancel_model_scope(
+                        &model_streams,
+                        &model_scopes,
+                        &cancellations,
+                        &frame.run_id,
+                    )
+                    .await;
+                }
                 continue;
             }
             let request_app = app.clone();
             let request_repository = repository.clone();
             let request_streams = model_streams.clone();
+            let request_scopes = model_scopes.clone();
             let request_cancellations = cancellations.clone();
             let request_stdin = stdin.clone();
             tauri::async_runtime::spawn(async move {
@@ -271,6 +347,7 @@ fn spawn_stdout_reader(
                     &request_app,
                     &request_repository,
                     &request_streams,
+                    &request_scopes,
                     &request_cancellations,
                     &frame,
                 )
@@ -288,6 +365,7 @@ fn spawn_stdout_reader(
                 "Agent runtime disconnected.",
             )));
         }
+        cancel_all_model_scopes(&model_streams, &model_scopes, &cancellations).await;
         let _ = repository
             .mark_active_runs_interrupted("The local agent runtime stopped unexpectedly.")
             .await;
@@ -299,6 +377,7 @@ async fn handle_runtime_request(
     app: &AppHandle,
     repository: &AgentRepository,
     model_streams: &Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: &Arc<Mutex<HashSet<String>>>,
     cancellations: &ToolCancellationRegistry,
     frame: &RpcFrame,
 ) -> Result<Value, AppError> {
@@ -360,6 +439,12 @@ async fn handle_runtime_request(
                 });
             }
             if name == "__june_model_chat_completions" {
+                if !model_scopes.lock().await.contains(&frame.run_id) {
+                    return Err(AppError::new(
+                        "agent_model_scope_inactive",
+                        "The agent model scope is no longer active.",
+                    ));
+                }
                 if let Some(stream_id) = arguments.get("streamId").and_then(Value::as_str) {
                     return poll_model_stream(model_streams, stream_id).await;
                 }
@@ -370,7 +455,22 @@ async fn handle_runtime_request(
                     )
                 })?;
                 request["stream"] = Value::Bool(true);
-                let response = crate::june_api::proxy_agent_chat_completions(request).await?;
+                let mut cancelled = cancellations.register(&frame.run_id).await;
+                if !model_scopes.lock().await.contains(&frame.run_id) {
+                    return Err(AppError::new(
+                        "agent_model_scope_inactive",
+                        "The agent model scope is no longer active.",
+                    ));
+                }
+                let response = tokio::select! {
+                    response = crate::june_api::proxy_agent_chat_completions(request) => response?,
+                    _ = cancelled.cancelled() => {
+                        return Err(AppError::new(
+                            "agent_model_scope_cancelled",
+                            "The agent model request was cancelled.",
+                        ));
+                    }
+                };
                 if response.status >= 400 {
                     let bytes = response.collect_body().await?;
                     let body: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
@@ -381,6 +481,13 @@ async fn handle_runtime_request(
                 }
                 let stream_id = Uuid::new_v4().to_string();
                 let route = response.route.clone();
+                let scopes = model_scopes.lock().await;
+                if !scopes.contains(&frame.run_id) {
+                    return Err(AppError::new(
+                        "agent_model_scope_inactive",
+                        "The agent model scope is no longer active.",
+                    ));
+                }
                 model_streams.lock().await.insert(
                     stream_id.clone(),
                     ModelStream {
@@ -391,6 +498,7 @@ async fn handle_runtime_request(
                         run_id: frame.run_id.clone(),
                     },
                 );
+                drop(scopes);
                 return poll_model_stream(model_streams, &stream_id).await;
             }
             let session = repository.get_session(&frame.session_id).await?;
@@ -427,6 +535,32 @@ async fn handle_runtime_request(
             "agent_protocol_invalid",
             "Request method is required.",
         )),
+    }
+}
+
+async fn cancel_model_scope(
+    model_streams: &Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: &Arc<Mutex<HashSet<String>>>,
+    cancellations: &ToolCancellationRegistry,
+    run_id: &str,
+) {
+    model_scopes.lock().await.remove(run_id);
+    model_streams
+        .lock()
+        .await
+        .retain(|_, stream| stream.run_id != run_id);
+    cancellations.cancel(run_id).await;
+}
+
+async fn cancel_all_model_scopes(
+    model_streams: &Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: &Arc<Mutex<HashSet<String>>>,
+    cancellations: &ToolCancellationRegistry,
+) {
+    let scopes = model_scopes.lock().await.drain().collect::<Vec<_>>();
+    model_streams.lock().await.clear();
+    for scope in scopes {
+        cancellations.cancel(&scope).await;
     }
 }
 
@@ -600,11 +734,8 @@ async fn persist_and_emit_event(
             None
         }
         "steering.consumed" => {
-            let message_id = params
-                .get("messageId")
-                .and_then(Value::as_str)
-                .unwrap_or(&event_id);
-            data["itemId"] = json!(format!("steering:{message_id}"));
+            persistence_external_id = steering_stable_id(&params, &event_id);
+            data["itemId"] = json!(persistence_external_id.clone());
             data["createdAt"] = json!(created_at);
             Some(AgentItemPayload::Steering(TextPayload {
                 text: params
@@ -612,6 +743,7 @@ async fn persist_and_emit_event(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .into(),
+                metadata: None,
             }))
         }
         "tool.started" => {
@@ -686,9 +818,17 @@ async fn persist_and_emit_event(
         }
         "run.started" => {
             data["startedAt"] = json!(created_at);
-            repository
+            let run = repository
                 .update_run_status(&frame.run_id, "running", None, None, None)
                 .await?;
+            if run.status != "running" {
+                tracing::warn!(
+                    run_id = %frame.run_id,
+                    status = %run.status,
+                    "ignored a late run.started event for a terminal run"
+                );
+                return Ok(());
+            }
             crate::routines::mark_agent_run_resumed(&repository.pool, &frame.run_id).await?;
             if params
                 .get("compacted")
@@ -699,6 +839,9 @@ async fn persist_and_emit_event(
                     .get("contextSummary")
                     .and_then(|summary| summary.get("text"))
                     .and_then(Value::as_str);
+                let summary_metadata = params
+                    .get("contextSummary")
+                    .and_then(|summary| summary.get("metadata"));
                 let removed_item_ids = params
                     .get("removedItemIds")
                     .and_then(Value::as_array)
@@ -716,6 +859,7 @@ async fn persist_and_emit_event(
                             &frame.session_id,
                             &frame.run_id,
                             summary_text,
+                            summary_metadata,
                             &removed_item_ids,
                         )
                         .await?
@@ -729,6 +873,7 @@ async fn persist_and_emit_event(
                             "createdAt": summary.created_at,
                             "kind": "context_summary",
                             "text": summary_text,
+                            "metadata": summary_metadata,
                         });
                     }
                 }
@@ -889,6 +1034,16 @@ fn interruption_stable_id(params: &Value, event_id: &str) -> String {
         .to_string()
 }
 
+fn steering_stable_id(params: &Value, event_id: &str) -> String {
+    format!(
+        "steering:{}",
+        params
+            .get("messageId")
+            .and_then(Value::as_str)
+            .unwrap_or(event_id)
+    )
+}
+
 fn sanitize_log(value: &str) -> String {
     let value = redact_bearer_tokens(value);
     let value = redact_key_tokens(&value);
@@ -978,6 +1133,73 @@ fn redact_key_tokens(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumed_steering_uses_message_id_as_its_persisted_external_id() {
+        assert_eq!(
+            steering_stable_id(&json!({ "messageId": "message-1" }), "event-1"),
+            "steering:message-1"
+        );
+        assert_eq!(
+            steering_stable_id(&json!({}), "event-1"),
+            "steering:event-1"
+        );
+    }
+
+    #[test]
+    fn history_compaction_uses_the_data_plane_timeout() {
+        assert_eq!(
+            runtime_request_timeout("history.compact"),
+            std::time::Duration::from_secs(120)
+        );
+        assert_eq!(
+            runtime_request_timeout("run.start"),
+            std::time::Duration::from_secs(15)
+        );
+    }
+
+    #[tokio::test]
+    async fn timed_out_control_requests_drop_pending_and_cancel_the_model_scope() {
+        let host = AgentRuntimeHost::default();
+        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let id = "request-timeout";
+        let scope = "run-timeout";
+        host.model_scopes.lock().await.insert(scope.into());
+        let _registration = host.cancellations.register(scope).await;
+        let (send, receive) = oneshot::channel();
+        pending.lock().await.insert(id.into(), send);
+
+        let error = host
+            .await_request_response(
+                &pending,
+                id,
+                receive,
+                std::time::Duration::ZERO,
+                scope,
+                false,
+            )
+            .await
+            .expect_err("the pending response must time out");
+
+        assert_eq!(error.code, "agent_runtime_request_timed_out");
+        assert!(!pending.lock().await.contains_key(id));
+        assert!(!host.model_scopes.lock().await.contains(scope));
+        assert_eq!(host.cancellations.registration_count(scope), 0);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_scope_disposes_its_live_model_registrations() {
+        let host = AgentRuntimeHost::default();
+        let scope = "run-timeout";
+        host.model_scopes.lock().await.insert(scope.into());
+        let _registration = host.cancellations.register(scope).await;
+        assert_eq!(host.cancellations.registration_count(scope), 1);
+
+        host.cancel_run_streams(scope).await;
+
+        assert!(!host.model_scopes.lock().await.contains(scope));
+        assert_eq!(host.cancellations.registration_count(scope), 0);
+    }
 
     #[test]
     fn model_gateway_errors_preserve_top_level_messages() {

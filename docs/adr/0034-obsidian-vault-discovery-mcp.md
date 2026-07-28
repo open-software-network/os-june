@@ -74,3 +74,5 @@ validate and persist or delete the selected vault, then refresh UI state.
   validation and leaks configuration ownership across the sandbox boundary.
 - **Register the server only while connected.** Rejected: stable registration
   lets a running runtime discover current state without a restart.
+
+2026-07-27 addendum: ADR-0040 supersedes this ADR's `june_obsidian` MCP-server integration shape; the Obsidian vault-discovery product scope remains binding.

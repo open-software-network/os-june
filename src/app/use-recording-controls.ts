@@ -15,7 +15,7 @@ import { errorCode, messageFromError } from "../lib/errors";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
 import type { RecordingSourceMode } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
-import { type AgentRecorderRequestPayload } from "./app-shell";
+import type { AgentRecorderRequestPayload } from "./app-shell";
 import type { UseRecordingControlsDependencies } from "./use-recording-controls-types";
 
 export function useRecordingControls(dependencies: UseRecordingControlsDependencies) {
