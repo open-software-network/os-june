@@ -577,6 +577,7 @@ fn build_windows_dictation_helper() {
         .join("native")
         .join("bin")
         .join("june-dictation-helper.exe");
+    println!("cargo:rerun-if-changed={}", destination.display());
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent)
             .expect("Windows dictation helper destination should be created");

@@ -38,6 +38,11 @@ try {
   }
   $cargoVersion = & cargo --version
   if ($LASTEXITCODE -ne 0 -or "$cargoVersion" -notmatch '^cargo ') { throw "cargo is not usable." }
+  $targetTriple = "x86_64-pc-windows-msvc"
+  $targetLibDirectory = & rustc --print target-libdir --target $targetTriple
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath "$targetLibDirectory" -PathType Container)) {
+    throw "The $targetTriple Rust target is required."
+  }
   if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
     throw "Unsigned Windows builds require WINDOWS_CERTIFICATE_PASSWORD to be unset."
   }
@@ -48,19 +53,24 @@ try {
   Set-Location -LiteralPath $repoRoot
   New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
   Get-ChildItem -LiteralPath $OutputDirectory -File -Filter "*-setup.exe" | Remove-Item -Force
+  $cargoMetadataOutput = & cargo metadata --manifest-path src-tauri/Cargo.toml --no-deps --format-version 1
+  if ($LASTEXITCODE -ne 0) { throw "Could not resolve Cargo's target directory." }
+  $cargoTargetDirectory = ("$cargoMetadataOutput" | ConvertFrom-Json).target_directory
+  if ([string]::IsNullOrWhiteSpace($cargoTargetDirectory)) { throw "Cargo metadata did not report a target directory." }
   & pnpm agent-runtime:build
   if ($LASTEXITCODE -ne 0) { throw "Agent runtime TypeScript build failed." }
   & node scripts/build-agent-runtime.mjs
   if ($LASTEXITCODE -ne 0) { throw "Windows agent runtime SEA build failed." }
 
-  $nsisDirectory = Join-Path $repoRoot "src-tauri\target\release\bundle\nsis"
+  $releaseDirectory = Join-Path $cargoTargetDirectory "$targetTriple\release"
+  $nsisDirectory = Join-Path $releaseDirectory "bundle\nsis"
   if (Test-Path -LiteralPath $nsisDirectory -PathType Container) {
     Get-ChildItem -LiteralPath $nsisDirectory -File -Filter "*-setup.exe" | Remove-Item -Force
   }
-  $appExecutable = Join-Path $repoRoot "src-tauri\target\release\os-june.exe"
+  $appExecutable = Join-Path $releaseDirectory "os-june.exe"
   Remove-Item -LiteralPath $appExecutable -Force -ErrorAction SilentlyContinue
   $env:JUNE_AGENT_RUNTIME_PREBUILT = "1"
-  & node scripts/tauri-build.mjs --no-sign
+  & node scripts/tauri-build.mjs --target $targetTriple --no-sign
   if ($LASTEXITCODE -ne 0) { throw "Unsigned Tauri release build failed." }
   if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt } else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT }
 
