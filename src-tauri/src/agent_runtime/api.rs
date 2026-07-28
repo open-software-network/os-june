@@ -1349,6 +1349,16 @@ async fn resolve_agent_interruption_inner(
         .request("run.resume", &session.id, &run.id, params)
         .await
     {
+        // The sidecar may have accepted this exact resume before the host
+        // observed the duplicate-active response. Keep the resolved payload
+        // (including any answer or secret ref) for that already-running tool.
+        if duplicate_resume_preserves_resolved_interruption(&error) {
+            return Ok(run_json(
+                repository
+                    .update_run_status(&run.id, "running", None, None, None)
+                    .await?,
+            ));
+        }
         let restore_result: Result<bool, sqlx::Error> = async {
             let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
             let run_restored = sqlx::query::query(
@@ -1417,13 +1427,6 @@ async fn resolve_agent_interruption_inner(
             );
         }
         restore_result?;
-        if is_duplicate_resume_error(&error) {
-            return Ok(run_json(
-                repository
-                    .update_run_status(&run.id, "running", None, None, None)
-                    .await?,
-            ));
-        }
         return Err(error);
     }
     if origin == InterruptionResolutionOrigin::Desktop {
@@ -1459,7 +1462,7 @@ fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
         .filter(|model| crate::june_api::is_canonical_agent_model(model))
 }
 
-fn is_duplicate_resume_error(error: &AppError) -> bool {
+fn duplicate_resume_preserves_resolved_interruption(error: &AppError) -> bool {
     error.code == "agent_runtime_request_failed" && error.message == "Run is already active"
 }
 
@@ -2447,19 +2450,19 @@ mod tests {
     }
 
     #[test]
-    fn only_the_sidecar_duplicate_resume_error_is_idempotent() {
-        assert!(is_duplicate_resume_error(&AppError::new(
-            "agent_runtime_request_failed",
-            "Run is already active",
-        )));
-        assert!(!is_duplicate_resume_error(&AppError::new(
-            "agent_runtime_request_failed",
-            "Run is already active after a worker crash",
-        )));
-        assert!(!is_duplicate_resume_error(&AppError::new(
-            "agent_runtime_request_timed_out",
-            "Run is already active",
-        )));
+    fn only_the_sidecar_duplicate_resume_error_preserves_the_resolution() {
+        assert!(duplicate_resume_preserves_resolved_interruption(
+            &AppError::new("agent_runtime_request_failed", "Run is already active",)
+        ));
+        assert!(!duplicate_resume_preserves_resolved_interruption(
+            &AppError::new(
+                "agent_runtime_request_failed",
+                "Run is already active after a worker crash",
+            )
+        ));
+        assert!(!duplicate_resume_preserves_resolved_interruption(
+            &AppError::new("agent_runtime_request_timed_out", "Run is already active",)
+        ));
     }
 
     #[test]
