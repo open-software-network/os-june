@@ -1182,6 +1182,10 @@ pub struct RuntimeToolDescriptorJson {
     pub strict: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requires_approval: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_remote_tool_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1261,6 +1265,8 @@ impl McpToolRegistry {
                 parameters: object_schema(tool.input_schema),
                 strict: Some(false),
                 requires_approval: requires_approval.then_some(true),
+                approval_provider: Some("Linear".to_string()),
+                approval_remote_tool_name: Some(tool.name.clone()),
             };
             // The managed source owns the mcp_linear_* namespace. A
             // user-configured server with the same display name must not
@@ -1304,6 +1310,8 @@ impl McpToolRegistry {
                 parameters: object_schema(tool.input_schema),
                 strict: None,
                 requires_approval: requires_approval.then_some(true),
+                approval_provider: None,
+                approval_remote_tool_name: None,
             };
             self.tools.insert(
                 name,
@@ -2089,6 +2097,20 @@ async fn session_request(
     let deadline = Duration::from_millis(server.safety.timeout_ms);
     let result = timeout(deadline, async move {
         let shared = persistent_session(server, secrets, sandbox_workspace).await;
+        // Linearize eligibility before taking the persistent-session slot and
+        // keep it through the remote request. Disconnect and reconnect take
+        // the same lifecycle gate before retiring the slot, so the global
+        // lock order is lifecycle -> session and an admitted request either
+        // finishes before the epoch advances or fails here as stale.
+        let _linear_dispatch_guard = match linear_lifecycle {
+            Some(snapshot) => Some(
+                snapshot
+                    .acquire_current()
+                    .await
+                    .ok_or(AgentMcpError::ToolUnavailable)?,
+            ),
+            None => None,
+        };
         let mut slot = shared.lock().await;
         if linear_lifecycle.is_some_and(|snapshot| !snapshot.is_current()) {
             slot.close().await;
@@ -3807,6 +3829,8 @@ mod tests {
             parameters: json!({"type":"object","properties":{}}),
             strict: None,
             requires_approval: None,
+            approval_provider: None,
+            approval_remote_tool_name: None,
         };
         snapshot_run_policies(&repo.pool, "run-1", std::slice::from_ref(&descriptor))
             .await
@@ -3864,6 +3888,8 @@ mod tests {
             parameters: json!({"type":"object","properties":{}}),
             strict: Some(false),
             requires_approval: None,
+            approval_provider: Some("Linear".into()),
+            approval_remote_tool_name: Some("search".into()),
         };
 
         snapshot_run_policies(&repo.pool, "run-linear", std::slice::from_ref(&descriptor))
@@ -3928,6 +3954,8 @@ mod tests {
             parameters: json!({"type":"object","properties":{}}),
             strict: None,
             requires_approval: None,
+            approval_provider: None,
+            approval_remote_tool_name: None,
         };
         snapshot_run_policies(&repo.pool, "run-empty", &[descriptor])
             .await
@@ -4826,48 +4854,31 @@ done
     }
 
     #[tokio::test]
-    async fn lifecycle_change_while_waiting_for_session_slot_blocks_transport_start() {
+    async fn admitted_linear_dispatch_blocks_epoch_change_until_guard_drops() {
         let account_id = format!("linear-session-slot-{}", Uuid::new_v4());
         let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
         let snapshot = lifecycle.snapshot();
         drop(lifecycle);
-        let mut server = managed_linear_definition();
-        server.id = format!("builtin:linear-slot-{}", Uuid::new_v4());
-        let secrets = McpSecretBundle::default();
-        let shared = persistent_session(&server, &secrets, None).await;
-        let slot = shared.lock().await;
+        let dispatch = snapshot.acquire_current().await.unwrap();
 
-        let request_server = server.clone();
-        let request_snapshot = snapshot.clone();
-        let request = tokio::spawn(async move {
-            session_request(
-                &request_server,
-                &McpSecretBundle::default(),
-                "tools/list",
-                json!({}),
-                None,
-                None,
-                Some(&request_snapshot),
-            )
-            .await
+        let lifecycle_change = tokio::spawn(async move {
+            let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+            lifecycle.bump_epoch();
         });
         tokio::time::sleep(Duration::from_millis(25)).await;
-        assert!(!request.is_finished());
+        assert!(!lifecycle_change.is_finished());
+        assert!(snapshot.is_current());
 
-        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
-        lifecycle.bump_epoch();
-        drop(lifecycle);
-        drop(slot);
-
-        assert!(matches!(
-            request.await.unwrap(),
-            Err(AgentMcpError::ToolUnavailable)
-        ));
-        retire_server_sessions(&server.id).await;
+        drop(dispatch);
+        tokio::time::timeout(Duration::from_secs(1), lifecycle_change)
+            .await
+            .expect("lifecycle change must not deadlock")
+            .unwrap();
+        assert!(!snapshot.is_current());
     }
 
     #[tokio::test]
-    async fn lifecycle_change_during_transport_initialization_blocks_first_request() {
+    async fn admitted_request_finishes_before_lifecycle_change() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::{net::TcpListener, sync::Notify};
 
@@ -4997,16 +5008,20 @@ done
         });
 
         initialize_started.notified().await;
-        let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
-        lifecycle.bump_epoch();
-        drop(lifecycle);
+        let lifecycle_change = tokio::spawn(async move {
+            let lifecycle = crate::connectors::acquire_linear_lifecycle(&account_id).await;
+            lifecycle.bump_epoch();
+        });
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!lifecycle_change.is_finished());
         release_initialize.notify_one();
 
-        assert!(matches!(
-            request.await.unwrap(),
-            Err(AgentMcpError::ToolUnavailable)
-        ));
-        assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+        assert!(request.await.unwrap().is_ok());
+        tokio::time::timeout(Duration::from_secs(1), lifecycle_change)
+            .await
+            .expect("lifecycle change must not deadlock")
+            .unwrap();
+        assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
         retire_server_sessions(&server.id).await;
         server_task.abort();
     }
@@ -5178,6 +5193,14 @@ done
         let search = registry.resolve("mcp_linear_search").unwrap();
         assert_eq!(search.server_id, MANAGED_LINEAR_SERVER_ID);
         assert_eq!(search.descriptor.description, "official");
+        assert_eq!(
+            search.descriptor.approval_provider.as_deref(),
+            Some("Linear")
+        );
+        assert_eq!(
+            search.descriptor.approval_remote_tool_name.as_deref(),
+            Some("search")
+        );
         assert_eq!(registry.descriptors().len(), 1);
     }
 

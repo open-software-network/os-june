@@ -393,6 +393,11 @@ impl LinearLifecycleSnapshot {
     pub(crate) fn is_current(&self) -> bool {
         self.state.epoch.load(Ordering::SeqCst) == self.epoch
     }
+
+    pub(crate) async fn acquire_current(&self) -> Option<OwnedMutexGuard<()>> {
+        let guard = self.state.gate.clone().lock_owned().await;
+        self.is_current().then_some(guard)
+    }
 }
 
 fn linear_lifecycle_for(account_id: &str) -> Arc<LinearLifecycleState> {
@@ -1223,10 +1228,38 @@ where
             )
             .await
             .map_err(AppError::from),
-        (None, true) => repos
-            .delete_connector_account(workspace_id)
-            .await
-            .map_err(AppError::from),
+        (None, true) => {
+            match repos
+                .delete_connector_account(workspace_id)
+                .await
+                .map_err(AppError::from)
+            {
+                Ok(()) => Ok(()),
+                Err(delete_error) => {
+                    match repos
+                        .upsert_connector_account(
+                            workspace_id,
+                            ConnectorProvider::Linear.as_str(),
+                            retry_account.email,
+                            retry_account.scopes,
+                            ConnectorAccountStatus::ReconnectRequired.as_str(),
+                            retry_account.metadata,
+                        )
+                        .await
+                        .map_err(AppError::from)
+                    {
+                        Ok(()) => Err(delete_error),
+                        Err(repair_error) => Err(AppError::new(
+                            "connector_connect_rollback_failed",
+                            format!(
+                                "June could not remove or mark the canceled Linear connection for retry (delete: {}; repair: {}). Remove June in Linear's authorized applications settings before trying again.",
+                                delete_error.code, repair_error.code
+                            ),
+                        )),
+                    }
+                }
+            }
+        }
         (None, false) => repos
             .upsert_connector_account(
                 workspace_id,
@@ -1482,10 +1515,8 @@ pub async fn begin_connect_linear(
                     error_code = %error.code,
                     "failed to restore Linear state after canceled credential write"
                 );
-                if error.code == "connector_connect_rollback_failed" {
-                    emit_connectors_changed(app);
-                    return Err(error);
-                }
+                emit_connectors_changed(app);
+                return Err(error);
             }
             emit_connectors_changed(app);
             return Err(canceled);
@@ -1516,10 +1547,8 @@ pub async fn begin_connect_linear(
                     error_code = %rollback_error.code,
                     "failed to restore Linear state after account persistence error"
                 );
-                if rollback_error.code == "connector_connect_rollback_failed" {
-                    emit_connectors_changed(app);
-                    return Err(rollback_error);
-                }
+                emit_connectors_changed(app);
+                return Err(rollback_error);
             }
             emit_connectors_changed(app);
             return Err(connect_error);
@@ -1538,10 +1567,8 @@ pub async fn begin_connect_linear(
                     error_code = %error.code,
                     "failed to restore Linear state after canceled account write"
                 );
-                if error.code == "connector_connect_rollback_failed" {
-                    emit_connectors_changed(app);
-                    return Err(error);
-                }
+                emit_connectors_changed(app);
+                return Err(error);
             }
             emit_connectors_changed(app);
             return Err(canceled);
@@ -2351,6 +2378,63 @@ mod tests {
             retry_record.metadata,
             r#"{"workspaceName":"Retry workspace"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_connect_account_delete_failure_marks_the_row_retryable() {
+        let repos = rollback_test_repositories().await;
+        let workspace_id = "fresh-account-delete-failed";
+        let new_scopes = vec!["linear_read".to_string(), "linear_write".to_string()];
+        let retry_account = LinearRetryAccount {
+            email: "actor@example.com",
+            scopes: &new_scopes,
+            metadata: r#"{"workspaceName":"Retry workspace"}"#,
+        };
+        repos
+            .upsert_connector_account(
+                workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                retry_account.email,
+                retry_account.scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                retry_account.metadata,
+            )
+            .await
+            .expect("seed connected account");
+        sqlx::query::query(
+            "CREATE TRIGGER fail_linear_account_delete
+             BEFORE DELETE ON connector_accounts
+             BEGIN
+               SELECT RAISE(FAIL, 'injected delete failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("install delete failure");
+
+        let error = restore_linear_connect_state_with(
+            &repos,
+            workspace_id,
+            None,
+            &retry_account,
+            || async { Ok(()) },
+        )
+        .await
+        .expect_err("account rollback failure is surfaced");
+
+        assert_ne!(error.code, "connector_connect_canceled");
+        let retry_record = repos
+            .get_connector_account(workspace_id)
+            .await
+            .expect("retry account lookup")
+            .expect("retry account remains visible");
+        assert_eq!(
+            retry_record.status,
+            ConnectorAccountStatus::ReconnectRequired.as_str()
+        );
+        assert_eq!(retry_record.email, retry_account.email);
+        assert_eq!(retry_record.scopes, new_scopes);
+        assert_eq!(retry_record.metadata, retry_account.metadata);
     }
 
     #[tokio::test]

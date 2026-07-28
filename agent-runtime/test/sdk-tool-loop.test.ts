@@ -534,6 +534,8 @@ test("keeps managed MCP schemas non-strict and approval arguments minimal", asyn
           parameters,
           strict: false,
           requiresApproval: true,
+          approvalProvider: "Linear",
+          approvalRemoteToolName: "save_issue",
         },
       ],
       skills: [],
@@ -546,6 +548,8 @@ test("keeps managed MCP schemas non-strict and approval arguments minimal", asyn
     team: "Personal Workspace",
     title: "another sample issue from budi",
   });
+  assert.equal(result.interruptions[0]?.approvalProvider, "Linear");
+  assert.equal(result.interruptions[0]?.approvalRemoteToolName, "save_issue");
   const functionTool = modelFunctionTool(modelRequest, "mcp_linear_save_issue");
   assert.equal(functionTool.strict, false);
   assert.deepEqual(functionTool.parameters, parameters);

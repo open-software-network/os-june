@@ -129,7 +129,14 @@ export class OpenAIAgentsEngine implements AgentEngine {
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, input.params.history, input.emit, runner.modelProvider, input.runId);
+    return this.consumeStream(
+      stream,
+      input.params.history,
+      input.emit,
+      runner.modelProvider,
+      input.runId,
+      input.params.tools,
+    );
   }
 
   async resume(input: EngineResumeInput): Promise<EngineResult> {
@@ -164,7 +171,14 @@ export class OpenAIAgentsEngine implements AgentEngine {
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, [], input.emit, runner.modelProvider, input.runId);
+    return this.consumeStream(
+      stream,
+      [],
+      input.emit,
+      runner.modelProvider,
+      input.runId,
+      input.params.tools,
+    );
   }
 
   async shutdown(): Promise<void> {
@@ -268,6 +282,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
     emit: (event: EngineEvent) => void,
     modelProvider: RpcChatCompletionsModelProvider,
     runId: string,
+    toolDescriptors: RuntimeToolDescriptor[],
   ): Promise<EngineResult> {
     for await (const event of stream) this.forwardSdkEvent(event, emit);
     await stream.completed;
@@ -276,7 +291,19 @@ export class OpenAIAgentsEngine implements AgentEngine {
 
     const activeKeys = new Set<string>();
     const interruptions = stream.interruptions.map((interruption) => {
-      const mapped = runtimeInterruptionFromSdk(interruption);
+      let mapped = runtimeInterruptionFromSdk(interruption);
+      const descriptor = toolDescriptors.find((tool) => tool.name === mapped.toolName);
+      if (
+        mapped.kind === "approval" &&
+        descriptor?.approvalProvider &&
+        descriptor.approvalRemoteToolName
+      ) {
+        mapped = {
+          ...mapped,
+          approvalProvider: descriptor.approvalProvider,
+          approvalRemoteToolName: descriptor.approvalRemoteToolName,
+        };
+      }
       const key = `${runId}:${mapped.id}`;
       activeKeys.add(key);
       const preflight = this.notionPreflights.get(key);

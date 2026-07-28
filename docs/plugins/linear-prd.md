@@ -33,9 +33,10 @@ change remain visible before an approval-required tool runs.
 - Connect one workspace with workspace-wide read and write access.
 - Discover the complete valid tool inventory from Linear's official hosted MCP
   server for each agent run.
-- Run clearly annotated read-only tools directly.
-- Require approval for write, destructive, ambiguous, or incompletely
-  annotated tools.
+- Run tools directly when `readOnlyHint` is explicitly true and
+  `destructiveHint` is false or absent.
+- Require approval for write, destructive, ambiguous, malformed, or missing
+  `readOnlyHint` annotations.
 - Link June notes to Linear objects and refresh status on demand.
 
 ## Scope
@@ -68,9 +69,9 @@ Use Linear OAuth with refresh-token rotation and store token material in the
 Keychain. Rust sends the current access token only to
 `https://mcp.linear.app/mcp`; the model and TypeScript runtime never receive
 it. Access is workspace-wide, not selected-team scoped. Linear content and MCP
-metadata are untrusted. Only tools explicitly annotated read-only and
-non-destructive may run directly; everything ambiguous or mutating requires
-approval.
+metadata are untrusted. Only tools with an explicit `readOnlyHint: true` and a
+false or absent `destructiveHint` may run directly; everything ambiguous or
+mutating requires approval.
 
 ## Business model
 

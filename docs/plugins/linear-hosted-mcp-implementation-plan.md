@@ -74,10 +74,12 @@ the next successful discovery without a June release.
 
 The runtime applies a generic MCP safety rule:
 
-1. A tool may run without approval only when its MCP annotations explicitly
-   identify it as read-only and not destructive.
+1. A tool may run without approval only when `readOnlyHint` is explicitly true
+   and `destructiveHint` is either false or absent.
 2. A tool with mutating or destructive annotations requires approval.
-3. Missing, malformed, contradictory, or unknown annotations require approval.
+3. An absent or false `readOnlyHint`, or malformed, contradictory, or unknown
+   annotations, require approval. An absent `destructiveHint` does not override
+   an explicit `readOnlyHint: true`.
 4. June may apply generic mutation-name safeguards as an additional
    fail-closed check, but it must not maintain a Linear tool allowlist.
 
@@ -193,8 +195,8 @@ Disconnect is locally authoritative:
 
 1. Mark the account unavailable to new Linear MCP dispatch.
 2. Retire the in-memory MCP session.
-3. Attempt provider-side token revocation.
-4. Remove local Keychain credentials and connector-account state.
+3. Remove local Keychain credentials and connector-account state.
+4. Attempt provider-side token revocation after local removal.
 5. Refresh Settings from the persisted account list.
 
 If provider revocation cannot be confirmed, local disconnect still completes.

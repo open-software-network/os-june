@@ -802,8 +802,10 @@ async fn persist_and_emit_event(
                     if let Some(presentation) = params.get("approvalPresentation") {
                         json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": presentation.get("title").cloned().unwrap_or_else(|| json!("Approval required")), "description": presentation.get("description").cloned().unwrap_or_else(|| json!("Review this Notion action.")), "command": presentation.get("command").cloned().unwrap_or_else(|| json!(tool_name)), "preview": presentation.get("preview").cloned().unwrap_or(Value::Null), "approvalBinding": params.get("approvalBinding").cloned().unwrap_or(Value::Null), "allowAlways": false })
                     } else {
-                        let command = approval_command(tool_name, params.get("arguments"));
-                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {tool_name}. Review the requested operation before approving."), "command": command, "allowAlways": false })
+                        let (operation_name, operation_description) =
+                            approval_operation_identity(&params, tool_name);
+                        let command = approval_command(&operation_name, params.get("arguments"));
+                        json!({ "id": interruption_id, "sessionId": frame.session_id, "runId": frame.run_id, "status": "pending", "createdAt": created_at, "kind": "approval", "toolName": tool_name, "title": "Approval required", "description": format!("June wants to run {operation_description}. Review the requested operation before approving."), "command": command, "allowAlways": false })
                     }
                 }
             };
@@ -1042,6 +1044,22 @@ fn approval_command(tool_name: &str, arguments: Option<&Value>) -> String {
     sanitize_log(&format!("{tool_name} {details}"))
 }
 
+fn approval_operation_identity(params: &Value, fallback: &str) -> (String, String) {
+    let provider = params.get("approvalProvider").and_then(Value::as_str);
+    let remote_tool_name = params.get("approvalRemoteToolName").and_then(Value::as_str);
+    match (provider, remote_tool_name) {
+        (Some(provider), Some(remote_tool_name))
+            if !provider.is_empty() && !remote_tool_name.is_empty() =>
+        {
+            (
+                format!("{provider}:{remote_tool_name}"),
+                format!("{provider} tool {remote_tool_name}"),
+            )
+        }
+        _ => (fallback.to_string(), fallback.to_string()),
+    }
+}
+
 fn interruption_stable_id(params: &Value, event_id: &str) -> String {
     params
         .get("id")
@@ -1265,6 +1283,21 @@ mod tests {
         assert!(command.contains("/workspace/report.md"));
         assert!(command.contains("safe content"));
         assert!(command.contains("[redacted]"));
+    }
+
+    #[test]
+    fn hosted_approval_identity_preserves_provider_and_remote_tool_name() {
+        let params = json!({
+            "approvalProvider": "Linear",
+            "approvalRemoteToolName": "save-issue.v2"
+        });
+        assert_eq!(
+            approval_operation_identity(&params, "mcp_linear_save_issue"),
+            (
+                "Linear:save-issue.v2".to_string(),
+                "Linear tool save-issue.v2".to_string()
+            )
+        );
     }
 
     #[test]
