@@ -62,7 +62,11 @@ request must not cancel or deliver into the new take.
   exact pending or confirmed take is still owned. It retires only that start
   and emits a correlated event; an already rejected start cannot clear a
   previously confirmed recording. An event suppressed to preserve that
-  recording does not consume the visible-prompt dedupe window.
+  recording does not consume the visible-prompt dedupe window. Malformed
+  `recording_ready` cleanup shares the same ordering lock. When an older
+  helper's untagged outcome loses to a replacement start, June cancels the
+  prior token without sending a take-blind discard that could stop the
+  replacement.
 - Every terminal helper command carries the `takeId`. A helper that processed
   a discard remembers that ID for its process lifetime and silently rejects
   later text for it. Tagged text, stop, and discard commands cannot affect a

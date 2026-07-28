@@ -846,6 +846,12 @@ enum HelperLifecycleDisposition {
     Ignore,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct MalformedRecordingReadyCleanup {
+    take_id: Option<String>,
+    send_helper_discard: bool,
+}
+
 impl ShortcutActivationController {
     fn handle_edge(
         &mut self,
@@ -958,6 +964,24 @@ impl ShortcutActivationController {
         self.helper_take_id = Some(take_id.to_string());
         if self.pending_helper_take_id.as_deref() == Some(take_id) {
             self.pending_helper_take_id = None;
+        }
+    }
+
+    fn malformed_recording_ready_cleanup(
+        &self,
+        event_take_id: Option<&str>,
+        current_take_id: Option<&str>,
+    ) -> MalformedRecordingReadyCleanup {
+        let take_id = event_take_id
+            .map(str::to_string)
+            .or_else(|| self.helper_take_id.clone())
+            .or_else(|| current_take_id.map(str::to_string));
+        MalformedRecordingReadyCleanup {
+            take_id,
+            // A tagged discard is safe because a current helper authorizes
+            // its target. An older helper ignores tags, so do not send its
+            // untagged cleanup after a replacement start is pending.
+            send_helper_discard: event_take_id.is_some() || self.pending_helper_take_id.is_none(),
         }
     }
 
@@ -2925,6 +2949,27 @@ fn pending_helper_start_take_id(app: &AppHandle) -> Option<String> {
         })
 }
 
+fn malformed_recording_ready_cleanup(
+    app: &AppHandle,
+    event: &serde_json::Value,
+) -> MalformedRecordingReadyCleanup {
+    let event_take_id = dictation_take_id_from_event(event);
+    let current_take_id = app
+        .try_state::<DictationTakeState>()
+        .and_then(|state| state.current_take_id());
+    app.try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state.controller.lock().ok().map(|controller| {
+                controller
+                    .malformed_recording_ready_cleanup(event_take_id, current_take_id.as_deref())
+            })
+        })
+        .unwrap_or_else(|| MalformedRecordingReadyCleanup {
+            take_id: event_take_id.map(str::to_string).or(current_take_id),
+            send_helper_discard: true,
+        })
+}
+
 fn dictation_start_take_id(event: &serde_json::Value, pending_take_id: Option<&str>) -> String {
     dictation_take_id_from_event(event)
         .or(pending_take_id)
@@ -3102,6 +3147,7 @@ fn helper_event_serializes_with_commands(event_type: Option<&str>) -> bool {
         Some(
             "listening_started"
                 | "audio_level"
+                | "recording_ready"
                 | "recording_discarded"
                 | "finalizing_transcript"
                 | "final_transcript"
@@ -4961,16 +5007,29 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
                     }
                 }
                 Err(error) => {
-                    let take_id = dictation_take_id_from_event(event);
-                    cancel_dictation_take(app, take_id);
-                    let mut command = serde_json::json!({ "type": "discard_recording" });
-                    if let (Some(take_id), Some(object)) = (take_id, command.as_object_mut()) {
-                        object.insert("takeId".into(), serde_json::json!(take_id));
+                    let cleanup = malformed_recording_ready_cleanup(app, event);
+                    cancel_dictation_take(app, cleanup.take_id.as_deref());
+                    if cleanup.send_helper_discard {
+                        let mut command = serde_json::json!({ "type": "discard_recording" });
+                        if let (Some(take_id), Some(object)) =
+                            (cleanup.take_id.as_deref(), command.as_object_mut())
+                        {
+                            object.insert("takeId".into(), serde_json::json!(take_id));
+                        }
+                        let state = app.state::<HelperState>();
+                        let _ = send_helper_command(&state, command);
                     }
-                    let state = app.state::<HelperState>();
-                    let _ = send_helper_command(&state, command);
-                    if let Some(take_id) = take_id {
-                        emit_dictation_take_id_event(app, take_id, app_error_event(error));
+                    if let Some(take_id) = cleanup.take_id.as_deref() {
+                        // `recording_ready` already holds the helper-command
+                        // lock, so correlate directly instead of recursively
+                        // acquiring it through `emit_dictation_take_id_event`.
+                        let mut event = app_error_event(error);
+                        add_dictation_take_id_to_event(&mut event, take_id);
+                        if dictation_delivery_matches_active_take(app, take_id) {
+                            emit_dictation_event_value(app, event);
+                        } else {
+                            emit_helper_event_without_lifecycle(app, event);
+                        }
                     } else {
                         emit_dictation_event_value(app, app_error_event(error));
                     }
@@ -8226,6 +8285,37 @@ mod tests {
         assert_eq!(controller.helper_take_id.as_deref(), Some("take-pending"));
         assert!(controller.pending_helper_take_id.is_none());
         assert!(!controller.helper_uses_take_ids);
+    }
+
+    #[test]
+    fn malformed_legacy_ready_does_not_discard_a_pending_replacement() {
+        assert!(helper_event_serializes_with_commands(Some(
+            "recording_ready"
+        )));
+
+        let mut controller = ShortcutActivationController::default();
+        controller.promote_untagged_helper_start("take-a");
+        assert_eq!(
+            controller.malformed_recording_ready_cleanup(None, Some("take-a")),
+            MalformedRecordingReadyCleanup {
+                take_id: Some("take-a".to_string()),
+                send_helper_discard: true,
+            }
+        );
+
+        controller.prepare_helper_start("take-b");
+        assert_eq!(
+            controller.malformed_recording_ready_cleanup(None, Some("take-a")),
+            MalformedRecordingReadyCleanup {
+                take_id: Some("take-a".to_string()),
+                send_helper_discard: false,
+            }
+        );
+        assert!(
+            controller
+                .malformed_recording_ready_cleanup(Some("take-a"), Some("take-a"))
+                .send_helper_discard
+        );
     }
 
     fn test_policy() -> RespawnPolicy {
