@@ -315,7 +315,11 @@ export const AgentSessionsList = forwardRef<AgentSessionsListHandle, AgentSessio
               placeholder="Active"
               ariaLabel="Filter sessions by status"
               popoverWidth={140}
-              onChange={(value) => setStatusFilter(value as SessionStatusFilter)}
+              onChange={(value) => {
+                const next = value as SessionStatusFilter;
+                if (next !== statusFilter) resetSelection();
+                setStatusFilter(next);
+              }}
             />
           </div>
         ) : null}

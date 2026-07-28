@@ -573,20 +573,23 @@ export function Sidebar({
           action: () => onSelectNote(note.id),
         };
       }),
-      ...agentSessions.slice(0, 5).map((session) => {
-        const title = session.title.trim() || "Untitled";
-        return {
-          id: `agent:${session.id}`,
-          label: title,
-          meta: "Session",
-          icon: <IconBubble3 size={15} />,
-          searchText: normalizeCommandQuery(`${title} agent session`),
-          action: () => {
-            setSelectedAgentSessionId(session.id);
-            onSelectAgentSession(session);
-          },
-        };
-      }),
+      ...agentSessions
+        .filter((session) => !completedSessionIds[session.id])
+        .slice(0, 5)
+        .map((session) => {
+          const title = session.title.trim() || "Untitled";
+          return {
+            id: `agent:${session.id}`,
+            label: title,
+            meta: "Session",
+            icon: <IconBubble3 size={15} />,
+            searchText: normalizeCommandQuery(`${title} agent session`),
+            action: () => {
+              setSelectedAgentSessionId(session.id);
+              onSelectAgentSession(session);
+            },
+          };
+        }),
     ]
       .filter(matches)
       .slice(0, 6);
@@ -743,6 +746,7 @@ export function Sidebar({
     agentSessions,
     commandQuery,
     companionPairingEnabled,
+    completedSessionIds,
     homeEnabled,
     notes,
     onChangeView,
