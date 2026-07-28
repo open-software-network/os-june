@@ -276,6 +276,7 @@ pub(super) async fn list_directory(
             modified_at: metadata.modified().ok().map(system_time_string),
         });
     }
+    ensure_browse_root_still_granted(repositories, account_user_id, &root).await?;
     items.sort_by(|left, right| {
         browse_kind_rank(left.kind)
             .cmp(&browse_kind_rank(right.kind))
@@ -336,6 +337,12 @@ pub(super) async fn stat_file(
     let metadata = fs::metadata(&materialized.path)
         .await
         .map_err(browse_io_error)?;
+    if let Err(error) = ensure_browse_root_still_granted(repositories, account_user_id, &root).await
+    {
+        remove_materialized_browse_attachment(&materialized.path).await;
+        return Err(error);
+    }
+    let materialized_path = materialized.path.clone();
     let name = materialized.name;
     let media_type = materialized.media_type;
     let expires_at_ms = now_ms().saturating_add(duration_ms(BROWSE_REFERENCE_LIFETIME));
@@ -379,6 +386,22 @@ pub(super) async fn stat_file(
                 expires_at_ms,
             },
         );
+    }
+    // The persisted check above closes the copy window. This second check
+    // closes the smaller check-to-insert window: if revocation deleted the
+    // grant just before insertion, discard the newly inserted reference. If
+    // revocation happens after this check, revoke_root sees and removes it.
+    if let Err(error) = ensure_browse_root_still_granted(repositories, account_user_id, &root).await
+    {
+        if let Ok(mut references) = app
+            .state::<super::CompanionRuntime>()
+            .browse_references
+            .lock()
+        {
+            references.remove(&reference_id);
+        }
+        remove_materialized_browse_attachment(&materialized_path).await;
+        return Err(error);
     }
     let entry = BrowseEntry {
         name: name.clone(),
@@ -741,6 +764,7 @@ pub(super) async fn resolve_attachments(
                 "This file is not within the companion attachment size limit.",
             ));
         }
+        active_browse_root(repositories, account_user_id, browse.root_id).await?;
         attachments.push(ResolvedAttachment {
             media_type: browse.media_type,
             path: path.to_string_lossy().into_owned(),
@@ -970,6 +994,34 @@ async fn root_record(
                 "This shared folder is no longer available.",
             )
         })
+}
+
+async fn active_browse_root(
+    repositories: &Repositories,
+    account_user_id: &str,
+    root_id: Uuid,
+) -> Result<BrowseRootRecord, AppError> {
+    let root = root_record(repositories, account_user_id, root_id).await?;
+    resolve_granted_path(&root, "", ExpectedKind::Directory)?;
+    Ok(root)
+}
+
+async fn ensure_browse_root_still_granted(
+    repositories: &Repositories,
+    account_user_id: &str,
+    expected_root: &BrowseRootRecord,
+) -> Result<(), AppError> {
+    let active_root = active_browse_root(repositories, account_user_id, expected_root.id).await?;
+    if active_root != *expected_root {
+        return Err(root_changed());
+    }
+    Ok(())
+}
+
+async fn remove_materialized_browse_attachment(path: &Path) {
+    if let Some(directory) = path.parent() {
+        let _ = fs::remove_dir_all(directory).await;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1722,6 +1774,48 @@ mod tests {
         assert_eq!(loaded, vec![granted]);
         assert!(!loaded[0].volume_device_id.is_empty());
         assert!(!loaded[0].directory_file_id.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revocation_wins_after_copy_and_before_reference_resolution() {
+        let repositories = test_repositories().await;
+        let account_user_id = "usr_browse_revocation";
+        let directory = tempfile::tempdir().unwrap();
+        let root_path = directory.path().join("Shared");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::write(root_path.join("brief.md"), "approved").unwrap();
+        let root = grant_root(&repositories, account_user_id, &root_path)
+            .await
+            .unwrap();
+        let stage = directory.path().join("stage");
+        let materialized =
+            materialize_browse_attachment_blocking(&root, "brief.md", &stage).unwrap();
+
+        query(
+            "DELETE FROM companion_browse_roots
+             WHERE account_user_id = ? AND id = ?",
+        )
+        .bind(account_user_id)
+        .bind(root.id.to_string())
+        .execute(&repositories.pool)
+        .await
+        .unwrap();
+
+        let mint_error = ensure_browse_root_still_granted(&repositories, account_user_id, &root)
+            .await
+            .unwrap_err();
+        assert_eq!(mint_error.code, "companion_root_not_found");
+
+        let resolve_error = active_browse_root(&repositories, account_user_id, root.id)
+            .await
+            .unwrap_err();
+        assert_eq!(resolve_error.code, "companion_root_not_found");
+        assert_eq!(
+            std::fs::read_to_string(materialized.path).unwrap(),
+            "approved",
+            "the copied bytes existed before the persisted grant was revoked"
+        );
     }
 
     #[test]
