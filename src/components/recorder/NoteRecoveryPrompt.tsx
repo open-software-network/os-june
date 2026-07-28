@@ -17,9 +17,11 @@ export function NoteRecoveryPrompt({
   disabled,
   recoverBlockedReason,
 }: NoteRecoveryPromptProps) {
+  const isRecoveryBlocked = Boolean(recoverBlockedReason);
+
   return (
     <InlineNotice
-      className="note-recovery-prompt"
+      className={`note-recovery-prompt${isRecoveryBlocked ? " note-recovery-prompt-blocked" : ""}`}
       aria-label="Recoverable recording"
       icon={<IconRecord size={14} aria-hidden />}
       body={
@@ -46,7 +48,7 @@ export function NoteRecoveryPrompt({
           <button
             type="button"
             className="btn btn-secondary"
-            disabled={disabled || Boolean(recoverBlockedReason)}
+            disabled={disabled || isRecoveryBlocked}
             title={recoverBlockedReason}
             onClick={() => onRecover(recovery.sessionId)}
           >

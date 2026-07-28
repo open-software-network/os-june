@@ -3,7 +3,7 @@ import appCss from "../styles/app.css?raw";
 
 function cssRuleFor(selector: string) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escaped}\\s*\\{`).exec(appCss);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(appCss);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;
@@ -241,12 +241,21 @@ describe("inline notice centering", () => {
     expect(baseIndex).toBeGreaterThan(overrideIndex);
   });
 
-  it("centers the meeting-note recovery row without changing the shared notice default", () => {
+  it("centers only the one-line meeting-note recovery row", () => {
     expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
-    expect(cssRuleFor(".inline-notice.note-recovery-prompt")).toContain("align-items: center;");
-    expect(cssRuleFor(".note-recovery-prompt .inline-notice-icon")).toContain(
-      "align-self: center;",
-    );
+    expect(
+      cssRuleFor(".inline-notice.note-recovery-prompt:not(.note-recovery-prompt-blocked)"),
+    ).toContain("align-items: center;");
+    expect(
+      cssRuleFor(".note-recovery-prompt:not(.note-recovery-prompt-blocked) .inline-notice-icon"),
+    ).toContain("align-self: center;");
+  });
+
+  it("keeps the blocked recovery variant on the shared first-line alignment", () => {
+    const blockedSelector = ".inline-notice.note-recovery-prompt-blocked";
+    expect(appCss).not.toContain(`${blockedSelector} {`);
+    expect(cssRuleFor(".inline-notice")).toContain("align-items: first baseline;");
+    expect(cssRuleFor(".inline-notice-icon")).toContain("align-self: flex-start;");
   });
 });
 
