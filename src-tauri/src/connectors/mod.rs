@@ -1332,231 +1332,245 @@ pub async fn begin_connect_linear(
 
     let requested = policy::requested_linear_scopes(bundles);
     let grant = linear::authorize(flow, &client_id, &requested, &linear_loopback_ports()).await?;
-    flow.ensure_not_canceled("Linear")?;
-    let identity = grant.identity;
-    let workspace_id = identity.workspace_id.clone();
+    let result = async {
+        flow.ensure_not_canceled("Linear")?;
+        let identity = &grant.identity;
+        let workspace_id = identity.workspace_id.clone();
 
-    // A reconnect id means the user asked to (re)connect one specific
-    // workspace. The browser can still consent for a different one; abort on
-    // mismatch rather than silently storing the wrong workspace (which would
-    // leave the intended one still flagged reconnect_required).
-    if let Some(expected) = reconnect_account_id {
-        if !workspace_id.eq_ignore_ascii_case(expected) {
+        // A reconnect id means the user asked to (re)connect one specific
+        // workspace. The browser can still consent for a different one; abort on
+        // mismatch rather than silently storing the wrong workspace (which would
+        // leave the intended one still flagged reconnect_required).
+        if let Some(expected) = reconnect_account_id {
+            if !workspace_id.eq_ignore_ascii_case(expected) {
+                return Err(AppError::new(
+                    "connector_account_mismatch",
+                    "That Linear workspace does not match the one you were reconnecting. Try again and pick that workspace.",
+                ));
+            }
+        }
+
+        // Final credential and index writes share the same lifecycle boundary as
+        // token refresh, managed MCP eligibility, session creation, and
+        // disconnect. The browser authorization above remains outside the lock.
+        let lifecycle = acquire_linear_lifecycle(&workspace_id).await;
+        let refresh_lock = refresh_lock_for(&workspace_id);
+        let _refresh_guard = refresh_lock.lock().await;
+        flow.ensure_not_canceled("Linear")?;
+
+        // Same single-account rationale as the Google guard above, scoped to the
+        // Linear provider: every Linear surface resolves "the connected
+        // workspace", so a second, distinct workspace is refused. Compared by
+        // workspace id (the account id), never email.
+        let existing_accounts = repos.list_connector_accounts().await?;
+        flow.ensure_not_canceled("Linear")?;
+        let previous_record = existing_accounts
+            .iter()
+            .find(|record| {
+                record.provider == ConnectorProvider::Linear.as_str()
+                    && record.account_id.eq_ignore_ascii_case(&workspace_id)
+            })
+            .cloned();
+        if let Some(existing_id) = conflicting_existing_account(
+            existing_accounts
+                .iter()
+                .map(|record| (record.provider.as_str(), record.account_id.as_str())),
+            ConnectorProvider::Linear.as_str(),
+            &workspace_id,
+        ) {
+            // Name the stored workspace when its metadata carries a name; the
+            // raw id is a last resort that at least identifies the row.
+            let display = existing_accounts
+                .iter()
+                .find(|record| record.account_id == existing_id)
+                .and_then(|record| {
+                    serde_json::from_str::<ConnectorAccountMetadata>(&record.metadata).ok()
+                })
+                .and_then(|metadata| metadata.workspace_name)
+                .filter(|name| !name.is_empty())
+                .unwrap_or(existing_id);
             return Err(AppError::new(
-                "connector_account_mismatch",
-                "That Linear workspace does not match the one you were reconnecting. Try again and pick that workspace.",
+                "connector_single_account_only",
+                format!(
+                    "June local mode uses one Linear workspace at a time. Disconnect {display} before connecting another."
+                ),
             ));
         }
-    }
 
-    // Final credential and index writes share the same lifecycle boundary as
-    // token refresh, managed MCP eligibility, session creation, and
-    // disconnect. The browser authorization above remains outside the lock.
-    let lifecycle = acquire_linear_lifecycle(&workspace_id).await;
-    let refresh_lock = refresh_lock_for(&workspace_id);
-    let _refresh_guard = refresh_lock.lock().await;
-    flow.ensure_not_canceled("Linear")?;
+        // Persist the granted scopes: Linear's response scope field when it
+        // carries anything, otherwise the requested list.
+        let granted_scopes: Vec<String> = grant
+            .tokens
+            .scope
+            .as_deref()
+            .map(linear::parse_scope_field)
+            .filter(|scopes| !scopes.is_empty())
+            .unwrap_or_else(|| requested.iter().map(|scope| scope.to_string()).collect());
 
-    // Same single-account rationale as the Google guard above, scoped to the
-    // Linear provider: every Linear surface resolves "the connected
-    // workspace", so a second, distinct workspace is refused. Compared by
-    // workspace id (the account id), never email.
-    let existing_accounts = repos.list_connector_accounts().await?;
-    flow.ensure_not_canceled("Linear")?;
-    let previous_record = existing_accounts
-        .iter()
-        .find(|record| {
-            record.provider == ConnectorProvider::Linear.as_str()
-                && record.account_id.eq_ignore_ascii_case(&workspace_id)
-        })
-        .cloned();
-    if let Some(existing_id) = conflicting_existing_account(
-        existing_accounts
-            .iter()
-            .map(|record| (record.provider.as_str(), record.account_id.as_str())),
-        ConnectorProvider::Linear.as_str(),
-        &workspace_id,
-    ) {
-        // Name the stored workspace when its metadata carries a name; the
-        // raw id is a last resort that at least identifies the row.
-        let display = existing_accounts
-            .iter()
-            .find(|record| record.account_id == existing_id)
-            .and_then(|record| {
-                serde_json::from_str::<ConnectorAccountMetadata>(&record.metadata).ok()
+        // Snapshot custody before changing it so a cancellation that lands while
+        // persistence is pending can restore the pre-connect state.
+        let previous_tokens = store::load_tokens(ConnectorProvider::Linear, &workspace_id).await?;
+        flow.ensure_not_canceled("Linear")?;
+
+        // Scope escalation on an existing grant can omit the refresh token; keep
+        // the one already in custody then (mirrors the Google fallback).
+        let refresh_token = match grant
+            .tokens
+            .refresh_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+        {
+            Some(token) => token.to_string(),
+            None => previous_tokens
+                .as_ref()
+                .map(|existing| existing.refresh_token.clone())
+                .ok_or_else(|| {
+                    AppError::new(
+                        "connector_missing_refresh_token",
+                        "Linear did not return a refresh token. Remove June's access in Linear settings and connect again.",
+                    )
+                })?,
+        };
+
+        let tokens = store::StoredConnectorTokens {
+            access_token: grant.tokens.access_token.clone(),
+            refresh_token,
+            expires_at_unix: now_unix() + grant.tokens.expires_in.max(0),
+            scopes: granted_scopes.clone(),
+            // May be empty; informational only. The workspace id keys custody.
+            email: identity.user_email.clone(),
+        };
+        let metadata_json = linear_account_metadata_json(identity);
+        let retry_account = LinearRetryAccount {
+            email: &identity.user_email,
+            scopes: &granted_scopes,
+            metadata: &metadata_json,
+        };
+
+        // Read the response-only projection before the first write. From this
+        // point onward every await is followed by a cancellation check and, once
+        // custody changes, a rollback to these snapshots.
+        let selected_teams = repos
+            .list_selected_teams(&workspace_id)
+            .await?
+            .into_iter()
+            .map(|team| SelectedTeamDto {
+                id: team.team_id,
+                key: team.team_key,
+                name: team.team_name,
             })
-            .and_then(|metadata| metadata.workspace_name)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(existing_id);
-        return Err(AppError::new(
-            "connector_single_account_only",
-            format!(
-                "June local mode uses one Linear workspace at a time. Disconnect {display} before connecting another."
-            ),
-        ));
-    }
+            .collect();
+        flow.ensure_not_canceled("Linear")?;
 
-    // Persist the granted scopes: Linear's response scope field when it
-    // carries anything, otherwise the requested list.
-    let granted_scopes: Vec<String> = grant
-        .tokens
-        .scope
-        .as_deref()
-        .map(linear::parse_scope_field)
-        .filter(|scopes| !scopes.is_empty())
-        .unwrap_or_else(|| requested.iter().map(|scope| scope.to_string()).collect());
+        // The old bearer must stop owning a live hosted MCP session before the
+        // replacement credential becomes eligible for discovery or dispatch.
+        lifecycle.bump_epoch();
+        crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
+        flow.ensure_not_canceled("Linear")?;
+        store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
+        if let Err(canceled) = flow.ensure_not_canceled("Linear") {
+            if let Err(error) = restore_linear_connect_state(
+                &repos,
+                &workspace_id,
+                previous_tokens.as_ref(),
+                previous_record.as_ref(),
+                &retry_account,
+            )
+            .await
+            {
+                tracing::error!(
+                    error_code = %error.code,
+                    "failed to restore Linear state after canceled credential write"
+                );
+                if error.code == "connector_connect_rollback_failed" {
+                    emit_connectors_changed(app);
+                    return Err(error);
+                }
+            }
+            emit_connectors_changed(app);
+            return Err(canceled);
+        }
 
-    // Snapshot custody before changing it so a cancellation that lands while
-    // persistence is pending can restore the pre-connect state.
-    let previous_tokens = store::load_tokens(ConnectorProvider::Linear, &workspace_id).await?;
-    flow.ensure_not_canceled("Linear")?;
+        if let Err(error) = repos
+            .upsert_connector_account(
+                &workspace_id,
+                ConnectorProvider::Linear.as_str(),
+                &identity.user_email,
+                &granted_scopes,
+                ConnectorAccountStatus::Connected.as_str(),
+                &metadata_json,
+            )
+            .await
+        {
+            let connect_error = AppError::from(error);
+            if let Err(rollback_error) = restore_linear_connect_state(
+                &repos,
+                &workspace_id,
+                previous_tokens.as_ref(),
+                previous_record.as_ref(),
+                &retry_account,
+            )
+            .await
+            {
+                tracing::error!(
+                    error_code = %rollback_error.code,
+                    "failed to restore Linear state after account persistence error"
+                );
+                if rollback_error.code == "connector_connect_rollback_failed" {
+                    emit_connectors_changed(app);
+                    return Err(rollback_error);
+                }
+            }
+            emit_connectors_changed(app);
+            return Err(connect_error);
+        }
+        if let Err(canceled) = flow.complete_operation("Linear") {
+            if let Err(error) = restore_linear_connect_state(
+                &repos,
+                &workspace_id,
+                previous_tokens.as_ref(),
+                previous_record.as_ref(),
+                &retry_account,
+            )
+            .await
+            {
+                tracing::error!(
+                    error_code = %error.code,
+                    "failed to restore Linear state after canceled account write"
+                );
+                if error.code == "connector_connect_rollback_failed" {
+                    emit_connectors_changed(app);
+                    return Err(error);
+                }
+            }
+            emit_connectors_changed(app);
+            return Err(canceled);
+        }
+        emit_connectors_changed(app);
 
-    // Scope escalation on an existing grant can omit the refresh token; keep
-    // the one already in custody then (mirrors the Google fallback).
-    let refresh_token = match grant
-        .tokens
-        .refresh_token
-        .as_deref()
-        .filter(|token| !token.is_empty())
-    {
-        Some(token) => token.to_string(),
-        None => previous_tokens
-            .as_ref()
-            .map(|existing| existing.refresh_token.clone())
-            .ok_or_else(|| {
-                AppError::new(
-                    "connector_missing_refresh_token",
-                    "Linear did not return a refresh token. Remove June's access in Linear settings and connect again.",
-                )
-            })?,
-    };
-
-    let tokens = store::StoredConnectorTokens {
-        access_token: grant.tokens.access_token.clone(),
-        refresh_token,
-        expires_at_unix: now_unix() + grant.tokens.expires_in.max(0),
-        scopes: granted_scopes.clone(),
-        // May be empty; informational only. The workspace id keys custody.
-        email: identity.user_email.clone(),
-    };
-    let metadata_json = linear_account_metadata_json(&identity);
-    let retry_account = LinearRetryAccount {
-        email: &identity.user_email,
-        scopes: &granted_scopes,
-        metadata: &metadata_json,
-    };
-
-    // Read the response-only projection before the first write. From this
-    // point onward every await is followed by a cancellation check and, once
-    // custody changes, a rollback to these snapshots.
-    let selected_teams = repos
-        .list_selected_teams(&workspace_id)
-        .await?
-        .into_iter()
-        .map(|team| SelectedTeamDto {
-            id: team.team_id,
-            key: team.team_key,
-            name: team.team_name,
+        Ok(ConnectorAccount {
+            account_id: workspace_id,
+            provider: ConnectorProvider::Linear,
+            email: identity.user_email.clone(),
+            scopes: granted_scopes,
+            status: ConnectorAccountStatus::Connected,
+            workspace_name: Some(identity.workspace_name.clone()).filter(|name| !name.is_empty()),
+            workspace_url_key: Some(identity.workspace_url_key.clone()).filter(|key| !key.is_empty()),
+            selected_teams,
         })
-        .collect();
-    flow.ensure_not_canceled("Linear")?;
+    }
+    .await;
 
-    // The old bearer must stop owning a live hosted MCP session before the
-    // replacement credential becomes eligible for discovery or dispatch.
-    lifecycle.bump_epoch();
-    crate::agent_mcp::retire_server_sessions(crate::agent_mcp::MANAGED_LINEAR_SERVER_ID).await;
-    flow.ensure_not_canceled("Linear")?;
-    store::store_tokens(ConnectorProvider::Linear, &workspace_id, &tokens).await?;
-    if let Err(canceled) = flow.ensure_not_canceled("Linear") {
-        if let Err(error) = restore_linear_connect_state(
-            &repos,
-            &workspace_id,
-            previous_tokens.as_ref(),
-            previous_record.as_ref(),
-            &retry_account,
-        )
-        .await
-        {
-            tracing::error!(
-                error_code = %error.code,
-                "failed to restore Linear state after canceled credential write"
-            );
-            if error.code == "connector_connect_rollback_failed" {
-                emit_connectors_changed(app);
-                return Err(error);
+    match result {
+        Ok(account) => Ok(account),
+        Err(error) => {
+            if linear::revoke_unpersisted_grant(&grant.tokens).await {
+                Err(error)
+            } else {
+                Err(linear::unpersisted_grant_cleanup_failed())
             }
         }
-        emit_connectors_changed(app);
-        return Err(canceled);
     }
-
-    if let Err(error) = repos
-        .upsert_connector_account(
-            &workspace_id,
-            ConnectorProvider::Linear.as_str(),
-            &identity.user_email,
-            &granted_scopes,
-            ConnectorAccountStatus::Connected.as_str(),
-            &metadata_json,
-        )
-        .await
-    {
-        let connect_error = AppError::from(error);
-        if let Err(rollback_error) = restore_linear_connect_state(
-            &repos,
-            &workspace_id,
-            previous_tokens.as_ref(),
-            previous_record.as_ref(),
-            &retry_account,
-        )
-        .await
-        {
-            tracing::error!(
-                error_code = %rollback_error.code,
-                "failed to restore Linear state after account persistence error"
-            );
-            if rollback_error.code == "connector_connect_rollback_failed" {
-                emit_connectors_changed(app);
-                return Err(rollback_error);
-            }
-        }
-        emit_connectors_changed(app);
-        return Err(connect_error);
-    }
-    if let Err(canceled) = flow.complete_operation("Linear") {
-        if let Err(error) = restore_linear_connect_state(
-            &repos,
-            &workspace_id,
-            previous_tokens.as_ref(),
-            previous_record.as_ref(),
-            &retry_account,
-        )
-        .await
-        {
-            tracing::error!(
-                error_code = %error.code,
-                "failed to restore Linear state after canceled account write"
-            );
-            if error.code == "connector_connect_rollback_failed" {
-                emit_connectors_changed(app);
-                return Err(error);
-            }
-        }
-        emit_connectors_changed(app);
-        return Err(canceled);
-    }
-    emit_connectors_changed(app);
-
-    Ok(ConnectorAccount {
-        account_id: workspace_id,
-        provider: ConnectorProvider::Linear,
-        email: identity.user_email,
-        scopes: granted_scopes,
-        status: ConnectorAccountStatus::Connected,
-        workspace_name: Some(identity.workspace_name).filter(|name| !name.is_empty()),
-        workspace_url_key: Some(identity.workspace_url_key).filter(|key| !key.is_empty()),
-        selected_teams,
-    })
 }
 
 /// The non-secret metadata blob persisted on a GitHub account row. Keys are
@@ -1849,6 +1863,19 @@ where
     account_cleanup.await
 }
 
+fn tokens_can_revoke_provider(
+    provider: ConnectorProvider,
+    tokens: &store::StoredConnectorTokens,
+) -> bool {
+    match provider {
+        ConnectorProvider::Google | ConnectorProvider::Linear => {
+            !tokens.refresh_token.is_empty() || !tokens.access_token.is_empty()
+        }
+        ConnectorProvider::Github => !tokens.access_token.is_empty(),
+        ConnectorProvider::Notion => false,
+    }
+}
+
 pub async fn disconnect(
     app: &tauri::AppHandle,
     account_id: &str,
@@ -1903,10 +1930,27 @@ pub async fn disconnect(
     // while refresh and disconnect are serialized. Remote revoke requests
     // remain outside both local lifecycle locks.
     let mut revoke_tokens = Vec::new();
+    let mut provider_revocation_confirmed = None;
     if revoke_grant {
         for &provider in providers {
-            if let Ok(Some(stored)) = store::load_tokens(provider, account_id).await {
-                revoke_tokens.push((provider, stored));
+            match store::load_tokens(provider, account_id).await {
+                Ok(Some(stored)) if tokens_can_revoke_provider(provider, &stored) => {
+                    revoke_tokens.push((provider, stored));
+                }
+                Ok(Some(_)) => {
+                    provider_revocation_confirmed =
+                        merge_revocation_confirmation(provider_revocation_confirmed, Some(false));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        provider = provider.as_str(),
+                        error_code = %error.code,
+                        "connector token capture failed before provider revocation"
+                    );
+                    provider_revocation_confirmed =
+                        merge_revocation_confirmation(provider_revocation_confirmed, Some(false));
+                }
             }
         }
     }
@@ -1935,7 +1979,6 @@ pub async fn disconnect(
     drop(linear_lifecycle);
     emit_connectors_changed(app);
 
-    let mut provider_revocation_confirmed = None;
     if revoke_grant {
         for (provider, stored) in revoke_tokens {
             let confirmed = match provider {
@@ -2551,6 +2594,42 @@ mod tests {
             merge_revocation_confirmation(Some(false), Some(true)),
             Some(false)
         );
+    }
+
+    #[test]
+    fn provider_revocation_requires_a_usable_captured_token() {
+        let tokens = |access_token: &str, refresh_token: &str| store::StoredConnectorTokens {
+            access_token: access_token.to_string(),
+            refresh_token: refresh_token.to_string(),
+            expires_at_unix: 0,
+            scopes: Vec::new(),
+            email: String::new(),
+        };
+
+        assert!(tokens_can_revoke_provider(
+            ConnectorProvider::Google,
+            &tokens("", "google-refresh"),
+        ));
+        assert!(tokens_can_revoke_provider(
+            ConnectorProvider::Linear,
+            &tokens("linear-access", ""),
+        ));
+        assert!(tokens_can_revoke_provider(
+            ConnectorProvider::Github,
+            &tokens("github-access", "ignored-refresh"),
+        ));
+        assert!(!tokens_can_revoke_provider(
+            ConnectorProvider::Github,
+            &tokens("", "ignored-refresh"),
+        ));
+        assert!(!tokens_can_revoke_provider(
+            ConnectorProvider::Linear,
+            &tokens("", ""),
+        ));
+        assert!(!tokens_can_revoke_provider(
+            ConnectorProvider::Notion,
+            &tokens("unused", "unused"),
+        ));
     }
 
     #[tokio::test]

@@ -196,7 +196,7 @@ pub async fn authorize(
     Ok(LinearAuthorizedGrant { tokens, identity })
 }
 
-async fn revoke_unpersisted_grant(tokens: &LinearTokenResponse) -> bool {
+pub(super) async fn revoke_unpersisted_grant(tokens: &LinearTokenResponse) -> bool {
     let mut confirmed = true;
     for (token, token_type_hint) in unpersisted_revocation_targets(tokens) {
         confirmed &= revoke(token, token_type_hint).await;
@@ -204,7 +204,7 @@ async fn revoke_unpersisted_grant(tokens: &LinearTokenResponse) -> bool {
     confirmed
 }
 
-fn unpersisted_grant_cleanup_failed() -> AppError {
+pub(super) fn unpersisted_grant_cleanup_failed() -> AppError {
     AppError::new(
         "connector_connect_cleanup_unconfirmed",
         "June stopped connecting, but could not confirm that Linear removed the new authorization. Remove June in Linear's authorized applications settings before trying again.",
