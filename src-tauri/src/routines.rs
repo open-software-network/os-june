@@ -175,8 +175,10 @@ fn resolve_routine_model(stored_model: &str, selected_model: &str) -> String {
         || stored_model == "auto"
         || stored_model == crate::providers::AUTO_GENERATION_MODEL
     {
-        // `open-software/auto` is itself a supported metered route. The shared
-        // agent proxy adds its cost-quality preference before calling June API.
+        // A Routine's stored Auto value resolves against the saved remote
+        // selection so unattended work stays on June's metered model route.
+        // `open-software/auto` is itself supported; the proxy adds its
+        // cost-quality preference before calling June API.
         let selected_model = selected_model.trim();
         if selected_model.is_empty() || selected_model == "auto" {
             crate::providers::AUTO_GENERATION_MODEL.to_string()
@@ -433,7 +435,7 @@ async fn claim_with_connector_guard(
     let run_id = Uuid::new_v4().to_string();
     let timestamp = now();
     let stored_model: String = routine.get("model");
-    let model = resolve_routine_model(&stored_model, &crate::providers::generation_model());
+    let model = resolve_routine_model(&stored_model, &crate::providers::remote_generation_model());
     let safety_mode = AgentSafetyMode::from(routine.get::<String, _>("safety_mode").as_str());
     let metadata = serde_json::from_str::<Value>(&routine.get::<String, _>("metadata_json"))
         .unwrap_or_else(|_| json!({}));
@@ -481,9 +483,18 @@ pub async fn claim_due(pool: &SqlitePool) -> Result<Vec<Claim>, AppError> {
     Ok(claims)
 }
 
-/// Reconciles terminal agent runs and releases abandoned queued claims after a
-/// restart. A still-running agent run remains claimed; an unstarted claim only
-/// becomes eligible again after a bounded lease expiry.
+async fn scheduler_tick(pool: &SqlitePool) -> Result<Vec<Claim>, AppError> {
+    // The terminal event path is best effort after the agent run is durable.
+    // Reconcile on every tick so a transient projection failure cannot retain
+    // a completed Routine's single-flight claim until the next app restart.
+    reconcile(pool).await?;
+    claim_due(pool).await
+}
+
+/// Reconciles terminal agent runs and releases abandoned queued claims during
+/// scheduler maintenance and restart recovery. A still-running agent run
+/// remains claimed; an unstarted claim only becomes eligible again after a
+/// bounded lease expiry.
 pub async fn reconcile(pool: &SqlitePool) -> Result<(), AppError> {
     let timestamp = now();
     let mut transaction = pool
@@ -697,7 +708,7 @@ pub fn start_scheduler(app: &AppHandle) {
             tracing::warn!(error_code = %error.code, "routine restart reconciliation failed");
         }
         loop {
-            match claim_due(&pool).await {
+            match scheduler_tick(&pool).await {
                 Ok(claims) => {
                     let host = app.state::<AgentRuntimeHost>();
                     for claim in claims {
@@ -1626,7 +1637,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_routine_model_resolves_to_the_selected_generation_model() {
+    fn automatic_routine_model_resolves_to_the_selected_remote_model() {
         for stored_model in ["", "auto", crate::providers::AUTO_GENERATION_MODEL] {
             assert_eq!(
                 resolve_routine_model(stored_model, "kimi-k2-6"),
@@ -1878,7 +1889,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claimed_run_snapshots_the_resolved_model_and_safety_mode() {
+    async fn claimed_run_snapshots_the_resolved_remote_model_and_safety_mode() {
         let pool = pool().await;
         let mut request = create_request("every 1h");
         request.model = "auto".into();
@@ -1888,14 +1899,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(claim.model, crate::providers::generation_model());
+        assert_eq!(claim.model, crate::providers::remote_generation_model());
         assert_eq!(claim.safety_mode, AgentSafetyMode::Unrestricted);
         let run = list_runs(&pool, Some("routine-1"))
             .await
             .unwrap()
             .pop()
             .unwrap();
-        assert_eq!(run.model, crate::providers::generation_model());
+        assert_eq!(run.model, crate::providers::remote_generation_model());
         assert_eq!(run.safety_mode, AgentSafetyMode::Unrestricted);
         let tools = base_unattended_tools().to_string();
         assert!(!tools.contains("computer_use"));
@@ -2115,6 +2126,52 @@ mod tests {
                 .unwrap()
                 .get("claim_token");
         assert_eq!(claim_token.as_deref(), Some(claimed.token.as_str()));
+    }
+
+    #[tokio::test]
+    async fn scheduler_tick_retries_a_missed_terminal_projection() {
+        let pool = pool().await;
+        create(&pool, create_request("every 1h")).await.unwrap();
+        let claimed = claim(&pool, "routine-1", "manual", false)
+            .await
+            .unwrap()
+            .unwrap();
+        query("INSERT INTO agent_sessions (id) VALUES ('session-retry')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO agent_runs
+             (id, status, completed_at)
+             VALUES ('run-retry', 'completed', '2026-07-28T08:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        attach_run_mapping(
+            &pool,
+            &claimed.routine_run_id,
+            &claimed.token,
+            "session-retry",
+            "run-retry",
+            &now(),
+        )
+        .await
+        .unwrap();
+
+        assert!(scheduler_tick(&pool).await.unwrap().is_empty());
+
+        let run = list_runs(&pool, Some("routine-1")).await.unwrap().remove(0);
+        assert_eq!(run.status, "completed");
+        let routine = get(&pool, "routine-1").await.unwrap();
+        assert_eq!(routine.last_status.as_deref(), Some("ok"));
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .get("claim_token");
+        assert_eq!(claim_token, None);
     }
 
     #[tokio::test]
