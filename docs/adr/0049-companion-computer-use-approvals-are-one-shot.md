@@ -187,3 +187,13 @@ fit the companion contract. A prefix is not a truthful representation of the
 proposed destination. If any field exceeds its protocol byte limit, Desktop
 returns a typed routing failure, publishes no remote approval request, and
 leaves the durable interruption available for desktop-local approval.
+
+## 2026-07-28 addendum: permit consumption is decision-scoped
+
+The host tool dispatch carries the matching request and stored session
+identity into the Computer use broker without activating an action-wide
+approval scope. The broker consumes the registry permit only when the first
+previously unauthorized app reaches `ensure_app_authorized`. That explicit
+permit object disables itself before the registry lookup, so any second
+authorization decision within the same Computer use action follows the normal
+desktop-local approval path.

@@ -2496,14 +2496,34 @@ fn emit_approvals_changed(app: &AppHandle, state: &ComputerUseState) {
     );
 }
 
-tokio::task_local! {
-    static COMPANION_REMOTE_APPROVAL: bool;
+#[derive(Debug)]
+struct CompanionAuthorizationPermit {
+    stored_session_id: String,
+    request_id: String,
+    available: AtomicBool,
 }
 
-fn companion_remote_approval_active() -> bool {
-    COMPANION_REMOTE_APPROVAL
-        .try_with(|approved| *approved)
-        .unwrap_or(false)
+impl CompanionAuthorizationPermit {
+    fn new(stored_session_id: &str, request_id: &str) -> Self {
+        Self {
+            stored_session_id: stored_session_id.to_string(),
+            request_id: request_id.to_string(),
+            available: AtomicBool::new(true),
+        }
+    }
+
+    fn consume_with(&self, consume: impl FnOnce(&str, &str) -> bool) -> bool {
+        if !self.available.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        consume(&self.stored_session_id, &self.request_id)
+    }
+
+    fn consume_for_authorization(&self, app: &AppHandle) -> bool {
+        self.consume_with(|stored_session_id, request_id| {
+            crate::companion::take_computer_use_remote_permit(app, stored_session_id, request_id)
+        })
+    }
 }
 
 pub(crate) async fn handle_proxy_action_for_call(
@@ -2512,17 +2532,18 @@ pub(crate) async fn handle_proxy_action_for_call(
     stored_session_id: &str,
     call_id: Option<&str>,
 ) -> Value {
-    let remote_approval = call_id.is_some_and(|request_id| {
-        crate::companion::take_computer_use_remote_permit(app, stored_session_id, request_id)
-    });
-    COMPANION_REMOTE_APPROVAL
-        .scope(remote_approval, handle_proxy_action_inner(app, arguments))
-        .await
+    let companion_permit =
+        call_id.map(|request_id| CompanionAuthorizationPermit::new(stored_session_id, request_id));
+    handle_proxy_action_inner(app, arguments, companion_permit.as_ref()).await
 }
 
-async fn handle_proxy_action_inner(app: &AppHandle, arguments: Value) -> Value {
+async fn handle_proxy_action_inner(
+    app: &AppHandle,
+    arguments: Value,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
+) -> Value {
     let state = app.state::<ComputerUseState>();
-    match handle_action(app, &state, arguments).await {
+    match handle_action(app, &state, arguments, companion_permit).await {
         Ok(result) => result,
         Err(error) => mcp_error(&error.message),
     }
@@ -2549,6 +2570,7 @@ async fn handle_action(
     app: &AppHandle,
     state: &ComputerUseState,
     arguments: Value,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<Value, AppError> {
     let _operation = state.operation.lock().await;
     let epoch = state.epoch.load(Ordering::SeqCst);
@@ -2584,7 +2606,17 @@ async fn handle_action(
     }
     crate::computer_use_cursor::show(app, epoch);
     match action.as_str() {
-        "capture" => capture(app, state, &arguments, Some(epoch), task_generation).await,
+        "capture" => {
+            capture(
+                app,
+                state,
+                &arguments,
+                Some(epoch),
+                task_generation,
+                companion_permit,
+            )
+            .await
+        }
         "list_apps" => list_apps(app, state, Some(epoch)).await,
         "wait" => {
             let seconds = arguments
@@ -2600,10 +2632,41 @@ async fn handle_action(
                 json!({ "ok": true, "action": "wait", "seconds": seconds }),
             ))
         }
-        "open_app" => open_app(app, state, &arguments, epoch, task_generation).await,
-        "focus_app" => focus_app(app, state, &arguments, epoch, task_generation).await,
+        "open_app" => {
+            open_app(
+                app,
+                state,
+                &arguments,
+                epoch,
+                task_generation,
+                companion_permit,
+            )
+            .await
+        }
+        "focus_app" => {
+            focus_app(
+                app,
+                state,
+                &arguments,
+                epoch,
+                task_generation,
+                companion_permit,
+            )
+            .await
+        }
         "click" | "double_click" | "right_click" | "drag" | "scroll" | "type" | "key"
-        | "set_value" => mutate(app, state, &action, &arguments, epoch, task_generation).await,
+        | "set_value" => {
+            mutate(
+                app,
+                state,
+                &action,
+                &arguments,
+                epoch,
+                task_generation,
+                companion_permit,
+            )
+            .await
+        }
         // The allowlist above should make this unreachable; if the two ever
         // drift, fail the action instead of panicking an attended task.
         _ => Err(AppError::new(
@@ -3190,6 +3253,7 @@ async fn capture(
     arguments: &Value,
     expected_epoch: Option<u64>,
     task_generation: u64,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<Value, AppError> {
     let epoch = expected_epoch.unwrap_or_else(|| state.epoch.load(Ordering::SeqCst));
     let windows = windows(app, state, expected_epoch).await?;
@@ -3205,6 +3269,7 @@ async fn capture(
         &target.app_name,
         epoch,
         task_generation,
+        companion_permit,
     )
     .await?;
     if newly_authorized {
@@ -3449,13 +3514,14 @@ async fn ensure_app_authorized(
     target_app: &str,
     epoch: u64,
     task_generation: u64,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<bool, AppError> {
     ensure_task_generation_current(state, task_generation)?;
     if app_is_authorized(state, &key)? {
         return Ok(false);
     }
 
-    if companion_remote_approval_active() {
+    if companion_permit.is_some_and(|permit| permit.consume_for_authorization(app)) {
         recheck_after_approval(app, state, epoch, task_generation).await?;
         return Ok(false);
     }
@@ -3509,6 +3575,7 @@ async fn open_app(
     arguments: &Value,
     epoch: u64,
     task_generation: u64,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<Value, AppError> {
     let requested_name = open_app_name(arguments)?;
     let requested_key = requested_app_authorization(&requested_name);
@@ -3529,6 +3596,7 @@ async fn open_app(
             &requested_name,
             epoch,
             task_generation,
+            companion_permit,
         )
         .await?;
         true
@@ -3587,6 +3655,7 @@ async fn open_app(
                 reported_name,
                 epoch,
                 task_generation,
+                companion_permit,
             )
             .await?;
         }
@@ -3660,6 +3729,7 @@ async fn focus_app(
     arguments: &Value,
     epoch: u64,
     task_generation: u64,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<Value, AppError> {
     let raise_window = arguments
         .get("raise_window")
@@ -3686,6 +3756,7 @@ async fn focus_app(
         &target.app_name,
         epoch,
         task_generation,
+        companion_permit,
     )
     .await?;
     if newly_authorized {
@@ -3719,6 +3790,7 @@ async fn mutate(
     arguments: &Value,
     epoch: u64,
     task_generation: u64,
+    companion_permit: Option<&CompanionAuthorizationPermit>,
 ) -> Result<Value, AppError> {
     let target = state
         .target
@@ -3744,6 +3816,7 @@ async fn mutate(
         &target.app_name,
         epoch,
         task_generation,
+        companion_permit,
     )
     .await?;
     revalidate_target(app, state, action, arguments, &target, epoch).await?;
@@ -3767,6 +3840,7 @@ async fn mutate(
             }),
             Some(epoch),
             task_generation,
+            companion_permit,
         )
         .await
         .map(|mut capture| {
@@ -4971,15 +5045,22 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    #[tokio::test]
-    async fn companion_approval_scope_is_one_invocation_and_defaults_off() {
-        assert!(!companion_remote_approval_active());
-        COMPANION_REMOTE_APPROVAL
-            .scope(true, async {
-                assert!(companion_remote_approval_active());
-            })
-            .await;
-        assert!(!companion_remote_approval_active());
+    #[test]
+    fn companion_permit_does_not_leak_to_a_second_decision_in_one_action() {
+        let permit = CompanionAuthorizationPermit::new("session-1", "call-1");
+        let decision_count = std::sync::atomic::AtomicUsize::new(0);
+
+        assert!(permit.consume_with(|stored_session_id, request_id| {
+            assert_eq!(stored_session_id, "session-1");
+            assert_eq!(request_id, "call-1");
+            decision_count.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        assert!(!permit.consume_with(|_, _| {
+            decision_count.fetch_add(1, Ordering::SeqCst);
+            true
+        }));
+        assert_eq!(decision_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
