@@ -1468,8 +1468,35 @@ async fn run_params(
     crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
+    let skill_catalog = agent_skill_catalog(app, repository).await?;
+    let skill_lookup: HashMap<String, Value> = skill_catalog
+        .into_iter()
+        .filter_map(|skill| {
+            let id = skill
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)?;
+            Some((id, skill))
+        })
+        .collect();
+    let skills = request
+        .skills
+        .iter()
+        .map(|name| {
+            let entry = skill_lookup.get(name);
+            let description = entry
+                .and_then(|skill| skill.get("description").and_then(Value::as_str))
+                .unwrap_or("June agent skill")
+                .to_string();
+            let source = entry
+                .and_then(|skill| skill.get("source").and_then(Value::as_str))
+                .unwrap_or("managed")
+                .to_string();
+            json!({ "name": name, "description": description, "source": source })
+        })
+        .collect::<Vec<_>>();
     Ok(
-        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
+        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": skills, "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
     )
 }
 

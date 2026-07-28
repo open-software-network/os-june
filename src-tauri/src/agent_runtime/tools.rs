@@ -1273,6 +1273,59 @@ fn skill_roots(app: &AppHandle) -> Vec<PathBuf> {
     roots
 }
 
+/// Seeds bundled agent skills (packaged as Tauri resources) into the managed
+/// skill directory. Copies only when the managed destination is absent so user
+/// edits and enable/disable settings are preserved across app launches.
+pub fn seed_bundled_skills(app: &AppHandle) {
+    let Some(managed_root) = crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|path| path.join("agents").join("skills"))
+    else {
+        return;
+    };
+    let resource_root = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("native").join("agent-skills"));
+    let debug_root = std::env::var("CARGO_MANIFEST_DIR")
+        .ok()
+        .map(|manifest| PathBuf::from(manifest).join("resources").join("agent-skills"));
+    let source_root = resource_root.or(debug_root);
+    let Some(source_root) = source_root else {
+        tracing::warn!("could not resolve bundled agent-skills resource directory");
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&source_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let skill_file = entry.path().join("SKILL.md");
+        if !skill_file.is_file() {
+            continue;
+        }
+        let skill_id = entry.file_name().to_string_lossy().into_owned();
+        let dest_dir = managed_root.join(&skill_id);
+        let dest_file = dest_dir.join("SKILL.md");
+        if dest_file.is_file() {
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(&dest_dir) {
+            tracing::warn!(?error, skill = %skill_id, "could not create managed skill directory");
+            continue;
+        }
+        let temp = dest_dir.join(".SKILL.md.tmp");
+        if let Err(error) = std::fs::copy(&skill_file, &temp) {
+            tracing::warn!(?error, skill = %skill_id, "could not copy bundled skill");
+            continue;
+        }
+        if let Err(error) = std::fs::rename(&temp, &dest_file) {
+            tracing::warn!(?error, skill = %skill_id, "could not finalize bundled skill");
+            let _ = std::fs::remove_file(&temp);
+        }
+    }
+}
+
 pub(crate) fn sandbox_profile(workspace: &Path) -> String {
     let escaped = workspace.to_string_lossy().replace('"', "\\\"");
     format!("(version 1) (allow default) (deny file-write*) (allow file-write* (subpath \"{escaped}\")) (allow file-write* (subpath \"/private/tmp\"))")

@@ -426,6 +426,7 @@ pub fn run() {
         .manage(connectors::NotionConnectFlow::default())
         .setup(|app| {
             browser::setup_on_app_start();
+            agent_runtime::tools::seed_bundled_skills(app.handle());
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             experimental_settings::setup(app)?;
