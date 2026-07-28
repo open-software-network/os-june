@@ -813,6 +813,9 @@ impl BrowseEntry {
     fn validate(&self) -> Result<(), ProtocolError> {
         validate_file_name(&self.name)?;
         validate_relative_path(&self.relative_path, false)?;
+        if self.kind == BrowseEntryKind::Directory && self.size_bytes.is_some() {
+            return Err(ProtocolError::InvalidBrowseEntry);
+        }
         if self.size_bytes.is_some_and(|size| size > MAX_UPLOAD_BYTES) {
             return Err(ProtocolError::UploadTooLarge);
         }
@@ -1298,6 +1301,8 @@ pub enum ProtocolError {
     InvalidUploadChunk,
     #[error("attachment references are invalid or exceed the supported count")]
     InvalidAttachmentReferences,
+    #[error("browse entry metadata is invalid")]
+    InvalidBrowseEntry,
     #[error("file name is invalid")]
     InvalidFileName,
     #[error("media type is invalid")]
@@ -2130,6 +2135,24 @@ mod tests {
                 Err(ProtocolError::InvalidRelativePath)
             ));
         }
+    }
+
+    #[test]
+    fn directory_browse_entries_require_a_null_size() {
+        let mut directory = BrowseEntry {
+            name: "briefs".to_string(),
+            relative_path: "Project/briefs".to_string(),
+            kind: BrowseEntryKind::Directory,
+            size_bytes: None,
+            modified_at: Some("2026-07-28T12:00:00Z".to_string()),
+        };
+        directory.validate().unwrap();
+
+        directory.size_bytes = Some(0);
+        assert!(matches!(
+            directory.validate(),
+            Err(ProtocolError::InvalidBrowseEntry)
+        ));
     }
 
     #[test]
