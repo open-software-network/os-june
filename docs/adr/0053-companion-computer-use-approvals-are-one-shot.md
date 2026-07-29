@@ -260,3 +260,15 @@ This remains backward compatible: a client that does not send the receipt can
 still approve or deny a request it actually received, but its absence cannot
 cause Desktop to deny a durable Mac interruption. A receipt arriving after the
 published deadline fails closed as expired.
+
+## 2026-07-29 addendum: audit commits with the visible resolution
+
+The linked-device audit receipt is inserted in the same SQLite transaction that
+changes the durable interruption from pending to resolved. A failure while
+preparing the workspace, model, run configuration, host, or persistence
+therefore leaves both the interruption and its audit receipt absent from the
+decision history, so a later valid decision cannot disagree with an abandoned
+attempt. Once that transaction commits, a sidecar resume failure may restore
+the visible interruption while retaining the receipt, as documented above:
+the authenticated decision did commit, remote authority is retired, and any
+later action is desktop-local.

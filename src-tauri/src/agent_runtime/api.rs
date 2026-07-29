@@ -1003,21 +1003,6 @@ async fn resolve_agent_interruption_inner(
         }
     };
     let resolved_at = chrono::Utc::now().to_rfc3339();
-    if let InterruptionResolutionOrigin::Companion(
-        crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
-    ) = &origin
-    {
-        crate::commands::repositories(app)
-            .await?
-            .record_companion_computer_use_approval_decision(
-                device_id,
-                &request.interruption_id,
-                companion_session_id.as_deref().unwrap_or(&session_id),
-                if approved { "approve" } else { "deny" },
-                &resolved_at,
-            )
-            .await?;
-    }
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
@@ -1164,6 +1149,20 @@ async fn resolve_agent_interruption_inner(
                 "agent_interruption_expired",
                 "This interruption can no longer be resumed.",
             ));
+        }
+        if let InterruptionResolutionOrigin::Companion(
+            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+        ) = &origin
+        {
+            crate::db::repositories::Repositories::record_companion_computer_use_approval_decision_in_transaction(
+                &mut transaction,
+                device_id,
+                &request.interruption_id,
+                companion_session_id.as_deref().unwrap_or(&session_id),
+                if approved { "approve" } else { "deny" },
+                &resolved_at,
+            )
+            .await?;
         }
         transaction.commit().await?;
         Ok(())
