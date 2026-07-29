@@ -1359,17 +1359,13 @@ fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec
         _ => Vec::new(),
     };
 
-    // Sandboxed routine catalogs created before read-only skill loading omit
-    // only `skills`. Upgrade those snapshots at run time so an existing routine
-    // benefits without needing a no-op edit and save. Memory was optional, so
-    // it is not part of the historical-base fingerprint. Explicit-empty and
-    // imported catalogs remain unchanged.
-    let previous_sandbox_base = ["web", "vision", "todo", "session_search", "context_engine"];
-    if (!imported_catalog
-        && ((legacy_catalog && !has_explicit_catalog)
-            || previous_sandbox_base
-                .iter()
-                .all(|required| toolsets.iter().any(|toolset| toolset == required))))
+    // Only rows durably marked as pre-catalog may gain a toolset that was not
+    // explicitly saved. A current explicit catalog can match an old default
+    // exactly, so inferring its provenance from the selected entries would
+    // override a user's decision to keep skills disabled.
+    if !imported_catalog
+        && legacy_catalog
+        && !has_explicit_catalog
         && !toolsets.iter().any(|toolset| toolset == "skills")
     {
         toolsets.push("skills".to_string());
@@ -2002,7 +1998,7 @@ mod tests {
     }
 
     #[test]
-    fn old_sandbox_catalogs_gain_only_read_only_skill_loading() {
+    fn explicit_sandbox_catalogs_preserve_disabled_skill_loading() {
         let metadata = json!({
             "enabledToolsets": [
                 "web",
@@ -2016,7 +2012,7 @@ mod tests {
         });
 
         let toolsets = enabled_toolsets_from_metadata(&metadata, false);
-        assert!(toolsets.iter().any(|toolset| toolset == "skills"));
+        assert!(!toolsets.iter().any(|toolset| toolset == "skills"));
         assert!(toolsets.iter().any(|toolset| toolset == "june_notion"));
         assert!(!toolsets
             .iter()
@@ -2024,7 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn old_sandbox_catalogs_without_memory_gain_skill_loading() {
+    fn explicit_sandbox_catalogs_without_memory_preserve_disabled_skills() {
         let metadata = json!({
             "enabledToolsets": [
                 "web",
@@ -2036,7 +2032,7 @@ mod tests {
         });
 
         let toolsets = enabled_toolsets_from_metadata(&metadata, false);
-        assert!(toolsets.iter().any(|toolset| toolset == "skills"));
+        assert!(!toolsets.iter().any(|toolset| toolset == "skills"));
         assert!(!toolsets.iter().any(|toolset| toolset == "memory"));
     }
 
