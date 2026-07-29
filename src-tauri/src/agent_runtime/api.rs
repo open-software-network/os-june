@@ -666,12 +666,8 @@ pub async fn cancel_agent_run(
     let run = repository.get_run(&run_id).await?;
     if run.status == "waiting_for_user" {
         repository.cancel_waiting_run(&run.id).await?;
-        if let Err(error) =
-            crate::routines::mark_agent_run_terminal(&repository.pool, &run.id).await
-        {
-            tracing::warn!(agent_run_id = %run.id, error_code = %error.code, "routine waiting-run cancellation projection failed");
-        }
         crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
+        crate::routines::mark_agent_run_terminal(&repository.pool, &run.id).await?;
         return Ok(());
     }
     host.request("run.cancel", &run.session_id, &run.id, json!({}))

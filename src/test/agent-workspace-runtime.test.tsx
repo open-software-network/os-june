@@ -1912,6 +1912,10 @@ describe("AgentWorkspace runtime wiring", () => {
       status: "waiting_for_user",
     };
     let cancelled = false;
+    let finishCancellation: (() => void) | undefined;
+    const cancellation = new Promise<void>((resolve) => {
+      finishCancellation = resolve;
+    });
     const interruption = () => ({
       id: "clarify-item",
       sessionId: session.id,
@@ -1963,8 +1967,9 @@ describe("AgentWorkspace runtime wiring", () => {
         });
       }
       if (command === "cancel_agent_run") {
-        cancelled = true;
-        return Promise.resolve();
+        return cancellation.then(() => {
+          cancelled = true;
+        });
       }
       return Promise.resolve(undefined);
     });
@@ -1975,7 +1980,14 @@ describe("AgentWorkspace runtime wiring", () => {
     const composer = screen.getByRole("textbox", { name: "Message June" });
     await user.type(composer, "Continue from here");
     expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Stop June" }));
+    const stopButton = screen.getByRole("button", { name: "Stop June" });
+    await user.click(stopButton);
+    expect(stopButton).toBeDisabled();
+    fireEvent.click(stopButton);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "cancel_agent_run"),
+    ).toHaveLength(1);
+    finishCancellation?.();
 
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("cancel_agent_run", { runId: "run-waiting" }),
