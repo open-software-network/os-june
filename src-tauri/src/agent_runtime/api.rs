@@ -1431,7 +1431,7 @@ async fn resolve_agent_interruption_inner(
             if let Some(secret_ref) = created_secret_ref.as_deref() {
                 let _ = super::secrets::delete(secret_ref).await;
             }
-            return Err(error.into());
+            return Err(error);
         }
     };
     if !claimed {
