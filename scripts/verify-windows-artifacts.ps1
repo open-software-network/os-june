@@ -67,7 +67,7 @@ try {
   }
 
   $app = Require-One "os-june.exe"
-  $null = Require-One "WebView2Loader.dll"
+  # The MSVC target statically links WebView2Loader; only GNU builds ship its DLL.
   $runtime = Require-One "june-agent-runtime.exe"
   $checksum = Require-One "june-agent-runtime.exe.sha256"
   $helper = Require-One "june-dictation-helper.exe"
