@@ -41,6 +41,7 @@ const PAIRING_TTL_MS: u64 = 5 * 60 * 1_000;
 const MAX_DEVICE_NAME_BYTES: usize = 128;
 const OUTBOUND_QUEUE_CAPACITY: usize = 64;
 const MAX_MESSAGES_PER_MINUTE: usize = 120;
+const RELAY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 const MIN_APNS_TOKEN_BYTES: usize = 16;
 const MAX_APNS_TOKEN_BYTES: usize = 256;
 const APNS_WAKE_COOLDOWN: Duration = Duration::from_secs(30);
@@ -564,8 +565,14 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
         return;
     };
     let (mut sender, mut receiver) = socket.split();
+    let mut heartbeat = tokio::time::interval(RELAY_HEARTBEAT_INTERVAL);
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat.tick().await;
     loop {
         tokio::select! {
+            _ = heartbeat.tick() => {
+                if sender.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+            }
             outbound_message = outbound.recv() => {
                 let Some(outbound_message) = outbound_message else { break };
                 let message = outbound_websocket_message(outbound_message);
