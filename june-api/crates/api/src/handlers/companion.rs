@@ -230,6 +230,33 @@ struct Connection {
     outbound: mpsc::Sender<Outbound>,
 }
 
+#[derive(Default)]
+struct RelayHeartbeat {
+    next_sequence: u64,
+    awaiting_pong: Option<[u8; size_of::<u64>()]>,
+}
+
+impl RelayHeartbeat {
+    fn next_ping(&mut self) -> Option<[u8; size_of::<u64>()]> {
+        if self.awaiting_pong.is_some() {
+            return None;
+        }
+        let payload = self.next_sequence.to_be_bytes();
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.awaiting_pong = Some(payload);
+        Some(payload)
+    }
+
+    fn receive_pong(&mut self, payload: &[u8]) {
+        if self
+            .awaiting_pong
+            .is_some_and(|expected| expected.as_slice() == payload)
+        {
+            self.awaiting_pong = None;
+        }
+    }
+}
+
 enum Outbound {
     Ciphertext(Vec<u8>),
     Revoked,
@@ -568,10 +595,12 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
     let mut heartbeat = tokio::time::interval(RELAY_HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     heartbeat.tick().await;
+    let mut heartbeat_state = RelayHeartbeat::default();
     loop {
         tokio::select! {
             _ = heartbeat.tick() => {
-                if sender.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                let Some(payload) = heartbeat_state.next_ping() else { break };
+                if sender.send(Message::Ping(payload.to_vec().into())).await.is_err() { break; }
             }
             outbound_message = outbound.recv() => {
                 let Some(outbound_message) = outbound_message else { break };
@@ -588,7 +617,10 @@ async fn relay_connection(state: ApiState, user_id: UserId, device_id: Uuid, soc
                         if sender.send(Message::Pong(payload)).await.is_err() { break; }
                         continue;
                     }
-                    Message::Pong(_) => continue,
+                    Message::Pong(payload) => {
+                        heartbeat_state.receive_pong(&payload);
+                        continue;
+                    }
                 };
                 if !state.companion().allow_relay_message(device_id) { break; }
                 if bytes.len() > MAX_RELAY_ENVELOPE_BYTES { break; }
@@ -2057,6 +2089,27 @@ RIka62gMy7ZimPaKaOpY0TuAiZjxiQ7MsSwyGrt766jyZ3XWBg3s4tWO";
 
         relay.disconnect(desktop, stale_connection_id);
         assert!(relay.connect(&user(), desktop).is_ok());
+    }
+
+    #[test]
+    fn relay_heartbeat_expires_when_a_pong_is_missing() {
+        let mut heartbeat = RelayHeartbeat::default();
+
+        assert!(heartbeat.next_ping().is_some());
+        assert!(heartbeat.next_ping().is_none());
+    }
+
+    #[test]
+    fn relay_heartbeat_accepts_only_the_matching_pong() {
+        let mut heartbeat = RelayHeartbeat::default();
+        let first_ping = heartbeat.next_ping().unwrap();
+        let wrong_pong = 1_u64.to_be_bytes();
+
+        heartbeat.receive_pong(&wrong_pong);
+        assert_eq!(heartbeat.awaiting_pong, Some(first_ping));
+
+        heartbeat.receive_pong(&first_ping);
+        assert_eq!(heartbeat.next_ping(), Some(wrong_pong));
     }
 
     #[tokio::test]
