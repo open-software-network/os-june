@@ -83,10 +83,13 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
   const generationRef = useRef(0);
   const sessionIdRef = useRef<string>();
   const activeSubmitRef = useRef<symbol>();
+  const selectedStoredModelRef = useRef(DEFAULT_MODEL);
   const applyStoredModel = useCallback((storedModel: string) => {
+    selectedStoredModelRef.current = storedModel;
     setModelState(agentModelSelection(storedModel).modelId || DEFAULT_MODEL);
   }, []);
   const setModel = useCallback((nextModel: string) => {
+    selectedStoredModelRef.current = nextModel;
     setModelState(nextModel);
     const sessionId = sessionIdRef.current;
     if (sessionId) rememberSessionModel(sessionId, nextModel);
@@ -119,6 +122,8 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
     activeSubmitRef.current = undefined;
     setStoredSessionId(rememberedSessionId);
     setProjection(createAgentRuntimeProjection());
+    selectedStoredModelRef.current = DEFAULT_MODEL;
+    setModelState(DEFAULT_MODEL);
     setError(null);
     setSubmissionPending(false);
     if (!rememberedSessionId) {
@@ -253,7 +258,7 @@ export function useNoteChat(note: NoteReferenceInput | null): NoteChat {
             items: [...existing.items, optimistic],
           }));
         }
-        const submittedModel = loadSessionModels()[session.id] ?? model;
+        const submittedModel = loadSessionModels()[session.id] ?? selectedStoredModelRef.current;
         const run = await agentRuntimeBindings.startRun({
           sessionId: session.id,
           prompt,
