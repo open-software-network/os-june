@@ -2,7 +2,7 @@
 //! and a linked June companion. Relay envelopes deliberately contain only
 //! routing metadata and ciphertext.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::collections::HashSet;
 use thiserror::Error;
 use uuid::Uuid;
@@ -63,6 +63,20 @@ pub enum Capability {
     ComputerUseApprove,
 }
 
+fn deserialize_peer_capabilities<'de, D>(deserializer: D) -> Result<Vec<Capability>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let names = Vec::<String>::deserialize(deserializer)?;
+    if names.len() > MAX_PEER_CAPABILITIES {
+        return Err(D::Error::custom("too many peer capabilities"));
+    }
+    Ok(names
+        .into_iter()
+        .filter_map(|name| serde_json::from_value(serde_json::Value::String(name)).ok())
+        .collect())
+}
+
 /// Optional authenticated Noise-handshake payload sent by a linked device.
 ///
 /// An empty handshake payload remains valid for older companions and means
@@ -70,7 +84,7 @@ pub enum Capability {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PeerHello {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_peer_capabilities")]
     pub capabilities: Vec<Capability>,
 }
 
@@ -1554,6 +1568,22 @@ mod tests {
             encode_peer_hello(&duplicate),
             Err(ProtocolError::InvalidCapabilities)
         ));
+
+        let future = br#"{"capabilities":["agentRead","futureCapability","computerUseApprove"]}"#;
+        assert_eq!(
+            decode_peer_hello(future).unwrap(),
+            PeerHello {
+                capabilities: vec![Capability::AgentRead, Capability::ComputerUseApprove],
+            }
+        );
+
+        let too_many_unknown = serde_json::to_vec(&serde_json::json!({
+            "capabilities": (0..=MAX_PEER_CAPABILITIES)
+                .map(|index| format!("futureCapability{index}"))
+                .collect::<Vec<_>>()
+        }))
+        .unwrap();
+        assert!(decode_peer_hello(&too_many_unknown).is_err());
     }
 
     #[test]

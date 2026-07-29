@@ -36,6 +36,9 @@ The linked device may put a bounded `PeerHello` JSON payload in its first Noise
 handshake message. Its `capabilities` array advertises optional event and
 response features that this app build can actually handle. An empty payload
 remains valid for older clients and advertises no optional capabilities.
+Unknown capability strings are ignored within the bounded array so a newer
+version-1 peer can add an optional feature without disabling capabilities both
+peers already understand.
 Desktop records the declaration only after the Noise static identity
 authenticates and clears it when that peer session or relay connection ends.
 
