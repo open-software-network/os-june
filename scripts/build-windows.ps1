@@ -13,12 +13,22 @@ $previousPrebuilt = $env:JUNE_AGENT_RUNTIME_PREBUILT
 $hadRuntimeTarget = Test-Path Env:JUNE_AGENT_RUNTIME_TARGET
 $previousRuntimeTarget = $env:JUNE_AGENT_RUNTIME_TARGET
 $previousPath = $env:PATH
+$mutexPath = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd([char[]]"\/").ToUpperInvariant()
+$mutexBytes = [System.Text.Encoding]::UTF8.GetBytes($mutexPath)
+$mutexHasher = [System.Security.Cryptography.SHA256]::Create()
+try { $mutexHash = [Convert]::ToHexString($mutexHasher.ComputeHash($mutexBytes)) }
+finally { $mutexHasher.Dispose() }
+$buildMutex = [System.Threading.Mutex]::new($false, "Local\JuneWindowsBuild-$mutexHash")
+$hasBuildMutex = $false
 
 function Require-Command([string]$Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "Required tool is unavailable: $Name" }
 }
 
 try {
+  try { $hasBuildMutex = $buildMutex.WaitOne(0) }
+  catch [System.Threading.AbandonedMutexException] { $hasBuildMutex = $true }
+  if (-not $hasBuildMutex) { throw "Another Windows build is active against this repository." }
   if ($PSVersionTable.PSVersion.Major -lt 7) { throw "PowerShell 7 or newer is required." }
   if (
     -not $IsWindows -or
@@ -108,10 +118,16 @@ try {
   Write-Host "Unsigned Windows installer: $stagedPath"
 }
 finally {
-  Set-Location -LiteralPath $callerLocation
-  $env:PATH = $previousPath
-  if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt }
-  else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
-  if ($hadRuntimeTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $previousRuntimeTarget }
-  else { Remove-Item Env:JUNE_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
+  try {
+    $env:PATH = $previousPath
+    if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt }
+    else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
+    if ($hadRuntimeTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $previousRuntimeTarget }
+    else { Remove-Item Env:JUNE_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
+    Set-Location -LiteralPath $callerLocation
+  }
+  finally {
+    if ($hasBuildMutex) { $buildMutex.ReleaseMutex() }
+    $buildMutex.Dispose()
+  }
 }

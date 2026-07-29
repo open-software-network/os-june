@@ -93,6 +93,34 @@ The Windows workflow performs the release steps in order:
     `latest.json` without removing macOS updater entries or the generated
     release changelog.
 
+## Qualifying an unsigned build on native Windows
+
+Before merging Windows build changes, run the tracked qualification helper in
+PowerShell 7 on a native x64 Windows machine. Pass the standalone repository,
+branch, and exact 40-character commit SHA to qualify:
+
+```powershell
+$repo = "E:\clones\work\os-june-butler"
+$branch = "<branch-to-qualify>"
+$expectedSha = "<exact-40-character-commit-sha>"
+
+& "$repo\scripts\qualify-windows-build.ps1" `
+  -RepoPath $repo `
+  -Branch $branch `
+  -ExpectedSha $expectedSha
+```
+
+The helper fetches `origin` and `upstream`, synchronizes the named GitButler
+branch to its remote state, and fails unless both resolve to the expected SHA.
+It then runs two complete unsigned builders and an additional explicit artifact
+verification after each build. It does not install dependencies, sign or upload
+artifacts, push branches, or discard source changes.
+
+The default evidence directory is
+`.tmp/windows-qualification/<branch>/<short-sha>/`. Pass
+`-EvidenceDirectory` to use another location. Each run writes `evidence.md` and
+`build-transcript.txt`; certificate values are not included.
+
 ## Validation
 
 After the workflow publishes assets, download `June_x64-setup.exe` from
