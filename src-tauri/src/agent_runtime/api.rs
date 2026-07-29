@@ -1,6 +1,6 @@
 use super::{
-    repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
-    AgentRuntimeHost, AgentSafetyMode, MessageAttachmentPayload,
+    repository::ContextSummaryReplacement, AgentArtifactDto, AgentItemDto, AgentItemPayload,
+    AgentRepository, AgentRuntimeHost, AgentSafetyMode, MessageAttachmentPayload,
 };
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -533,6 +533,12 @@ pub async fn start_agent_run(
         .await?;
     let prepared_attachments =
         prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
+    let original_attachment_paths = request
+        .attachments
+        .iter()
+        .cloned()
+        .map(Some)
+        .collect::<Vec<_>>();
     let available_skills = agent_skill_catalog(&app, &repository).await?;
     let requested_skills = request
         .enabled_skill_ids
@@ -598,7 +604,7 @@ pub async fn start_agent_run(
             &run.id,
             &user_item.id,
             &prepared_attachments,
-            &request.attachments,
+            &original_attachment_paths,
         )
         .await?;
         Ok::<_, AppError>(params)
@@ -684,6 +690,9 @@ pub async fn retry_agent_run(
                 "No user message is available to retry.",
             )
         })?;
+    let persisted_artifacts = repository.artifacts(&session.id).await?;
+    let original_attachment_paths =
+        persisted_attachment_original_paths(&message.attachments, &persisted_artifacts);
     let prompt = message.content;
     let workspace = authoritative_session_workspace(&app, &repository, &session.id).await?;
     let prepared_attachments = prepare_persisted_attachments(
@@ -692,10 +701,6 @@ pub async fn retry_agent_run(
         PersistedAttachmentPolicy::RetryStrict,
     )
     .await?;
-    let original_attachment_paths = prepared_attachments
-        .iter()
-        .map(|(original_path, _)| original_path.clone())
-        .collect::<Vec<_>>();
     let attachments = prepared_attachments
         .into_iter()
         .map(|(_, attachment)| attachment)
@@ -2155,7 +2160,11 @@ async fn prepare_persisted_attachments(
         let original_path = attachment.path.clone();
         let stable_key = format!("{}\0{}", attachment.id, original_path);
         match prepare_attachment(&original_path, workspace, Some(&stable_key)).await {
-            Ok(copied) => prepared.push((original_path, copied)),
+            Ok(mut copied) => {
+                copied.name.clone_from(&attachment.name);
+                copied.mime_type.clone_from(&attachment.mime_type);
+                prepared.push((original_path, copied));
+            }
             Err(AttachmentStageError::SourceUnavailable(_))
                 if matches!(policy, PersistedAttachmentPolicy::HistoricalBestEffort) => {}
             Err(AttachmentStageError::SourceUnavailable(_)) => {
@@ -2167,15 +2176,40 @@ async fn prepare_persisted_attachments(
     Ok(prepared)
 }
 
+fn persisted_attachment_original_paths(
+    attachments: &[MessageAttachmentPayload],
+    artifacts: &[AgentArtifactDto],
+) -> Vec<Option<String>> {
+    let original_paths = artifacts
+        .iter()
+        .map(|artifact| (artifact.id.as_str(), artifact.original_path.clone()))
+        .collect::<HashMap<_, _>>();
+    attachments
+        .iter()
+        .map(|attachment| {
+            original_paths
+                .get(attachment.id.as_str())
+                .cloned()
+                .unwrap_or_else(|| Some(attachment.path.clone()))
+        })
+        .collect()
+}
+
 async fn persist_attachments(
     repository: &AgentRepository,
     session_id: &str,
     run_id: &str,
     item_id: &str,
     attachments: &[MessageAttachmentPayload],
-    original_paths: &[String],
+    original_paths: &[Option<String>],
 ) -> Result<(), AppError> {
-    for (index, attachment) in attachments.iter().enumerate() {
+    if attachments.len() != original_paths.len() {
+        return Err(AppError::new(
+            "agent_attachment_provenance_invalid",
+            "Attachment provenance does not match the staged attachments.",
+        ));
+    }
+    for (attachment, original_path) in attachments.iter().zip(original_paths) {
         sqlx::query::query(
             "INSERT INTO agent_artifacts (
                 id, session_id, run_id, item_id, provenance, action, path,
@@ -2187,7 +2221,7 @@ async fn persist_attachments(
         .bind(run_id)
         .bind(item_id)
         .bind(&attachment.path)
-        .bind(original_paths.get(index))
+        .bind(original_path)
         .bind(&attachment.mime_type)
         .bind(attachment.size_bytes)
         .bind(&attachment.created_at)
@@ -2536,6 +2570,112 @@ mod tests {
 
             assert_eq!(error.code, "agent_attachment_unavailable");
         }
+    }
+
+    #[tokio::test]
+    async fn successful_retry_staging_preserves_attachment_semantics_and_order() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let markdown = source_directory.path().join("brief.md");
+        let image = source_directory.path().join("diagram.png");
+        tokio::fs::write(&markdown, "brief")
+            .await
+            .expect("markdown attachment");
+        tokio::fs::write(&image, b"image")
+            .await
+            .expect("image attachment");
+        let mut persisted = prepare_attachments(
+            &[
+                markdown.to_string_lossy().into_owned(),
+                image.to_string_lossy().into_owned(),
+            ],
+            workspace.path(),
+        )
+        .await
+        .expect("initial staging");
+        persisted[1].mime_type = None;
+        let persisted_ids = persisted
+            .iter()
+            .map(|attachment| attachment.id.clone())
+            .collect::<Vec<_>>();
+
+        let retried = prepare_persisted_attachments(
+            &persisted,
+            workspace.path(),
+            PersistedAttachmentPolicy::RetryStrict,
+        )
+        .await
+        .expect("retry staging")
+        .into_iter()
+        .map(|(_, attachment)| attachment)
+        .collect::<Vec<_>>();
+
+        assert_eq!(
+            retried
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>(),
+            ["brief.md", "diagram.png"]
+        );
+        assert_eq!(retried[0].mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(retried[1].mime_type, None);
+        assert_eq!(retried[0].size_bytes, 5);
+        assert_eq!(retried[1].size_bytes, 5);
+        assert!(retried
+            .iter()
+            .all(|attachment| Path::new(&attachment.path).starts_with(workspace.path())));
+        assert!(retried
+            .iter()
+            .zip(persisted_ids)
+            .all(|(attachment, persisted_id)| attachment.id != persisted_id));
+        let manifest = message_with_attachment_context("Review these.", &retried);
+        assert!(manifest.contains("- brief.md ("));
+        assert!(manifest.contains("- diagram.png ("));
+    }
+
+    #[test]
+    fn retry_provenance_preserves_original_paths_in_descriptor_order() {
+        let attachment = |id: &str, path: &str| MessageAttachmentPayload {
+            id: id.into(),
+            name: format!("{id}.md"),
+            path: path.into(),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: 1,
+            available: true,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let artifact = |id: &str, original_path: Option<&str>| AgentArtifactDto {
+            id: id.into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            item_id: Some("item-1".into()),
+            provenance: "attachment".into(),
+            action: "imported".into(),
+            path: format!("/workspace/{id}.md"),
+            original_path: original_path.map(str::to_string),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: Some(1),
+            available: true,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let attachments = vec![
+            attachment("with-source", "/workspace/staged-1.md"),
+            attachment("without-source", "/workspace/staged-2.md"),
+            attachment("missing-row", "/workspace/staged-3.md"),
+        ];
+        let artifacts = vec![
+            artifact("without-source", None),
+            artifact("with-source", Some("/Users/jimmy/Documents/brief.md")),
+        ];
+
+        assert_eq!(
+            persisted_attachment_original_paths(&attachments, &artifacts),
+            vec![
+                Some("/Users/jimmy/Documents/brief.md".into()),
+                None,
+                Some("/workspace/staged-3.md".into()),
+            ]
+        );
     }
 
     #[tokio::test]
