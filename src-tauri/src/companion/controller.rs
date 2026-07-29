@@ -25,18 +25,26 @@ const MAX_COMPANION_NOTE_CONTENT_JSON_BYTES: usize = 30 * 1024;
 /// here. Attachment paths are injected only after the controller resolves
 /// authenticated, device-scoped opaque references.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FrontendIntent {
     AgentSessionsList {
+        #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
         limit: u16,
     },
     AgentMessagesList {
         stored_session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
         limit: u16,
     },
     AgentSend {
+        #[serde(skip_serializing_if = "Option::is_none")]
         stored_session_id: Option<String>,
         message: String,
         attachments: Vec<super::files::ResolvedAttachment>,
@@ -894,6 +902,74 @@ mod tests {
         assert_eq!(encoded[1]["data"]["storedSessionId"], "session-1");
         assert_eq!(encoded[2]["type"], "sessionModelSet");
         assert_eq!(encoded[2]["data"]["modelId"], "kimi-k2-6");
+    }
+
+    #[test]
+    fn frontend_intents_omit_absent_optional_fields() {
+        let sessions = serde_json::to_value(FrontendIntent::AgentSessionsList {
+            cursor: None,
+            limit: 50,
+        })
+        .unwrap();
+        assert_eq!(
+            sessions,
+            serde_json::json!({
+                "type": "agentSessionsList",
+                "data": { "limit": 50 },
+            })
+        );
+
+        let send = serde_json::to_value(FrontendIntent::AgentSend {
+            stored_session_id: None,
+            message: "Hello".to_string(),
+            attachments: Vec::new(),
+            attachment_reference_ids: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            send,
+            serde_json::json!({
+                "type": "agentSend",
+                "data": {
+                    "message": "Hello",
+                    "attachments": [],
+                    "attachmentReferenceIds": [],
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn frontend_intents_use_camel_case_fields() {
+        let messages = serde_json::to_value(FrontendIntent::AgentMessagesList {
+            stored_session_id: "stored-1".to_string(),
+            cursor: Some("next".to_string()),
+            limit: 50,
+        })
+        .unwrap();
+        assert_eq!(
+            messages,
+            serde_json::json!({
+                "type": "agentMessagesList",
+                "data": {
+                    "storedSessionId": "stored-1",
+                    "cursor": "next",
+                    "limit": 50,
+                },
+            })
+        );
+
+        let cancel = serde_json::to_value(FrontendIntent::AgentCancel {
+            stored_session_id: "stored-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            cancel,
+            serde_json::json!({
+                "type": "agentCancel",
+                "data": { "storedSessionId": "stored-1" },
+            })
+        );
     }
 
     #[test]

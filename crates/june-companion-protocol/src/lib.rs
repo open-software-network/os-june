@@ -170,11 +170,13 @@ impl Frame {
 pub enum Body {
     NotesList(PageRequest),
     NoteGet {
+        #[serde(rename = "noteId", alias = "note_id")]
         note_id: String,
     },
     NoteEdit(NoteEditRequest),
     AgentSessionsList(PageRequest),
     AgentMessagesList {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
         stored_session_id: String,
         page: PageRequest,
     },
@@ -196,6 +198,7 @@ pub enum Body {
     },
     MediaFetch(MediaFetchRequest),
     AgentCancel {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
         stored_session_id: String,
     },
     ModelsList,
@@ -207,12 +210,15 @@ pub enum Body {
     SettingsGet,
     SettingsEditSafe(SafeSettingsPatch),
     RecordingPause {
+        #[serde(rename = "recordingSessionId", alias = "recording_session_id")]
         recording_session_id: String,
     },
     RecordingResume {
+        #[serde(rename = "recordingSessionId", alias = "recording_session_id")]
         recording_session_id: String,
     },
     RecordingStop {
+        #[serde(rename = "recordingSessionId", alias = "recording_session_id")]
         recording_session_id: String,
     },
     RecordingGetActive,
@@ -663,8 +669,14 @@ pub enum DictationStyle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FocusTarget {
-    Agent { stored_session_id: Option<String> },
-    Note { note_id: String },
+    Agent {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
+        stored_session_id: Option<String>,
+    },
+    Note {
+        #[serde(rename = "noteId", alias = "note_id")]
+        note_id: String,
+    },
     Settings,
 }
 
@@ -739,7 +751,10 @@ pub enum ResultPayload {
     Note(NoteRecord),
     AgentSessions(Page<AgentSession>),
     AgentMessages(Page<AgentMessage>),
-    AgentAccepted { stored_session_id: String },
+    AgentAccepted {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
+        stored_session_id: String,
+    },
     Upload(UploadProgress),
     BrowseRoots(Vec<BrowseRoot>),
     BrowseEntries(Page<BrowseEntry>),
@@ -1200,10 +1215,12 @@ pub enum FailureCode {
 #[serde(tag = "type", content = "data", rename_all = "camelCase")]
 pub enum Event {
     AgentDelta {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
         stored_session_id: String,
         text: String,
     },
     AgentStatus {
+        #[serde(rename = "storedSessionId", alias = "stored_session_id")]
         stored_session_id: String,
         status: AgentStatus,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1584,6 +1601,52 @@ mod tests {
         }))
         .unwrap();
         assert!(decode_peer_hello(&too_many_unknown).is_err());
+    }
+
+    #[test]
+    fn agent_accepted_uses_the_camel_case_session_id_wire_field() {
+        let encoded = r#"{"type":"agentAccepted","data":{"storedSessionId":"stored-1"}}"#;
+        let payload: ResultPayload = serde_json::from_str(encoded).unwrap();
+        assert_eq!(
+            payload,
+            ResultPayload::AgentAccepted {
+                stored_session_id: "stored-1".to_string(),
+            }
+        );
+        assert_eq!(serde_json::to_string(&payload).unwrap(), encoded);
+    }
+
+    #[test]
+    fn agent_message_reads_use_the_camel_case_session_id_wire_field() {
+        let encoded = r#"{"type":"agentMessagesList","data":{"storedSessionId":"stored-1","page":{"cursor":null,"limit":100}}}"#;
+        let body: Body = serde_json::from_str(encoded).unwrap();
+        assert_eq!(
+            body,
+            Body::AgentMessagesList {
+                stored_session_id: "stored-1".to_string(),
+                page: PageRequest {
+                    cursor: None,
+                    limit: 100,
+                },
+            }
+        );
+        assert_eq!(serde_json::to_string(&body).unwrap(), encoded);
+    }
+
+    #[test]
+    fn agent_events_use_the_camel_case_session_id_wire_field() {
+        let encoded =
+            r#"{"type":"agentStatus","data":{"storedSessionId":"stored-1","status":"completed"}}"#;
+        let event: Event = serde_json::from_str(encoded).unwrap();
+        assert_eq!(
+            event,
+            Event::AgentStatus {
+                stored_session_id: "stored-1".to_string(),
+                status: AgentStatus::Completed,
+                media: Vec::new(),
+            }
+        );
+        assert_eq!(serde_json::to_string(&event).unwrap(), encoded);
     }
 
     #[test]
