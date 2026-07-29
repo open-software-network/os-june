@@ -12,6 +12,7 @@ $hadPrebuilt = Test-Path Env:JUNE_AGENT_RUNTIME_PREBUILT
 $previousPrebuilt = $env:JUNE_AGENT_RUNTIME_PREBUILT
 $hadRuntimeTarget = Test-Path Env:JUNE_AGENT_RUNTIME_TARGET
 $previousRuntimeTarget = $env:JUNE_AGENT_RUNTIME_TARGET
+$previousPath = $env:PATH
 
 function Require-Command([string]$Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { throw "Required tool is unavailable: $Name" }
@@ -24,7 +25,7 @@ try {
     [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [System.Runtime.InteropServices.Architecture]::X64 -or
     [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne [System.Runtime.InteropServices.Architecture]::X64
   ) { throw "Native x64 Windows is required." }
-  foreach ($tool in @("node", "pnpm", "rustc", "cargo", "makensis")) { Require-Command $tool }
+  foreach ($tool in @("node", "pnpm", "rustc", "cargo")) { Require-Command $tool }
   $nodeVersionOutput = & node --version
   $nodeVersionExit = $LASTEXITCODE
   $nodeVersion = "$nodeVersionOutput".Trim()
@@ -48,6 +49,17 @@ try {
   if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
     throw "Unsigned Windows builds require WINDOWS_CERTIFICATE_PASSWORD to be unset."
   }
+  $makensisCommand = Get-Command makensis.exe -ErrorAction SilentlyContinue
+  $makensisCandidates = @()
+  if (${env:ProgramFiles(x86)}) { $makensisCandidates += Join-Path ${env:ProgramFiles(x86)} "NSIS\makensis.exe" }
+  if ($env:ProgramFiles) { $makensisCandidates += Join-Path $env:ProgramFiles "NSIS\makensis.exe" }
+  $makensisPath = if ($makensisCommand) {
+    $makensisCommand.Source
+  } else {
+    $makensisCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  }
+  if (-not $makensisPath) { throw "A usable NSIS makensis.exe is required." }
+  $env:PATH = "$(Split-Path -Parent $makensisPath);$env:PATH"
   $sevenZipCommand = Get-Command 7z.exe -ErrorAction SilentlyContinue
   $sevenZipPath = if ($sevenZipCommand) { $sevenZipCommand.Source } else { Join-Path $env:ProgramFiles "7-Zip\7z.exe" }
   if (-not (Test-Path -LiteralPath $sevenZipPath -PathType Leaf)) { throw "A usable 7-Zip executable is required." }
@@ -97,6 +109,7 @@ try {
 }
 finally {
   Set-Location -LiteralPath $callerLocation
+  $env:PATH = $previousPath
   if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt }
   else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
   if ($hadRuntimeTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $previousRuntimeTarget }
