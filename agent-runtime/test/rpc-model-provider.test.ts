@@ -100,6 +100,31 @@ test("retains the actual host route from the latest stream page", async () => {
   });
 });
 
+test("derives total usage when Venice omits total_tokens", async () => {
+  const provider = new RpcChatCompletionsModelProvider(async () => ({
+    streamId: "stream-usage-without-total",
+    chunks: [
+      {
+        ...finalChunk,
+        usage: { prompt_tokens: 4, completion_tokens: 3 },
+      },
+    ],
+    done: true,
+  }));
+  for await (const _event of provider
+    .getModel("private-auto")
+    .getStreamedResponse(modelRequest())) {
+    // Drain the model response.
+  }
+  assert.deepEqual(provider.latestUsage, {
+    inputTokens: 4,
+    outputTokens: 3,
+    totalTokens: 7,
+    requests: 1,
+  });
+  assert.deepEqual(provider.totalUsage, provider.latestUsage);
+});
+
 test("rejects an Auto response without a canonical selected model", async () => {
   const provider = new RpcChatCompletionsModelProvider(async () => ({
     streamId: "stream-auto-missing-model",

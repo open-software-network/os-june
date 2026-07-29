@@ -404,7 +404,11 @@ function chatCompletionUsage(value: unknown): RuntimeUsage | undefined {
   const outputTokens = numberValue(
     value.outputTokens ?? value.output_tokens ?? value.completion_tokens,
   );
-  const totalTokens = numberValue(value.totalTokens ?? value.total_tokens);
+  const totalTokens =
+    numberValue(value.totalTokens ?? value.total_tokens) ??
+    (inputTokens !== undefined && outputTokens !== undefined
+      ? inputTokens + outputTokens
+      : undefined);
   if (
     inputTokens === undefined &&
     outputTokens === undefined &&
