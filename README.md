@@ -143,6 +143,24 @@ Windows builds cover the app shell, sign-in, microphone recording, notes, and
 the bundled agent runtime, but not global dictation paste, system audio
 capture, or the macOS sandbox. macOS is the primary target.
 
+### Use June with Buzz
+
+June can run as an [Agent Client Protocol](https://agentclientprotocol.com/)
+agent for Buzz. Sign in to the June desktop app first, then add a custom
+harness in Buzz with these values:
+
+| Field | Value |
+| --- | --- |
+| Name | `June` |
+| Command | `/Applications/June.app/Contents/MacOS/June` |
+| Arguments | `acp` |
+
+No environment variables are required. The headless process uses June's
+existing OS Accounts session for private model routing and accepts Buzz's MCP
+server configuration at session creation. Buzz credentials stay in that
+session-scoped child process and are not written to June's database or
+keychain. Conversations started by Buzz are saved as June agent sessions.
+
 ## Repository layout
 
 This repo contains the full product: the desktop app and the service that

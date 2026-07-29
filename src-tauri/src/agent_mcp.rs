@@ -1273,6 +1273,163 @@ pub struct AgentMcpSubsystem<S: McpSecretStore> {
     pub secrets: S,
     pub registry: Mutex<McpToolRegistry>,
 }
+
+/// One stdio MCP server supplied by an external ACP client for the lifetime of
+/// a single June session. These definitions never enter June's database or
+/// keychain: the ACP client owns both the process configuration and its
+/// credentials, and June drops them when that ACP session ends.
+#[derive(Debug, Clone)]
+pub struct EphemeralMcpServer {
+    pub name: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct EphemeralMcpTool {
+    server_index: usize,
+    remote_name: String,
+    descriptor: RuntimeToolDescriptorJson,
+}
+
+/// Session-scoped MCP bridge used by the ACP entrypoint. Tool names stay
+/// unchanged when they cross ACP so a host-provided instruction that names
+/// `send_message` still matches the tool the model sees.
+pub struct EphemeralMcpRuntime {
+    servers: Vec<(McpServerDefinition, McpSecretBundle)>,
+    tools: BTreeMap<String, EphemeralMcpTool>,
+}
+
+impl EphemeralMcpRuntime {
+    pub async fn connect(
+        supplied: Vec<EphemeralMcpServer>,
+    ) -> Result<(Self, Vec<RuntimeToolDescriptorJson>), AgentMcpError> {
+        let mut servers = Vec::with_capacity(supplied.len());
+        let mut tools = BTreeMap::new();
+        for (server_index, supplied_server) in supplied.into_iter().enumerate() {
+            let mut definition =
+                McpServerDefinition::new(supplied_server.name.trim(), McpTransport::Stdio);
+            // Persistent MCP sessions are process-global, so a generated id
+            // keeps two concurrent Buzz sessions from sharing a child process.
+            definition.id = format!("acp-{}", Uuid::new_v4());
+            definition.command = Some(supplied_server.command);
+            definition.args = supplied_server.args;
+            definition.safety = McpSafetyPolicy {
+                requires_approval: false,
+                allow_sandboxed: true,
+                timeout_ms: 120_000,
+                max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+                approval_tools: Vec::new(),
+            };
+            definition.validate()?;
+            let secrets = McpSecretBundle {
+                env: supplied_server.env,
+                headers: BTreeMap::new(),
+                oauth: BTreeMap::new(),
+            };
+            let discovered = match discover_server(&definition, &secrets, None).await {
+                Ok(discovered) => discovered,
+                Err(error) => {
+                    close_ephemeral_servers(&servers, Some(&definition)).await;
+                    return Err(error);
+                }
+            };
+            for tool in discovered {
+                if let Err(error) = validate_ephemeral_tool_name(&tool.name) {
+                    close_ephemeral_servers(&servers, Some(&definition)).await;
+                    return Err(error);
+                }
+                if tools.contains_key(&tool.name) {
+                    close_ephemeral_servers(&servers, Some(&definition)).await;
+                    return Err(AgentMcpError::InvalidDefinition(format!(
+                        "ACP MCP tool name is duplicated: {}",
+                        tool.name
+                    )));
+                }
+                let descriptor = RuntimeToolDescriptorJson {
+                    id: format!("mcp:{}/{}", definition.id, tool.name),
+                    name: tool.name.clone(),
+                    description: tool.description,
+                    parameters: object_schema(tool.input_schema),
+                    requires_approval: None,
+                };
+                tools.insert(
+                    tool.name.clone(),
+                    EphemeralMcpTool {
+                        server_index,
+                        remote_name: tool.name,
+                        descriptor,
+                    },
+                );
+            }
+            servers.push((definition, secrets));
+        }
+        let descriptors = tools.values().map(|tool| tool.descriptor.clone()).collect();
+        Ok((Self { servers, tools }, descriptors))
+    }
+
+    pub async fn invoke(
+        &self,
+        runtime_name: &str,
+        arguments: Value,
+    ) -> Result<Value, AgentMcpError> {
+        let registered = self
+            .tools
+            .get(runtime_name)
+            .ok_or(AgentMcpError::ToolUnavailable)?;
+        let (server, secrets) = self
+            .servers
+            .get(registered.server_index)
+            .ok_or(AgentMcpError::ToolUnavailable)?;
+        call_server(
+            server,
+            secrets,
+            &registered.remote_name,
+            arguments,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub fn contains_tool(&self, runtime_name: &str) -> bool {
+        self.tools.contains_key(runtime_name)
+    }
+
+    pub async fn close(&self) {
+        for (server, _) in &self.servers {
+            retire_server_sessions(&server.id).await;
+        }
+    }
+}
+
+async fn close_ephemeral_servers(
+    servers: &[(McpServerDefinition, McpSecretBundle)],
+    current: Option<&McpServerDefinition>,
+) {
+    for (server, _) in servers {
+        retire_server_sessions(&server.id).await;
+    }
+    if let Some(current) = current {
+        retire_server_sessions(&current.id).await;
+    }
+}
+
+fn validate_ephemeral_tool_name(name: &str) -> Result<(), AgentMcpError> {
+    if name.is_empty()
+        || name.len() > 128
+        || name.starts_with("__june_")
+        || !name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return Err(AgentMcpError::InvalidDefinition(
+            "ACP MCP tool names must use letters, numbers, underscores, or hyphens".into(),
+        ));
+    }
+    Ok(())
+}
 impl<S: McpSecretStore> AgentMcpSubsystem<S> {
     pub fn new(repository: AgentMcpRepository, secrets: S) -> Self {
         Self {
@@ -3019,6 +3176,58 @@ fn string_array(value: Option<&Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_tools_keep_protocol_names_and_reject_unsafe_names() {
+        assert!(validate_ephemeral_tool_name("send_message").is_ok());
+        assert!(validate_ephemeral_tool_name("feed-actions").is_ok());
+        assert!(validate_ephemeral_tool_name("send message").is_err());
+        assert!(validate_ephemeral_tool_name("__june_model_chat_completions").is_err());
+        assert!(validate_ephemeral_tool_name("").is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn acp_ephemeral_runtime_discovers_and_invokes_host_tools() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"fake-buzz","version":"1"}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_message","description":"Send a Buzz message","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}'
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"sent"}]}}'
+      ;;
+  esac
+done
+"#;
+        let temp = tempfile::tempdir().unwrap();
+        let server_path = temp.path().join("fake-buzz-mcp");
+        std::fs::write(&server_path, script).unwrap();
+        std::fs::set_permissions(&server_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (runtime, descriptors) = EphemeralMcpRuntime::connect(vec![EphemeralMcpServer {
+            name: "buzz".into(),
+            command: server_path.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }])
+        .await
+        .unwrap();
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].name, "send_message");
+        assert_eq!(descriptors[0].requires_approval, None);
+        let result = runtime
+            .invoke("send_message", json!({ "text": "hello" }))
+            .await
+            .unwrap();
+        assert_eq!(result["content"][0]["text"], "sent");
+        runtime.close().await;
+    }
     use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::collections::HashMap;
     use std::str::FromStr;

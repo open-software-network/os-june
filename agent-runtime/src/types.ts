@@ -56,6 +56,7 @@ export type RunStartParams = {
   skills: RuntimeSkillDescriptor[];
   contextWindow: number;
   maxOutputTokens?: number;
+  includeClarificationTool?: boolean;
 };
 
 export type InterruptionResolution =

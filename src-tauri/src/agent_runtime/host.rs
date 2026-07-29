@@ -56,6 +56,7 @@ pub struct AgentRuntimeHost {
     interruption_resolutions: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
     model_scopes: Arc<Mutex<HashSet<String>>>,
+    ephemeral_mcp: Arc<Mutex<HashMap<String, Arc<crate::agent_mcp::EphemeralMcpRuntime>>>>,
     cancellations: ToolCancellationRegistry,
 }
 
@@ -147,6 +148,7 @@ impl AgentRuntimeHost {
             pending.clone(),
             self.model_streams.clone(),
             self.model_scopes.clone(),
+            self.ephemeral_mcp.clone(),
             self.cancellations.clone(),
         );
         tauri::async_runtime::spawn(async move {
@@ -256,6 +258,16 @@ impl AgentRuntimeHost {
     pub async fn shutdown(&self) {
         let _startup = self.startup.lock().await;
         crate::agent_mcp::shutdown_sessions().await;
+        let ephemeral = self
+            .ephemeral_mcp
+            .lock()
+            .await
+            .drain()
+            .map(|(_, runtime)| runtime)
+            .collect::<Vec<_>>();
+        for runtime in ephemeral {
+            runtime.close().await;
+        }
         cancel_all_model_scopes(&self.model_streams, &self.model_scopes, &self.cancellations).await;
         let mut guard = self.inner.lock().await;
         let Some(mut runtime) = guard.take() else {
@@ -282,6 +294,31 @@ impl AgentRuntimeHost {
             run_id,
         )
         .await;
+    }
+
+    pub async fn register_ephemeral_mcp(
+        &self,
+        session_id: &str,
+        servers: Vec<crate::agent_mcp::EphemeralMcpServer>,
+    ) -> Result<Vec<crate::agent_mcp::RuntimeToolDescriptorJson>, AppError> {
+        let (runtime, descriptors) = crate::agent_mcp::EphemeralMcpRuntime::connect(servers)
+            .await
+            .map_err(|error| AppError::new("agent_mcp_failed", error.to_string()))?;
+        let previous = self
+            .ephemeral_mcp
+            .lock()
+            .await
+            .insert(session_id.to_string(), Arc::new(runtime));
+        if let Some(previous) = previous {
+            previous.close().await;
+        }
+        Ok(descriptors)
+    }
+
+    pub async fn unregister_ephemeral_mcp(&self, session_id: &str) {
+        if let Some(runtime) = self.ephemeral_mcp.lock().await.remove(session_id) {
+            runtime.close().await;
+        }
     }
 }
 
@@ -317,6 +354,7 @@ async fn await_runtime_response(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_stdout_reader(
     app: AppHandle,
     repository: AgentRepository,
@@ -325,6 +363,7 @@ fn spawn_stdout_reader(
     pending: PendingRequests,
     model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
     model_scopes: Arc<Mutex<HashSet<String>>>,
+    ephemeral_mcp: Arc<Mutex<HashMap<String, Arc<crate::agent_mcp::EphemeralMcpRuntime>>>>,
     cancellations: ToolCancellationRegistry,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -380,6 +419,7 @@ fn spawn_stdout_reader(
             let request_repository = repository.clone();
             let request_streams = model_streams.clone();
             let request_scopes = model_scopes.clone();
+            let request_ephemeral_mcp = ephemeral_mcp.clone();
             let request_cancellations = cancellations.clone();
             let request_stdin = stdin.clone();
             tauri::async_runtime::spawn(async move {
@@ -388,6 +428,7 @@ fn spawn_stdout_reader(
                     &request_repository,
                     &request_streams,
                     &request_scopes,
+                    &request_ephemeral_mcp,
                     &request_cancellations,
                     &frame,
                 )
@@ -418,6 +459,7 @@ async fn handle_runtime_request(
     repository: &AgentRepository,
     model_streams: &Arc<Mutex<HashMap<String, ModelStream>>>,
     model_scopes: &Arc<Mutex<HashSet<String>>>,
+    ephemeral_mcp: &Arc<Mutex<HashMap<String, Arc<crate::agent_mcp::EphemeralMcpRuntime>>>>,
     cancellations: &ToolCancellationRegistry,
     frame: &RpcFrame,
 ) -> Result<Value, AppError> {
@@ -540,6 +582,14 @@ async fn handle_runtime_request(
                 );
                 drop(scopes);
                 return poll_model_stream(model_streams, &stream_id).await;
+            }
+            if let Some(runtime) = ephemeral_mcp.lock().await.get(&frame.session_id).cloned() {
+                if runtime.contains_tool(name) {
+                    return runtime
+                        .invoke(name, arguments)
+                        .await
+                        .map_err(|error| AppError::new("agent_mcp_failed", error.to_string()));
+                }
             }
             let session = repository.get_session(&frame.session_id).await?;
             let workspace = session.workspace_path.map(PathBuf::from).ok_or_else(|| {

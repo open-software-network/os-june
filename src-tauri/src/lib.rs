@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+pub mod acp;
 pub mod agent_hud;
 pub mod agent_mcp;
 pub mod agent_recorder;
@@ -106,7 +107,7 @@ type MainWindowSendEventImp = unsafe extern "C-unwind" fn(
 
 pub fn run() {
     providers::load_local_env();
-    let context = tauri::generate_context!();
+    let context = app_context();
     let mut builder = tauri::Builder::default();
 
     // Single-instance MUST register before the deep-link plugin so it owns
@@ -475,6 +476,41 @@ pub fn run() {
             tauri::RunEvent::Reopen { .. } => show_main_window(app),
             _ => {}
         });
+}
+
+/// Runs June as a headless ACP agent over stdin/stdout. This mode deliberately
+/// omits desktop plugins and windows, but retains the app identity and resource
+/// directory so it can use June's keychain session and bundled agent runtime.
+pub fn run_acp() {
+    providers::load_local_env();
+    let mut context = app_context();
+    context.config_mut().app.windows.clear();
+    tauri::Builder::default()
+        .manage(agent_runtime::AgentRuntimeHost::default())
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+            providers::setup(app);
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let exit_code = match acp::serve(handle.clone()).await {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        eprintln!("June ACP stopped: {}", error.message);
+                        1
+                    }
+                };
+                handle.exit(exit_code);
+            });
+            Ok(())
+        })
+        .build(context)
+        .expect("failed to build June ACP")
+        .run(|_, _| {});
+}
+
+fn app_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
 }
 
 /// Registers the generated-video directory in the asset-protocol scope so the
