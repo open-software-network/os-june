@@ -1987,7 +1987,7 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     // A relay task may be awaiting a frontend-backed operation, or pairing may
     // be committing an authorization grant. Wait until all authorized account
     // work observes the sign-out boundary before revoking local state.
-    wait_for_account_activity(&runtime, ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT).await?;
+    wait_for_account_activity_then_clear_media(&runtime, ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT).await?;
 
     let repos = repositories(app).await?;
     let persisted_account_user_id = repos.companion_account_user_id().await?;
@@ -2054,6 +2054,15 @@ async fn wait_for_account_activity(
             "Companion activity did not stop in time. Try signing out again.",
         )
     })
+}
+
+async fn wait_for_account_activity_then_clear_media(
+    runtime: &CompanionRuntime,
+    timeout: Duration,
+) -> Result<(), AppError> {
+    wait_for_account_activity(runtime, timeout).await?;
+    media::clear_transfer_cache(&runtime.media_transfers);
+    Ok(())
 }
 
 pub fn resume_account_transport(app: &AppHandle) {
@@ -2949,5 +2958,48 @@ mod tests {
         wait_for_account_activity(&runtime, Duration::from_millis(10))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_clears_media_handles_inserted_by_draining_activity() {
+        let runtime = CompanionRuntime::default();
+        runtime.account_activity.store(1, Ordering::Release);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("media.png");
+        std::fs::write(&path, [1]).unwrap();
+
+        media::clear_transfer_cache(&runtime.media_transfers);
+        runtime
+            .media_transfers
+            .lock()
+            .unwrap()
+            .insert_test_transfer(path);
+        assert_eq!(
+            runtime
+                .media_transfers
+                .lock()
+                .unwrap()
+                .test_transfer_count(),
+            1
+        );
+
+        let drain =
+            wait_for_account_activity_then_clear_media(&runtime, Duration::from_millis(100));
+        tokio::pin!(drain);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut drain)
+            .await
+            .is_err());
+
+        runtime.account_activity.store(0, Ordering::Release);
+        runtime.account_activity_changed.notify_one();
+        drain.await.unwrap();
+        assert_eq!(
+            runtime
+                .media_transfers
+                .lock()
+                .unwrap()
+                .test_transfer_count(),
+            0
+        );
     }
 }

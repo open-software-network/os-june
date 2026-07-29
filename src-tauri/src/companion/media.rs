@@ -76,11 +76,11 @@ pub(super) fn start_cleanup(app: &AppHandle) {
 }
 
 pub(super) fn clear_cache(app: &AppHandle) {
-    if let Ok(mut cache) = app
-        .state::<super::CompanionRuntime>()
-        .media_transfers
-        .lock()
-    {
+    clear_transfer_cache(&app.state::<super::CompanionRuntime>().media_transfers);
+}
+
+pub(super) fn clear_transfer_cache(cache: &std::sync::Mutex<MediaTransferCache>) {
+    if let Ok(mut cache) = cache.lock() {
         cache.entries.clear();
     }
 }
@@ -257,6 +257,26 @@ impl MediaTransferCache {
         self.entries.retain(|_, entry| {
             now.saturating_duration_since(entry.touched_at) <= TRANSFER_IDLE_TTL
         });
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_test_transfer(&mut self, path: PathBuf) {
+        self.entries.insert(
+            "test-transfer".to_string(),
+            CachedTransfer {
+                file: Arc::new(File::open(&path).expect("open test transfer")),
+                artifact_id: "artifact".to_string(),
+                path,
+                size_bytes: 1,
+                sha256: "0".repeat(64),
+                touched_at: Instant::now(),
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_transfer_count(&self) -> usize {
+        self.entries.len()
     }
 }
 
