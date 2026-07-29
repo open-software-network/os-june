@@ -56,6 +56,7 @@ const SERIALIZED_STATE_ENVELOPE_VERSION = 1;
 export class OpenAIAgentsEngine implements AgentEngine {
   readonly invokeHostTool: HostToolInvoker;
   initialized = false;
+  private readonly notionPreflights = new Map<string, JsonObject>();
 
   constructor(invokeHostTool: HostToolInvoker) {
     this.invokeHostTool = invokeHostTool;
@@ -128,7 +129,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, input.params.history, input.emit, runner.modelProvider);
+    return this.consumeStream(stream, input.params.history, input.emit, runner.modelProvider, input.runId);
   }
 
   async resume(input: EngineResumeInput): Promise<EngineResult> {
@@ -163,7 +164,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, [], input.emit, runner.modelProvider);
+    return this.consumeStream(stream, [], input.emit, runner.modelProvider, input.runId);
   }
 
   async shutdown(): Promise<void> {
@@ -204,13 +205,35 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     emit: (event: EngineEvent) => void,
   ): FunctionTool {
-    return tool({
+    const definition = {
       name: descriptor.name,
       description: descriptor.description,
       parameters: descriptor.parameters as never,
-      strict: true,
+      strict: descriptor.strict ?? true,
       needsApproval: descriptor.requiresApproval ?? false,
-      execute: async (argumentsValue, _context, details) => {
+      ...(descriptor.notionAction ? {
+        inputGuardrails: [{
+          name: "notion_action_preflight",
+          run: async ({ toolCall }: { toolCall: unknown }) => {
+            const callId = toolCallId(toolCall);
+            const argumentsJson = exactToolArguments(isRecord(toolCall) ? toolCall.arguments : {});
+            try {
+              const result = await this.invokeHostTool({
+                sessionId,
+                runId,
+                name: "__june_notion_action_preflight",
+                arguments: { toolName: descriptor.name, arguments: argumentsJson },
+                callId,
+              });
+              if (isRecord(result)) this.notionPreflights.set(`${runId}:${callId}`, result as JsonObject);
+              return { behavior: { type: "allow" as const } };
+            } catch (error) {
+              return { behavior: { type: "rejectContent" as const, message: errorMessage(error) } };
+            }
+          },
+        }],
+      } : {}),
+      execute: async (argumentsValue: unknown, _context: unknown, details: unknown) => {
         const callId = toolCallId(details);
         const argumentsJson = asJsonValue(argumentsValue);
         emit({
@@ -235,7 +258,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
           throw new Error(message);
         }
       },
-    });
+    };
+    return tool(definition as never);
   }
 
   private async consumeStream(
@@ -243,13 +267,37 @@ export class OpenAIAgentsEngine implements AgentEngine {
     _priorHistory: RuntimeHistoryItem[],
     emit: (event: EngineEvent) => void,
     modelProvider: RpcChatCompletionsModelProvider,
+    runId: string,
   ): Promise<EngineResult> {
     for await (const event of stream) this.forwardSdkEvent(event, emit);
     await stream.completed;
     if (stream.cancelled) throw abortError();
     if (stream.error) throw stream.error;
 
-    const interruptions = stream.interruptions.map(runtimeInterruptionFromSdk);
+    const activeKeys = new Set<string>();
+    const interruptions = stream.interruptions.map((interruption) => {
+      const mapped = runtimeInterruptionFromSdk(interruption);
+      const key = `${runId}:${mapped.id}`;
+      activeKeys.add(key);
+      const preflight = this.notionPreflights.get(key);
+      this.notionPreflights.delete(key);
+      if (mapped.kind !== "approval" || !preflight) return mapped;
+      return {
+        ...mapped,
+        approvalPresentation: {
+          title: stringValue(preflight.title) ?? "Approval required",
+          description: stringValue(preflight.description) ?? "Review this Notion action.",
+          command: stringValue(preflight.command) ?? mapped.toolName,
+          preview: stringValue(preflight.preview) ?? "",
+        },
+        approvalBinding: {
+          digest: stringValue(preflight.digest) ?? "",
+        },
+      } satisfies RuntimeInterruption;
+    });
+    for (const key of this.notionPreflights.keys()) {
+      if (key.startsWith(`${runId}:`) && !activeKeys.has(key)) this.notionPreflights.delete(key);
+    }
     const serializedState =
       interruptions.length > 0
         ? serializeState(stream.state.toString(), modelProvider.reasoningWireFormat)
@@ -544,6 +592,17 @@ function parsedToolArguments(value: unknown): JsonValue {
   return sanitizeForLog(value);
 }
 
+function exactToolArguments(value: unknown): JsonValue {
+  if (typeof value === "string") {
+    try {
+      return asJsonValue(JSON.parse(value));
+    } catch {
+      return asJsonValue(value);
+    }
+  }
+  return asJsonValue(value);
+}
+
 function interruptionId(interruption: unknown): string {
   if (!isRecord(interruption)) return "unknown-interruption";
   if (typeof interruption.id === "string") return interruption.id;
@@ -558,6 +617,11 @@ function toolCallId(details: unknown): string {
   if (isRecord(details)) {
     if (typeof details.toolCallId === "string") return details.toolCallId;
     if (typeof details.callId === "string") return details.callId;
+    if (typeof details.id === "string") return details.id;
+    if (isRecord(details.toolCall)) {
+      if (typeof details.toolCall.callId === "string") return details.toolCall.callId;
+      if (typeof details.toolCall.id === "string") return details.toolCall.id;
+    }
   }
   return crypto.randomUUID();
 }

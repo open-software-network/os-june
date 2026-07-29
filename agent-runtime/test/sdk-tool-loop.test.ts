@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
 import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
-import type { EngineEvent, EngineRunInput, JsonObject } from "../src/types.ts";
+import type { EngineEvent, EngineRunInput, JsonObject, JsonValue } from "../src/types.ts";
 
 const AUTO_RUN_MODEL = "__june_auto_generation__:73";
 const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
@@ -598,6 +598,242 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.ok(isRecord(resumedAssistant));
   assert.equal(resumedAssistant.reasoning, "I should write the requested file.");
   assert.equal(resumedAssistant.reasoning_content, undefined);
+});
+
+test("preflights a Notion action before interruption and again before approved execution", async () => {
+  let modelRequestCount = 0;
+  const hostCalls: Array<{ name: string; callId?: string }> = [];
+  const preflightArguments: JsonValue[] = [];
+  const executionArguments: JsonValue[] = [];
+  const actionArguments = {
+    page_id: "roadmap",
+    content: "Shipped the repair",
+    properties: { token: "sk-example-content-that-must-not-be-redacted" },
+    content_updates: Array.from({ length: 101 }, (_, index) => ({ index })),
+  };
+  const preflight = {
+    title: "Update Notion page",
+    description: "Update Roadmap in Notion.",
+    command: "Update Notion page\nPage: Roadmap | Content: Shipped the repair",
+    preview: "Page: Roadmap | Content: Shipped the repair",
+    digest: "bound-action-digest",
+  };
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name === "__june_notion_action_preflight") {
+      hostCalls.push({ name: input.name, callId: input.callId });
+      preflightArguments.push(input.arguments.arguments as JsonValue);
+      return preflight;
+    }
+    if (input.name === "notion-update-page") {
+      hostCalls.push({ name: input.name, callId: input.callId });
+      executionArguments.push(input.arguments as JsonValue);
+      return { updated: true };
+    }
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Unexpected host tool: ${input.name}`);
+    }
+    if (!("request" in input.arguments)) throw new Error("The test streams complete in one page");
+    modelRequestCount += 1;
+    if (modelRequestCount === 1) {
+      return streamPage("notion-approval-start", {
+        id: "completion-notion-approval",
+        object: "chat.completion.chunk",
+        created: 6,
+        model: "private-auto",
+        choices: [{
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [{
+              index: 0,
+              id: "call-notion-update",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: JSON.stringify(actionArguments),
+              },
+            }],
+          },
+        }],
+      });
+    }
+    return streamPage("notion-approval-finish", {
+      id: "completion-notion-finish",
+      object: "chat.completion.chunk",
+      created: 7,
+      model: "private-auto",
+      choices: [{
+        index: 0,
+        finish_reason: "stop",
+        delta: { role: "assistant", content: "The Notion page was updated." },
+      }],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const commonParams = {
+    model: "private-auto",
+    instructions: "Update the requested Notion page.",
+    workspace: "/tmp/june-workspace",
+    safetyMode: "sandboxed" as const,
+    tools: [{
+      name: "notion-update-page",
+      description: "Update one Notion page.",
+      parameters: {
+        type: "object",
+        properties: {
+          page_id: { type: "string" },
+          content: { type: "string" },
+          properties: { type: "object" },
+          content_updates: { type: "array", items: { type: "object" } },
+        },
+        required: ["page_id", "content"],
+        additionalProperties: true,
+      },
+      requiresApproval: true,
+      notionAction: true,
+      strict: false,
+    }],
+    skills: [],
+    contextWindow: 16_000,
+  };
+  const paused = await engine.start({
+    sessionId: "session-notion",
+    runId: "run-notion",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: { ...commonParams, input: "Update Roadmap.", history: [] },
+  });
+
+  assert.deepEqual(hostCalls, [{ name: "__june_notion_action_preflight", callId: "call-notion-update" }]);
+  assert.equal(paused.interruptions.length, 1);
+  assert.deepEqual(paused.interruptions[0]?.approvalPresentation, {
+    title: preflight.title,
+    description: preflight.description,
+    command: preflight.command,
+    preview: preflight.preview,
+  });
+  assert.deepEqual(paused.interruptions[0]?.approvalBinding, {
+    digest: preflight.digest,
+  });
+  assert.ok(paused.serializedState);
+
+  const resumed = await engine.resume({
+    sessionId: "session-notion",
+    runId: "run-notion",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      ...commonParams,
+      serializedState: paused.serializedState,
+      resolutions: [{ interruptionId: paused.interruptions[0]!.id, decision: "approve" }],
+    },
+  });
+
+  assert.deepEqual(hostCalls, [
+    { name: "__june_notion_action_preflight", callId: "call-notion-update" },
+    { name: "__june_notion_action_preflight", callId: "call-notion-update" },
+    { name: "notion-update-page", callId: "call-notion-update" },
+  ]);
+  assert.deepEqual(preflightArguments, [actionArguments, actionArguments]);
+  assert.deepEqual(executionArguments, [actionArguments]);
+  assert.equal(resumed.finalOutput, "The Notion page was updated.");
+});
+
+test("keeps concurrent Notion preflights bound to their original tool call ids", async () => {
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name === "__june_notion_action_preflight") {
+      if (input.callId === "call-slow") {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return {
+        title: `Approval ${input.callId}`,
+        description: `Description ${input.callId}`,
+        command: `Command ${input.callId}`,
+        preview: `Preview ${input.callId}`,
+        digest: `digest-${input.callId}`,
+      };
+    }
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Unexpected host tool: ${input.name}`);
+    }
+    if (!("request" in input.arguments)) throw new Error("The test streams complete in one page");
+    return streamPage("notion-concurrent-approvals", {
+      id: "completion-notion-concurrent",
+      object: "chat.completion.chunk",
+      created: 8,
+      model: "private-auto",
+      choices: [{
+        index: 0,
+        finish_reason: "tool_calls",
+        delta: {
+          role: "assistant",
+          tool_calls: [
+            {
+              index: 0,
+              id: "call-slow",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: "{\"page_id\":\"slow\",\"content\":\"Slow\"}",
+              },
+            },
+            {
+              index: 1,
+              id: "call-fast",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: "{\"page_id\":\"fast\",\"content\":\"Fast\"}",
+              },
+            },
+          ],
+        },
+      }],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const paused = await engine.start({
+    sessionId: "session-notion-concurrent",
+    runId: "run-notion-concurrent",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "private-auto",
+      instructions: "Update both Notion pages.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Update both pages.",
+      history: [],
+      tools: [{
+        name: "notion-update-page",
+        description: "Update one Notion page.",
+        parameters: {
+          type: "object",
+          properties: { page_id: { type: "string" }, content: { type: "string" } },
+          required: ["page_id", "content"],
+          additionalProperties: false,
+        },
+        requiresApproval: true,
+        notionAction: true,
+        strict: false,
+      }],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(paused.interruptions.length, 2);
+  for (const interruption of paused.interruptions) {
+    assert.equal(interruption.kind, "approval");
+    assert.equal(interruption.approvalPresentation?.title, `Approval ${interruption.id}`);
+    assert.equal(interruption.approvalPresentation?.preview, `Preview ${interruption.id}`);
+    assert.equal(interruption.approvalBinding?.digest, `digest-${interruption.id}`);
+  }
 });
 
 test("preserves observed reasoning_content for an unlisted model alias", async () => {

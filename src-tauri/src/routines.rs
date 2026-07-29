@@ -1243,7 +1243,7 @@ async fn unattended_tools(
     routine_id: &str,
     enabled_toolsets: &[String],
 ) -> Value {
-    let autonomous_tools = routine_autonomous_tools(&repository.pool, routine_id).await;
+    let (autonomous_tools, trust_mode) = routine_trust(&repository.pool, routine_id).await;
     let mut tools = base_unattended_tools();
     if let Some(descriptors) = tools.as_array_mut() {
         descriptors.retain(|descriptor| {
@@ -1306,6 +1306,7 @@ async fn unattended_tools(
                             name,
                             enabled_toolsets,
                             &autonomous_tools,
+                            trust_mode.as_deref(),
                         )
                     })
             })),
@@ -1335,14 +1336,19 @@ fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec
     }
 }
 
-async fn routine_autonomous_tools(pool: &SqlitePool, routine_id: &str) -> Vec<String> {
-    query("SELECT autonomous_tools FROM routine_trust WHERE job_id = ?")
+async fn routine_trust(pool: &SqlitePool, routine_id: &str) -> (Vec<String>, Option<String>) {
+    query("SELECT autonomous_tools, trust_mode FROM routine_trust WHERE job_id = ?")
         .bind(routine_id)
         .fetch_optional(pool)
         .await
         .ok()
         .flatten()
-        .and_then(|row| serde_json::from_str(&row.get::<String, _>("autonomous_tools")).ok())
+        .map(|row| {
+            let tools =
+                serde_json::from_str(&row.get::<String, _>("autonomous_tools")).unwrap_or_default();
+            let mode = row.try_get::<String, _>("trust_mode").ok();
+            (tools, mode)
+        })
         .unwrap_or_default()
 }
 
@@ -1379,13 +1385,14 @@ pub async fn routine_tool_allowed_for_session(
         .unwrap_or_else(|_| json!({}));
     let enabled_toolsets =
         enabled_toolsets_from_metadata(&metadata, row.get::<i64, _>("tool_catalog_version") == 0);
-    let autonomous_tools = routine_autonomous_tools(pool, &routine_id).await;
+    let (autonomous_tools, trust_mode) = routine_trust(pool, &routine_id).await;
     Ok(Some(
         routine_base_tool_allowed(name, &enabled_toolsets)
             || crate::agent_runtime::native_connectors::routine_tool_allowed(
                 name,
                 &enabled_toolsets,
                 &autonomous_tools,
+                trust_mode.as_deref(),
             )
             || name == "request_clarification",
     ))

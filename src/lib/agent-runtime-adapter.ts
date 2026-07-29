@@ -449,6 +449,7 @@ function interruptionToPart(
       type: "clarify",
       id: interruption.id,
       sessionId: interruption.sessionId,
+      runId: interruption.runId,
       question: interruption.question,
       choices: interruption.choices,
       answer: interruption.answer,
@@ -459,6 +460,7 @@ function interruptionToPart(
     return {
       type: "secret",
       id: interruption.id,
+      runId: interruption.runId,
       reason: interruption.reason,
       status: interruption.status === "pending" ? "pending" : "resolved",
     };
@@ -467,6 +469,7 @@ function interruptionToPart(
     type: "approval",
     id: interruption.id,
     sessionId: interruption.sessionId,
+    runId: interruption.runId,
     command: interruption.command ?? interruption.toolName,
     description: interruption.description || interruption.title,
     allowPermanent: interruption.allowAlways,

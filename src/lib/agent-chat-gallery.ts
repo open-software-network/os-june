@@ -374,6 +374,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-pending",
+            runId: "gallery-run",
             command: "rm -rf ./build && npm run build",
             description: "The agent wants to run a shell command.",
             allowPermanent: true,
@@ -391,6 +392,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-no-permanent",
+            runId: "gallery-run",
             command: "curl https://api.example.com/charge",
             description: "Network request that can't be permanently allowed.",
             allowPermanent: false,
@@ -408,6 +410,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-once",
+            runId: "gallery-run",
             command: "git status",
             description: "The agent wants to check the working tree status.",
             allowPermanent: true,
@@ -419,6 +422,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-session",
+            runId: "gallery-run",
             command: "ls -la",
             description: "The agent wants to list the project directory.",
             allowPermanent: true,
@@ -430,6 +434,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-always",
+            runId: "gallery-run",
             command: "cat package.json",
             description: "The agent wants to read package.json.",
             allowPermanent: true,
@@ -441,6 +446,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "approval",
             id: "approval-deny",
+            runId: "gallery-run",
             command: "rm -rf /",
             description: "The agent wants to delete the entire filesystem.",
             allowPermanent: true,
@@ -458,6 +464,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "clarify",
             id: "clarify-choices",
+            runId: "gallery-run",
             question: "Which format should the recap use?",
             choices: ["Bulleted list", "Numbered steps", "Short paragraph"],
             status: "pending",
@@ -473,6 +480,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "clarify",
             id: "clarify-freeform",
+            runId: "gallery-run",
             question: "What should I name the exported file?",
             choices: [],
             status: "pending",
@@ -489,6 +497,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "clarify",
             id: "clarify-answered",
+            runId: "gallery-run",
             question: "Which format should the recap use?",
             choices: ["Bulleted list", "Numbered steps", "Short paragraph"],
             answer: "Bulleted list",
@@ -506,6 +515,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "clarify",
             id: "clarify-skipped",
+            runId: "gallery-run",
             question: "Any constraints on the file name?",
             choices: [],
             answer: "",
@@ -558,6 +568,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "secret",
             id: "secret-pending",
+            runId: "gallery-run",
             keyName: "OPENAI_API_KEY",
             reason: "Needed to call the OpenAI API on your behalf",
             status: "pending",
@@ -574,6 +585,7 @@ export function buildAgentChatGallery(): AgentChatGallerySection[] {
           {
             type: "secret",
             id: "secret-provided",
+            runId: "gallery-run",
             keyName: "DATABASE_PASSWORD",
             reason: "Needed to connect to your database",
             status: "resolved",

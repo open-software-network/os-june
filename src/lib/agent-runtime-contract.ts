@@ -279,6 +279,7 @@ export type StartAgentRunRequest = {
 
 export type ResolveAgentInterruptionRequest = {
   interruptionId: string;
+  runId: string;
   resolution:
     | { kind: "approval"; choice: "once" | "session" | "always" | "deny" }
     | { kind: "clarification"; answer: string }

@@ -26,6 +26,7 @@ export type AgentChatApprovalPart = {
   type: "approval";
   id: string;
   sessionId?: string;
+  runId: string;
   command: string;
   description: string;
   allowPermanent: boolean;
@@ -37,6 +38,7 @@ export type AgentChatClarifyPart = {
   type: "clarify";
   id: string;
   sessionId?: string;
+  runId: string;
   question: string;
   choices: string[];
   answer?: string;
@@ -57,6 +59,7 @@ export const UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY =
 export type AgentChatSecretPart = {
   type: "secret";
   id: string;
+  runId: string;
   keyName?: string;
   reason?: string;
   status: "pending" | "resolved";
