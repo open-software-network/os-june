@@ -122,6 +122,7 @@ import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
 import { companionSessionInActivePartition } from "../../lib/companion-partition";
+import { createCompanionPublicationQueue } from "../../lib/companion-publication-queue";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
@@ -766,27 +767,48 @@ export function AgentWorkspace({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    const publishCompanionStatus = async (
+    const companionPublicationQueue = createCompanionPublicationQueue({
+      isSessionPublishable: async (storedSessionId) =>
+        Boolean(await companionSessionInActivePartition(storedSessionId)) && !disposed,
+      onFailure: ({ error, eventType, storedSessionId }) => {
+        // biome-ignore lint/suspicious/noConsole: stream publication failures need a content-free diagnostic
+        console.warn("Failed to publish companion agent event", {
+          eventType,
+          reason: messageFromError(error),
+          storedSessionId,
+        });
+      },
+    });
+    const enqueueCompanionPublication = (
+      storedSessionId: string,
+      eventType: "delta" | "status",
+      publish: () => Promise<void>,
+    ) => {
+      void companionPublicationQueue.enqueue({ eventType, publish, storedSessionId });
+    };
+    const publishCompanionStatus = (
       storedSessionId: string,
       status: CompanionAgentStatus,
       runId?: string,
     ) => {
-      if (!(await companionSessionInActivePartition(storedSessionId)) || disposed) return;
-      await companionPublishAgentEvent({
-        type: "status",
-        data: {
-          storedSessionId,
-          status,
-          ...(runId ? { runId } : {}),
-        },
-      });
+      enqueueCompanionPublication(storedSessionId, "status", () =>
+        companionPublishAgentEvent({
+          type: "status",
+          data: {
+            storedSessionId,
+            status,
+            ...(runId ? { runId } : {}),
+          },
+        }),
+      );
     };
-    const publishCompanionDelta = async (storedSessionId: string, text: string) => {
-      if (!(await companionSessionInActivePartition(storedSessionId)) || disposed) return;
-      await companionPublishAgentEvent({
-        type: "delta",
-        data: { storedSessionId, text },
-      });
+    const publishCompanionDelta = (storedSessionId: string, text: string) => {
+      enqueueCompanionPublication(storedSessionId, "delta", () =>
+        companionPublishAgentEvent({
+          type: "delta",
+          data: { storedSessionId, text },
+        }),
+      );
     };
     void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
       if (payload.method === "steering.consumed") {
@@ -813,12 +835,10 @@ export function AgentWorkspace({
         );
       }
       if (companionPairingEnabled && payload.method === "message.delta" && payload.data.delta) {
-        void publishCompanionDelta(payload.sessionId, payload.data.delta).catch(() => undefined);
+        publishCompanionDelta(payload.sessionId, payload.data.delta);
       }
       if (companionPairingEnabled && payload.method === "tool.completed") {
-        void publishCompanionStatus(payload.sessionId, "running", payload.runId).catch(
-          () => undefined,
-        );
+        publishCompanionStatus(payload.sessionId, "running", payload.runId);
       }
       const companionStatus: CompanionAgentStatus | undefined =
         payload.method === "interruption.requested"
@@ -833,11 +853,11 @@ export function AgentWorkspace({
                   ? "running"
                   : undefined;
       if (companionPairingEnabled && companionStatus) {
-        void publishCompanionStatus(
+        publishCompanionStatus(
           payload.sessionId,
           companionStatus,
           terminal ? payload.runId : undefined,
-        ).catch(() => undefined);
+        );
       }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
