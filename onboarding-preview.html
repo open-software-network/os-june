@@ -351,6 +351,24 @@
               }
               case "p3a_record":
                 return null;
+              // Routine machinery behind the morning brief step. The stub
+              // pretends the bridge is up and creation succeeds, so the
+              // final screen can be exercised end to end in the preview.
+              case "hermes_bridge_status":
+                return { running: true };
+              case "start_hermes_bridge":
+                return { running: true };
+              case "ensure_hermes_bridge_gateway":
+                return null;
+              case "create_hermes_bridge_cron_job":
+                return {
+                  id: "job-morning-brief",
+                  name: args.request && args.request.name,
+                  prompt: args.request && args.request.prompt,
+                  schedule_display: args.request && args.request.schedule,
+                  enabled: true,
+                  state: "scheduled",
+                };
               default:
                 return null;
             }

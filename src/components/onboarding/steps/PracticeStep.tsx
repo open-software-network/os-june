@@ -110,7 +110,7 @@ export function DictationPracticeStep({
       </div>
       {capture.error ? <p className="welcome-status">{capture.error}</p> : null}
       <StepActions
-        continueLabel="Start using June"
+        continueLabel="Continue"
         onContinue={onContinue}
         continueDisabled={!succeeded}
         onSkip={onContinue}
