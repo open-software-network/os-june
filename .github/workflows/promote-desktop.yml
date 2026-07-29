@@ -387,8 +387,13 @@ jobs:
           # The rc already ran lint/test/test:rust at this exact commit, so the
           # only change here is the version string (rc -> clean); no need to
           # re-run the suite. set-build-version accepts the plain X.Y.Z too.
-          node scripts/set-build-version.mjs "$VERSION"
-          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          node .pnpm-policy/scripts/set-build-version.mjs "$VERSION"
+          cargo metadata \
+            --manifest-path src-tauri/Cargo.toml \
+            --locked \
+            --no-deps \
+            --format-version 1 \
+            > /dev/null
 
       - name: Generate release changelog
         run: |
@@ -1032,12 +1037,18 @@ jobs:
             git checkout -B main origin/main
             current="$(node -e 'process.stdout.write(require("./package.json").version)')"
             if [ "$current" = "$VERSION" ]; then
+              node .pnpm-policy/scripts/set-build-version.mjs --check "$VERSION"
               echo "main is already at v$VERSION; nothing to record."
               exit 0
             fi
             pnpm version:bump "$VERSION"
-            cargo update --workspace --manifest-path src-tauri/Cargo.toml
-            git add package.json pnpm-lock.yaml src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+            cargo metadata \
+              --manifest-path src-tauri/Cargo.toml \
+              --locked \
+              --no-deps \
+              --format-version 1 \
+              > /dev/null
+            git add package.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
             git commit -m "release: v$VERSION"
             if git push origin HEAD:main; then
               echo "Recorded release: v$VERSION on main."
