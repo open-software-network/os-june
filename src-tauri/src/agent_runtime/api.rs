@@ -664,6 +664,16 @@ pub async fn cancel_agent_run(
 ) -> Result<(), AppError> {
     let repository = repository(&app).await?;
     let run = repository.get_run(&run_id).await?;
+    if run.status == "waiting_for_user" {
+        repository.cancel_waiting_run(&run.id).await?;
+        if let Err(error) =
+            crate::routines::mark_agent_run_terminal(&repository.pool, &run.id).await
+        {
+            tracing::warn!(agent_run_id = %run.id, error_code = %error.code, "routine waiting-run cancellation projection failed");
+        }
+        crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
+        return Ok(());
+    }
     host.request("run.cancel", &run.session_id, &run.id, json!({}))
         .await?;
     host.cancel_run_streams(&run.id).await;
@@ -1015,7 +1025,7 @@ async fn resolve_agent_interruption_inner(
     if auto_run && resolved_model.is_none() {
         return Err(AppError::new(
             "agent_auto_resume_model_missing",
-            "This approval cannot safely resume because its Auto model was not recorded. Retry the agent run.",
+            "This older Auto run cannot resume because its model was not recorded. Stop the run to continue.",
         ));
     }
     let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;

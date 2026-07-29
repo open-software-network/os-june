@@ -897,6 +897,62 @@ impl AgentRepository {
         self.get_run(run_id).await
     }
 
+    /// Cancel a run that is durably paused for user input. Paused runs are no
+    /// longer active in the sidecar, so they cannot use the ordinary
+    /// `run.cancel` path. Retire their pending cards in the same transaction
+    /// that releases the session for another turn.
+    pub async fn cancel_waiting_run(&self, run_id: &str) -> Result<AgentRunDto, sqlx::Error> {
+        let run = self.get_run(run_id).await?;
+        if run.status != "waiting_for_user" {
+            return Ok(run);
+        }
+        let timestamp = now();
+        let mut transaction = self.pool.begin().await?;
+        let updated = query(
+            "UPDATE agent_runs
+             SET status = 'cancelled', updated_at = ?, completed_at = ?, error_code = NULL, error_message = NULL
+             WHERE id = ? AND status = 'waiting_for_user'",
+        )
+        .bind(&timestamp)
+        .bind(&timestamp)
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            transaction.rollback().await?;
+            return self.get_run(run_id).await;
+        }
+        query(
+            "UPDATE agent_items
+             SET payload_json = json_set(payload_json, '$.status', 'expired', '$.resolvedAt', ?)
+             WHERE run_id = ?
+               AND kind = 'interruption'
+               AND json_extract(payload_json, '$.status') = 'pending'",
+        )
+        .bind(&timestamp)
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?;
+        query(
+            "UPDATE agent_sessions
+             SET status = 'idle', updated_at = ?, last_error = NULL
+             WHERE id = ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_runs
+                   WHERE session_id = ?
+                     AND status IN ('queued', 'running', 'waiting_for_user')
+               )",
+        )
+        .bind(&timestamp)
+        .bind(&run.session_id)
+        .bind(&run.session_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_run(run_id).await
+    }
+
     pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
         let now = now();
         let result = query("UPDATE agent_runs SET status = 'interrupted', updated_at = ?, completed_at = ?, error_code = 'runtime_crashed', error_message = ? WHERE status IN ('queued', 'running')")
@@ -1177,6 +1233,67 @@ mod tests {
                 .status,
             "idle"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_waiting_run_expires_its_interruption_and_releases_the_session() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Waiting", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("waiting session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("waiting run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-1",
+                    "kind": "clarification",
+                    "status": "pending",
+                    "question": "Which project?"
+                })),
+                Some("interruption:clarify-1"),
+            )
+            .await
+            .expect("pending interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting status");
+
+        let cancelled = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect("cancel waiting run");
+
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.completed_at.is_some());
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("released session")
+                .status,
+            "idle"
+        );
+        let items = repository.items(&session.id).await.expect("retired items");
+        assert!(matches!(
+            &items[0].payload,
+            AgentItemPayload::Interruption(value)
+                if value.get("status").and_then(serde_json::Value::as_str) == Some("expired")
+                    && value.get("resolvedAt").and_then(serde_json::Value::as_str).is_some()
+        ));
     }
 
     #[tokio::test]
