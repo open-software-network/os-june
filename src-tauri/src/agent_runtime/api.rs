@@ -12,6 +12,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
@@ -685,8 +686,12 @@ pub async fn retry_agent_run(
         })?;
     let prompt = message.content;
     let workspace = authoritative_session_workspace(&app, &repository, &session.id).await?;
-    let prepared_attachments =
-        prepare_persisted_attachments(&message.attachments, Path::new(&workspace)).await;
+    let prepared_attachments = prepare_persisted_attachments(
+        &message.attachments,
+        Path::new(&workspace),
+        PersistedAttachmentPolicy::RetryStrict,
+    )
+    .await?;
     let original_attachment_paths = prepared_attachments
         .iter()
         .map(|(original_path, _)| original_path.clone())
@@ -1488,7 +1493,7 @@ async fn run_params(
         request.excluded_history_run_id,
         Path::new(request.workspace),
     )
-    .await;
+    .await?;
     if !supports_vision {
         for item in &mut history {
             if let Some(object) = item.as_object_mut() {
@@ -1754,7 +1759,7 @@ async fn normalized_runtime_history(
     items: Vec<AgentItemDto>,
     excluded_run_id: Option<&str>,
     workspace: &Path,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, AppError> {
     let mut history = Vec::new();
     for mut item in items {
         if item.run_id.as_deref() == excluded_run_id {
@@ -1764,12 +1769,15 @@ async fn normalized_runtime_history(
             AgentItemPayload::UserMessage(message)
             | AgentItemPayload::AssistantMessage(message)
             | AgentItemPayload::SystemMessage(message) => {
-                message.attachments =
-                    prepare_persisted_attachments(&message.attachments, workspace)
-                        .await
-                        .into_iter()
-                        .map(|(_, attachment)| attachment)
-                        .collect();
+                message.attachments = prepare_persisted_attachments(
+                    &message.attachments,
+                    workspace,
+                    PersistedAttachmentPolicy::HistoricalBestEffort,
+                )
+                .await?
+                .into_iter()
+                .map(|(_, attachment)| attachment)
+                .collect();
             }
             _ => {}
         }
@@ -1777,7 +1785,7 @@ async fn normalized_runtime_history(
             history.push(item);
         }
     }
-    history
+    Ok(history)
 }
 
 fn session_json(session: super::AgentSessionDto) -> Value {
@@ -1942,55 +1950,140 @@ async fn prepare_attachments(
     }
     let mut attachments = Vec::with_capacity(source_paths.len());
     for source_path in source_paths {
-        attachments.push(prepare_attachment(source_path, workspace, None).await?);
+        attachments.push(
+            prepare_attachment(source_path, workspace, None)
+                .await
+                .map_err(AttachmentStageError::into_app_error)?,
+        );
     }
     Ok(attachments)
+}
+
+enum AttachmentStageError {
+    SourceUnavailable(AppError),
+    Fatal(AppError),
+}
+
+impl AttachmentStageError {
+    fn source_unavailable(error: AppError) -> Self {
+        Self::SourceUnavailable(error)
+    }
+
+    fn into_app_error(self) -> AppError {
+        match self {
+            Self::SourceUnavailable(error) | Self::Fatal(error) => error,
+        }
+    }
+}
+
+fn retry_attachment_unavailable() -> AppError {
+    AppError::new(
+        "agent_attachment_unavailable",
+        "One or more attachments from this message are no longer available. Restore them before retrying.",
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PersistedAttachmentPolicy {
+    RetryStrict,
+    HistoricalBestEffort,
+}
+
+async fn copy_attachment_file(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), AttachmentStageError> {
+    let mut source_file = tokio::fs::File::open(source).await.map_err(|error| {
+        AttachmentStageError::source_unavailable(AppError::new(
+            "agent_workspace_failed",
+            error.to_string(),
+        ))
+    })?;
+    let mut destination_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .await
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let copy = async {
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = source_file.read(&mut buffer).await.map_err(|error| {
+                AttachmentStageError::source_unavailable(AppError::new(
+                    "agent_workspace_failed",
+                    error.to_string(),
+                ))
+            })?;
+            if read == 0 {
+                break;
+            }
+            destination_file
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+        }
+        destination_file
+            .flush()
+            .await
+            .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+        Ok(())
+    }
+    .await;
+    if copy.is_err() {
+        let _ = tokio::fs::remove_file(destination).await;
+    }
+    copy
 }
 
 async fn prepare_attachment(
     source_path: &str,
     workspace: &Path,
     stable_key: Option<&str>,
-) -> Result<MessageAttachmentPayload, AppError> {
+) -> Result<MessageAttachmentPayload, AttachmentStageError> {
     let destination_root = workspace.join("attachments");
     tokio::fs::create_dir_all(&destination_root)
         .await
-        .map_err(io_error)?;
-    let canonical_workspace = workspace.canonicalize().map_err(io_error)?;
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
     let destination_metadata = tokio::fs::symlink_metadata(&destination_root)
         .await
-        .map_err(io_error)?;
-    let destination_root = destination_root.canonicalize().map_err(io_error)?;
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let destination_root = destination_root
+        .canonicalize()
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
     if destination_metadata.file_type().is_symlink()
         || !destination_metadata.is_dir()
         || !destination_root.starts_with(&canonical_workspace)
     {
-        return Err(AppError::new(
+        return Err(AttachmentStageError::Fatal(AppError::new(
             "agent_attachment_invalid",
             "Attachment destination is outside the session workspace.",
-        ));
+        )));
     }
     let source = PathBuf::from(source_path)
         .canonicalize()
-        .map_err(io_error)?;
+        .map_err(|error| AttachmentStageError::source_unavailable(io_error(error)))?;
     if !source.is_file() {
-        return Err(AppError::new(
+        return Err(AttachmentStageError::source_unavailable(AppError::new(
             "agent_attachment_invalid",
             "Attachment source is not a file.",
-        ));
+        )));
     }
     let name = source
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            AppError::new(
+            AttachmentStageError::source_unavailable(AppError::new(
                 "agent_attachment_invalid",
                 "Attachment source has no valid file name.",
-            )
+            ))
         })?
         .to_string();
-    let destination = if source.starts_with(&canonical_workspace) {
+    let source_in_workspace = source.starts_with(&canonical_workspace);
+    let destination = if source_in_workspace {
         source
     } else {
         let destination_name = match stable_key {
@@ -2009,26 +2102,32 @@ async fn prepare_attachment(
         let destination = destination_root.join(destination_name);
         if !destination.exists() {
             let temporary = destination_root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-            tokio::fs::copy(&source, &temporary)
-                .await
-                .map_err(io_error)?;
+            copy_attachment_file(&source, &temporary).await?;
             if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
                 let _ = tokio::fs::remove_file(&temporary).await;
                 if !destination.exists() {
-                    return Err(io_error(error));
+                    return Err(AttachmentStageError::Fatal(io_error(error)));
                 }
             }
         }
-        let destination = destination.canonicalize().map_err(io_error)?;
+        let destination = destination
+            .canonicalize()
+            .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
         if !destination.starts_with(&canonical_workspace) || !destination.is_file() {
-            return Err(AppError::new(
+            return Err(AttachmentStageError::Fatal(AppError::new(
                 "agent_attachment_invalid",
                 "Attachment destination is outside the session workspace.",
-            ));
+            )));
         }
         destination
     };
-    let metadata = tokio::fs::metadata(&destination).await.map_err(io_error)?;
+    let metadata = match tokio::fs::metadata(&destination).await {
+        Ok(metadata) => metadata,
+        Err(error) if source_in_workspace => {
+            return Err(AttachmentStageError::source_unavailable(io_error(error)));
+        }
+        Err(error) => return Err(AttachmentStageError::Fatal(io_error(error))),
+    };
     Ok(MessageAttachmentPayload {
         id: uuid::Uuid::new_v4().to_string(),
         name,
@@ -2043,16 +2142,29 @@ async fn prepare_attachment(
 async fn prepare_persisted_attachments(
     attachments: &[MessageAttachmentPayload],
     workspace: &Path,
-) -> Vec<(String, MessageAttachmentPayload)> {
+    policy: PersistedAttachmentPolicy,
+) -> Result<Vec<(String, MessageAttachmentPayload)>, AppError> {
     let mut prepared = Vec::new();
-    for attachment in attachments.iter().filter(|attachment| attachment.available) {
+    for attachment in attachments {
+        if !attachment.available {
+            if matches!(policy, PersistedAttachmentPolicy::RetryStrict) {
+                return Err(retry_attachment_unavailable());
+            }
+            continue;
+        }
         let original_path = attachment.path.clone();
         let stable_key = format!("{}\0{}", attachment.id, original_path);
-        if let Ok(copied) = prepare_attachment(&original_path, workspace, Some(&stable_key)).await {
-            prepared.push((original_path, copied));
+        match prepare_attachment(&original_path, workspace, Some(&stable_key)).await {
+            Ok(copied) => prepared.push((original_path, copied)),
+            Err(AttachmentStageError::SourceUnavailable(_))
+                if matches!(policy, PersistedAttachmentPolicy::HistoricalBestEffort) => {}
+            Err(AttachmentStageError::SourceUnavailable(_)) => {
+                return Err(retry_attachment_unavailable());
+            }
+            Err(error) => return Err(error.into_app_error()),
         }
     }
-    prepared
+    Ok(prepared)
 }
 
 async fn persist_attachments(
@@ -2321,13 +2433,14 @@ mod tests {
         let source_directory = tempfile::tempdir().expect("source directory");
         let workspace = tempfile::tempdir().expect("workspace");
         let source = source_directory.path().join("historical.png");
+        let missing = source_directory.path().join("missing.png");
         tokio::fs::write(&source, b"old image")
             .await
             .expect("historical attachment");
-        let attachment = |id: &str, available: bool| MessageAttachmentPayload {
+        let attachment = |id: &str, path: &Path, available: bool| MessageAttachmentPayload {
             id: id.into(),
             name: "historical.png".into(),
-            path: source.to_string_lossy().into_owned(),
+            path: path.to_string_lossy().into_owned(),
             mime_type: Some("image/png".into()),
             size_bytes: 1,
             available,
@@ -2341,13 +2454,21 @@ mod tests {
             payload: AgentItemPayload::UserMessage(super::super::MessagePayload {
                 role: "user".into(),
                 content: "Review this.".into(),
-                attachments: vec![attachment("available", true), attachment("stale", false)],
+                attachments: vec![
+                    attachment("available", &source, true),
+                    attachment("stale-positive", &missing, true),
+                    attachment("unavailable", &source, false),
+                ],
             }),
             external_id: None,
             created_at: "2026-07-24T12:00:00Z".into(),
         };
-        let history = normalized_runtime_history(vec![item.clone()], None, workspace.path()).await;
-        let repeated = normalized_runtime_history(vec![item], None, workspace.path()).await;
+        let history = normalized_runtime_history(vec![item.clone()], None, workspace.path())
+            .await
+            .expect("historical normalization");
+        let repeated = normalized_runtime_history(vec![item], None, workspace.path())
+            .await
+            .expect("repeated historical normalization");
 
         let normalized = PathBuf::from(
             history[0]["attachments"][0]["path"]
@@ -2379,6 +2500,65 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn retry_attachment_preparation_fails_when_any_attachment_is_unavailable() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let source = source_directory.path().join("available.md");
+        let missing = source_directory.path().join("missing.md");
+        tokio::fs::write(&source, "available")
+            .await
+            .expect("available attachment");
+        let attachment = |id: &str, path: &Path, available: bool| MessageAttachmentPayload {
+            id: id.into(),
+            name: "brief.md".into(),
+            path: path.to_string_lossy().into_owned(),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: 1,
+            available,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+
+        for attachments in [
+            vec![
+                attachment("available", &source, true),
+                attachment("missing", &missing, true),
+            ],
+            vec![attachment("marked-unavailable", &source, false)],
+        ] {
+            let error = prepare_persisted_attachments(
+                &attachments,
+                workspace.path(),
+                PersistedAttachmentPolicy::RetryStrict,
+            )
+            .await
+            .expect_err("retry must preserve its complete attachment context");
+
+            assert_eq!(error.code, "agent_attachment_unavailable");
+        }
+    }
+
+    #[tokio::test]
+    async fn attachment_copy_classifies_a_source_open_race_as_unavailable() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let destination_directory = tempfile::tempdir().expect("destination directory");
+        let source = source_directory.path().join("removed.md");
+        let destination = destination_directory.path().join("copy.md");
+        tokio::fs::write(&source, "removed")
+            .await
+            .expect("source attachment");
+        tokio::fs::remove_file(&source)
+            .await
+            .expect("remove source before open");
+
+        let error = copy_attachment_file(&source, &destination)
+            .await
+            .expect_err("source open failures must remain best-effort eligible");
+
+        assert!(matches!(error, AttachmentStageError::SourceUnavailable(_)));
+        assert!(!destination.exists());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn attachment_staging_rejects_a_symlinked_destination_directory() {
@@ -2405,6 +2585,24 @@ mod tests {
                 .count(),
             0
         );
+
+        let persisted = MessageAttachmentPayload {
+            id: "attachment-1".into(),
+            name: "brief.md".into(),
+            path: source.to_string_lossy().into_owned(),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: 7,
+            available: true,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let error = prepare_persisted_attachments(
+            &[persisted],
+            workspace.path(),
+            PersistedAttachmentPolicy::HistoricalBestEffort,
+        )
+        .await
+        .expect_err("historical replay cannot suppress a containment failure");
+        assert_eq!(error.code, "agent_attachment_invalid");
     }
 
     #[test]
