@@ -275,10 +275,12 @@ export type StartAgentRunRequest = {
   workspacePath: string;
   enabledSkillIds: string[];
   attachments: string[];
+  attachmentMetadata?: Array<{ name: string; mediaType?: string }>;
 };
 
 export type ResolveAgentInterruptionRequest = {
   interruptionId: string;
+  runId: string;
   resolution:
     | { kind: "approval"; choice: "once" | "session" | "always" | "deny" }
     | { kind: "clarification"; answer: string }

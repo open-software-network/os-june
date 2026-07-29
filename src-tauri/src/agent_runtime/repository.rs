@@ -2,6 +2,7 @@ use super::domain::{
     AgentArtifactDto, AgentItemDto, AgentItemPayload, AgentRunDto, AgentSafetyMode,
     AgentSessionDto, AgentSkillDto,
 };
+use crate::domain::types::AppError;
 use chrono::{SecondsFormat, Utc};
 use sqlx::{query::query, row::Row};
 use sqlx_sqlite::{SqlitePool, SqliteRow};
@@ -195,6 +196,25 @@ impl AgentRepository {
         .fetch_one(&self.pool)
         .await?;
         Ok(run_from_row(row))
+    }
+
+    pub async fn pending_interruption_ids(&self, run_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows = query(
+            "SELECT json_extract(payload_json, '$.id') AS interruption_id
+             FROM agent_items
+             WHERE run_id = ?
+               AND kind = 'interruption'
+               AND json_extract(payload_json, '$.status') = 'pending'
+             ORDER BY interruption_id",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.get::<Option<String>, _>("interruption_id"))
+            .filter(|id| !id.is_empty())
+            .collect())
     }
 
     pub async fn reset_run_sequence_for_resume(&self, run_id: &str) -> Result<(), sqlx::Error> {
@@ -408,9 +428,13 @@ impl AgentRepository {
 
         if let Some(row) = query(
             "SELECT id, sequence, payload_json, created_at
-             FROM agent_items WHERE external_id = ?",
+             FROM agent_items
+             WHERE external_id = ? AND session_id = ? AND run_id = ?
+               AND kind = 'assistant_message'",
         )
         .bind(external_id)
+        .bind(session_id)
+        .bind(run_id)
         .fetch_optional(&mut *transaction)
         .await?
         {
@@ -530,16 +554,26 @@ impl AgentRepository {
         let payload_json = serde_json::to_string(&payload)
             .map_err(|error| sqlx::Error::Encode(Box::new(error)))?;
         let item = if let Some(row) =
-            query("SELECT id, sequence, created_at FROM agent_items WHERE external_id = ?")
+            query("SELECT id FROM agent_items WHERE external_id = ? AND session_id = ? AND run_id = ? AND kind = 'assistant_message'")
                 .bind(external_id)
+                .bind(session_id)
+                .bind(run_id)
                 .fetch_optional(&mut *transaction)
                 .await?
         {
             let id: String = row.get("id");
-            let display_sequence: i64 = row.get("sequence");
-            let created_at: String = row.get("created_at");
-            query("UPDATE agent_items SET payload_json = ?, external_id = NULL WHERE id = ?")
+            let display_sequence: i64 = query(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 AS next_sequence
+                 FROM agent_items WHERE session_id = ?",
+            )
+            .bind(session_id)
+            .fetch_one(&mut *transaction)
+            .await?
+            .get("next_sequence");
+            query("UPDATE agent_items SET sequence = ?, payload_json = ?, external_id = NULL, created_at = ? WHERE id = ?")
+                .bind(display_sequence)
                 .bind(&payload_json)
+                .bind(&now)
                 .bind(&id)
                 .execute(&mut *transaction)
                 .await?;
@@ -550,7 +584,7 @@ impl AgentRepository {
                 sequence: display_sequence,
                 payload: AgentItemPayload::AssistantMessage(payload),
                 external_id: None,
-                created_at,
+                created_at: now.clone(),
             }
         } else {
             let id = Uuid::new_v4().to_string();
@@ -883,6 +917,68 @@ impl AgentRepository {
         self.get_run(run_id).await
     }
 
+    /// Cancel a run that is durably paused for user input. Paused runs are no
+    /// longer active in the sidecar, so they cannot use the ordinary
+    /// `run.cancel` path. Retire their pending cards in the same transaction
+    /// that releases the session for another turn.
+    pub async fn cancel_waiting_run(&self, run_id: &str) -> Result<Option<AgentRunDto>, AppError> {
+        let run = self.get_run(run_id).await?;
+        if run.status != "waiting_for_user" {
+            return Ok(None);
+        }
+        let timestamp = now();
+        let mut transaction = self.pool.begin().await?;
+        let retired = query(
+            "UPDATE agent_items
+             SET payload_json = json_set(payload_json, '$.status', 'expired', '$.resolvedAt', ?)
+             WHERE run_id = ?
+               AND kind = 'interruption'
+               AND json_extract(payload_json, '$.status') = 'pending'",
+        )
+        .bind(&timestamp)
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if retired == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        let updated = query(
+            "UPDATE agent_runs
+             SET status = 'cancelled', updated_at = ?, completed_at = ?, error_code = NULL, error_message = NULL
+             WHERE id = ? AND status = 'waiting_for_user'",
+        )
+        .bind(&timestamp)
+        .bind(&timestamp)
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        query(
+            "UPDATE agent_sessions
+             SET status = 'idle', updated_at = ?, last_error = NULL
+             WHERE id = ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM agent_runs
+                   WHERE session_id = ?
+                     AND status IN ('queued', 'running', 'waiting_for_user')
+               )",
+        )
+        .bind(&timestamp)
+        .bind(&run.session_id)
+        .bind(&run.session_id)
+        .execute(&mut *transaction)
+        .await?;
+        crate::routines::project_agent_run_terminal(&mut transaction, run_id, &timestamp).await?;
+        transaction.commit().await?;
+        self.get_run(run_id).await.map(Some).map_err(Into::into)
+    }
+
     pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
         let now = now();
         let result = query("UPDATE agent_runs SET status = 'interrupted', updated_at = ?, completed_at = ?, error_code = 'runtime_crashed', error_message = ? WHERE status IN ('queued', 'running')")
@@ -1163,6 +1259,258 @@ mod tests {
                 .status,
             "idle"
         );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_waiting_run_expires_its_interruption_and_releases_the_session() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Waiting", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("waiting session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("waiting run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-1",
+                    "kind": "clarification",
+                    "status": "pending",
+                    "question": "Which project?"
+                })),
+                Some("interruption:clarify-1"),
+            )
+            .await
+            .expect("pending interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting status");
+
+        let cancelled = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect("cancel waiting run")
+            .expect("cancellation won the pending interruption race");
+
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.completed_at.is_some());
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("released session")
+                .status,
+            "idle"
+        );
+        let items = repository.items(&session.id).await.expect("retired items");
+        assert!(matches!(
+            &items[0].payload,
+            AgentItemPayload::Interruption(value)
+                if value.get("status").and_then(serde_json::Value::as_str) == Some("expired")
+                    && value.get("resolvedAt").and_then(serde_json::Value::as_str).is_some()
+        ));
+    }
+
+    #[tokio::test]
+    async fn waiting_run_cancellation_loses_to_an_already_resolved_interruption() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Resuming", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("resuming session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("resuming run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-1",
+                    "kind": "clarification",
+                    "status": "resolved",
+                    "question": "Which project?",
+                    "answer": "June"
+                })),
+                Some("interruption:clarify-1"),
+            )
+            .await
+            .expect("resolved interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting status");
+
+        let cancelled = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect("race check");
+
+        assert!(cancelled.is_none());
+        assert_eq!(
+            repository
+                .get_run(&run.id)
+                .await
+                .expect("unchanged run")
+                .status,
+            "waiting_for_user"
+        );
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("unchanged session")
+                .status,
+            "waiting_for_user"
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_run_cancellation_rolls_back_when_routine_claim_release_fails() {
+        let repository = repository().await;
+        crate::routines::create(
+            &repository.pool,
+            crate::routines::CreateAgentRoutineRequest {
+                id: Some("routine-atomic".into()),
+                legacy_job_id: None,
+                name: Some("Atomic cancellation".into()),
+                prompt: "Prepare a brief".into(),
+                schedule: "every 1h".into(),
+                timezone: "UTC".into(),
+                repeat: None,
+                deliver: None,
+                model: "auto".into(),
+                safety_mode: Some(AgentSafetyMode::Sandboxed),
+                state: None,
+                enabled: None,
+                metadata: serde_json::json!({}),
+                enabled_toolsets: None,
+            },
+        )
+        .await
+        .expect("routine");
+        let claim = crate::routines::claim(&repository.pool, "routine-atomic", "manual", false)
+            .await
+            .expect("claim")
+            .expect("available claim");
+        let session = repository
+            .create_session(
+                "Atomic cancellation",
+                "auto",
+                AgentSafetyMode::Sandboxed,
+                None,
+            )
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-atomic",
+                    "kind": "clarification",
+                    "status": "pending",
+                    "question": "Which project?"
+                })),
+                Some("interruption:clarify-atomic"),
+            )
+            .await
+            .expect("pending interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting run");
+        let timestamp = now();
+        query(
+            "UPDATE routine_runs
+             SET agent_session_id = ?, agent_run_id = ?, status = 'waiting_for_user',
+                 started_at = ?, updated_at = ?
+             WHERE id = ? AND claim_token = ?",
+        )
+        .bind(&session.id)
+        .bind(&run.id)
+        .bind(&timestamp)
+        .bind(&timestamp)
+        .bind(&claim.routine_run_id)
+        .bind(&claim.token)
+        .execute(&repository.pool)
+        .await
+        .expect("attach run");
+        query("UPDATE routines SET schedule = 'not a schedule' WHERE id = 'routine-atomic'")
+            .execute(&repository.pool)
+            .await
+            .expect("invalid schedule");
+
+        let error = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect_err("claim release must fail");
+
+        assert_eq!(error.code, "routine_schedule_invalid");
+        assert_eq!(
+            repository
+                .get_run(&run.id)
+                .await
+                .expect("unchanged run")
+                .status,
+            "waiting_for_user"
+        );
+        assert!(matches!(
+            &repository.items(&session.id).await.expect("items")[0].payload,
+            AgentItemPayload::Interruption(value)
+                if value.get("status").and_then(serde_json::Value::as_str) == Some("pending")
+        ));
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("unchanged session")
+                .status,
+            "waiting_for_user"
+        );
+        let routine_run = crate::routines::list_runs(&repository.pool, Some("routine-atomic"))
+            .await
+            .expect("routine runs")
+            .remove(0);
+        assert_eq!(routine_run.status, "waiting_for_user");
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-atomic'")
+                .fetch_one(&repository.pool)
+                .await
+                .expect("routine claim")
+                .get("claim_token");
+        assert_eq!(claim_token.as_deref(), Some(claim.token.as_str()));
     }
 
     #[tokio::test]

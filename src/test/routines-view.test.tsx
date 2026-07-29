@@ -425,7 +425,15 @@ describe("RoutinesView templates and creation", () => {
         schedule: "0 9 * * *",
         name: undefined,
         unrestricted: false,
-        enabledToolsets: ["web", "vision", "todo", "memory", "session_search", "context_engine"],
+        enabledToolsets: [
+          "web",
+          "vision",
+          "skills",
+          "todo",
+          "memory",
+          "session_search",
+          "context_engine",
+        ],
       }),
     );
     // Creation lands on the new routine's detail page.
@@ -1054,6 +1062,51 @@ describe("RoutinesView detail", () => {
     expect(screen.getByRole("button", { name: "Queued" })).toBeDisabled();
   });
 
+  it("refreshes the open routine when an agent run finishes", async () => {
+    mocks.listRoutines
+      .mockResolvedValueOnce([
+        job({
+          last_status: "error",
+          last_error: "The previous run failed.",
+        }),
+      ])
+      .mockResolvedValueOnce([
+        job({
+          last_run_at: "2026-06-10T09:00:30Z",
+          last_status: "ok",
+          last_error: null,
+        }),
+      ]);
+    renderView();
+    await openDetail("Morning summary");
+
+    expect(screen.getByText("Last run failed.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(eventMocks.listen).toHaveBeenCalledWith(
+        "june://agent-runtime-event",
+        expect.any(Function),
+      ),
+    );
+    const runtimeListener = eventMocks.listen.mock.calls.find(
+      ([eventName]) => eventName === "june://agent-runtime-event",
+    )?.[1] as ((event: { payload: { method: string } }) => void) | undefined;
+    expect(runtimeListener).toBeDefined();
+
+    await act(async () => {
+      runtimeListener?.({ payload: { method: "run.started" } });
+      await Promise.resolve();
+    });
+    expect(mocks.listRoutines).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      runtimeListener?.({ payload: { method: "run.completed" } });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.queryByText("Last run failed.")).toBeNull());
+    expect(mocks.listRoutines).toHaveBeenCalledTimes(2);
+  });
+
   it("disables run now with the funding explanation while credits are depleted", async () => {
     mocks.listRoutines.mockResolvedValue([job()]);
     renderView({ creditActionsDisabledReason: "Add credits before running a routine." });
@@ -1246,9 +1299,11 @@ describe("RoutinesView run history", () => {
     expect(within(history).getByText("Running now")).toBeInTheDocument();
   });
 
-  it("refreshes run history while the routines view stays open", async () => {
+  it("refreshes run history and routine status while the view stays open", async () => {
     vi.useFakeTimers();
-    mocks.listRoutines.mockResolvedValue([job()]);
+    mocks.listRoutines
+      .mockResolvedValueOnce([job({ last_status: "error" })])
+      .mockResolvedValueOnce([job({ last_status: "ok" })]);
     adapterMocks.listScheduledRunSessions
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([run({ active: true, preview: "" })]);
@@ -1259,12 +1314,80 @@ describe("RoutinesView run history", () => {
     });
     const history = screen.getByRole("region", { name: "Run history" });
     expect(within(history).getByText(/No runs yet/)).toBeInTheDocument();
+    expect(screen.getByText("Last run failed")).toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10000);
     });
 
     expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Last run failed")).toBeNull();
+  });
+
+  it("keeps polling when terminal event listener registration fails", async () => {
+    vi.useFakeTimers();
+    eventMocks.listen.mockRejectedValueOnce(new Error("event listener unavailable"));
+    mocks.listRoutines
+      .mockResolvedValueOnce([job({ last_status: "error" })])
+      .mockResolvedValueOnce([job({ last_status: "ok" })]);
+    adapterMocks.listScheduledRunSessions
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([run({ active: true, preview: "" })]);
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Last run failed")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+
+    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.queryByText("Last run failed")).toBeNull();
+  });
+
+  it("does not let a background refresh supersede a visible load", async () => {
+    vi.useFakeTimers();
+    let resolveFirstLoad: (routines: RoutineJob[]) => void = () => {};
+    mocks.listRoutines.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirstLoad = resolve;
+      }),
+    );
+    renderView();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+    expect(mocks.listRoutines).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstLoad([job({ name: "Visible routine" })]);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("Visible routine")).toBeInTheDocument();
+  });
+
+  it("keeps usable routine data when a background refresh fails", async () => {
+    vi.useFakeTimers();
+    mocks.listRoutines
+      .mockResolvedValueOnce([job()])
+      .mockRejectedValueOnce(new Error("temporary refresh failure"));
+    renderView();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByText("Morning summary")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
+
+    expect(screen.getByText("Morning summary")).toBeInTheDocument();
+    expect(screen.queryByText("temporary refresh failure")).toBeNull();
   });
 
   it("ignores stale run history responses after a newer refresh", async () => {

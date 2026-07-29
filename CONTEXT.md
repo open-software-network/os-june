@@ -197,6 +197,17 @@ non-focusable dictation HUD.
 On macOS it is also authoritative for Accessibility permission state.
 _Avoid_: dictation app, keyboard helper.
 
+**Dictation take**:
+One helper-owned dictation capture from `listening_started` until its text is
+delivered or the capture is discarded. June gives each take an opaque
+identity before asking the helper to start; a helper paired with an older
+coordinator mints the identity itself. The identity lets June cancel pending
+dictation transcription, cleanup, history, and delivery without affecting a
+newer take. Cancellation is terminal; a late result never regains delivery
+authority.
+_Avoid_: recording session (that is note-backed), utterance (that identifies a
+metered June API request, not the user-visible capture lifecycle).
+
 **Paste target**:
 The destination where a finished dictation transcript is delivered. For native
 paste, it is the exact app window pinned when recording stops and never
@@ -300,12 +311,19 @@ per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
 
-**Completed session**:
-An agent session the user has marked done. Completion is **June-owned local
-state** keyed by the stored session id and set only by June; completed sessions
-move out of the active sidebar list into a distinct Completed section. See
-[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md).
-_Avoid_: archived (the product action is completion).
+**Archived session**:
+An agent session the user has archived out of the live lists (the product
+verb is **archive**; renamed from "completed" 2026-07-27). The mark is
+**June-owned local state** keyed by the stored session id, persisted as
+`completed_sessions(session_id, completed_at)`, and set only by June.
+Archived sessions leave the sidebar entirely and surface under the sessions
+page's Archived status filter. Distinct from both the runtime session
+*status* `completed` (the agent finished running) and Hermes' `archived`
+flag (a runtime read-filter June never writes). See
+[ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md),
+including its 2026-07-27 addendum.
+_Avoid_: completed (in user-facing copy; internal persistence names keep
+completed_at), "archived" for the Hermes flag without saying Hermes.
 
 **Agent run**:
 The user-initiated execution that starts with `run.start` and ends with a
@@ -376,25 +394,25 @@ is UI; the reference is the token).
 
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
-group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, `june_image`, `june_recorder`, `june_video`, and the connector
-servers `june_gmail`, `june_gcal`, `june_linear`, and `june_notion`, plus their
-`*_actions` counterparts). `june_notion` is the hosted Notion MCP read toolset;
-`june_notion_actions` is the separately approval-gated create/update toolset.
+group; an MCP server is an external tool provider (June ships no June-managed
+MCP servers after ADR-0040; June-owned capabilities are host tools in the agent
+loop). User-supplied external MCP servers remain supported through the `mcp_`
+dispatch prefix.
 _Avoid_: using "tool" for all three.
 
 **Obsidian plugin**:
 The June-owned local capability for discovering the user-selected Obsidian vault
-at task time through the `june_obsidian` MCP server. The vault selection is
+at task time through the `get_obsidian_vault` host tool. The vault selection is
 stored in June-owned `obsidian.json`; it is not a runtime environment variable.
-Discovery is current state, not write authorization. Disconnect removes future
-discovery but cannot revoke a path already disclosed to a live unrestricted
-runtime.
-_Avoid_: Obsidian connector, `OBSIDIAN_VAULT_PATH`.
+Discovery is current state, not write authorization. In Sandboxed mode, only
+`list_files`, `read_file`, and `search_files` may access the vault; writes are
+host-denied. Disconnect removes future discovery but cannot revoke a path
+already disclosed to a live unrestricted runtime.
+_Avoid_: Obsidian connector, `OBSIDIAN_VAULT_PATH`, `june_obsidian` MCP server.
 
 **Plugin**:
 A user-facing capability bundle in June's Plugins area. A plugin may combine
-Skills, Toolsets, app-owned MCP servers, routine templates, and optional
+Skills, Toolsets, June-owned host tools, routine templates, and optional
 Connectors around one job. Enabling or installing the bundle is distinct from
 connecting a third-party account and from choosing a routine's trust mode.
 The ranked portfolio and shared product contract live in
@@ -647,6 +665,13 @@ A versioned, capability-scoped, expiring application message encrypted between
 linked devices. Only routing metadata and ciphertext are visible to the
 **companion relay**.
 _Avoid_: raw command, Hermes frame, Tauri command.
+
+**Companion media result**:
+A bounded metadata reference to a canonical image or video artifact generated
+by June's agent for one stored session and run. The reference is not the media
+itself; a linked device with `mediaRead` fetches the verified full artifact in
+chunks.
+_Avoid_: media upload, attachment path, inline media.
 
 ### Desktop shell & updates
 

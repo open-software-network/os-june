@@ -423,6 +423,37 @@ export function withJuneHomeContext(prompt: string): string {
   ].join("\n");
 }
 
+function normalizedHomeTaskPrompt(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+export function withJuneHomeLatestTaskIntent(
+  standalonePrompt: string,
+  latestMessage: string,
+): string {
+  const resolvedTask = standalonePrompt.trim();
+  const latestRequest = latestMessage.trim();
+  if (!resolvedTask) return latestRequest;
+  if (
+    !latestRequest ||
+    normalizedHomeTaskPrompt(resolvedTask) === normalizedHomeTaskPrompt(latestRequest)
+  ) {
+    return resolvedTask;
+  }
+  return [
+    latestRequest,
+    "",
+    "--- Resolved Home task ---",
+    "The latest Home request above is authoritative.",
+    "Use the standalone task below only to resolve references and add details. If it conflicts with the latest request, follow the latest request.",
+    resolvedTask,
+  ].join("\n");
+}
+
 export function withJuneHomeCurrentResearch(
   prompt: string,
   conversation: JuneHomeConversationContext = { recentMessages: [] },

@@ -7,12 +7,16 @@ use crate::{commands::repositories, db::repositories::Repositories, domain::type
 use futures_util::{SinkExt, StreamExt};
 use june_companion_crypto::Session;
 use june_companion_protocol::{
-    decode_frame, encode_frame, Body, Event, FailureCode, Frame, ProtocolFailure, RelayEnvelope,
-    Response, ResultPayload,
+    decode_frame, decode_peer_hello, encode_frame, Body, Capability, Event, FailureCode, Frame,
+    ProtocolError, ProtocolFailure, RelayEnvelope, Response, ResultPayload,
 };
 use rand::Rng;
 use serde::Serialize;
-use std::{collections::HashMap, sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::atomic::Ordering,
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
@@ -38,6 +42,8 @@ struct PeerSession {
     crypto: Session,
     expected_public_key: [u8; 32],
     pairing_id: Option<Uuid>,
+    observed_capabilities: HashSet<Capability>,
+    advertised_capabilities: HashSet<Capability>,
 }
 
 struct RelayConnectionGuard<'a> {
@@ -89,6 +95,7 @@ impl Drop for InflightOperationGuard {
 impl Drop for RelayConnectionGuard<'_> {
     fn drop(&mut self) {
         self.runtime.relay_connected.store(false, Ordering::Release);
+        self.runtime.clear_peer_capabilities();
         if let Ok(mut sender) = self.runtime.event_sender.lock() {
             *sender = None;
         }
@@ -321,6 +328,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                             let ready = std::mem::take(pending);
                             if !ready.is_empty() {
                                 publish_event(
+                                    &runtime,
                                     &repos,
                                     &identity,
                                     &mut socket,
@@ -333,6 +341,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                         pending.push_str(&text);
                     }
                     event => publish_event(
+                        &runtime,
                         &repos,
                         &identity,
                         &mut socket,
@@ -349,6 +358,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                 for (stored_session_id, text) in pending_deltas.drain() {
                     if text.is_empty() { continue; }
                     publish_event(
+                        &runtime,
                         &repos,
                         &identity,
                         &mut socket,
@@ -380,6 +390,7 @@ fn relay_upgrade_request(
 }
 
 async fn publish_event(
+    runtime: &CompanionRuntime,
     repos: &Repositories,
     identity: &StoredIdentity,
     socket: &mut RelaySocket,
@@ -396,12 +407,16 @@ async fn publish_event(
             .is_some_and(|device| device.revoked_at.is_none());
         if !active {
             peers.remove(&peer_id);
+            runtime.remove_peer_capabilities(peer_id);
             continue;
         }
         let peer = peers
             .get_mut(&peer_id)
             .ok_or_else(|| transport_error("The linked device session disappeared."))?;
         if !peer.crypto.is_transport_ready() {
+            continue;
+        }
+        if !peer_supports_event(peer, &event) {
             continue;
         }
         *outbound_sequence = outbound_sequence.saturating_add(1);
@@ -412,8 +427,9 @@ async fn publish_event(
             event.capability(),
             Body::Event(event.clone()),
         );
-        let encoded = encode_frame(&frame)
-            .map_err(|_| transport_error("The companion event exceeded its size limit."))?;
+        let encoded = encode_outbound_frame(&frame).map_err(|_| {
+            transport_error("The companion event failed outbound protocol validation.")
+        })?;
         let encrypted = peer
             .crypto
             .write(&encoded)
@@ -471,11 +487,11 @@ async fn receive_envelope(
         let handshake_payload = crypto
             .read(&envelope.ciphertext)
             .map_err(|_| transport_error("The linked device handshake was rejected."))?;
-        if !handshake_payload.is_empty() {
-            return Err(transport_error(
-                "The linked device handshake carried unexpected data.",
-            ));
-        }
+        let advertised_capabilities = decode_peer_hello(&handshake_payload)
+            .map_err(|_| transport_error("The linked device capability hello was invalid."))?
+            .capabilities
+            .into_iter()
+            .collect();
         let response = crypto
             .write(&[])
             .map_err(|_| transport_error("The linked device handshake was rejected."))?;
@@ -484,6 +500,8 @@ async fn receive_envelope(
             crypto,
             expected_public_key,
             pairing_id: pairing.map(|(pairing_id, _)| pairing_id),
+            observed_capabilities: HashSet::new(),
+            advertised_capabilities,
         };
         if peer.crypto.is_transport_ready() {
             authenticate_peer(app, repos, &identity.account_user_id, peer_id, &mut peer).await?;
@@ -514,17 +532,21 @@ async fn receive_envelope(
             let handshake_payload = replacement
                 .read(&envelope.ciphertext)
                 .map_err(|_| transport_error("The encrypted companion frame was rejected."))?;
-            if !handshake_payload.is_empty() {
-                return Err(transport_error(
-                    "The linked device handshake carried unexpected data.",
-                ));
-            }
+            let advertised_capabilities = decode_peer_hello(&handshake_payload)
+                .map_err(|_| transport_error("The linked device capability hello was invalid."))?
+                .capabilities
+                .into_iter()
+                .collect();
             let response = replacement
                 .write(&[])
                 .map_err(|_| transport_error("The linked device handshake was rejected."))?;
             send_envelope(socket, identity.device_id, peer_id, response).await?;
             peer.crypto = replacement;
             peer.pairing_id = pairing.map(|(pairing_id, _)| pairing_id);
+            peer.observed_capabilities.clear();
+            peer.advertised_capabilities = advertised_capabilities;
+            app.state::<CompanionRuntime>()
+                .remove_peer_capabilities(peer_id);
             if peer.crypto.is_transport_ready() {
                 authenticate_peer(app, repos, &identity.account_user_id, peer_id, peer).await?;
             }
@@ -553,6 +575,10 @@ async fn receive_envelope(
         .map_err(|_| transport_error("The encrypted companion request is invalid."))?;
     let operation_id = frame.operation_id;
     let capability = frame.capability;
+    peer.observed_capabilities.insert(capability);
+    if capability == Capability::ModelEdit {
+        peer.observed_capabilities.insert(Capability::ModelRead);
+    }
     let _operation_guard = reserve_operation(app, operation_id).await?;
     let result = dispatch_request(app, repos, &identity.account_user_id, peer_id, frame).await;
     let response = match result {
@@ -581,9 +607,9 @@ async fn receive_envelope(
         capability,
         Body::Response(response),
     );
-    let encoded = match encode_frame(&response_frame) {
+    let encoded = match encode_outbound_frame(&response_frame) {
         Ok(encoded) => encoded,
-        Err(_) => encode_frame(&Frame::new(
+        Err(ProtocolError::FrameTooLarge) => encode_outbound_frame(&Frame::new(
             operation_id,
             *outbound_sequence,
             current_time_ms(),
@@ -599,12 +625,32 @@ async fn receive_envelope(
             }),
         ))
         .map_err(|_| transport_error("The companion response exceeded its size limit."))?,
+        Err(_) => {
+            return Err(transport_error(
+                "The companion response failed outbound protocol validation.",
+            ));
+        }
     };
     let encrypted = peer
         .crypto
         .write(&encoded)
         .map_err(|_| transport_error("The companion response could not be encrypted."))?;
     send_envelope(socket, identity.device_id, peer_id, encrypted).await
+}
+
+fn peer_supports_event(peer: &PeerSession, event: &Event) -> bool {
+    match event.capability() {
+        Capability::ModelRead => peer.observed_capabilities.contains(&Capability::ModelRead),
+        Capability::ComputerUseApprove => peer
+            .advertised_capabilities
+            .contains(&Capability::ComputerUseApprove),
+        _ => true,
+    }
+}
+
+fn encode_outbound_frame(frame: &Frame) -> Result<Vec<u8>, ProtocolError> {
+    frame.validate(current_time_ms())?;
+    encode_frame(frame)
 }
 
 async fn reserve_operation(
@@ -650,9 +696,9 @@ async fn authenticate_peer(
     if peer.crypto.remote_static() != Some(&peer.expected_public_key) {
         return Err(transport_error("The linked device identity did not match."));
     }
-    app.state::<CompanionRuntime>()
-        .controller
-        .reset_sequence(&peer_id.to_string());
+    let runtime = app.state::<CompanionRuntime>();
+    runtime.controller.reset_sequence(&peer_id.to_string());
+    runtime.set_peer_capabilities(peer_id, peer.advertised_capabilities.clone());
     repos
         .touch_companion_device(account_user_id, &peer_id.to_string())
         .await?;
@@ -783,11 +829,41 @@ async fn send_envelope(
 fn protocol_failure(error: &AppError) -> ProtocolFailure {
     let code = match error.code.as_str() {
         "unauthorized" => FailureCode::Unauthorized,
-        "companion_replay_rejected" => FailureCode::Replay,
-        "companion_frame_invalid" | "companion_device_name_invalid" => FailureCode::InvalidRequest,
-        "companion_device_not_found" => FailureCode::NotFound,
-        "note_revision_conflict" => FailureCode::Conflict,
-        "companion_note_too_large" => FailureCode::Unsupported,
+        "companion_replay_rejected" | "companion_computer_use_approval_replay" => {
+            FailureCode::Replay
+        }
+        "companion_frame_invalid"
+        | "companion_device_name_invalid"
+        | "companion_computer_use_approval_invalid"
+        | "companion_computer_use_approval_disabled"
+        | "companion_root_invalid"
+        | "companion_browse_invalid"
+        | "companion_browse_cursor_invalid"
+        | "companion_upload_offset_invalid"
+        | "companion_upload_incomplete"
+        | "companion_attachment_invalid"
+        | "companion_identifier_invalid" => FailureCode::InvalidRequest,
+        "companion_device_not_found"
+        | "companion_root_not_found"
+        | "companion_file_not_found"
+        | "companion_upload_not_found"
+        | "companion_attachment_not_found"
+        | "companion_agent_session_not_found"
+        | "companion_media_not_found"
+        | "companion_computer_use_approval_not_found"
+        | "agent_interruption_not_found" => FailureCode::NotFound,
+        "note_revision_conflict" | "companion_upload_conflict" => FailureCode::Conflict,
+        "companion_upload_expired"
+        | "companion_attachment_expired"
+        | "companion_computer_use_approval_expired"
+        | "agent_interruption_expired" => FailureCode::Expired,
+        "companion_root_limit_exceeded"
+        | "companion_file_limit_exceeded"
+        | "companion_upload_limit_exceeded"
+        | "companion_reference_limit_exceeded" => FailureCode::LimitExceeded,
+        "companion_upload_integrity_mismatch" => FailureCode::IntegrityMismatch,
+        "companion_upload_outcome_unknown" => FailureCode::OutcomeUnknown,
+        "companion_note_too_large" | "companion_media_chunk_invalid" => FailureCode::Unsupported,
         "companion_frontend_timeout" => FailureCode::Busy,
         "companion_frontend_unavailable" => FailureCode::MacOffline,
         _ => FailureCode::Internal,
@@ -820,7 +896,10 @@ fn transport_error(message: &str) -> AppError {
 mod tests {
     use super::*;
     use june_companion_crypto::{generate_identity, KEY_BYTES};
-    use june_companion_protocol::Capability;
+    use june_companion_protocol::{
+        encode_peer_hello, AgentStatus, BrowseEntry, Capability, MediaKind, MediaResultReference,
+        Page, PeerHello, ProtocolError, MAX_PAGE_CURSOR_BYTES,
+    };
 
     #[tokio::test]
     #[allow(clippy::result_large_err)]
@@ -885,8 +964,17 @@ mod tests {
         let mut initiator = Session::pairing(true, &mobile.private, &secret).unwrap();
         let mut responder = Session::pairing(false, &desktop.private, &secret).unwrap();
 
-        let first = initiator.write(&[]).unwrap();
-        assert_eq!(responder.read(&first).unwrap(), b"");
+        let hello = encode_peer_hello(&PeerHello {
+            capabilities: vec![Capability::ComputerUseApprove],
+        })
+        .unwrap();
+        let first = initiator.write(&hello).unwrap();
+        assert_eq!(
+            decode_peer_hello(&responder.read(&first).unwrap())
+                .unwrap()
+                .capabilities,
+            vec![Capability::ComputerUseApprove]
+        );
         let second = responder.write(&[]).unwrap();
         assert_eq!(initiator.read(&second).unwrap(), b"");
         let third = initiator.write(&[]).unwrap();
@@ -896,6 +984,22 @@ mod tests {
         assert!(!was_transport_ready);
         assert!(responder.is_transport_ready());
         assert!(plaintext.is_empty());
+    }
+
+    #[test]
+    fn connected_peer_must_advertise_computer_use_approval_support() {
+        let runtime = CompanionRuntime::default();
+        let device_id = Uuid::new_v4();
+
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
+        runtime.set_peer_capabilities(device_id, HashSet::from([Capability::AgentRead]));
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
+        assert!(!runtime.peer_has_capability(device_id, Capability::ComputerUseApprove));
+        runtime.set_peer_capabilities(device_id, HashSet::from([Capability::ComputerUseApprove]));
+        assert!(runtime.has_peer_capability(Capability::ComputerUseApprove));
+        assert!(runtime.peer_has_capability(device_id, Capability::ComputerUseApprove));
+        runtime.remove_peer_capabilities(device_id);
+        assert!(!runtime.has_peer_capability(Capability::ComputerUseApprove));
     }
 
     #[test]
@@ -945,5 +1049,159 @@ mod tests {
             }),
         };
         assert!(should_cache_response(&response));
+    }
+
+    #[test]
+    fn outbound_boundary_rejects_an_overlong_browse_cursor() {
+        let frame = Frame::new(
+            Uuid::new_v4(),
+            1,
+            current_time_ms(),
+            june_companion_protocol::Capability::FilesBrowse,
+            Body::Response(Response {
+                capability: june_companion_protocol::Capability::FilesBrowse,
+                result: ResultPayload::BrowseEntries(Page::<BrowseEntry> {
+                    items: Vec::new(),
+                    next_cursor: Some("x".repeat(MAX_PAGE_CURSOR_BYTES + 1)),
+                }),
+            }),
+        );
+
+        assert!(matches!(
+            encode_outbound_frame(&frame),
+            Err(ProtocolError::InvalidPageSize)
+        ));
+    }
+
+    #[test]
+    fn outbound_boundary_rejects_invalid_media_producer_values() {
+        let frame = Frame::new(
+            Uuid::new_v4(),
+            1,
+            current_time_ms(),
+            Capability::AgentRead,
+            Body::Event(Event::AgentStatus {
+                stored_session_id: "session-1".to_string(),
+                status: AgentStatus::Completed,
+                media: vec![MediaResultReference {
+                    artifact_id: "artifact-1".to_string(),
+                    kind: MediaKind::Image,
+                    media_type: "image/svg/xml".to_string(),
+                    width_px: Some(1),
+                    height_px: Some(1),
+                    duration_ms: None,
+                    size_bytes: 1,
+                }],
+            }),
+        );
+
+        assert!(matches!(
+            encode_outbound_frame(&frame),
+            Err(ProtocolError::InvalidMediaReference)
+        ));
+    }
+
+    #[test]
+    fn companion_file_failures_keep_the_committed_wire_codes() {
+        let cases = [
+            (
+                "companion_upload_limit_exceeded",
+                FailureCode::LimitExceeded,
+                "limit_exceeded",
+            ),
+            (
+                "companion_upload_integrity_mismatch",
+                FailureCode::IntegrityMismatch,
+                "integrity_mismatch",
+            ),
+            ("companion_upload_expired", FailureCode::Expired, "expired"),
+            (
+                "companion_upload_conflict",
+                FailureCode::Conflict,
+                "conflict",
+            ),
+        ];
+
+        for (app_code, expected_code, expected_wire_code) in cases {
+            let failure = protocol_failure(&AppError::new(app_code, "File request failed."));
+
+            assert_eq!(failure.code, expected_code);
+            assert!(!failure.retryable);
+            assert_eq!(
+                serde_json::to_value(&failure).unwrap()["code"],
+                expected_wire_code
+            );
+        }
+    }
+
+    #[test]
+    fn model_events_require_observed_model_capability() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let event = Event::SessionModelChanged {
+            selection: june_companion_protocol::SessionModelSelection {
+                stored_session_id: "session-1".to_string(),
+                model_id: "open-software/auto".to_string(),
+                model_name: "Auto".to_string(),
+                cost_quality: Some(100),
+            },
+        };
+        let mut peer = PeerSession {
+            crypto: Session::linked(false, &desktop.private, &mobile.public).unwrap(),
+            expected_public_key: mobile.public.try_into().unwrap(),
+            pairing_id: None,
+            observed_capabilities: HashSet::new(),
+            advertised_capabilities: HashSet::new(),
+        };
+
+        assert!(!peer_supports_event(&peer, &event));
+        peer.observed_capabilities.insert(Capability::ModelRead);
+        assert!(peer_supports_event(&peer, &event));
+    }
+
+    #[test]
+    fn existing_events_remain_available_without_new_capability_observation() {
+        let mobile = generate_identity().unwrap();
+        let desktop = generate_identity().unwrap();
+        let peer = PeerSession {
+            crypto: Session::linked(false, &desktop.private, &mobile.public).unwrap(),
+            expected_public_key: mobile.public.try_into().unwrap(),
+            pairing_id: None,
+            observed_capabilities: HashSet::new(),
+            advertised_capabilities: HashSet::new(),
+        };
+        let event = Event::AgentStatus {
+            stored_session_id: "session-1".to_string(),
+            status: june_companion_protocol::AgentStatus::Idle,
+            media: Vec::new(),
+        };
+
+        assert!(peer_supports_event(&peer, &event));
+    }
+
+    #[test]
+    fn computer_use_approval_failures_have_stable_wire_codes() {
+        for (error_code, expected) in [
+            (
+                "companion_computer_use_approval_not_found",
+                FailureCode::NotFound,
+            ),
+            (
+                "companion_computer_use_approval_invalid",
+                FailureCode::InvalidRequest,
+            ),
+            (
+                "companion_computer_use_approval_expired",
+                FailureCode::Expired,
+            ),
+            (
+                "companion_computer_use_approval_replay",
+                FailureCode::Replay,
+            ),
+        ] {
+            let failure = protocol_failure(&AppError::new(error_code, "denied"));
+            assert_eq!(failure.code, expected);
+            assert!(!failure.retryable);
+        }
     }
 }

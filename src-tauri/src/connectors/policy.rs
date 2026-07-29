@@ -50,6 +50,9 @@ pub const TRUST_MODES: &[&str] = &["read_only", "approval", "autonomous"];
 pub const SANDBOXED_ROUTINE_BASE_TOOLSETS: &[&str] = &[
     "web",
     "vision",
+    // Loading an enabled skill only reads its instructions. The tools those
+    // instructions can use remain independently restricted by this catalog.
+    "skills",
     "todo",
     "memory",
     "session_search",

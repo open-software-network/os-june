@@ -255,10 +255,15 @@ jobs:
       - name: Stamp rc build version
         run: |
           set -euo pipefail
-          # Sets X.Y.Z-rc.N into the three version files for this build only.
+          # Sets X.Y.Z-rc.N into the four version files for this build only.
           # NOT committed — rc versions are ephemeral and sort below their base.
           node scripts/set-build-version.mjs "$VERSION"
-          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          cargo metadata \
+            --manifest-path src-tauri/Cargo.toml \
+            --locked \
+            --no-deps \
+            --format-version 1 \
+            > /dev/null
 
       - name: Run release checks
         run: |

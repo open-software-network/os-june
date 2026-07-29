@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   }),
   hide: vi.fn().mockResolvedValue(undefined),
   startDragging: vi.fn().mockResolvedValue(undefined),
+  getCurrentWindow: vi.fn(() => ({
+    hide: mocks.hide,
+    startDragging: mocks.startDragging,
+  })),
 }));
 
 function deferred<T>() {
@@ -33,10 +37,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    hide: mocks.hide,
-    startDragging: mocks.startDragging,
-  }),
+  getCurrentWindow: mocks.getCurrentWindow,
 }));
 
 describe("HUD listener lifecycle", () => {
@@ -46,6 +47,10 @@ describe("HUD listener lifecycle", () => {
     mocks.listeners.clear();
     mocks.unlistenHandles.length = 0;
     mocks.invoke.mockResolvedValue(undefined);
+    mocks.getCurrentWindow.mockImplementation(() => ({
+      hide: mocks.hide,
+      startDragging: mocks.startDragging,
+    }));
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       configurable: true,
       value: {},
@@ -97,9 +102,13 @@ describe("HUD listener lifecycle", () => {
   });
 
   it("shows the meeting-end countdown and wires both safety actions", async () => {
+    mocks.getCurrentWindow.mockImplementationOnce(() => {
+      throw new Error("Mocked Tauri bridge has no window metadata");
+    });
     await import("../meeting-hud");
     await vi.waitFor(() => {
       expect(mocks.listeners.has("meeting-end-state-event")).toBe(true);
+      expect((window as unknown as Record<string, unknown>).__recordingHud).toBeTypeOf("function");
     });
 
     const countdown = {
@@ -130,6 +139,7 @@ describe("HUD listener lifecycle", () => {
         sessionId: "meeting-session",
       });
     });
+    expect(pill?.dataset.mode).toBe("meeting-end");
 
     mocks.listeners.get("meeting-end-state-event")?.({ payload: countdown });
     stop?.click();
@@ -138,11 +148,41 @@ describe("HUD listener lifecycle", () => {
         sessionId: "meeting-session",
       });
     });
+    expect(pill?.dataset.mode).toBe("meeting-end");
 
     mocks.listeners.get("meeting-end-state-event")?.({
       payload: { sessionId: "meeting-session", phase: "tracking" },
     });
     expect(pill?.dataset.mode).toBeUndefined();
+
+    window.dispatchEvent(new Event("pagehide"));
+    expect((window as unknown as Record<string, unknown>).__recordingHud).toBeUndefined();
+  });
+
+  it("disposes recording demo timers, local buttons, and its console hook", async () => {
+    const setInterval = vi.spyOn(window, "setInterval");
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    const { registerRecordingHudDemo } = await import("../lib/recording-hud-demo");
+    const demo = registerRecordingHudDemo({ local: true });
+    const hook = (window as unknown as Record<string, unknown>).__recordingHud as (
+      state: "recording",
+    ) => string;
+
+    hook("recording");
+    expect(setInterval).toHaveBeenCalled();
+    clearInterval.mockClear();
+
+    demo.dispose();
+
+    expect(clearInterval).toHaveBeenCalled();
+    expect((window as unknown as Record<string, unknown>).__recordingHud).toBeUndefined();
+    setInterval.mockClear();
+    document.querySelector<HTMLButtonElement>("#mhud-end-keep")?.click();
+    document.querySelector<HTMLButtonElement>("#mhud-end-stop")?.click();
+    expect(setInterval).not.toHaveBeenCalled();
+
+    setInterval.mockRestore();
+    clearInterval.mockRestore();
   });
 
   it("does not let the initial meeting-end read overwrite a newer HUD event", async () => {

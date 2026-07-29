@@ -48,11 +48,20 @@ pub struct StartRunRequest {
     pub enabled_skill_ids: Vec<String>,
     #[serde(default)]
     pub attachments: Vec<String>,
+    #[serde(default)]
+    pub attachment_metadata: Vec<AttachmentMetadataInput>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentMetadataInput {
+    pub name: String,
+    pub media_type: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolveInterruptionRequest {
     pub interruption_id: String,
+    pub run_id: String,
     pub resolution: Value,
 }
 #[derive(Deserialize)]
@@ -549,8 +558,12 @@ pub async fn start_agent_run(
     .bind(&session.id)
     .execute(&repository.pool)
     .await?;
-    let prepared_attachments =
-        prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
+    let prepared_attachments = prepare_attachments(
+        &request.attachments,
+        &request.attachment_metadata,
+        std::path::Path::new(&workspace),
+    )
+    .await?;
     let available_skills = agent_skill_catalog(&app, &repository).await?;
     let requested_skills = request
         .enabled_skill_ids
@@ -651,9 +664,27 @@ pub async fn cancel_agent_run(
 ) -> Result<(), AppError> {
     let repository = repository(&app).await?;
     let run = repository.get_run(&run_id).await?;
+    if run.status == "waiting_for_user" {
+        let pending_interruption_ids = repository.pending_interruption_ids(&run.id).await?;
+        let mut _resolution_guards = Vec::with_capacity(pending_interruption_ids.len());
+        for interruption_id in pending_interruption_ids {
+            _resolution_guards.push(host.lock_interruption_resolution(&interruption_id).await);
+        }
+        let Some(cancelled_run) = repository.cancel_waiting_run(&run.id).await? else {
+            return Err(AppError::new(
+                "agent_waiting_cancel_conflict",
+                "This request is already resuming. Wait for June to continue before stopping it.",
+            ));
+        };
+        crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
+        host.cancel_run_streams(&run.id).await;
+        super::host::emit_persisted_run_cancelled(&app, &cancelled_run)?;
+        return Ok(());
+    }
     host.request("run.cancel", &run.session_id, &run.id, json!({}))
         .await?;
     host.cancel_run_streams(&run.id).await;
+    crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
     Ok(())
 }
 
@@ -804,9 +835,108 @@ pub async fn resolve_agent_interruption(
     host: State<'_, AgentRuntimeHost>,
     request: ResolveInterruptionRequest,
 ) -> Result<Value, AppError> {
-    let repository = repository(&app).await?;
-    let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE kind = 'interruption' AND json_extract(payload_json, '$.id') = ? ORDER BY created_at DESC LIMIT 1")
-        .bind(&request.interruption_id).fetch_one(&repository.pool).await?;
+    resolve_agent_interruption_inner(&app, &host, request, InterruptionResolutionOrigin::Desktop)
+        .await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InterruptionResolutionOrigin {
+    Desktop,
+    Companion(crate::companion::ComputerUseApprovalOrigin),
+}
+
+pub(crate) async fn resolve_companion_computer_use_approval(
+    app: &AppHandle,
+    request_id: &str,
+    stored_session_id: &str,
+    decision: june_companion_protocol::ComputerUseApprovalDecision,
+    origin: crate::companion::ComputerUseApprovalOrigin,
+) -> Result<Value, AppError> {
+    use sqlx::row::Row;
+    let repository = repository(app).await?;
+    let row = sqlx::query::query(
+        "SELECT run_id
+         FROM agent_items
+         WHERE session_id = ?
+           AND kind = 'interruption'
+           AND json_extract(payload_json, '$.id') = ?
+           AND json_extract(payload_json, '$.status') = 'pending'
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(stored_session_id)
+    .bind(request_id)
+    .fetch_optional(&repository.pool)
+    .await?
+    .ok_or_else(|| {
+        AppError::new(
+            "agent_interruption_not_found",
+            "This interruption could not be found.",
+        )
+    })?;
+    let request = ResolveInterruptionRequest {
+        interruption_id: request_id.to_string(),
+        run_id: row.get("run_id"),
+        resolution: json!({
+            "kind": "approval",
+            "choice": match decision {
+                june_companion_protocol::ComputerUseApprovalDecision::Approve => "once",
+                june_companion_protocol::ComputerUseApprovalDecision::Deny => "deny",
+            },
+            "storedSessionId": stored_session_id,
+        }),
+    };
+    let host = app.state::<AgentRuntimeHost>();
+    resolve_agent_interruption_inner(
+        app,
+        &host,
+        request,
+        InterruptionResolutionOrigin::Companion(origin),
+    )
+    .await
+}
+
+async fn resolve_agent_interruption_inner(
+    app: &AppHandle,
+    host: &AgentRuntimeHost,
+    request: ResolveInterruptionRequest,
+    origin: InterruptionResolutionOrigin,
+) -> Result<Value, AppError> {
+    let _resolution = host
+        .lock_interruption_resolution(&request.interruption_id)
+        .await;
+    let companion_session_id = match &origin {
+        InterruptionResolutionOrigin::Desktop => None,
+        InterruptionResolutionOrigin::Companion(companion_origin) => {
+            let stored_session_id = request
+                .resolution
+                .get("storedSessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    AppError::new(
+                        "companion_computer_use_approval_invalid",
+                        "The Computer use approval session is missing.",
+                    )
+                })?;
+            crate::companion::begin_companion_computer_use_resolution(
+                app,
+                &request.interruption_id,
+                stored_session_id,
+                companion_origin.clone(),
+            )?;
+            Some(stored_session_id.to_string())
+        }
+    };
+    let repository = repository(app).await?;
+    let row = sqlx::query::query("SELECT id, run_id, session_id, payload_json FROM agent_items WHERE run_id = ? AND kind = 'interruption' AND json_extract(payload_json, '$.id') = ? AND json_extract(payload_json, '$.status') = 'pending' LIMIT 1")
+        .bind(&request.run_id)
+        .bind(&request.interruption_id)
+        .fetch_optional(&repository.pool)
+        .await?
+        .ok_or_else(|| AppError::new(
+            "agent_interruption_not_found",
+            "This interruption could not be found.",
+        ))?;
     use sqlx::row::Row;
     let run_id: String = row.get("run_id");
     let session_id: String = row.get("session_id");
@@ -814,6 +944,17 @@ pub async fn resolve_agent_interruption(
     let original_interruption_json: String = row.get("payload_json");
     let mut interruption: Value = serde_json::from_str(&original_interruption_json)
         .map_err(|error| AppError::new("agent_interruption_invalid", error.to_string()))?;
+    if let Some(expected_session_id) = companion_session_id.as_deref() {
+        if session_id != expected_session_id
+            || interruption.get("kind").and_then(Value::as_str) != Some("approval")
+            || interruption.get("toolName").and_then(Value::as_str) != Some("computer_use")
+        {
+            return Err(AppError::new(
+                "companion_computer_use_approval_invalid",
+                "The Computer use approval does not match the pending action.",
+            ));
+        }
+    }
     let run = repository.get_run(&run_id).await?;
     if run.status != "waiting_for_user" {
         return Err(AppError::new(
@@ -837,6 +978,22 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .unwrap_or("approval")
         .to_string();
+    let resolution_kind = request
+        .resolution
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response kind is required.",
+            )
+        })?;
+    if resolution_kind != interruption_kind {
+        return Err(AppError::new(
+            "agent_interruption_resolution_invalid",
+            "The interruption response does not match the pending request.",
+        ));
+    }
     let clarification_answer = request
         .resolution
         .get("answer")
@@ -848,26 +1005,42 @@ pub async fn resolve_agent_interruption(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let approved = clarification_answer.is_some()
-        || secret_value.is_some()
-        || request
-            .resolution
-            .get("choice")
-            .and_then(Value::as_str)
-            .is_some_and(|choice| choice != "deny");
+    let choice = request.resolution.get("choice").and_then(Value::as_str);
+    let approved = match interruption_kind.as_str() {
+        "clarification" if clarification_answer.is_some() => true,
+        "secret" if secret_value.is_some() && choice == Some("once") => true,
+        "secret" if secret_value.is_none() && choice == Some("deny") => false,
+        "approval" if matches!(choice, Some("once" | "session" | "always")) => true,
+        "approval" if choice == Some("deny") => false,
+        _ => {
+            return Err(AppError::new(
+                "agent_interruption_resolution_invalid",
+                "The interruption response is invalid.",
+            ));
+        }
+    };
+    let resolved_at = chrono::Utc::now().to_rfc3339();
     let workspace = session.workspace_path.clone().ok_or_else(|| {
         AppError::new(
             "agent_workspace_missing",
             "Session workspace is unavailable.",
         )
     })?;
-    let model = normalize_agent_model(&session.model);
+    let model = normalize_agent_model(&run.model);
+    let auto_run = crate::june_api::is_agent_auto_model(&model);
+    let resolved_model = resolved_model_from_usage(run.usage.as_ref());
+    if auto_run && resolved_model.is_none() {
+        return Err(AppError::new(
+            "agent_auto_resume_model_missing",
+            "This older Auto run cannot resume because its model was not recorded. Stop the run to continue.",
+        ));
+    }
     let enabled_skill_ids = repository.run_enabled_skills(&run.id).await?;
-    host.ensure_started(&app, repository.clone()).await?;
+    host.ensure_started(app, repository.clone()).await?;
     let mut params = match repository.run_config(&run.id).await? {
         Some(config) => config,
         None => match crate::routines::reconstruct_unattended_resume_params(
-            &app,
+            app,
             &repository,
             &run.id,
             &session.id,
@@ -880,7 +1053,7 @@ pub async fn resolve_agent_interruption(
             Some(config) => config,
             None => resumable_run_config(
                 &run_params(
-                    &app,
+                    app,
                     &repository,
                     RunParamsInput {
                         session_id: &session.id,
@@ -899,6 +1072,7 @@ pub async fn resolve_agent_interruption(
             ),
         },
     };
+    params["model"] = json!(model);
     params
         .as_object_mut()
         .expect("run params object")
@@ -908,6 +1082,9 @@ pub async fn resolve_agent_interruption(
         .expect("run params object")
         .remove("history");
     params["serializedState"] = json!(serialized_state);
+    if let Some(resolved_model) = resolved_model {
+        params["resolvedModel"] = json!(resolved_model);
+    }
     params["resolutions"] = if let Some(answer) = clarification_answer.as_deref() {
         json!([{ "interruptionId": request.interruption_id, "kind": "clarification", "answer": answer }])
     } else if interruption_kind == "secret" {
@@ -927,8 +1104,33 @@ pub async fn resolve_agent_interruption(
     } else {
         None
     };
+    let resolution_nonce = uuid::Uuid::new_v4().to_string();
     interruption["status"] = json!("resolved");
-    interruption["resolvedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    interruption["approved"] = json!(approved);
+    interruption["resolutionNonce"] = json!(resolution_nonce);
+    interruption["resolvedAt"] = json!(resolved_at);
+    if interruption_kind == "approval" {
+        interruption["resolution"] = request
+            .resolution
+            .get("choice")
+            .cloned()
+            .unwrap_or_else(|| json!("deny"));
+        interruption["resolvedBy"] = json!(match &origin {
+            InterruptionResolutionOrigin::Desktop => "desktop",
+            InterruptionResolutionOrigin::Companion(
+                crate::companion::ComputerUseApprovalOrigin::Companion { .. },
+            ) => "linkedDevice",
+            InterruptionResolutionOrigin::Companion(
+                crate::companion::ComputerUseApprovalOrigin::Timeout,
+            ) => "timeout",
+        });
+        if let InterruptionResolutionOrigin::Companion(
+            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+        ) = &origin
+        {
+            interruption["resolvedByDeviceId"] = json!(device_id);
+        }
+    }
     if let Some(answer) = clarification_answer.as_deref() {
         interruption["answer"] = json!(answer);
     }
@@ -939,26 +1141,69 @@ pub async fn resolve_agent_interruption(
     // sidecar can emit resumed events immediately after accepting the request,
     // so both must be in place before dispatch, but neither may be left behind
     // when preparation or persistence fails.
-    let persist_result: Result<(), sqlx::Error> = async {
+    let persist_result: Result<(), AppError> = async {
         let mut transaction = repository.pool.begin().await?;
-        sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
+        let item_updated = sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ? AND json_extract(payload_json, '$.status') = 'pending'")
             .bind(interruption.to_string())
             .bind(&item_id)
             .execute(&mut *transaction)
-            .await?;
-        sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ?")
+            .await?
+            .rows_affected();
+        if item_updated != 1 {
+            return Err(AppError::new(
+                "agent_interruption_expired",
+                "This interruption can no longer be resumed.",
+            ));
+        }
+        let run_updated = sqlx::query::query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ? AND status = 'waiting_for_user'")
             .bind(chrono::Utc::now().to_rfc3339())
             .bind(&run.id)
             .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        if run_updated != 1 {
+            return Err(AppError::new(
+                "agent_interruption_expired",
+                "This interruption can no longer be resumed.",
+            ));
+        }
+        if let InterruptionResolutionOrigin::Companion(
+            crate::companion::ComputerUseApprovalOrigin::Companion { device_id },
+        ) = &origin
+        {
+            crate::db::repositories::Repositories::record_companion_computer_use_approval_decision_in_transaction(
+                &mut transaction,
+                device_id,
+                &request.interruption_id,
+                companion_session_id.as_deref().unwrap_or(&session_id),
+                if approved { "approve" } else { "deny" },
+                &resolved_at,
+            )
             .await?;
-        transaction.commit().await
+        }
+        transaction.commit().await?;
+        Ok(())
     }
     .await;
     if let Err(error) = persist_result {
         if let Some(secret_ref) = secret_ref.as_deref() {
             let _ = super::secrets::delete(secret_ref).await;
         }
-        return Err(error.into());
+        return Err(error);
+    }
+    if let InterruptionResolutionOrigin::Companion(companion_origin) = &origin {
+        crate::companion::complete_computer_use_resolution(
+            app,
+            &request.interruption_id,
+            companion_session_id.as_deref().unwrap_or(&session_id),
+            approved,
+            approved
+                && matches!(
+                    companion_origin,
+                    crate::companion::ComputerUseApprovalOrigin::Companion { .. }
+                ),
+            Some(companion_origin.clone()),
+        );
     }
     if let Err(error) = host
         .request("run.resume", &session.id, &run.id, params)
@@ -966,19 +1211,23 @@ pub async fn resolve_agent_interruption(
     {
         let restore_result = async {
             let mut transaction = repository.pool.begin().await?;
-            sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ?")
+            let restored = sqlx::query::query("UPDATE agent_items SET payload_json = ? WHERE id = ? AND json_extract(payload_json, '$.resolutionNonce') = ? AND COALESCE(json_extract(payload_json, '$.executionState'), 'unconsumed') = 'unconsumed'")
                 .bind(&original_interruption_json)
                 .bind(&item_id)
+                .bind(&resolution_nonce)
+                .execute(&mut *transaction)
+                .await?
+                .rows_affected();
+            if restored == 1 {
+                sqlx::query::query(
+                    "UPDATE agent_runs SET last_sequence = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(run.last_sequence)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(&run.id)
                 .execute(&mut *transaction)
                 .await?;
-            sqlx::query::query(
-                "UPDATE agent_runs SET last_sequence = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(run.last_sequence)
-            .bind(chrono::Utc::now().to_rfc3339())
-            .bind(&run.id)
-            .execute(&mut *transaction)
-            .await?;
+            }
             transaction.commit().await
         }
         .await;
@@ -990,14 +1239,47 @@ pub async fn resolve_agent_interruption(
                 );
             }
         }
+        if let Some(stored_session_id) = companion_session_id.as_deref() {
+            crate::companion::cancel_computer_use_resolution(
+                app,
+                &request.interruption_id,
+                stored_session_id,
+            );
+        }
         restore_result?;
         return Err(error);
     }
+    if origin == InterruptionResolutionOrigin::Desktop {
+        crate::companion::complete_computer_use_resolution(
+            app,
+            &request.interruption_id,
+            &session_id,
+            approved,
+            false,
+            None,
+        );
+    }
+    tracing::info!(
+        interruption_id = %request.interruption_id,
+        stored_session_id = %session_id,
+        approved,
+        origin = ?origin,
+        "resolved agent interruption"
+    );
     Ok(run_json(
         repository
             .update_run_status(&run.id, "running", None, None, None)
             .await?,
     ))
+}
+
+fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
+    usage
+        .and_then(Value::as_object)
+        .and_then(|usage| usage.get("resolvedModel"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|model| crate::june_api::is_canonical_agent_model(model))
 }
 
 async fn mark_dispatch_failed(repository: &AgentRepository, run_id: &str, error: &AppError) {
@@ -1239,7 +1521,7 @@ fn validate_skill_id(skill_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn agent_skill_catalog(
+pub(crate) async fn agent_skill_catalog(
     app: &AppHandle,
     repository: &AgentRepository,
 ) -> Result<Vec<Value>, AppError> {
@@ -1447,8 +1729,35 @@ async fn run_params(
     crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
+    let skill_catalog = agent_skill_catalog(app, repository).await?;
+    let skill_lookup: HashMap<String, Value> = skill_catalog
+        .into_iter()
+        .filter_map(|skill| {
+            let id = skill
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)?;
+            Some((id, skill))
+        })
+        .collect();
+    let skills = request
+        .skills
+        .iter()
+        .map(|name| {
+            let entry = skill_lookup.get(name);
+            let description = entry
+                .and_then(|skill| skill.get("description").and_then(Value::as_str))
+                .unwrap_or("June agent skill")
+                .to_string();
+            let source = entry
+                .and_then(|skill| skill.get("source").and_then(Value::as_str))
+                .unwrap_or("managed")
+                .to_string();
+            json!({ "name": name, "description": description, "source": source })
+        })
+        .collect::<Vec<_>>();
     Ok(
-        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
+        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": skills, "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
     )
 }
 
@@ -1479,7 +1788,7 @@ async fn tool_descriptors(
         { "name": "generate_image", "description": "Generate an image from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" } }, "required": ["prompt"], "additionalProperties": false } },
         { "name": "edit_image", "description": "Edit an image file in the June session workspace and show the result in the conversation.", "parameters": { "type": "object", "properties": { "sourcePath": { "type": "string" }, "instruction": { "type": "string" } }, "required": ["sourcePath", "instruction"], "additionalProperties": false } },
         { "name": "generate_video", "description": "Generate a short video from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" }, "duration": { "type": "string" }, "aspectRatio": { "type": "string" }, "audio": { "type": "boolean" } }, "required": ["prompt"], "additionalProperties": false } },
-        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in June. Re-query for each distinct task.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in June. When the june-obsidian skill is available, load it before Obsidian note work. Call this tool before every distinct Obsidian task because the user may change or disconnect the vault while the session remains open. If connected is false, do not guess a vault path. If available is false, do not infer or reconstruct its path. A returned path is current discovery only, not write authorization; stay within that vault and use only filesystem operations allowed by the current safety mode.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
         { "name": "start_recording", "description": "Start a visible June recording only when the user explicitly asks to begin recording now.", "parameters": { "type": "object", "properties": { "sourceMode": { "type": "string", "enum": ["microphoneOnly", "microphonePlusSystem"] } }, "required": [], "additionalProperties": false }, "requiresApproval": true },
         { "name": "stop_recording", "description": "Stop the recording currently visible in June.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }, "requiresApproval": true },
         { "name": "recording_status", "description": "Check whether June is currently recording and return the active recording metadata.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
@@ -1518,8 +1827,6 @@ async fn tool_descriptors(
         ,{ "name": "request_clarification", "description": "Pause and ask the user a question when their answer is required to continue.", "parameters": { "type": "object", "properties": { "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["question", "choices"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_secret", "description": "Securely request a secret from the user. The result is an opaque one-use reference for a safety-controlled tool, never the secret value.", "parameters": { "type": "object", "properties": { "reason": { "type": "string" } }, "required": ["reason"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "computer_use", "description": "Operate the attended computer-use session through June's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
-        ,{ "name": "notion_call", "description": "Call an enabled read-only Notion tool through June's connected account.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false } }
-        ,{ "name": "notion_action", "description": "Call an enabled Notion action through June's approval broker.", "parameters": { "type": "object", "properties": { "toolName": { "type": "string" }, "arguments": { "type": "object" } }, "required": ["toolName", "arguments"], "additionalProperties": false }, "requiresApproval": true }
     ]);
     let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
         crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),
@@ -1741,10 +2048,17 @@ async fn inherit_session_profile(
 
 async fn prepare_attachments(
     source_paths: &[String],
+    supplied_metadata: &[AttachmentMetadataInput],
     workspace: &std::path::Path,
 ) -> Result<Vec<MessageAttachmentPayload>, AppError> {
     if source_paths.is_empty() {
         return Ok(Vec::new());
+    }
+    if !supplied_metadata.is_empty() && supplied_metadata.len() != source_paths.len() {
+        return Err(AppError::new(
+            "agent_attachment_invalid",
+            "Attachment metadata does not match the selected files.",
+        ));
     }
     let destination_root = workspace.join("attachments");
     tokio::fs::create_dir_all(&destination_root)
@@ -1752,7 +2066,7 @@ async fn prepare_attachments(
         .map_err(io_error)?;
     let canonical_workspace = workspace.canonicalize().map_err(io_error)?;
     let mut attachments = Vec::with_capacity(source_paths.len());
-    for source_path in source_paths {
+    for (index, source_path) in source_paths.iter().enumerate() {
         let source = PathBuf::from(source_path)
             .canonicalize()
             .map_err(io_error)?;
@@ -1762,10 +2076,17 @@ async fn prepare_attachments(
                 "Attachment source is not a file.",
             ));
         }
-        let name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
+        let name = supplied_metadata
+            .get(index)
+            .map(|metadata| metadata.name.trim())
+            .or_else(|| source.file_name().and_then(|value| value.to_str()))
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= 255
+                    && !value
+                        .chars()
+                        .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+            })
             .ok_or_else(|| {
                 AppError::new(
                     "agent_attachment_invalid",
@@ -1787,7 +2108,10 @@ async fn prepare_attachments(
             id: uuid::Uuid::new_v4().to_string(),
             name,
             path: destination.to_string_lossy().into_owned(),
-            mime_type: attachment_mime_type(&destination).map(str::to_string),
+            mime_type: supplied_metadata
+                .get(index)
+                .and_then(|metadata| metadata.media_type.clone())
+                .or_else(|| attachment_mime_type(&destination).map(str::to_string)),
             size_bytes: metadata.len() as i64,
             available: true,
             created_at: chrono::Utc::now().to_rfc3339(),
@@ -1906,6 +2230,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extracts_a_concrete_model_from_persisted_usage() {
+        let usage = json!({ "resolvedModel": " z-ai/glm-5.2 " });
+        assert_eq!(
+            resolved_model_from_usage(Some(&usage)),
+            Some("z-ai/glm-5.2")
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": "open-software/auto" }))),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(
+                &json!({ "resolvedModel": "__june_auto_generation__:73" })
+            )),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(
+                &json!({ "resolvedModel": "__june_local_generation__:z-ai%2Fglm-5.2" })
+            )),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": "z-ai/glm 5.2" }))),
+            None
+        );
+        assert_eq!(
+            resolved_model_from_usage(Some(&json!({ "resolvedModel": 42 }))),
+            None
+        );
+        assert_eq!(resolved_model_from_usage(None), None);
+    }
+
+    #[test]
     fn retry_uses_the_prompt_owned_by_the_selected_run() {
         let item = |id: &str, run_id: &str, content: &str, sequence: i64| AgentItemDto {
             id: id.into(),
@@ -1989,7 +2347,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attachments_are_copied_into_the_session_workspace_and_added_to_context() {
+    async fn supplied_attachment_name_and_media_type_survive_workspace_copy() {
         let source_directory = tempfile::tempdir().expect("source directory");
         let workspace = tempfile::tempdir().expect("workspace");
         let source = source_directory.path().join("brief.md");
@@ -1997,14 +2355,23 @@ mod tests {
             .await
             .expect("source attachment");
 
-        let attachments =
-            prepare_attachments(&[source.to_string_lossy().into_owned()], workspace.path())
-                .await
-                .expect("prepared attachments");
+        let attachments = prepare_attachments(
+            &[source.to_string_lossy().into_owned()],
+            &[AttachmentMetadataInput {
+                name: "launch-brief.custom".to_string(),
+                media_type: Some("application/x-june-brief".to_string()),
+            }],
+            workspace.path(),
+        )
+        .await
+        .expect("prepared attachments");
 
         assert_eq!(attachments.len(), 1);
-        assert_eq!(attachments[0].name, "brief.md");
-        assert_eq!(attachments[0].mime_type.as_deref(), Some("text/markdown"));
+        assert_eq!(attachments[0].name, "launch-brief.custom");
+        assert_eq!(
+            attachments[0].mime_type.as_deref(),
+            Some("application/x-june-brief")
+        );
         assert!(PathBuf::from(&attachments[0].path).starts_with(workspace.path()));
         assert_eq!(
             tokio::fs::read_to_string(&attachments[0].path)
@@ -2014,7 +2381,7 @@ mod tests {
         );
         let input = message_with_attachment_context("Summarize this.", &attachments);
         assert!(input.starts_with("[June attachment manifest v1]"));
-        assert!(input.contains("brief.md"));
+        assert!(input.contains("launch-brief.custom"));
         assert!(input.contains(&attachments[0].path));
         assert!(input.ends_with("Summarize this."));
     }
@@ -2035,6 +2402,29 @@ mod tests {
             )
             .as_deref(),
             Some("Readable managed skill summary.")
+        );
+    }
+
+    #[test]
+    fn bundled_obsidian_skill_has_correct_tool_reference_and_frontmatter() {
+        let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("agent-skills")
+            .join("june-obsidian")
+            .join("SKILL.md");
+        let content = std::fs::read_to_string(&skill_path)
+            .unwrap_or_else(|_| panic!("skill file should exist at {}", skill_path.display()));
+        assert!(
+            content.contains("get_obsidian_vault"),
+            "skill must reference the unprefixed get_obsidian_vault host tool"
+        );
+        assert!(
+            !content.contains("june_obsidian.get_obsidian_vault"),
+            "skill must not reference the retired june_obsidian MCP server prefix"
+        );
+        assert_eq!(
+            skill_description(&content).as_deref(),
+            Some("Work with the Obsidian vault currently selected in June.")
         );
     }
 

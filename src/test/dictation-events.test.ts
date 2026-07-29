@@ -89,4 +89,9 @@ describe("dictation workflow activity", () => {
     expect(nextDictationWorkflowActive(true, "permission_status")).toBe(true);
     expect(nextDictationWorkflowActive(false, "dictation_diagnostics")).toBe(false);
   });
+
+  it("preserves the active take for event-only replacement outcomes", () => {
+    expect(nextDictationWorkflowActive(true, "error", true)).toBe(true);
+    expect(nextDictationWorkflowActive(false, "error", true)).toBe(false);
+  });
 });

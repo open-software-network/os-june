@@ -369,6 +369,13 @@ pub fn generation_model() -> String {
     current_settings().generation_model
 }
 
+/// The saved service-managed generation model, independent of an explicitly
+/// enabled local provider. Unattended Routines use this accessor so they stay
+/// on June's metered remote route.
+pub fn remote_generation_model() -> String {
+    current_settings().remote_generation_model
+}
+
 pub fn cost_quality() -> f64 {
     // Keep the wire value safe even if a user manually edits the settings file
     // after it has been loaded but before a future accessor refactor.
@@ -2252,6 +2259,7 @@ mod tests {
 
         assert_eq!(sanitized.generation_provider, PROVIDER_LOCAL);
         assert_eq!(sanitized.generation_model, "llama3.1:8b");
+        assert_eq!(sanitized.remote_generation_model, "remote-model");
         assert_eq!(
             sanitized.local_generation.base_url,
             "http://192.168.1.5:11434/v1"

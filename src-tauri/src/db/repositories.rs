@@ -38,6 +38,26 @@ pub struct Repositories {
     pub pool: SqlitePool,
 }
 
+pub struct PendingDictationHistoryItem {
+    transaction: sqlx::transaction::Transaction<'static, Sqlite>,
+    item: DictationHistoryItemDto,
+}
+
+impl PendingDictationHistoryItem {
+    pub async fn commit(mut self) -> Result<DictationHistoryItemDto, sqlx::error::Error> {
+        query("DELETE FROM dictation_history WHERE created_at < ?")
+            .bind(dictation_history_cutoff_timestamp())
+            .execute(&mut *self.transaction)
+            .await?;
+        self.transaction.commit().await?;
+        Ok(self.item)
+    }
+
+    pub async fn rollback(self) -> Result<(), sqlx::error::Error> {
+        self.transaction.rollback().await
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionDeviceRecord {
     pub id: String,
@@ -581,6 +601,53 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn record_companion_computer_use_approval_decision(
+        &self,
+        device_id: &str,
+        request_id: &str,
+        stored_session_id: &str,
+        decision: &str,
+        recorded_at: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let mut transaction = self.pool.begin().await?;
+        let inserted = Self::record_companion_computer_use_approval_decision_in_transaction(
+            &mut transaction,
+            device_id,
+            request_id,
+            stored_session_id,
+            decision,
+            recorded_at,
+        )
+        .await?;
+        transaction.commit().await?;
+        Ok(inserted)
+    }
+
+    pub async fn record_companion_computer_use_approval_decision_in_transaction(
+        transaction: &mut sqlx::transaction::Transaction<'_, Sqlite>,
+        device_id: &str,
+        request_id: &str,
+        stored_session_id: &str,
+        decision: &str,
+        recorded_at: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        Ok(query(
+            "INSERT OR IGNORE INTO companion_computer_use_approval_audit (
+               id, device_id, request_id, stored_session_id, decision, recorded_at
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(device_id)
+        .bind(request_id)
+        .bind(stored_session_id)
+        .bind(decision)
+        .bind(recorded_at)
+        .execute(&mut **transaction)
+        .await?
+        .rows_affected()
+            == 1)
     }
 
     pub async fn companion_operation(
@@ -2164,7 +2231,7 @@ impl Repositories {
         let mut note_query = QueryBuilder::<Sqlite>::new(
             "SELECT id, title, generated_content, edited_content, active_tab, processing_status, created_at, updated_at, revision, last_error,
                     calendar_event_id, calendar_event_title, calendar_event_start_at,
-                    calendar_event_end_at, calendar_account_email
+                    calendar_event_end_at, calendar_account_email, calendar_event_html_link
              FROM notes WHERE id = ",
         );
         note_query.push_bind(note_id);
@@ -2243,7 +2310,7 @@ impl Repositories {
              SET title = CASE WHEN ? = 1 AND title = ? THEN ? ELSE title END,
                  calendar_event_id = ?, calendar_event_title = ?,
                  calendar_event_start_at = ?, calendar_event_end_at = ?,
-                 calendar_account_email = ?,
+                 calendar_account_email = ?, calendar_event_html_link = ?,
                  revision = revision + CASE
                      WHEN ? = 1 AND title = ? AND title != ? THEN 1
                      ELSE 0
@@ -2259,6 +2326,7 @@ impl Repositories {
         .bind(&event.start_at)
         .bind(&event.end_at)
         .bind(&event.account_email)
+        .bind(&event.html_link)
         .bind(i64::from(expected_title.trim().is_empty()))
         .bind(expected_title)
         .bind(&event.title)
@@ -2814,6 +2882,22 @@ impl Repositories {
         language: Option<String>,
         provider: &str,
     ) -> Result<Option<DictationHistoryItemDto>, sqlx::error::Error> {
+        let pending = self
+            .stage_dictation_history_item(profile, text, language, provider)
+            .await?;
+        match pending {
+            Some(pending) => pending.commit().await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn stage_dictation_history_item(
+        &self,
+        data_partition: &str,
+        text: &str,
+        language: Option<String>,
+        provider: &str,
+    ) -> Result<Option<PendingDictationHistoryItem>, sqlx::error::Error> {
         let text = text.trim();
         if text.is_empty() {
             return Ok(None);
@@ -2825,6 +2909,7 @@ impl Repositories {
             provider: provider.to_string(),
             created_at: timestamp(),
         };
+        let mut transaction = self.pool.begin().await?;
         query(
             "INSERT INTO dictation_history (id, text, language, provider, profile, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
@@ -2833,12 +2918,11 @@ impl Repositories {
         .bind(&item.text)
         .bind(&item.language)
         .bind(&item.provider)
-        .bind(profile)
+        .bind(data_partition)
         .bind(&item.created_at)
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await?;
-        self.prune_old_dictation_history().await?;
-        Ok(Some(item))
+        Ok(Some(PendingDictationHistoryItem { transaction, item }))
     }
 
     pub async fn list_dictation_history(
@@ -6244,6 +6328,12 @@ fn note_calendar_event_from_row(row: &sqlx_sqlite::SqliteRow) -> Option<NoteCale
             .try_get::<Option<String>, _>("calendar_account_email")
             .ok()
             .flatten()?,
+        // Nullable by design: events matched before the column shipped have no
+        // stored link, and the frontend falls back to constructing one.
+        html_link: row
+            .try_get::<Option<String>, _>("calendar_event_html_link")
+            .ok()
+            .flatten(),
     })
 }
 
@@ -6513,6 +6603,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn staged_dictation_history_is_visible_only_after_commit() {
+        let repos = test_repositories().await;
+        let rolled_back = repos
+            .stage_dictation_history_item(
+                "default",
+                "cancelled transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage cancelled history")
+            .expect("non-empty transcript");
+        rolled_back.rollback().await.expect("rollback history");
+
+        let count_after_rollback: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count rolled back history")
+            .get("count");
+        assert_eq!(count_after_rollback, 0);
+
+        let committed = repos
+            .stage_dictation_history_item(
+                "default",
+                "delivered transcript",
+                Some("en".to_string()),
+                "test",
+            )
+            .await
+            .expect("stage delivered history")
+            .expect("non-empty transcript");
+        committed.commit().await.expect("commit history");
+
+        let count_after_commit: i64 = query("SELECT COUNT(*) AS count FROM dictation_history")
+            .fetch_one(&repos.pool)
+            .await
+            .expect("count committed history")
+            .get("count");
+        assert_eq!(count_after_commit, 1);
+    }
+
+    #[tokio::test]
     async fn create_note_with_id_replays_the_same_note() {
         let repos = test_repositories().await;
 
@@ -6595,6 +6727,9 @@ mod tests {
             start_at: "2026-07-20T14:00:00Z".to_string(),
             end_at: "2026-07-20T14:30:00Z".to_string(),
             account_email: "june@example.com".to_string(),
+            // Round-trips through the equality assertions below, covering the
+            // calendar_event_html_link column.
+            html_link: Some("https://www.google.com/calendar/event?eid=ZXZlbnQtMQ".to_string()),
         };
 
         repos
@@ -8450,6 +8585,123 @@ mod tests {
         assert_eq!(unchanged.title, note.title);
         assert_eq!(unchanged.edited_content, note.edited_content);
         assert_eq!(unchanged.revision, note.revision);
+    }
+
+    #[tokio::test]
+    async fn companion_computer_use_decision_audit_is_durable_and_device_attributed() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        repos
+            .upsert_companion_device("usr_test", &device_id, "iPhone", &[4; 32])
+            .await
+            .expect("create companion device");
+
+        assert!(repos
+            .record_companion_computer_use_approval_decision(
+                &device_id,
+                "approval-1",
+                "session-1",
+                "approve",
+                "2026-07-28T10:00:00Z",
+            )
+            .await
+            .expect("record decision"));
+        assert!(!repos
+            .record_companion_computer_use_approval_decision(
+                &device_id,
+                "approval-1",
+                "session-1",
+                "deny",
+                "2026-07-28T10:01:00Z",
+            )
+            .await
+            .expect("duplicate decision is idempotent"));
+        repos
+            .delete_companion_device("usr_test", &device_id)
+            .await
+            .expect("delete linked device");
+
+        let row = query(
+            "SELECT device_id, request_id, stored_session_id, decision, recorded_at
+             FROM companion_computer_use_approval_audit",
+        )
+        .fetch_one(&repos.pool)
+        .await
+        .expect("durable audit row");
+        assert_eq!(row.get::<String, _>("device_id"), device_id);
+        assert_eq!(row.get::<String, _>("request_id"), "approval-1");
+        assert_eq!(row.get::<String, _>("stored_session_id"), "session-1");
+        assert_eq!(row.get::<String, _>("decision"), "approve");
+        assert_eq!(row.get::<String, _>("recorded_at"), "2026-07-28T10:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn companion_computer_use_decision_audit_rolls_back_with_failed_resolution() {
+        let repos = test_repositories().await;
+        let device_id = Uuid::new_v4().to_string();
+        let mut failed_resolution = repos.pool.begin().await.expect("begin failed resolution");
+        assert!(
+            Repositories::record_companion_computer_use_approval_decision_in_transaction(
+                &mut failed_resolution,
+                &device_id,
+                "approval-rollback",
+                "session-1",
+                "approve",
+                "2026-07-28T10:00:00Z",
+            )
+            .await
+            .expect("stage failed decision")
+        );
+        failed_resolution
+            .rollback()
+            .await
+            .expect("roll back failed resolution");
+
+        let audit_count: i64 = query(
+            "SELECT COUNT(*) AS count
+             FROM companion_computer_use_approval_audit
+             WHERE request_id = ?",
+        )
+        .bind("approval-rollback")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("count rolled-back receipts")
+        .get("count");
+        assert_eq!(audit_count, 0);
+
+        let mut successful_resolution = repos
+            .pool
+            .begin()
+            .await
+            .expect("begin successful resolution");
+        assert!(
+            Repositories::record_companion_computer_use_approval_decision_in_transaction(
+                &mut successful_resolution,
+                &device_id,
+                "approval-rollback",
+                "session-1",
+                "deny",
+                "2026-07-28T10:01:00Z",
+            )
+            .await
+            .expect("stage successful decision")
+        );
+        successful_resolution
+            .commit()
+            .await
+            .expect("commit successful resolution");
+
+        let decision: String = query(
+            "SELECT decision
+             FROM companion_computer_use_approval_audit
+             WHERE request_id = ?",
+        )
+        .bind("approval-rollback")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("committed receipt")
+        .get("decision");
+        assert_eq!(decision, "deny");
     }
 
     #[tokio::test]

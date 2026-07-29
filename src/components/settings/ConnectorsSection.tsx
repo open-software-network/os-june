@@ -667,16 +667,11 @@ export function ConnectorsSection({
     setNotionConnecting(true);
     try {
       await notionConnectorConnect();
-      // OAuth succeeded: tokens are stored. Close the consent dialog now,
-      // before the runtime apply/refresh that can fail independently. A
-      // runtime-apply failure after a successful grant is a transient
-      // infra issue, not a reason to re-prompt for OAuth. The success
-      // toast is deferred until the full chain completes so the user
-      // never sees "connected" followed by an error.
+      // Notion tools are discovered fresh for each agent run, so the new
+      // connection is available without applying a long-lived MCP config.
       if (operationId === notionOperationIdRef.current) {
         setNotionConnectOpen(false);
       }
-      await connectorsApplyRuntime();
       await refresh();
       if (operationId === notionOperationIdRef.current) {
         toast.success("Notion connected");
@@ -699,7 +694,6 @@ export function ConnectorsSection({
     setNotionDisconnecting(true);
     try {
       await notionConnectorDisconnect();
-      await connectorsApplyRuntime();
       await refresh();
       if (operationId === notionOperationIdRef.current) toast.success("Notion disconnected");
     } catch (err) {

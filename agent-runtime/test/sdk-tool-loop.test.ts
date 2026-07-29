@@ -5,7 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
 import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
-import type { EngineEvent, EngineRunInput, JsonObject } from "../src/types.ts";
+import type { EngineEvent, EngineRunInput, JsonObject, JsonValue } from "../src/types.ts";
+
+const AUTO_RUN_MODEL = "__june_auto_generation__:73";
+const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
+const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
 test("continues model inference after a host tool result", async () => {
   const modelRequests: JsonObject[] = [];
@@ -460,8 +464,10 @@ test("serializes an approval interruption after assistant history", async () => 
 });
 
 test("resumes a serialized approval and continues after the host tool result", async () => {
+  const modelRequests: JsonObject[] = [];
   let modelRequestCount = 0;
   let toolInvocationCount = 0;
+  const events: EngineEvent[] = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
     if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
       toolInvocationCount += 1;
@@ -472,6 +478,7 @@ test("resumes a serialized approval and continues after the host tool result", a
       throw new Error("The test streams complete in one page");
     }
     modelRequestCount += 1;
+    modelRequests.push(input.arguments.request);
     if (modelRequestCount === 1) {
       return streamPage("approval-start", {
         id: "completion-approval-start",
@@ -484,6 +491,8 @@ test("resumes a serialized approval and continues after the host tool result", a
             finish_reason: "tool_calls",
             delta: {
               role: "assistant",
+              reasoning: "I should write the requested file.",
+              reasoning_content: "",
               tool_calls: [
                 {
                   index: 0,
@@ -543,7 +552,7 @@ test("resumes a serialized approval and continues after the host tool result", a
     sessionId: "session-resume",
     runId: "run-resume",
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event) => events.push(event),
     takeSteering: () => [],
     params: {
       ...commonParams,
@@ -552,13 +561,20 @@ test("resumes a serialized approval and continues after the host tool result", a
     },
   });
   assert.equal(paused.interruptions.length, 1);
+  const approval = paused.interruptions[0]!;
+  if (approval.kind !== "approval") throw new Error("expected an approval interruption");
+  assert.equal(approval.id, "call-write-file-resume");
+  assert.equal(approval.callId, "call-write-file-resume");
   assert.ok(paused.serializedState);
+  const nativeStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(nativeStateEnvelope.juneVersion, 1);
+  assert.equal(nativeStateEnvelope.reasoningWireFormat, "reasoning");
 
   const resumed = await engine.resume({
     sessionId: "session-resume",
     runId: "run-resume",
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event) => events.push(event),
     takeSteering: () => [],
     params: {
       ...commonParams,
@@ -573,9 +589,849 @@ test("resumes a serialized approval and continues after the host tool result", a
   });
 
   assert.equal(toolInvocationCount, 1);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "tool.started" &&
+        event.callId === approval.callId,
+    ),
+  );
   assert.equal(modelRequestCount, 2);
   assert.equal(resumed.finalOutput, "The file contains OK.");
   assert.equal(resumed.interruptions.length, 0);
+  const resumedMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(resumedMessages));
+  const resumedAssistant = resumedMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(resumedAssistant));
+  assert.equal(resumedAssistant.reasoning, "I should write the requested file.");
+  assert.equal(resumedAssistant.reasoning_content, undefined);
+});
+
+test("preflights a Notion action before interruption and again before approved execution", async () => {
+  let modelRequestCount = 0;
+  const hostCalls: Array<{ name: string; callId?: string }> = [];
+  const preflightArguments: JsonValue[] = [];
+  const executionArguments: JsonValue[] = [];
+  const actionArguments = {
+    page_id: "roadmap",
+    content: "Shipped the repair",
+    properties: { token: "sk-example-content-that-must-not-be-redacted" },
+    content_updates: Array.from({ length: 101 }, (_, index) => ({ index })),
+  };
+  const preflight = {
+    title: "Update Notion page",
+    description: "Update Roadmap in Notion.",
+    command: "Update Notion page\nPage: Roadmap | Content: Shipped the repair",
+    preview: "Page: Roadmap | Content: Shipped the repair",
+    digest: "bound-action-digest",
+  };
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name === "__june_notion_action_preflight") {
+      hostCalls.push({ name: input.name, callId: input.callId });
+      preflightArguments.push(input.arguments.arguments as JsonValue);
+      return preflight;
+    }
+    if (input.name === "notion-update-page") {
+      hostCalls.push({ name: input.name, callId: input.callId });
+      executionArguments.push(input.arguments as JsonValue);
+      return { updated: true };
+    }
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Unexpected host tool: ${input.name}`);
+    }
+    if (!("request" in input.arguments)) throw new Error("The test streams complete in one page");
+    modelRequestCount += 1;
+    if (modelRequestCount === 1) {
+      return streamPage("notion-approval-start", {
+        id: "completion-notion-approval",
+        object: "chat.completion.chunk",
+        created: 6,
+        model: "private-auto",
+        choices: [{
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [{
+              index: 0,
+              id: "call-notion-update",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: JSON.stringify(actionArguments),
+              },
+            }],
+          },
+        }],
+      });
+    }
+    return streamPage("notion-approval-finish", {
+      id: "completion-notion-finish",
+      object: "chat.completion.chunk",
+      created: 7,
+      model: "private-auto",
+      choices: [{
+        index: 0,
+        finish_reason: "stop",
+        delta: { role: "assistant", content: "The Notion page was updated." },
+      }],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const commonParams = {
+    model: "private-auto",
+    instructions: "Update the requested Notion page.",
+    workspace: "/tmp/june-workspace",
+    safetyMode: "sandboxed" as const,
+    tools: [{
+      name: "notion-update-page",
+      description: "Update one Notion page.",
+      parameters: {
+        type: "object",
+        properties: {
+          page_id: { type: "string" },
+          content: { type: "string" },
+          properties: { type: "object" },
+          content_updates: { type: "array", items: { type: "object" } },
+        },
+        required: ["page_id", "content"],
+        additionalProperties: true,
+      },
+      requiresApproval: true,
+      notionAction: true,
+      strict: false,
+    }],
+    skills: [],
+    contextWindow: 16_000,
+  };
+  const paused = await engine.start({
+    sessionId: "session-notion",
+    runId: "run-notion",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: { ...commonParams, input: "Update Roadmap.", history: [] },
+  });
+
+  assert.deepEqual(hostCalls, [{ name: "__june_notion_action_preflight", callId: "call-notion-update" }]);
+  assert.equal(paused.interruptions.length, 1);
+  assert.deepEqual(paused.interruptions[0]?.approvalPresentation, {
+    title: preflight.title,
+    description: preflight.description,
+    command: preflight.command,
+    preview: preflight.preview,
+  });
+  assert.deepEqual(paused.interruptions[0]?.approvalBinding, {
+    digest: preflight.digest,
+  });
+  assert.ok(paused.serializedState);
+
+  const resumed = await engine.resume({
+    sessionId: "session-notion",
+    runId: "run-notion",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      ...commonParams,
+      serializedState: paused.serializedState,
+      resolutions: [{ interruptionId: paused.interruptions[0]!.id, decision: "approve" }],
+    },
+  });
+
+  assert.deepEqual(hostCalls, [
+    { name: "__june_notion_action_preflight", callId: "call-notion-update" },
+    { name: "__june_notion_action_preflight", callId: "call-notion-update" },
+    { name: "notion-update-page", callId: "call-notion-update" },
+  ]);
+  assert.deepEqual(preflightArguments, [actionArguments, actionArguments]);
+  assert.deepEqual(executionArguments, [actionArguments]);
+  assert.equal(resumed.finalOutput, "The Notion page was updated.");
+});
+
+test("keeps concurrent Notion preflights bound to their original tool call ids", async () => {
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name === "__june_notion_action_preflight") {
+      if (input.callId === "call-slow") {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      return {
+        title: `Approval ${input.callId}`,
+        description: `Description ${input.callId}`,
+        command: `Command ${input.callId}`,
+        preview: `Preview ${input.callId}`,
+        digest: `digest-${input.callId}`,
+      };
+    }
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error(`Unexpected host tool: ${input.name}`);
+    }
+    if (!("request" in input.arguments)) throw new Error("The test streams complete in one page");
+    return streamPage("notion-concurrent-approvals", {
+      id: "completion-notion-concurrent",
+      object: "chat.completion.chunk",
+      created: 8,
+      model: "private-auto",
+      choices: [{
+        index: 0,
+        finish_reason: "tool_calls",
+        delta: {
+          role: "assistant",
+          tool_calls: [
+            {
+              index: 0,
+              id: "call-slow",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: "{\"page_id\":\"slow\",\"content\":\"Slow\"}",
+              },
+            },
+            {
+              index: 1,
+              id: "call-fast",
+              type: "function",
+              function: {
+                name: "notion_update_page",
+                arguments: "{\"page_id\":\"fast\",\"content\":\"Fast\"}",
+              },
+            },
+          ],
+        },
+      }],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const paused = await engine.start({
+    sessionId: "session-notion-concurrent",
+    runId: "run-notion-concurrent",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "private-auto",
+      instructions: "Update both Notion pages.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Update both pages.",
+      history: [],
+      tools: [{
+        name: "notion-update-page",
+        description: "Update one Notion page.",
+        parameters: {
+          type: "object",
+          properties: { page_id: { type: "string" }, content: { type: "string" } },
+          required: ["page_id", "content"],
+          additionalProperties: false,
+        },
+        requiresApproval: true,
+        notionAction: true,
+        strict: false,
+      }],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(paused.interruptions.length, 2);
+  for (const interruption of paused.interruptions) {
+    assert.equal(interruption.kind, "approval");
+    assert.equal(interruption.approvalPresentation?.title, `Approval ${interruption.id}`);
+    assert.equal(interruption.approvalPresentation?.preview, `Preview ${interruption.id}`);
+    assert.equal(interruption.approvalBinding?.digest, `digest-${interruption.id}`);
+  }
+});
+
+test("preserves observed reasoning_content for an unlisted model alias", async () => {
+  const modelRequests: JsonObject[] = [];
+  const toolCalls: Array<{ name: string; callId?: string }> = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      toolCalls.push({ name: input.name, callId: input.callId });
+      return { skills: [] };
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    const request = input.arguments.request;
+    modelRequests.push(request);
+    if (modelRequests.length === 1) {
+      return {
+        streamId: "glm-reasoning-stream",
+        chunks: [
+          {
+            id: "glm-reasoning-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: UNLISTED_GLM_MODEL,
+            choices: [
+              {
+                index: 0,
+                finish_reason: null,
+                delta: {
+                  role: "assistant",
+                  reasoning: "I should check ",
+                },
+              },
+            ],
+          },
+          {
+            id: "glm-reasoning-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: UNLISTED_GLM_MODEL,
+            choices: [
+              {
+                index: 0,
+                finish_reason: null,
+                delta: {
+                  reasoning_content: "the skills list first.",
+                },
+              },
+            ],
+          },
+          {
+            id: "glm-reasoning-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: UNLISTED_GLM_MODEL,
+            choices: [
+              {
+                index: 0,
+                finish_reason: "tool_calls",
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call-glm-skills",
+                      type: "function",
+                      function: { name: "list_skills", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        done: true,
+        route: {
+          provider: "phala",
+          privacyLevel: "tee",
+          endpoint: "phala-glm-5.2",
+        },
+      };
+    }
+    return streamPage("glm-answer-stream", {
+      id: "glm-reasoning-2",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: UNLISTED_GLM_MODEL,
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "No skills are installed." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const input: EngineRunInput = {
+    sessionId: "session-glm-reasoning",
+    runId: "run-glm-reasoning",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: UNLISTED_GLM_MODEL,
+      reasoningEffort: "high",
+      instructions: "Use list_skills, then answer.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "What skills are installed?",
+      history: [],
+      tools: [
+        {
+          name: "list_skills",
+          description: "List installed skills.",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  };
+
+  const result = await engine.start(input);
+
+  assert.equal(result.finalOutput, "No skills are installed.");
+  assert.equal(toolCalls.length, 1);
+  assert.equal(toolCalls[0]?.name, "list_skills");
+  assert.equal(modelRequests.length, 2);
+
+  // The second request must carry reasoning_content (not reasoning) on the
+  // assistant tool-call message, because GLM expects its native field.
+  const secondMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(secondMessages));
+  const assistantMessage = secondMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(assistantMessage), "second request must have an assistant tool-call message");
+  assert.equal(
+    typeof assistantMessage.reasoning_content,
+    "string",
+    "assistant message must have reasoning_content for GLM",
+  );
+  // Exact text must survive across split chunks.
+  assert.equal(
+    assistantMessage.reasoning_content,
+    "I should check the skills list first.",
+    "reasoning_content must carry the exact concatenated reasoning text",
+  );
+  assert.equal(
+    assistantMessage.reasoning,
+    undefined,
+    "reasoning must be renamed to reasoning_content, not duplicated",
+  );
+  // Tool calls must be preserved unchanged.
+  const toolCall = assistantMessage.tool_calls?.[0];
+  assert.ok(isRecord(toolCall));
+  assert.equal(toolCall.id, "call-glm-skills");
+});
+
+test("pins an Auto-routed GLM model across a tool-call continuation", async () => {
+  const modelRequests: JsonObject[] = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      return { skills: [] };
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    modelRequests.push(input.arguments.request);
+    if (modelRequests.length === 1) {
+      return {
+        streamId: "auto-glm-stream",
+        chunks: [
+          {
+            id: "auto-glm-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: null,
+                delta: {
+                  role: "assistant",
+                  reasoning_content: "Auto-routed reasoning.",
+                },
+              },
+            ],
+          },
+          {
+            id: "auto-glm-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: "tool_calls",
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call-auto-skills",
+                      type: "function",
+                      function: { name: "list_skills", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        done: true,
+        route: {
+          provider: "phala",
+          privacyLevel: "tee",
+          endpoint: "phala-glm-5.2",
+        },
+      };
+    }
+    return streamPage("auto-glm-answer", {
+      id: "auto-glm-2",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "z-ai/glm-5.2",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "Done via auto." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  await engine.start({
+    sessionId: "session-auto-glm",
+    runId: "run-auto-glm",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: AUTO_RUN_MODEL,
+      reasoningEffort: "high",
+      instructions: "Use list_skills, then answer.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "What skills are installed?",
+      history: [],
+      tools: [
+        {
+          name: "list_skills",
+          description: "List installed skills.",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(modelRequests[0]?.model, AUTO_RUN_MODEL);
+  assert.equal(modelRequests[1]?.model, PINNED_GLM_RUN_MODEL);
+  const secondMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(secondMessages));
+  const assistantMessage = secondMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(assistantMessage));
+  assert.equal(
+    assistantMessage.reasoning_content,
+    "Auto-routed reasoning.",
+    "the pinned GLM continuation must use the provider-native reasoning field",
+  );
+  assert.equal(assistantMessage.reasoning, undefined);
+});
+
+test("pins an Auto-routed non-GLM model without renaming reasoning", async () => {
+  const modelRequests: JsonObject[] = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      return { skills: [] };
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    modelRequests.push(input.arguments.request);
+    if (modelRequests.length === 1) {
+      return {
+        streamId: "kimi-stream",
+        chunks: [
+          {
+            id: "kimi-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "kimi-k2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: null,
+                delta: {
+                  role: "assistant",
+                  reasoning: "Let me check the skills.",
+                },
+              },
+            ],
+          },
+          {
+            id: "kimi-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "kimi-k2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: "tool_calls",
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call-kimi-skills",
+                      type: "function",
+                      function: { name: "list_skills", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        done: true,
+        route: {
+          provider: "venice",
+          privacyLevel: "preferred",
+          endpoint: "venice-kimi",
+        },
+      };
+    }
+    return streamPage("kimi-answer", {
+      id: "kimi-2",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "kimi-k2",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "Done." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  await engine.start({
+    sessionId: "session-kimi",
+    runId: "run-kimi",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "open-software/auto",
+      reasoningEffort: "high",
+      instructions: "Use list_skills, then answer.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "What skills are installed?",
+      history: [],
+      tools: [
+        {
+          name: "list_skills",
+          description: "List installed skills.",
+          parameters: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(modelRequests[0]?.model, "open-software/auto");
+  assert.equal(modelRequests[1]?.model, "__june_auto_resolved__:kimi-k2");
+  const secondMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(secondMessages));
+  const assistantMessage = secondMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(assistantMessage));
+  // Non-GLM model: reasoning should NOT be renamed to reasoning_content.
+  assert.equal(
+    assistantMessage.reasoning_content,
+    undefined,
+    "non-GLM model must not have reasoning_content",
+  );
+  // Original reasoning text must be preserved unchanged.
+  assert.equal(
+    assistantMessage.reasoning,
+    "Let me check the skills.",
+    "non-GLM reasoning text must be preserved",
+  );
+});
+
+test("pins an Auto-routed GLM model across an approval resume", async () => {
+  const modelRequests: JsonObject[] = [];
+  let modelRequestCount = 0;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      return { skills: [] };
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    modelRequestCount += 1;
+    modelRequests.push(input.arguments.request);
+    if (modelRequestCount === 1) {
+      return {
+        streamId: "auto-glm-approval-stream",
+        chunks: [
+          {
+            id: "auto-glm-approval-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: null,
+                delta: {
+                  role: "assistant",
+                  reasoning_content: "I need to list skills first.",
+                },
+              },
+            ],
+          },
+          {
+            id: "auto-glm-approval-1",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "z-ai/glm-5.2",
+            choices: [
+              {
+                index: 0,
+                finish_reason: "tool_calls",
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: "call-auto-approval-skills",
+                      type: "function",
+                      function: { name: "list_skills", arguments: "{}" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        done: true,
+        route: {
+          provider: "phala",
+          privacyLevel: "tee",
+          endpoint: "phala-glm-5.2",
+        },
+      };
+    }
+    return streamPage("auto-glm-approval-finish", {
+      id: "auto-glm-approval-2",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "z-ai/glm-5.2",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "Done after approval." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const commonParams = {
+    model: AUTO_RUN_MODEL,
+    reasoningEffort: "high" as const,
+    instructions: "Use list_skills, then answer.",
+    workspace: "/tmp/june-workspace",
+    safetyMode: "sandboxed" as const,
+    tools: [
+      {
+        name: "list_skills",
+        description: "List installed skills.",
+        parameters: {
+          type: "object",
+          properties: {},
+          additionalProperties: false,
+        },
+        requiresApproval: true,
+      },
+    ],
+    skills: [],
+    contextWindow: 16_000,
+  };
+
+  const paused = await engine.start({
+    sessionId: "session-auto-glm-approval",
+    runId: "run-auto-glm-approval",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      ...commonParams,
+      input: "What skills are installed?",
+      history: [],
+    },
+  });
+  assert.equal(paused.interruptions.length, 1);
+  assert.ok(paused.serializedState);
+  const glmStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(glmStateEnvelope.juneVersion, 1);
+  assert.equal(glmStateEnvelope.reasoningWireFormat, "reasoning_content");
+  // The start result must carry both observational route metadata and the
+  // canonical model that can pin the resumed request.
+  assert.equal(paused.usage.endpoint, "phala-glm-5.2");
+  assert.equal(paused.usage.resolvedModel, "z-ai/glm-5.2");
+
+  const resumed = await engine.resume({
+    sessionId: "session-auto-glm-approval",
+    runId: "run-auto-glm-approval",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      ...commonParams,
+      serializedState: paused.serializedState,
+      resolutions: [
+        {
+          interruptionId: paused.interruptions[0]!.id,
+          decision: "approve",
+        },
+      ],
+      resolvedModel: paused.usage.resolvedModel,
+    },
+  });
+
+  assert.equal(resumed.finalOutput, "Done after approval.");
+  assert.equal(resumed.interruptions.length, 0);
+
+  assert.equal(modelRequests[0]?.model, AUTO_RUN_MODEL);
+  assert.equal(modelRequests[1]?.model, PINNED_GLM_RUN_MODEL);
+  const secondMessages = modelRequests[1]?.messages;
+  assert.ok(Array.isArray(secondMessages));
+  const assistantMessage = secondMessages.find(
+    (message) =>
+      isRecord(message) &&
+      message.role === "assistant" &&
+      Array.isArray(message.tool_calls),
+  );
+  assert.ok(isRecord(assistantMessage));
+  assert.equal(
+    assistantMessage.reasoning_content,
+    "I need to list skills first.",
+    "the pinned GLM resume must use the provider-native reasoning field",
+  );
+  assert.equal(assistantMessage.reasoning, undefined);
 });
 
 function streamPage(streamId: string, chunk: JsonObject) {

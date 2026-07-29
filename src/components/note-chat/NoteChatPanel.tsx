@@ -210,9 +210,8 @@ export function NoteChatPanel({
     }
   }
 
-  // Focus the composer, then toggle the dictation helper's listening state —
-  // the same command the hotkey path sends. The helper records, shows the
-  // HUD, and pastes the transcription into the focused field (the composer).
+  // Focus the composer, then explicitly start the dictation helper. Stop and
+  // discard controls are correlated separately with the take shown in the HUD.
   async function startDictation() {
     if (creditActionsDisabledReason) {
       setComposerError(creditActionsDisabledReason);
@@ -220,7 +219,7 @@ export function NoteChatPanel({
     }
     composerRef.current?.focus();
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (err) {
       setComposerError(messageFromError(err));
     }
@@ -237,13 +236,15 @@ export function NoteChatPanel({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  // Catalog hydration is presentation-only. The session-local staged choice
+  // is authoritative until a run applies it, including choices acknowledged
+  // to a linked companion while this panel is already open.
   useEffect(() => {
     let stale = false;
     void listVeniceModels("generation")
       .then((catalog) => {
         if (stale) return;
         setModels(catalog.models);
-        if (activeModelId === "auto" && catalog.selectedModel) setModel(catalog.selectedModel);
       })
       .catch(() => undefined);
     void providerModelSettings()
@@ -254,7 +255,7 @@ export function NoteChatPanel({
     return () => {
       stale = true;
     };
-  }, [activeModelId, setModel]);
+  }, []);
   const model = selectedModel(models, activeModelId);
   const textFundingContext: TextFundingModelContext = {
     activeModelId: activeModelId || undefined,

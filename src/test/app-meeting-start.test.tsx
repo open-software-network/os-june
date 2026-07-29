@@ -1,6 +1,9 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// This suite verifies native meeting event orchestration, not workspace chunk loading.
+// Preload the lazy editor module so transform latency cannot consume assertion timeouts.
+import "../components/note-editor/NoteEditor";
 import { App } from "../app/App";
 import {
   AGENT_RECORDER_REQUEST_EVENT,
@@ -159,6 +162,8 @@ vi.mock("../lib/tauri", () => ({
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionListAgentMedia: vi.fn(async () => []),
+  companionReadAgentMediaChunk: vi.fn(),
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -379,8 +384,8 @@ describe("meeting start transcription event", () => {
         "meeting-request-1",
         "microphonePlusSystem",
       );
+      expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     });
-    expect(mocks.acknowledgeMeetingStartRequest).toHaveBeenCalledWith("meeting-request-1");
     expect(mocks.playRecordingSound).toHaveBeenCalledWith("start");
     expect(await screen.findByLabelText("Note title")).toHaveValue("New meeting");
   });
@@ -438,7 +443,7 @@ describe("meeting start transcription event", () => {
     });
 
     expect(await screen.findByLabelText("Note title")).toHaveValue("Roadmap sync");
-    expect(screen.getByText("calendar-owner@example.com")).toBeInTheDocument();
+    expect(screen.getByLabelText("Matched to Roadmap sync in Google Calendar")).toBeInTheDocument();
   });
 
   it("reopens the recording HUD to the note editor for the active recording", async () => {

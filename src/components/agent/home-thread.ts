@@ -248,12 +248,317 @@ const HOME_HANDOFF_ACKNOWLEDGEMENTS = new Set([
   "yup",
 ]);
 
+const HOME_CONVERSATION_GREETING =
+  /^(?:(?:hi|hey|hello)(?: there| again)?|(?:good )?(?:morning|afternoon|evening)|greetings|good to see you)(?: june)?$/u;
+const HOME_CONVERSATION_HELLO_FROM = /^hello\s+from\s+(.+?)[\p{P}\p{S}\s]*$/iu;
+const HOME_CONVERSATION_LOCATION_CONNECTORS = new Set([
+  "da",
+  "de",
+  "del",
+  "do",
+  "dos",
+  "la",
+  "las",
+  "le",
+  "of",
+  "the",
+  "van",
+  "von",
+]);
+
+function isHomeConversationLocationWord(word: string): boolean {
+  if (!/^[\p{L}\p{N}'’-]+$/u.test(word)) return false;
+  if (!/[\p{Ll}\p{Lu}]/u.test(word)) return true;
+  return /^\p{Lu}/u.test(word);
+}
+
+function isHomeConversationHelloFrom(message: string): boolean {
+  const match = HOME_CONVERSATION_HELLO_FROM.exec(message);
+  if (!match?.[1]) return false;
+  const words = match[1].trim().split(/\s+/);
+  if (words.length === 0 || words.length > 3) return false;
+  return words.every(
+    (word, index) =>
+      isHomeConversationLocationWord(word) ||
+      (index > 0 &&
+        index < words.length - 1 &&
+        HOME_CONVERSATION_LOCATION_CONNECTORS.has(word.toLocaleLowerCase())),
+  );
+}
+
 function normalizedHomeAcknowledgement(message: string): string {
   return message
     .trim()
     .toLocaleLowerCase()
     .replace(/[.!?,;:]+$/g, "")
     .replace(/\s+/g, " ");
+}
+
+export function homeConversationGreetingReply(message: string): string | undefined {
+  const visibleMessage = message.normalize("NFKC").trim();
+  const normalized = message
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  return HOME_CONVERSATION_GREETING.test(normalized) || isHomeConversationHelloFrom(visibleMessage)
+    ? "Hey! What can I help with?"
+    : undefined;
+}
+
+const HOME_TASK_GROUNDING_STOP_WORDS = new Set([
+  "a",
+  "afternoon",
+  "about",
+  "agent",
+  "again",
+  "an",
+  "analyze",
+  "analyse",
+  "and",
+  "are",
+  "build",
+  "check",
+  "compare",
+  "create",
+  "day",
+  "do",
+  "draft",
+  "edit",
+  "email",
+  "explore",
+  "find",
+  "fix",
+  "generate",
+  "help",
+  "investigate",
+  "in",
+  "is",
+  "it",
+  "look",
+  "evening",
+  "focused",
+  "for",
+  "from",
+  "good",
+  "greetings",
+  "hello",
+  "hey",
+  "hiya",
+  "howdy",
+  "june",
+  "morning",
+  "make",
+  "me",
+  "plan",
+  "prepare",
+  "please",
+  "research",
+  "review",
+  "schedule",
+  "search",
+  "summarize",
+  "summarise",
+  "update",
+  "write",
+  "see",
+  "session",
+  "start",
+  "task",
+  "that",
+  "the",
+  "them",
+  "there",
+  "this",
+  "those",
+  "to",
+  "what",
+  "when",
+  "where",
+  "which",
+  "who",
+  "with",
+  "you",
+  "your",
+]);
+
+const HOME_TASK_ACTION_NEGATION =
+  /\b(?:(?:do not|don't|never)(?!\s+forget\s+to\b)|stop)\b|\bwithout\s+(?:\w+\s+){0,3}\w+ing\b/i;
+const HOME_TASK_REPEAT_NEGATION =
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,8}(?:again|continue|redo|repeat|resume)\b/i;
+const HOME_TASK_CONTEXTUAL_NEGATION =
+  /\b(?:do not|don't|never|stop|without)\s+(?:\w+\s+){0,5}(?:do (?:it|that|this|the same)|one more|same for|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_POSITIVE_NEGATION_EXCEPTION = /\b(?:do not|don't|never)\s+forget\s+to\b/i;
+const HOME_TASK_REPEAT_REQUEST = /\b(?:again|continue|redo|repeat|resume)\b/i;
+const HOME_TASK_CONTEXTUAL_REQUEST =
+  /\b(?:do (?:it|that|this|the same)|one more|same for|start (?:it|that|this)|(?:first|second|third|next) one)\b/i;
+const HOME_TASK_REPLACEMENT_LEADING_WORDS = new Set([
+  "a",
+  "also",
+  "an",
+  "and",
+  "can",
+  "could",
+  "instead",
+  "it",
+  "just",
+  "please",
+  "that",
+  "the",
+  "them",
+  "these",
+  "then",
+  "this",
+  "those",
+  "will",
+  "would",
+  "you",
+]);
+
+function normalizedHomeTaskWord(word: string): string {
+  return word.length > 3 && word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word;
+}
+
+function homeTaskGroundingTokens(value: string): Set<string> {
+  return new Set(
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)
+      ?.map(normalizedHomeTaskWord)
+      .filter((token) => token.length >= 2 && !HOME_TASK_GROUNDING_STOP_WORDS.has(token)) ?? [],
+  );
+}
+
+function normalizedHomeTaskIntent(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[’‘]/g, "'")
+    .replace(/\bdon't\b/gi, "do not")
+    .replace(/'/g, "")
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function homeTaskSimilarity(left: JuneHomeTaskRequest, right: JuneHomeTaskRequest): number {
+  const normalizedLeftTitle = normalizedHomeTaskIntent(left.title).toLocaleLowerCase();
+  const normalizedRightTitle = normalizedHomeTaskIntent(right.title).toLocaleLowerCase();
+  if (normalizedLeftTitle && normalizedLeftTitle === normalizedRightTitle) return 1;
+  const leftTokens = homeTaskGroundingTokens(`${left.title} ${left.prompt}`);
+  const rightTokens = homeTaskGroundingTokens(`${right.title} ${right.prompt}`);
+  if (leftTokens.size === 0 || rightTokens.size === 0) return 0;
+  const shared = [...leftTokens].filter((leftToken) => rightTokens.has(leftToken)).length;
+  return shared / Math.max(leftTokens.size, rightTokens.size);
+}
+
+function matchingPriorHomeTaskHandoffs(
+  task: JuneHomeTaskRequest,
+  handoffs: HomeTaskHandoff[],
+): HomeTaskHandoff[] {
+  return handoffs.filter((handoff) => homeTaskSimilarity(task, handoff) >= 0.6);
+}
+
+function latestHomeTaskNovelGrounding(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  matchingHandoffs: HomeTaskHandoff[],
+): { hasNovelGrounding: boolean; taskUsesNovelGrounding: boolean } {
+  const latestTokens = homeTaskGroundingTokens(latestMessage);
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  const priorTokens = matchingHandoffs.map((handoff) =>
+    homeTaskGroundingTokens(`${handoff.title} ${handoff.prompt}`),
+  );
+  const novelGrounding = [...latestTokens].filter((token) =>
+    priorTokens.every((tokens) => !tokens.has(token)),
+  );
+  return {
+    hasNovelGrounding: novelGrounding.length > 0,
+    taskUsesNovelGrounding: novelGrounding.some((token) => taskTokens.has(token)),
+  };
+}
+
+function homeTaskSharesLatestGrounding(task: JuneHomeTaskRequest, latestMessage: string): boolean {
+  const taskTokens = homeTaskGroundingTokens(`${task.title} ${task.prompt}`);
+  return [...homeTaskGroundingTokens(latestMessage)].some((token) => taskTokens.has(token));
+}
+
+function homeTaskHasPositiveReplacementAfterNegation(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  matchingHandoffs: HomeTaskHandoff[],
+): boolean {
+  const taskWords = new Set(
+    normalizedHomeTaskIntent(`${task.title} ${task.prompt}`)
+      .toLocaleLowerCase()
+      .split(" ")
+      .map(normalizedHomeTaskWord),
+  );
+  const priorGrounding = matchingHandoffs.map((handoff) =>
+    homeTaskGroundingTokens(`${handoff.title} ${handoff.prompt}`),
+  );
+  const clauses = latestMessage
+    .normalize("NFKC")
+    .replace(/[’‘]/g, "'")
+    .replace(/\b(do not|don't|never),\s*please,\s*/giu, "$1 ")
+    .split(/(?:[;,]|\bbut\b|\binstead\b|\bthen\b)/iu);
+  let sawNegatedClause = false;
+
+  for (const clause of clauses) {
+    const intentText = normalizedHomeTaskIntent(clause).toLocaleLowerCase();
+    if (!intentText) continue;
+    if (
+      HOME_TASK_REPEAT_NEGATION.test(intentText) ||
+      HOME_TASK_CONTEXTUAL_NEGATION.test(intentText) ||
+      HOME_TASK_ACTION_NEGATION.test(intentText)
+    ) {
+      sawNegatedClause = true;
+      continue;
+    }
+    if (!sawNegatedClause) continue;
+    const leadingWordCandidate = intentText
+      .split(" ")
+      .find((word) => !HOME_TASK_REPLACEMENT_LEADING_WORDS.has(word));
+    const leadingWord = leadingWordCandidate
+      ? normalizedHomeTaskWord(leadingWordCandidate)
+      : undefined;
+    if (
+      leadingWord &&
+      taskWords.has(leadingWord) &&
+      priorGrounding.every((tokens) => !tokens.has(leadingWord))
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+export function isHomeTaskReplayWithoutNewIntent(
+  task: JuneHomeTaskRequest,
+  latestMessage: string,
+  handoffs: HomeTaskHandoff[],
+): boolean {
+  const intentText = normalizedHomeTaskIntent(latestMessage);
+  const negatesRepeat = HOME_TASK_REPEAT_NEGATION.test(intentText);
+  const negatesAction = HOME_TASK_ACTION_NEGATION.test(intentText);
+  const negatesContext = HOME_TASK_CONTEXTUAL_NEGATION.test(intentText);
+  const matchingHandoffs = matchingPriorHomeTaskHandoffs(task, handoffs);
+  if (matchingHandoffs.length === 0) return false;
+  if (homeConversationGreetingReply(latestMessage)) return true;
+  const grounding = latestHomeTaskNovelGrounding(task, latestMessage, matchingHandoffs);
+  if (grounding.taskUsesNovelGrounding) return false;
+  if (HOME_TASK_POSITIVE_NEGATION_EXCEPTION.test(intentText)) return false;
+  if (homeTaskHasPositiveReplacementAfterNegation(task, latestMessage, matchingHandoffs)) {
+    return false;
+  }
+  if (negatesRepeat || negatesContext || negatesAction) return true;
+  if (grounding.hasNovelGrounding) return true;
+  if (HOME_TASK_REPEAT_REQUEST.test(intentText) || HOME_TASK_CONTEXTUAL_REQUEST.test(intentText)) {
+    return false;
+  }
+  return !homeTaskSharesLatestGrounding(task, latestMessage);
 }
 
 export function compareHomeTurnOrder(left: AgentChatTurn, right: AgentChatTurn): number {

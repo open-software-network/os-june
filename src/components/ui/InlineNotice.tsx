@@ -5,6 +5,7 @@ export type InlineNoticeTone = "info" | "warning" | "destructive";
 type InlineNoticeProps = {
   eyebrow?: ReactNode;
   body: ReactNode;
+  bodyRef?: React.Ref<HTMLSpanElement>;
   actions?: ReactNode;
   icon?: ReactNode;
   tone?: InlineNoticeTone;
@@ -16,6 +17,7 @@ type InlineNoticeProps = {
 export function InlineNotice({
   eyebrow,
   body,
+  bodyRef,
   actions,
   icon,
   tone = "warning",
@@ -29,7 +31,9 @@ export function InlineNotice({
       {icon ? <span className="inline-notice-icon">{icon}</span> : null}
       <div className="inline-notice-message">
         {eyebrow ? <span className="inline-notice-eyebrow">{eyebrow}</span> : null}
-        <span className="inline-notice-body">{body}</span>
+        <span ref={bodyRef} className="inline-notice-body">
+          {body}
+        </span>
       </div>
       {actions ? <div className="inline-notice-actions">{actions}</div> : null}
     </section>

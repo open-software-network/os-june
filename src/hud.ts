@@ -476,6 +476,18 @@ function setCancelHover(isHovered: boolean) {
 // Standalone browser demos own their key events. Native helpers must
 // explicitly advertise a global Escape monitor before the HUD teaches it.
 let escapeCancelAvailable = !HAS_TAURI_BRIDGE;
+let activeDictationTakeId: string | undefined;
+
+function dictationTakeId(event: DictationHudEvent) {
+  const takeId = event.payload?.takeId;
+  return typeof takeId === "string" && takeId.trim().length > 0 && takeId.length <= 128
+    ? takeId.trim()
+    : undefined;
+}
+
+function correlatedHelperCommand(type: "stop_and_paste" | "discard_recording") {
+  return activeDictationTakeId ? { type, takeId: activeDictationTakeId } : { type };
+}
 
 function setCancelTooltipHover(isHovered: boolean) {
   setEscTipVisible(isHovered && escapeCancelAvailable && hud?.dataset.state === "listening");
@@ -1015,8 +1027,29 @@ function hideSoon(delay = 900) {
 async function handleDictationEventPayload(payload: unknown) {
   const dictationEvent = parseEvent(payload);
   if (!dictationEvent) return;
+  if (activeDictationTakeId && dictationEvent.payload?.preserveActiveTake === true) {
+    return;
+  }
+  const eventTakeId = dictationTakeId(dictationEvent);
+  if (
+    activeDictationTakeId &&
+    eventTakeId &&
+    eventTakeId !== activeDictationTakeId &&
+    [
+      "audio_level",
+      "finalizing_transcript",
+      "final_transcript",
+      "paste_target",
+      "paste_completed",
+      "recording_discarded",
+      "error",
+    ].includes(dictationEvent.type)
+  ) {
+    return;
+  }
 
   if (dictationEvent.type === "listening_started") {
+    activeDictationTakeId = dictationTakeId(dictationEvent);
     escapeCancelAvailable =
       !HAS_TAURI_BRIDGE || dictationEvent.payload?.escapeCancelAvailable === true;
     resetBars();
@@ -1085,11 +1118,13 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "paste_completed") {
+    activeDictationTakeId = undefined;
     void hideHud();
     return;
   }
 
   if (dictationEvent.type === "recording_discarded") {
+    activeDictationTakeId = undefined;
     // A grazed push-to-talk key or a signed-out session: the recording was
     // dropped without transcription, so the listening HUD just goes away.
     void hideHud();
@@ -1384,7 +1419,7 @@ stopButton?.addEventListener("click", async (event) => {
   }
   try {
     await invoke("dictation_helper_command", {
-      command: { type: "stop_and_paste" },
+      command: correlatedHelperCommand("stop_and_paste"),
     });
   } catch {
     if (lifecycle.signal.aborted) return;
@@ -1397,11 +1432,13 @@ stopButton?.addEventListener("click", async (event) => {
   }
 });
 
-// Cancel discards the recording outright: nothing enters dictation
-// transcription and no usage is charged. The helper answers with
-// recording_discarded, which is the authoritative confirmation that capture
-// actually stopped. Keep the listening HUD visible if the command write fails
-// so an active recording is never concealed behind a dismissed panel.
+// Cancel makes the current take terminal before asking the helper to discard
+// it. Work that has not started is suppressed; a metered request whose
+// settlement June API already spawned cannot be revoked at the desktop
+// boundary. The helper answers with recording_discarded, which is the
+// authoritative confirmation that capture actually stopped. Keep the
+// listening HUD visible if the command write fails so an active recording is
+// never concealed behind a dismissed panel.
 async function cancelDictation() {
   if (hud?.dataset.state !== "listening") return;
   setStopHover(false);
@@ -1409,7 +1446,7 @@ async function cancelDictation() {
   setCancelTooltipHover(false);
   try {
     await invoke("dictation_helper_command", {
-      command: { type: "discard_recording" },
+      command: correlatedHelperCommand("discard_recording"),
     });
   } catch {
     if (!lifecycle.signal.aborted) triggerShake();

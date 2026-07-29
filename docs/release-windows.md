@@ -1,9 +1,10 @@
 # Releasing June for Windows
 
 June ships Windows builds as an NSIS installer. The production Windows release
-workflow builds from `main`, signs the app executable and installer with
-Authenticode, signs updater artifacts with the Tauri updater key, and attaches
-Windows assets to the existing `open-software-network/os-june-releases` release.
+workflow builds from the promoted commit recorded by `stable-build.json`, signs
+the app executable and installer with Authenticode, signs updater artifacts with
+the Tauri updater key, and attaches Windows assets to the existing
+`open-software-network/os-june-releases` release.
 
 ## Windows support
 
@@ -91,6 +92,34 @@ The Windows workflow performs the release steps in order:
 12. Uploads Windows release assets and merges `windows-x86_64` into
     `latest.json` without removing macOS updater entries or the generated
     release changelog.
+
+## Qualifying an unsigned build on native Windows
+
+Before merging Windows build changes, run the tracked qualification helper in
+PowerShell 7 on a native x64 Windows machine. Pass the standalone repository,
+branch, and exact 40-character commit SHA to qualify:
+
+```powershell
+$repo = "E:\clones\work\os-june-butler"
+$branch = "<branch-to-qualify>"
+$expectedSha = "<exact-40-character-commit-sha>"
+
+& "$repo\scripts\qualify-windows-build.ps1" `
+  -RepoPath $repo `
+  -Branch $branch `
+  -ExpectedSha $expectedSha
+```
+
+The helper fetches `origin` and `upstream`, synchronizes the named GitButler
+branch to its remote state, and fails unless both resolve to the expected SHA.
+It then runs two complete unsigned builders and an additional explicit artifact
+verification after each build. It does not install dependencies, sign or upload
+artifacts, push branches, or discard source changes.
+
+The default evidence directory is
+`.tmp/windows-qualification/<branch>/<short-sha>/`. Pass
+`-EvidenceDirectory` to use another location. Each run writes `evidence.md` and
+`build-transcript.txt`; certificate values are not included.
 
 ## Validation
 

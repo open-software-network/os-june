@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { Editor } from "@tiptap/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
@@ -147,11 +148,52 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByText("Google Calendar")).toBeInTheDocument();
-    expect(screen.getByText("june@example.com")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Matched to Product review in Google Calendar"),
-    ).toBeInTheDocument();
+    const chip = screen.getByLabelText("Matched to Product review in Google Calendar");
+    expect(chip).toHaveClass("note-calendar-chip");
+    // The badge stays succinct: the event title is the visible label; the
+    // schedule and account email live in the hover card.
+    expect(chip).toHaveTextContent("Product review");
+    expect(screen.queryByText("june@example.com")).toBeNull();
+
+    fireEvent.focus(chip);
+    const card = screen.getByRole("tooltip");
+    expect(card).toHaveTextContent(/ to /);
+    expect(card).toHaveTextContent("june@example.com");
+
+    // Without a persisted htmlLink (events matched before the field shipped),
+    // the link falls back to Google's constructed eid deep link, targeted at
+    // the connected account.
+    const link = screen.getByLabelText("Open in Google Calendar");
+    const eid = btoa("event-1 june@example.com").replace(/=+$/, "");
+    expect(link).toHaveAttribute(
+      "href",
+      `https://calendar.google.com/calendar/event?eid=${eid}&authuser=june%40example.com`,
+    );
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("prefers the persisted Google Calendar link for the matched event", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          calendarEvent: {
+            eventId: "event-1",
+            title: "Product review",
+            startAt: "2026-05-19T14:00:00Z",
+            endAt: "2026-05-19T14:30:00Z",
+            accountEmail: "june@example.com",
+            htmlLink: "https://www.google.com/calendar/event?eid=ZXZlbnQtMQ",
+          },
+        })}
+      />,
+    );
+
+    fireEvent.focus(screen.getByLabelText("Matched to Product review in Google Calendar"));
+    expect(screen.getByLabelText("Open in Google Calendar")).toHaveAttribute(
+      "href",
+      "https://www.google.com/calendar/event?eid=ZXZlbnQtMQ&authuser=june%40example.com",
+    );
   });
 
   it("shows raw transcript in transcription tab", () => {
@@ -1061,14 +1103,12 @@ describe("NoteEditor", () => {
         })}
       />,
     );
-    const manualText = editor.querySelector("p")?.firstChild;
-    if (!manualText) throw new Error("Expected the focused manual note text");
-    const caret = document.createRange();
-    caret.setStart(manualText, manualText.textContent?.length ?? 0);
-    caret.collapse(true);
-    window.getSelection()?.removeAllRanges();
-    window.getSelection()?.addRange(caret);
-    await user.type(editor, " written live", { skipClick: true });
+    // Move ProseMirror's state selection, not only the DOM range. In jsdom,
+    // installing a browser Range does not update the editor transaction.
+    const tiptapEditor = (editor as HTMLElement & { editor?: Editor }).editor;
+    if (!tiptapEditor) throw new Error("Expected the mounted Tiptap editor");
+    tiptapEditor.commands.focus("end");
+    await user.keyboard(" written live");
     fireEvent.blur(editor);
 
     expect(onContentChange).toHaveBeenLastCalledWith(

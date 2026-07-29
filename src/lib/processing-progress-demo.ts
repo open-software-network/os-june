@@ -165,6 +165,15 @@ function buildDemoNote(status: ProcessingStatus, queued = 0): NoteDto {
     id: PROCESSING_DEMO_NOTE_ID,
     title: "Weekly product sync",
     preview: "Launch review for Friday",
+    // A matched event so the overline's Google Calendar chip renders alongside
+    // the progress indicator (its real-world neighborhood in a meeting note).
+    calendarEvent: {
+      eventId: `${PROCESSING_DEMO_NOTE_ID}-calendar-event`,
+      title: "Weekly product sync",
+      startAt: "2026-06-30T15:00:00.000Z",
+      endAt: "2026-06-30T15:30:00.000Z",
+      accountEmail: "andrew@example.com",
+    },
     processingStatus: status,
     folderIds: [],
     createdAt,

@@ -1,7 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { bumpVersionContents } from "./bump-version.mjs";
+import { bumpVersionContents, readCurrentVersion } from "./bump-version.mjs";
 
 // Build versions for on-demand RC artifacts. Unlike bump-version.mjs (which
 // gates main's version: valid X.Y.Z, strictly increasing), this stamps an
@@ -48,6 +49,10 @@ export function setBuildVersionContents(files, version) {
   if (!isBuildVersion(version)) {
     throw new Error(`Build version "${version}" must be X.Y.Z or X.Y.Z-rc.N (no leading zeros).`);
   }
+  const current = readCurrentVersion(files);
+  if (!current.ok) {
+    throw new Error(current.reason);
+  }
   // bumpVersionContents only does the file string-replace — the X.Y.Z-only
   // validation and monotonic check live in bump-version.mjs's main(), which we
   // deliberately bypass here.
@@ -55,29 +60,47 @@ export function setBuildVersionContents(files, version) {
 }
 
 async function main() {
-  const version = process.argv[2];
-  if (!version) {
-    throw new Error("Usage: node scripts/set-build-version.mjs <X.Y.Z[-rc.N]>");
+  const args = process.argv.slice(2);
+  const check = args[0] === "--check";
+  const version = check ? args[1] : args[0];
+  if (!version || args.length !== (check ? 2 : 1) || (!check && version.startsWith("--"))) {
+    throw new Error("Usage: node scripts/set-build-version.mjs [--check] <X.Y.Z[-rc.N]>");
+  }
+  if (!isBuildVersion(version)) {
+    throw new Error(`Build version "${version}" must be X.Y.Z or X.Y.Z-rc.N (no leading zeros).`);
   }
 
   const root = process.cwd();
   const paths = {
     tauriConf: resolve(root, "src-tauri/tauri.conf.json"),
     cargoToml: resolve(root, "src-tauri/Cargo.toml"),
+    cargoLock: resolve(root, "src-tauri/Cargo.lock"),
     packageJson: resolve(root, "package.json"),
   };
   const files = {
     tauriConf: await readFile(paths.tauriConf, "utf8"),
     cargoToml: await readFile(paths.cargoToml, "utf8"),
+    cargoLock: await readFile(paths.cargoLock, "utf8"),
     packageJson: await readFile(paths.packageJson, "utf8"),
   };
+  const current = readCurrentVersion(files);
+  if (!current.ok) {
+    throw new Error(current.reason);
+  }
+  if (check) {
+    if (current.version !== version) {
+      throw new Error(`Expected version ${version}, found agreed version ${current.version}.`);
+    }
+    return;
+  }
   const next = setBuildVersionContents(files, version);
   await writeFile(paths.tauriConf, next.tauriConf);
   await writeFile(paths.cargoToml, next.cargoToml);
+  await writeFile(paths.cargoLock, next.cargoLock);
   await writeFile(paths.packageJson, next.packageJson);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

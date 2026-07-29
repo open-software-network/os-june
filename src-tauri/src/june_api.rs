@@ -49,6 +49,10 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// session-scoped `config.set`. June's on-device provider proxy rewrites it
 /// before forwarding, so June API never sees this implementation detail.
 const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
+/// Internal model id for the canonical model selected by Auto for the rest of
+/// one agent run. It preserves service-managed inference provenance across
+/// continuations.
+const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
 /// Internal agent model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.
 const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
@@ -986,6 +990,10 @@ fn job_id_from_status_path(path: &str) -> &str {
 pub async fn proxy_agent_chat_completions(
     mut body: serde_json::Value,
 ) -> Result<AgentChatCompletionsResponse, AppError> {
+    let managed_auto = body
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(is_agent_auto_model);
     let local_settings = crate::providers::local_generation_settings();
     let route = agent_generation_route(
         &body,
@@ -999,7 +1007,7 @@ pub async fn proxy_agent_chat_completions(
     if route == AgentGenerationRoute::Local {
         return proxy_local_agent_chat_completions(body).await;
     }
-    let send_venice_api_key = body_model_accepts_venice_api_key(&body);
+    let send_venice_api_key = !managed_auto && body_model_accepts_venice_api_key(&body);
     let url = format!("{}/v1/chat/completions", june_api_url());
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
@@ -1338,6 +1346,7 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         .unwrap_or_default()
         .to_string();
     for prefix in [
+        AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX,
         AGENT_RUN_REMOTE_MODEL_PREFIX,
         LOCAL_GENERATION_OPTION_ID_PREFIX,
     ] {
@@ -1396,6 +1405,29 @@ fn decode_tagged_model(model: &str, prefix: &str) -> Option<String> {
     (!decoded.is_empty()).then_some(decoded)
 }
 
+pub(crate) fn is_canonical_agent_model(model: &str) -> bool {
+    let model = model.trim();
+    !model.is_empty()
+        && model.chars().count() <= JUNE_API_MAX_ID_CHARS
+        && model != "auto"
+        && model != crate::providers::AUTO_GENERATION_MODEL
+        && !model.starts_with("__june_")
+        && !model.chars().any(char::is_whitespace)
+        && !model.chars().any(char::is_control)
+}
+
+fn decode_resolved_auto_model(model: &str) -> Option<String> {
+    decode_tagged_model(model, AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+        .filter(|model| is_canonical_agent_model(model))
+}
+
+pub(crate) fn is_agent_auto_model(model: &str) -> bool {
+    let model = model.trim();
+    model == crate::providers::AUTO_GENERATION_MODEL
+        || model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
+        || model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+}
+
 /// Resolve provider provenance before normalization removes internal tags.
 /// New June sessions are always tagged. The raw-id comparison remains only
 /// for sessions created by older app versions, where provenance was not
@@ -1435,6 +1467,15 @@ fn agent_generation_route(
             AppError::new(
                 "remote_model_invalid",
                 "The model selected for this session is invalid. Choose the model again.",
+            )
+        })?;
+        return Ok(AgentGenerationRoute::Remote);
+    }
+    if requested_model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX) {
+        decode_resolved_auto_model(requested_model).ok_or_else(|| {
+            AppError::new(
+                "auto_resolved_model_invalid",
+                "The model selected by Auto is invalid. Retry the agent run.",
             )
         })?;
         return Ok(AgentGenerationRoute::Remote);
@@ -1658,7 +1699,7 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: June is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: June is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
 const JUNE_HOME_MEMORY_MAX_ITEMS: usize = 12;
 const JUNE_HOME_MEMORY_MAX_ITEM_CHARS: usize = 400;
 const JUNE_HOME_MEMORY_MAX_TOTAL_CHARS: usize = 4_000;
@@ -4490,6 +4531,13 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
+    fn home_chat_prompt_keeps_new_intent_in_the_latest_message() {
+        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("only source of new intent"));
+        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("work mentioned only in an earlier turn"));
+        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey June' is conversation"));
+    }
+
+    #[test]
     fn parses_home_task_handoff_from_string_arguments() {
         let message = serde_json::json!({
             "tool_calls": [{
@@ -4920,6 +4968,50 @@ data: [DONE]
         let mut normalized = body;
         normalize_agent_chat_request_for_proxy(&mut normalized);
         assert_eq!(normalized["model"], serde_json::json!("llama3.1:8b"));
+    }
+
+    #[test]
+    fn agent_proxy_preserves_managed_auto_provenance_after_model_resolution() {
+        let mut body = serde_json::json!({
+            "model": "__june_auto_resolved__:z-ai%2Fglm-5.2",
+            "messages": [{ "role": "user", "content": "hi" }],
+        });
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "z-ai/glm-5.2".to_string(),
+            api_key: String::new(),
+        };
+
+        assert!(is_agent_auto_model(
+            body["model"].as_str().expect("tagged model")
+        ));
+        assert_eq!(
+            agent_generation_route(&body, &settings, PROVIDER_LOCAL).unwrap(),
+            AgentGenerationRoute::Remote
+        );
+
+        normalize_agent_chat_request_for_proxy(&mut body);
+        assert_eq!(body["model"], serde_json::json!("z-ai/glm-5.2"));
+        assert!(body_model_accepts_venice_api_key(&body));
+    }
+
+    #[test]
+    fn agent_proxy_rejects_noncanonical_resolved_auto_models() {
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "z-ai/glm-5.2".to_string(),
+            api_key: String::new(),
+        };
+        for model in [
+            "__june_auto_resolved__:auto",
+            "__june_auto_resolved__:z-ai%2Fglm%205.2",
+            "__june_auto_resolved__:__june_local_generation__%3Az-ai%252Fglm-5.2",
+        ] {
+            let body = serde_json::json!({ "model": model });
+            let error = agent_generation_route(&body, &settings, PROVIDER_LOCAL)
+                .expect_err("noncanonical resolved Auto model must fail closed");
+            assert_eq!(error.code, "auto_resolved_model_invalid");
+        }
     }
 
     #[test]

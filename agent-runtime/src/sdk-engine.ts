@@ -8,7 +8,10 @@ import {
 } from "@openai/agents";
 import { readFile } from "node:fs/promises";
 import { formatHistoryForSummary } from "./compaction.js";
-import { RpcChatCompletionsModelProvider } from "./rpc-model-provider.js";
+import {
+  RpcChatCompletionsModelProvider,
+  type ReasoningWireFormat,
+} from "./rpc-model-provider.js";
 import { REQUEST_CLARIFICATION_TOOL } from "./types.js";
 import type { JsonObject, JsonValue } from "./types.js";
 import { errorMessage, sanitizeForLog } from "./sanitize.js";
@@ -48,10 +51,12 @@ const CONTEXT_SUMMARY_POLICY =
 const CONTEXT_SUMMARY_MAX_TOKENS = 2_048;
 const CONTEXT_SUMMARY_CONTEXT_UTILIZATION = 0.75;
 const CONSERVATIVE_SUMMARY_CHARS_PER_TOKEN = 2;
+const SERIALIZED_STATE_ENVELOPE_VERSION = 1;
 
 export class OpenAIAgentsEngine implements AgentEngine {
   readonly invokeHostTool: HostToolInvoker;
   initialized = false;
+  private readonly notionPreflights = new Map<string, JsonObject>();
 
   constructor(invokeHostTool: HostToolInvoker) {
     this.invokeHostTool = invokeHostTool;
@@ -124,12 +129,13 @@ export class OpenAIAgentsEngine implements AgentEngine {
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, input.params.history, input.emit, runner.modelProvider);
+    return this.consumeStream(stream, input.params.history, input.emit, runner.modelProvider, input.runId);
   }
 
   async resume(input: EngineResumeInput): Promise<EngineResult> {
     const agent = this.createAgent(input.params, input.sessionId, input.runId, input.emit);
-    const state = await RunState.fromString(agent, input.params.serializedState);
+    const persistedState = parseSerializedState(input.params.serializedState);
+    const state = await RunState.fromString(agent, persistedState.sdkState);
     const interruptions = state.getInterruptions();
     for (const resolution of input.params.resolutions) {
       const interruption = interruptions.find((candidate) => interruptionId(candidate) === resolution.interruptionId);
@@ -150,13 +156,15 @@ export class OpenAIAgentsEngine implements AgentEngine {
       input.runId,
       input.takeSteering,
       input.emit,
+      input.params.resolvedModel,
+      persistedState.reasoningWireFormat,
     );
     const stream = (await runner.runner.run(agent, state, {
       stream: true,
       signal: input.signal,
       maxTurns: 40,
     })) as unknown as SdkStream;
-    return this.consumeStream(stream, [], input.emit, runner.modelProvider);
+    return this.consumeStream(stream, [], input.emit, runner.modelProvider, input.runId);
   }
 
   async shutdown(): Promise<void> {
@@ -197,13 +205,35 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     emit: (event: EngineEvent) => void,
   ): FunctionTool {
-    return tool({
+    const definition = {
       name: descriptor.name,
       description: descriptor.description,
       parameters: descriptor.parameters as never,
-      strict: true,
+      strict: descriptor.strict ?? true,
       needsApproval: descriptor.requiresApproval ?? false,
-      execute: async (argumentsValue, _context, details) => {
+      ...(descriptor.notionAction ? {
+        inputGuardrails: [{
+          name: "notion_action_preflight",
+          run: async ({ toolCall }: { toolCall: unknown }) => {
+            const callId = toolCallId(toolCall);
+            const argumentsJson = exactToolArguments(isRecord(toolCall) ? toolCall.arguments : {});
+            try {
+              const result = await this.invokeHostTool({
+                sessionId,
+                runId,
+                name: "__june_notion_action_preflight",
+                arguments: { toolName: descriptor.name, arguments: argumentsJson },
+                callId,
+              });
+              if (isRecord(result)) this.notionPreflights.set(`${runId}:${callId}`, result as JsonObject);
+              return { behavior: { type: "allow" as const } };
+            } catch (error) {
+              return { behavior: { type: "rejectContent" as const, message: errorMessage(error) } };
+            }
+          },
+        }],
+      } : {}),
+      execute: async (argumentsValue: unknown, _context: unknown, details: unknown) => {
         const callId = toolCallId(details);
         const argumentsJson = asJsonValue(argumentsValue);
         emit({
@@ -228,7 +258,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
           throw new Error(message);
         }
       },
-    });
+    };
+    return tool(definition as never);
   }
 
   private async consumeStream(
@@ -236,14 +267,41 @@ export class OpenAIAgentsEngine implements AgentEngine {
     _priorHistory: RuntimeHistoryItem[],
     emit: (event: EngineEvent) => void,
     modelProvider: RpcChatCompletionsModelProvider,
+    runId: string,
   ): Promise<EngineResult> {
     for await (const event of stream) this.forwardSdkEvent(event, emit);
     await stream.completed;
     if (stream.cancelled) throw abortError();
     if (stream.error) throw stream.error;
 
-    const interruptions = stream.interruptions.map(runtimeInterruptionFromSdk);
-    const serializedState = interruptions.length > 0 ? stream.state.toString() : undefined;
+    const activeKeys = new Set<string>();
+    const interruptions = stream.interruptions.map((interruption) => {
+      const mapped = runtimeInterruptionFromSdk(interruption);
+      const key = `${runId}:${mapped.id}`;
+      activeKeys.add(key);
+      const preflight = this.notionPreflights.get(key);
+      this.notionPreflights.delete(key);
+      if (mapped.kind !== "approval" || !preflight) return mapped;
+      return {
+        ...mapped,
+        approvalPresentation: {
+          title: stringValue(preflight.title) ?? "Approval required",
+          description: stringValue(preflight.description) ?? "Review this Notion action.",
+          command: stringValue(preflight.command) ?? mapped.toolName,
+          preview: stringValue(preflight.preview) ?? "",
+        },
+        approvalBinding: {
+          digest: stringValue(preflight.digest) ?? "",
+        },
+      } satisfies RuntimeInterruption;
+    });
+    for (const key of this.notionPreflights.keys()) {
+      if (key.startsWith(`${runId}:`) && !activeKeys.has(key)) this.notionPreflights.delete(key);
+    }
+    const serializedState =
+      interruptions.length > 0
+        ? serializeState(stream.state.toString(), modelProvider.reasoningWireFormat)
+        : undefined;
     const history = sdkHistoryToRuntime(stream.history);
     return {
       ...(typeof stream.finalOutput === "string" ? { finalOutput: stream.finalOutput } : {}),
@@ -251,6 +309,7 @@ export class OpenAIAgentsEngine implements AgentEngine {
       usage: {
         ...normalizeUsage(stream.usage),
         ...modelProvider.latestRoute,
+        ...(modelProvider.resolvedModel ? { resolvedModel: modelProvider.resolvedModel } : {}),
       },
       interruptions,
       ...(serializedState === undefined ? {} : { serializedState }),
@@ -274,12 +333,20 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     takeSteering: EngineRunInput["takeSteering"],
     emit: (event: EngineEvent) => void,
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): { runner: Runner; modelProvider: RpcChatCompletionsModelProvider } {
-    const modelProvider = this.createModelProvider(sessionId, runId, {
-      takeSteering,
-      onSteeringConsumed: (message) =>
-        emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
-    });
+    const modelProvider = this.createModelProvider(
+      sessionId,
+      runId,
+      {
+        takeSteering,
+        onSteeringConsumed: (message) =>
+          emit({ type: "steering.consumed", messageId: message.messageId, text: message.text }),
+      },
+      initialResolvedModel,
+      initialReasoningWireFormat,
+    );
     return {
       modelProvider,
       runner: new Runner({
@@ -298,6 +365,8 @@ export class OpenAIAgentsEngine implements AgentEngine {
       takeSteering: () => SteeringMessage[];
       onSteeringConsumed: (message: SteeringMessage) => void;
     },
+    initialResolvedModel?: string,
+    initialReasoningWireFormat?: ReasoningWireFormat,
   ): RpcChatCompletionsModelProvider {
     if (!this.initialized) throw new Error("OpenAI Agents engine is not initialized");
     return new RpcChatCompletionsModelProvider(
@@ -311,8 +380,45 @@ export class OpenAIAgentsEngine implements AgentEngine {
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         }),
       steering,
+      initialResolvedModel,
+      initialReasoningWireFormat,
     );
   }
+}
+
+function serializeState(sdkState: string, reasoningWireFormat?: ReasoningWireFormat): string {
+  return JSON.stringify({
+    juneVersion: SERIALIZED_STATE_ENVELOPE_VERSION,
+    sdkState,
+    ...(reasoningWireFormat === undefined ? {} : { reasoningWireFormat }),
+  });
+}
+
+function parseSerializedState(serializedState: string): {
+  sdkState: string;
+  reasoningWireFormat?: ReasoningWireFormat;
+} {
+  try {
+    const envelope = JSON.parse(serializedState) as unknown;
+    if (
+      isRecord(envelope) &&
+      envelope.juneVersion === SERIALIZED_STATE_ENVELOPE_VERSION &&
+      typeof envelope.sdkState === "string"
+    ) {
+      const reasoningWireFormat =
+        envelope.reasoningWireFormat === "reasoning" ||
+        envelope.reasoningWireFormat === "reasoning_content"
+          ? envelope.reasoningWireFormat
+          : undefined;
+      return {
+        sdkState: envelope.sdkState,
+        ...(reasoningWireFormat === undefined ? {} : { reasoningWireFormat }),
+      };
+    }
+  } catch {
+    // Older interruptions stored the raw SDK state string.
+  }
+  return { sdkState: serializedState };
 }
 
 async function historyToSdkInput(history: RuntimeHistoryItem[]): Promise<unknown[]> {
@@ -469,6 +575,7 @@ export function runtimeInterruptionFromSdk(interruption: unknown): RuntimeInterr
   }
   return {
     id: interruptionId(interruption),
+    callId: interruptionCallId(interruption),
     kind: "approval",
     toolName,
     arguments: argumentsValue,
@@ -486,6 +593,17 @@ function parsedToolArguments(value: unknown): JsonValue {
   return sanitizeForLog(value);
 }
 
+function exactToolArguments(value: unknown): JsonValue {
+  if (typeof value === "string") {
+    try {
+      return asJsonValue(JSON.parse(value));
+    } catch {
+      return asJsonValue(value);
+    }
+  }
+  return asJsonValue(value);
+}
+
 function interruptionId(interruption: unknown): string {
   if (!isRecord(interruption)) return "unknown-interruption";
   if (typeof interruption.id === "string") return interruption.id;
@@ -496,10 +614,24 @@ function interruptionId(interruption: unknown): string {
   return "unknown-interruption";
 }
 
+function interruptionCallId(interruption: unknown): string {
+  if (!isRecord(interruption)) return "unknown-interruption";
+  if (typeof interruption.callId === "string") return interruption.callId;
+  if (isRecord(interruption.rawItem) && typeof interruption.rawItem.callId === "string") {
+    return interruption.rawItem.callId;
+  }
+  return interruptionId(interruption);
+}
+
 function toolCallId(details: unknown): string {
   if (isRecord(details)) {
     if (typeof details.toolCallId === "string") return details.toolCallId;
     if (typeof details.callId === "string") return details.callId;
+    if (typeof details.id === "string") return details.id;
+    if (isRecord(details.toolCall)) {
+      if (typeof details.toolCall.callId === "string") return details.toolCall.callId;
+      if (typeof details.toolCall.id === "string") return details.toolCall.id;
+    }
   }
   return crypto.randomUUID();
 }

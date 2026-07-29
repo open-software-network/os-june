@@ -28,6 +28,8 @@ export type RuntimeToolDescriptor = {
   description: string;
   parameters: JsonObject;
   requiresApproval?: boolean;
+  notionAction?: boolean;
+  strict?: boolean;
 };
 
 export type RuntimeSkillDescriptor = {
@@ -77,6 +79,7 @@ export type InterruptionResolution =
 export type RunResumeParams = Omit<RunStartParams, "input" | "history"> & {
   serializedState: string;
   resolutions: InterruptionResolution[];
+  resolvedModel?: string;
 };
 
 export type RuntimeUsage = {
@@ -87,14 +90,25 @@ export type RuntimeUsage = {
   provider?: string;
   privacyLevel?: string;
   endpoint?: string;
+  resolvedModel?: string;
 };
 
 export type RuntimeInterruption =
   | {
       id: string;
+      callId: string;
       kind: "approval";
       toolName: string;
       arguments: JsonValue;
+      approvalPresentation?: {
+        title: string;
+        description: string;
+        command: string;
+        preview: string;
+      };
+      approvalBinding?: {
+        digest: string;
+      };
     }
   | {
       id: string;

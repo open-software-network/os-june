@@ -80,3 +80,17 @@ Model selection is staged and applied at the next **agent run** boundary:
 - **Queue only a model id, then read the latest choice after asynchronous Send
   preparation.** Rejected: a picker change after Send would retroactively alter
   the message the user already submitted.
+
+## 2026-07-28 addendum: Auto resolution within an agent run
+
+For Auto, the captured model at the agent-run boundary is the Auto policy. The
+first inference returns the canonical model selected by that policy. June pins
+that canonical model for tool continuations and approval resumes within the
+same agent run, rather than evaluating Auto again or inferring from provider,
+privacy, or endpoint metadata. A later user-initiated agent run evaluates the
+captured Auto policy again.
+
+This makes the existing one-model-per-agent-run decision enforceable for
+provider-native reasoning history while retaining Auto selection between
+agent runs. The canonical response model is requestable; route metadata remains
+observational and is never treated as a continuation token.

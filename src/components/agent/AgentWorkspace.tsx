@@ -42,6 +42,7 @@ import type {
 import {
   agentRuntimeBindings,
   companionCompleteFrontendRequest,
+  companionConsumeAttachments,
   companionPublishAgentEvent,
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
@@ -50,7 +51,6 @@ import {
   dictationHelperCommand,
   juneHomeChat,
   type JuneHomeChatResponse,
-  listSessionPartitions,
   listVeniceModels,
   providerModelSettings,
   setCostQuality as setProviderCostQuality,
@@ -77,6 +77,8 @@ import {
   type QueuedAgentFollowUps,
 } from "../../lib/agent-follow-up-queue";
 import {
+  AGENT_SESSION_MODEL_CHANGED_EVENT,
+  type AgentSessionModelChangedDetail,
   clearSessionModelIfApplied,
   forgetSessionModel,
   loadSessionModels,
@@ -119,10 +121,8 @@ import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker
 import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
-import {
-  filterAgentSessionsForDataPartition,
-  sessionPartitionMap,
-} from "../../lib/session-partition-filter";
+import { companionSessionInActivePartition } from "../../lib/companion-partition";
+import { createCompanionPublicationQueue } from "../../lib/companion-publication-queue";
 import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPickerDialog";
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
@@ -148,6 +148,7 @@ import {
   resolveJuneHomeThreadSessionId,
   stripJuneHomeContextFromPreview,
   withJuneHomeCurrentResearch,
+  withJuneHomeLatestTaskIntent,
   type JuneHomeConversationContext,
   type JuneHomeTaskRequest,
 } from "../../lib/june-home";
@@ -157,7 +158,9 @@ import {
   compareHomeTurnOrder,
   enqueueHomeDirectChat,
   existingHomeTaskHandoffForSourceTurn,
+  homeConversationGreetingReply,
   homeConversationContextFromTurns,
+  isHomeTaskReplayWithoutNewIntent,
   isHomeTaskHandoffAcknowledgement,
   homeDemoReply,
   insertHomeDirectReply,
@@ -419,6 +422,8 @@ export function AgentWorkspace({
   const hydrationRequestRef = useRef<string>();
   const submissionOwnerRef = useRef<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [stoppingRunId, setStoppingRunId] = useState<string>();
+  const stoppingRunIdRef = useRef<string>();
   const [error, setError] = useState<string>();
   const [approvalSubmitting, setApprovalSubmitting] = useState<
     Partial<Record<string, "once" | "session" | "always" | "deny">>
@@ -432,6 +437,7 @@ export function AgentWorkspace({
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLFormElement>(null);
   const [composerClearance, setComposerClearance] = useState(0);
+  const [submittedScrollRevision, setSubmittedScrollRevision] = useState(0);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
   const projectContextRef = useRef(projectContext);
@@ -447,6 +453,9 @@ export function AgentWorkspace({
       targetProjectContext,
       projectContextSignaturesBySessionId.get(storedSessionId),
     );
+  }, []);
+  const requestSubmittedMessageScroll = useCallback(() => {
+    setSubmittedScrollRevision((revision) => revision + 1);
   }, []);
   const [homeDirectTurns, setHomeDirectTurns] = useState<AgentChatTurn[]>(() =>
     homeMode ? readHomeDirectTurns(initialSessionId) : [],
@@ -620,6 +629,17 @@ export function AgentWorkspace({
     }
   }, []);
 
+  useEffect(() => {
+    const applyExternalSessionModel = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
+      if (!detail || detail.sessionId !== selectedIdRef.current) return;
+      applySessionModel(detail.storedModel);
+    };
+    window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+    return () =>
+      window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, applyExternalSessionModel);
+  }, [applySessionModel]);
+
   const hydrate = useCallback(
     async (sessionId: string) => {
       const requestId = crypto.randomUUID();
@@ -749,6 +769,49 @@ export function AgentWorkspace({
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const companionPublicationQueue = createCompanionPublicationQueue({
+      isSessionPublishable: async (storedSessionId) =>
+        Boolean(await companionSessionInActivePartition(storedSessionId)) && !disposed,
+      onFailure: ({ error, eventType, storedSessionId }) => {
+        // biome-ignore lint/suspicious/noConsole: stream publication failures need a content-free diagnostic
+        console.warn("Failed to publish companion agent event", {
+          eventType,
+          reason: messageFromError(error),
+          storedSessionId,
+        });
+      },
+    });
+    const enqueueCompanionPublication = (
+      storedSessionId: string,
+      eventType: "delta" | "status",
+      publish: () => Promise<void>,
+    ) => {
+      void companionPublicationQueue.enqueue({ eventType, publish, storedSessionId });
+    };
+    const publishCompanionStatus = (
+      storedSessionId: string,
+      status: CompanionAgentStatus,
+      runId?: string,
+    ) => {
+      enqueueCompanionPublication(storedSessionId, "status", () =>
+        companionPublishAgentEvent({
+          type: "status",
+          data: {
+            storedSessionId,
+            status,
+            ...(runId ? { runId } : {}),
+          },
+        }),
+      );
+    };
+    const publishCompanionDelta = (storedSessionId: string, text: string) => {
+      enqueueCompanionPublication(storedSessionId, "delta", () =>
+        companionPublishAgentEvent({
+          type: "delta",
+          data: { storedSessionId, text },
+        }),
+      );
+    };
     void listen<AgentRuntimeEvent>(AGENT_RUNTIME_EVENT, ({ payload }) => {
       if (payload.method === "steering.consumed") {
         attemptedQueuedMessageIdsRef.current.delete(payload.data.messageId);
@@ -774,10 +837,10 @@ export function AgentWorkspace({
         );
       }
       if (companionPairingEnabled && payload.method === "message.delta" && payload.data.delta) {
-        void companionPublishAgentEvent({
-          type: "delta",
-          data: { storedSessionId: payload.sessionId, text: payload.data.delta },
-        }).catch(() => undefined);
+        publishCompanionDelta(payload.sessionId, payload.data.delta);
+      }
+      if (companionPairingEnabled && payload.method === "tool.completed") {
+        publishCompanionStatus(payload.sessionId, "running", payload.runId);
       }
       const companionStatus: CompanionAgentStatus | undefined =
         payload.method === "interruption.requested"
@@ -792,10 +855,11 @@ export function AgentWorkspace({
                   ? "running"
                   : undefined;
       if (companionPairingEnabled && companionStatus) {
-        void companionPublishAgentEvent({
-          type: "status",
-          data: { storedSessionId: payload.sessionId, status: companionStatus },
-        }).catch(() => undefined);
+        publishCompanionStatus(
+          payload.sessionId,
+          companionStatus,
+          terminal ? payload.runId : undefined,
+        );
       }
       if (payload.sessionId !== selectedIdRef.current) {
         void refreshSessions().catch(() => undefined);
@@ -831,18 +895,6 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!companionPairingEnabled) return;
-    async function companionSessionInActivePartition(storedSessionId: string) {
-      const [sessions, assignments] = await Promise.all([
-        agentRuntimeBindings.listSessions(),
-        listSessionPartitions(),
-      ]);
-      return filterAgentSessionsForDataPartition(
-        sessions,
-        sessionPartitionMap(assignments),
-        getCurrentDataPartitionName(),
-      ).find((session) => session.id === storedSessionId);
-    }
-
     async function rejectUnavailableCompanionSession(operationId: string) {
       await companionCompleteFrontendRequest(operationId, {
         type: "error",
@@ -859,9 +911,17 @@ export function AgentWorkspace({
         switch (payload.intent.type) {
           case "agentSessionsList":
           case "agentMessagesList":
+          case "modelsList":
+          case "sessionModelGet":
+          case "sessionModelSet":
             return;
           case "agentSend": {
-            const { storedSessionId: requestedStoredSessionId, message } = payload.intent.data;
+            const {
+              storedSessionId: requestedStoredSessionId,
+              message,
+              attachments = [],
+              attachmentReferenceIds = [],
+            } = payload.intent.data;
             let session: AgentSessionDto | undefined;
             let createdSessionPartition: string | undefined;
             if (requestedStoredSessionId) {
@@ -895,10 +955,12 @@ export function AgentWorkspace({
               return;
             }
             const preparedPrompt = preparePromptForSession(authorizedSession.id, message);
+            const stagedModel = loadSessionModels()[authorizedSession.id];
+            const submittedModel = stagedModel ?? authorizedSession.model;
             await agentRuntimeBindings.startRun({
               sessionId: authorizedSession.id,
               prompt: preparedPrompt.text,
-              model: authorizedSession.model,
+              model: submittedModel,
               reasoningEffort: thinkingEffortForLevel(thinkingLevelRef.current) as
                 | "minimal"
                 | "medium"
@@ -906,8 +968,11 @@ export function AgentWorkspace({
               safetyMode: authorizedSession.safetyMode,
               workspacePath: authorizedSession.workspacePath,
               enabledSkillIds,
-              attachments: [],
+              attachments: attachments.map((attachment) => attachment.path),
+              attachmentMetadata: attachments.map(({ name, mediaType }) => ({ name, mediaType })),
             });
+            clearSessionModelIfApplied(authorizedSession.id, submittedModel);
+            await companionConsumeAttachments(attachmentReferenceIds).catch(() => undefined);
             projectContextSignaturesBySessionId.set(
               authorizedSession.id,
               preparedPrompt.contextSignature,
@@ -979,6 +1044,13 @@ export function AgentWorkspace({
       scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
     }
   }, [projection.items]);
+
+  useLayoutEffect(() => {
+    if (submittedScrollRevision === 0) return;
+    const scroller = scrollRef.current;
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
+  }, [submittedScrollRevision]);
 
   useEffect(() => {
     if (
@@ -1116,6 +1188,7 @@ export function AgentWorkspace({
       }));
       setComposerDraft("");
       setAttachments([]);
+      requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
         void agentRuntimeBindings
@@ -1257,6 +1330,7 @@ export function AgentWorkspace({
           session: activeSession,
           items: [...current.items, optimistic],
         }));
+        requestSubmittedMessageScroll();
       }
       if (
         !queuedSnapshot &&
@@ -1569,15 +1643,18 @@ export function AgentWorkspace({
         priorDirectTurns,
         readHomeTaskHandoffs(storedSessionId),
       );
+      const greetingReply = homeConversationGreetingReply(message);
+      const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      requestSubmittedMessageScroll();
 
-      if (acknowledgesTaskHandoff && messageAttachments.length === 0) {
+      if (directConversationReply && messageAttachments.length === 0) {
         const assistantTurn: AgentChatTurn = {
           id: `home:direct:assistant:${suffix}`,
           role: "assistant",
           createdAt: new Date().toISOString(),
           status: "complete",
-          parts: [{ type: "text", text: "Got it.", status: "complete" }],
+          parts: [{ type: "text", text: directConversationReply, status: "complete" }],
         };
         const nextTurns = insertHomeDirectReply(storedSessionId, userTurn.id, assistantTurn);
         homeDirectTurnsRef.current = nextTurns;
@@ -1657,9 +1734,20 @@ export function AgentWorkspace({
         } finally {
           acceptingDeltas = false;
         }
-        const toolCallId = response.task ? `direct:${suffix}` : undefined;
+        const latestHandoffs = readHomeTaskHandoffs(storedSessionId as string);
+        const rejectedStaleTask = Boolean(
+          response.task && isHomeTaskReplayWithoutNewIntent(response.task, message, latestHandoffs),
+        );
+        const responseTask =
+          rejectedStaleTask || !response.task
+            ? undefined
+            : {
+                ...response.task,
+                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+              };
+        const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
-          response.task && toolCallId
+          responseTask && toolCallId
             ? {
                 id: streamingTurnId,
                 role: "assistant",
@@ -1683,7 +1771,9 @@ export function AgentWorkspace({
                 parts: [
                   {
                     type: "text",
-                    text: response.content?.trim() || streamedContent.trim() || "I'm here.",
+                    text: rejectedStaleTask
+                      ? "I'm here. What can I help with?"
+                      : response.content?.trim() || streamedContent.trim() || "I'm here.",
                     status: "complete",
                   },
                 ],
@@ -1696,9 +1786,9 @@ export function AgentWorkspace({
         homeDirectTurnsRef.current = nextTurns;
         setHomeDirectTurns(nextTurns);
         setHomeStreamingReply(null);
-        if (response.task && toolCallId) {
+        if (responseTask && toolCallId) {
           void startHomeTask(
-            response.task,
+            responseTask,
             toolCallId,
             conversation,
             storedSessionId as string,
@@ -1722,11 +1812,30 @@ export function AgentWorkspace({
   }
 
   async function stop() {
-    if (!projection.run) return;
+    const runId = projection.run?.id;
+    if (!runId || stoppingRunIdRef.current === runId) return;
+    stoppingRunIdRef.current = runId;
+    setStoppingRunId(runId);
+    let cancellationFailed = false;
     try {
-      await agentRuntimeBindings.cancelRun(projection.run.id);
+      await agentRuntimeBindings.cancelRun(runId);
     } catch (cause) {
+      cancellationFailed = true;
       setError(messageFromError(cause));
+    } finally {
+      const sessionId = selectedIdRef.current;
+      try {
+        if (sessionId) {
+          await Promise.all([hydrate(sessionId), refreshSessions()]);
+        }
+      } catch (cause) {
+        if (!cancellationFailed) setError(messageFromError(cause));
+      } finally {
+        if (stoppingRunIdRef.current === runId) {
+          stoppingRunIdRef.current = undefined;
+          setStoppingRunId(undefined);
+        }
+      }
     }
   }
 
@@ -1757,15 +1866,33 @@ export function AgentWorkspace({
 
   async function respondToApproval(
     interruptionId: string,
+    runId: string,
     choice: "once" | "session" | "always" | "deny",
   ) {
     setApprovalSubmitting((current) => ({ ...current, [interruptionId]: choice }));
     try {
       const run = await agentRuntimeBindings.resolveInterruption({
         interruptionId,
+        runId,
         resolution: { kind: "approval", choice },
       });
-      setProjection((current) => ({ ...current, run }));
+      setProjection((current) => ({
+        ...current,
+        run,
+        items: current.items.map((item) =>
+          item.kind === "interruption" && item.interruption.id === interruptionId
+            ? {
+                ...item,
+                interruption: {
+                  ...item.interruption,
+                  status: "resolved",
+                  resolvedAt: new Date().toISOString(),
+                  ...(item.interruption.kind === "approval" ? { resolution: choice } : {}),
+                },
+              }
+            : item,
+        ),
+      }));
     } catch (cause) {
       setError(messageFromError(cause));
     } finally {
@@ -1777,11 +1904,12 @@ export function AgentWorkspace({
     }
   }
 
-  async function respondToClarification(interruptionId: string, answer: string) {
+  async function respondToClarification(interruptionId: string, runId: string, answer: string) {
     setClarifySubmitting((current) => ({ ...current, [interruptionId]: answer }));
     try {
       const run = await agentRuntimeBindings.resolveInterruption({
         interruptionId,
+        runId,
         resolution: { kind: "clarification", answer },
       });
       setProjection((current) => ({ ...current, run }));
@@ -1796,11 +1924,12 @@ export function AgentWorkspace({
     }
   }
 
-  async function respondToSecret(interruptionId: string, secret: string) {
+  async function respondToSecret(interruptionId: string, runId: string, secret: string) {
     setSecretSubmitting((current) => ({ ...current, [interruptionId]: true }));
     try {
       const run = await agentRuntimeBindings.resolveInterruption({
         interruptionId,
+        runId,
         resolution: secret
           ? { kind: "secret", secret, choice: "once" }
           : { kind: "secret", choice: "deny" },
@@ -1867,7 +1996,7 @@ export function AgentWorkspace({
       return;
     }
     try {
-      await dictationHelperCommand({ type: "toggle_listening", shortcut: "Dictation" });
+      await dictationHelperCommand({ type: "start_listening" });
     } catch (cause) {
       setError(messageFromError(cause));
     }
@@ -2086,6 +2215,8 @@ export function AgentWorkspace({
       onSubmit={homeMode ? submitHomeMessage : submit}
       onStop={stop}
       running={running}
+      waiting={waiting}
+      stopping={stoppingRunId === projection.run?.id}
       submitting={submitting}
       disabledReason={textActionsDisabledReason}
       notice={!heroMode ? error : undefined}
@@ -2173,10 +2304,16 @@ export function AgentWorkspace({
                         onThinkingOpenChange={(key, open) =>
                           setThinkingOpen((current) => ({ ...current, [key]: open }))
                         }
-                        onApproval={(part, choice) => void respondToApproval(part.id, choice)}
-                        onClarify={(part, answer) => void respondToClarification(part.id, answer)}
+                        onApproval={(part, choice) =>
+                          void respondToApproval(part.id, part.runId, choice)
+                        }
+                        onClarify={(part, answer) =>
+                          void respondToClarification(part.id, part.runId, answer)
+                        }
                         onSudo={() => undefined}
-                        onSecret={(part, secret) => void respondToSecret(part.id, secret)}
+                        onSecret={(part, secret) =>
+                          void respondToSecret(part.id, part.runId, secret)
+                        }
                         homeTaskHandoff={homeHandoffsByTurnId.get(turn.id)}
                         onOpenHomeTaskSession={onOpenHomeTaskSession}
                         onRetryHomeTask={retryHomeTask}
@@ -2279,10 +2416,14 @@ export function AgentWorkspace({
                     onThinkingOpenChange={(key, open) =>
                       setThinkingOpen((current) => ({ ...current, [key]: open }))
                     }
-                    onApproval={(part, choice) => void respondToApproval(part.id, choice)}
-                    onClarify={(part, answer) => void respondToClarification(part.id, answer)}
+                    onApproval={(part, choice) =>
+                      void respondToApproval(part.id, part.runId, choice)
+                    }
+                    onClarify={(part, answer) =>
+                      void respondToClarification(part.id, part.runId, answer)
+                    }
                     onSudo={() => undefined}
-                    onSecret={(part, secret) => void respondToSecret(part.id, secret)}
+                    onSecret={(part, secret) => void respondToSecret(part.id, part.runId, secret)}
                     onRetryUpstreamFailure={(turnId) => void retryFailure(turnId)}
                     onBranch={(itemId) => void branchFrom(itemId)}
                     branching={branchingItemId === turn.id}
@@ -2602,6 +2743,8 @@ function AgentComposer({
   onSubmit,
   onStop,
   running,
+  waiting,
+  stopping,
   submitting,
   disabledReason,
   notice,
@@ -2630,6 +2773,8 @@ function AgentComposer({
   onSubmit: (event?: FormEvent) => Promise<void>;
   onStop: () => Promise<void>;
   running: boolean;
+  waiting: boolean;
+  stopping: boolean;
   submitting: boolean;
   disabledReason?: string;
   notice?: string;
@@ -2873,11 +3018,22 @@ function AgentComposer({
                   type="button"
                   className="agent-composer-stop"
                   aria-label="Stop June"
+                  disabled={stopping}
                   onClick={() => void onStop()}
                 >
                   <IconStop size={16} />
                 </button>
               </>
+            ) : waiting ? (
+              <button
+                type="button"
+                className="agent-composer-stop"
+                aria-label="Stop June"
+                disabled={stopping}
+                onClick={() => void onStop()}
+              >
+                <IconStop size={16} />
+              </button>
             ) : (
               <button
                 type="submit"

@@ -158,8 +158,19 @@ jobs:
         run: |
           # The checked-out commit still carries the RC's version files; stamp the
           # clean X.Y.Z so the Windows build matches the promoted macOS version.
-          node scripts/set-build-version.mjs $env:VERSION
-          cargo update --workspace --manifest-path src-tauri/Cargo.toml
+          node .pnpm-policy/scripts/set-build-version.mjs $env:VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Version stamping failed."
+          }
+
+          cargo metadata `
+            --manifest-path src-tauri/Cargo.toml `
+            --locked `
+            --no-deps `
+            --format-version 1 | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "Stamped Cargo metadata validation failed."
+          }
 
       - name: Verify release exists
         shell: pwsh
@@ -285,10 +296,9 @@ jobs:
             throw "Could not inspect NSIS installer payload."
           }
           $listingText = ($listing -join "`n").Replace("\", "/")
-          foreach ($expected in @("os-june.exe", "WebView2Loader.dll")) {
-            if ($listingText -notmatch [regex]::Escape($expected)) {
-              throw "NSIS installer payload does not include $expected."
-            }
+          # The MSVC target statically links WebView2Loader; only GNU builds ship its DLL.
+          if ($listingText -notmatch [regex]::Escape("os-june.exe")) {
+            throw "NSIS installer payload does not include os-june.exe."
           }
           foreach ($expected in @("native/bin/june-agent-runtime.exe", "native/bin/june-agent-runtime.exe.sha256", "native/bin/june-dictation-helper.exe")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {

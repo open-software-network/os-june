@@ -160,6 +160,7 @@ fn candidate_for_event(
             start_at: start.to_rfc3339_opts(SecondsFormat::Secs, true),
             end_at: end.to_rfc3339_opts(SecondsFormat::Secs, true),
             account_email: account_email.to_string(),
+            html_link: event.html_link,
         },
         distance_ms,
         start_distance_ms: (recording_started_at - start).num_milliseconds().abs(),
@@ -181,7 +182,7 @@ mod tests {
             attendees: Vec::new(),
             location: None,
             organizer: None,
-            html_link: None,
+            html_link: Some("https://www.google.com/calendar/event?eid=ZXZlbnQtMQ".to_string()),
             status: Some("confirmed".to_string()),
         }
     }
@@ -203,6 +204,10 @@ mod tests {
         assert_eq!(candidate.distance_ms, 0);
         assert_eq!(candidate.event.title, "Product review");
         assert_eq!(candidate.event.account_email, "june@example.com");
+        assert_eq!(
+            candidate.event.html_link.as_deref(),
+            Some("https://www.google.com/calendar/event?eid=ZXZlbnQtMQ"),
+        );
     }
 
     #[test]

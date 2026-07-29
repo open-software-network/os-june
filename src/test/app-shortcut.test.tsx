@@ -12,6 +12,7 @@ import {
 } from "../lib/data-partition";
 import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
+import { rememberSessionModel } from "../lib/agent-session-models";
 import {
   resetSidebarShortcutCacheForTests,
   SIDEBAR_SHORTCUT_STORAGE_KEY,
@@ -31,6 +32,8 @@ import type {
   NoteDto,
   RecordingSessionDto,
   RecordingSourceReadinessDto,
+  VeniceModelDto,
+  VeniceModelsResponse,
 } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -93,7 +96,10 @@ const mocks = vi.hoisted(() => ({
   completeNoteSaveFlush: vi.fn(async () => true),
   checkRecordingSourceReadiness: vi.fn(),
   companionCompleteFrontendRequest: vi.fn(),
+  companionConsumeAttachments: vi.fn().mockResolvedValue(undefined),
   companionPublishAgentEvent: vi.fn().mockResolvedValue(undefined),
+  companionListAgentMedia: vi.fn().mockResolvedValue([]),
+  companionReadAgentMediaChunk: vi.fn(),
   companionPairingEnabled: true,
   listAgentItems: vi.fn().mockResolvedValue([]),
   getAgentSession: vi.fn(),
@@ -254,7 +260,10 @@ vi.mock("../lib/tauri", () => ({
   NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
+  companionConsumeAttachments: mocks.companionConsumeAttachments,
   companionPublishAgentEvent: mocks.companionPublishAgentEvent,
+  companionListAgentMedia: mocks.companionListAgentMedia,
+  companionReadAgentMediaChunk: mocks.companionReadAgentMediaChunk,
   listAgentItems: mocks.listAgentItems,
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
@@ -325,6 +334,23 @@ function agentSession(id: string, title: string): AgentSessionDto {
     source: "user",
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+function generationModel(id: string, overrides: Partial<VeniceModelDto> = {}): VeniceModelDto {
+  return {
+    provider: "venice",
+    id,
+    name: id,
+    modelType: "text",
+    privacy: "private",
+    traits: ["private"],
+    capabilities: ["supportsFunctionCalling"],
+    priceUnit: "tokens",
+    priceDescription: "",
+    inputCreditsPerMillionTokens: 850,
+    outputCreditsPerMillionTokens: 4660,
+    ...overrides,
   };
 }
 
@@ -399,6 +425,7 @@ describe("App shortcuts", () => {
     window.localStorage.removeItem("june:agent:last-open-session");
     window.localStorage.removeItem(SIDEBAR_SHORTCUT_STORAGE_KEY);
     resetSidebarShortcutCacheForTests();
+    window.localStorage.removeItem("june.agent.sessionModels");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
@@ -446,6 +473,15 @@ describe("App shortcuts", () => {
       ],
     });
     mocks.companionCompleteFrontendRequest.mockResolvedValue(undefined);
+    mocks.companionListAgentMedia.mockResolvedValue([]);
+    mocks.companionReadAgentMediaChunk.mockResolvedValue({
+      artifactId: "artifact-default",
+      offsetBytes: 0,
+      totalSizeBytes: 1,
+      sha256: "0".repeat(64),
+      bytes: "AA==",
+      complete: true,
+    });
     mocks.getAgentSession.mockImplementation(async (sessionId: string) => {
       const sessions = await mocks.listAgentSessions();
       const found = sessions.find((candidate: AgentSessionDto) => candidate.id === sessionId);
@@ -496,7 +532,7 @@ describe("App shortcuts", () => {
       models: [],
     });
     mocks.providerModelSettings.mockResolvedValue({
-      settings: { generationModel: "" },
+      settings: { generationModel: "", costQuality: 100 },
     });
     mocks.p3aSettings.mockResolvedValue({
       settings: {
@@ -615,6 +651,232 @@ describe("App shortcuts", () => {
     expect(screen.queryByText(HERO_GREETING)).not.toBeInTheDocument();
   });
 
+  it("returns only Auto and the live curated desktop models with canonical labels", async () => {
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [
+        generationModel("kimi-k2-6", { name: "Kimi K2.6" }),
+        generationModel("uncurated", { name: "Uncurated" }),
+        generationModel("zai-org-glm-5-2", { name: "GLM 5.2" }),
+      ],
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-models-list",
+          intent: { type: "modelsList" },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-models-list", {
+        type: "models",
+        data: {
+          models: [
+            expect.objectContaining({
+              id: "open-software/auto",
+              name: "Auto",
+              routing: "automatic",
+            }),
+            expect.objectContaining({
+              id: "zai-org-glm-5-2",
+              name: "GLM 5.2",
+              privacy: "private",
+              privacyLabel: "Private mode",
+            }),
+            expect.objectContaining({
+              id: "kimi-k2-6",
+              name: "Kimi K2.6",
+              priceLabel: "$0.85 input / $4.66 output per 1M tokens",
+            }),
+          ],
+        },
+      }),
+    );
+  });
+
+  it("reads and stages a companion model switch without disturbing an active run", async () => {
+    const session = {
+      ...agentSession("session-model", "Model session"),
+      status: "running" as const,
+      model: "zai-org-glm-5-2",
+    };
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
+    });
+    window.localStorage.setItem(
+      "june.agent.sessionModels",
+      JSON.stringify({ [session.id]: "__june_auto_generation__:20" }),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-get",
+          intent: { type: "sessionModelGet", data: { storedSessionId: session.id } },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-model-get", {
+        type: "sessionModel",
+        data: {
+          storedSessionId: session.id,
+          modelId: "open-software/auto",
+          modelName: "Auto",
+          costQuality: 20,
+        },
+      }),
+    );
+
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-set",
+          intent: {
+            type: "sessionModelSet",
+            data: { storedSessionId: session.id, modelId: "kimi-k2-6" },
+          },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-model-set", {
+        type: "sessionModel",
+        data: {
+          storedSessionId: session.id,
+          modelId: "kimi-k2-6",
+          modelName: "Kimi K2.6",
+        },
+      }),
+    );
+    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({
+      [session.id]: "kimi-k2-6",
+    });
+    expect(mocks.startAgentRun).not.toHaveBeenCalled();
+    expect(mocks.cancelAgentRun).not.toHaveBeenCalled();
+  });
+
+  it("publishes a model event when the desktop stages a session choice", async () => {
+    const session = agentSession("session-desktop-model", "Desktop model session");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+    });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => rememberSessionModel(session.id, "kimi-k2-6"));
+
+    await waitFor(() =>
+      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+        type: "modelChanged",
+        data: {
+          selection: {
+            storedSessionId: session.id,
+            modelId: "kimi-k2-6",
+            modelName: "Kimi K2.6",
+          },
+        },
+      }),
+    );
+  });
+
+  it("drops a staged model event when the data partition changes during catalog loading", async () => {
+    const partitionASession = agentSession("session-model-partition-a", "Partition A model");
+    const partitionBSession = agentSession("session-model-partition-b", "Partition B model");
+    mocks.listAgentSessions.mockResolvedValue([partitionASession, partitionBSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: partitionASession.id, profile: "partition-a" },
+      { sessionId: partitionBSession.id, profile: "partition-b" },
+    ]);
+    setCurrentDataPartitionName("partition-a");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    mocks.companionPublishAgentEvent.mockClear();
+    mocks.listVeniceModels.mockClear();
+    const catalog = deferred<VeniceModelsResponse>();
+    mocks.listVeniceModels.mockReturnValueOnce(catalog.promise);
+
+    await act(async () => {
+      rememberSessionModel(partitionASession.id, "kimi-k2-6");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    setCurrentDataPartitionName("partition-b");
+    await act(async () => {
+      catalog.resolve({
+        mode: "generation",
+        modelType: "text",
+        selectedModel: "zai-org-glm-5-2",
+        models: [generationModel("kimi-k2-6", { name: "Kimi K2.6" })],
+      });
+      await catalog.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects uncurated companion model writes", async () => {
+    const session = agentSession("session-model-rejected", "Rejected model session");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5-2",
+      models: [generationModel("kimi-k2-6")],
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-model-rejected",
+          intent: {
+            type: "sessionModelSet",
+            data: { storedSessionId: session.id, modelId: "uncurated" },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-model-rejected",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "unsupported" }),
+        }),
+      ),
+    );
+    expect(window.localStorage.getItem("june.agent.sessionModels")).toBeNull();
+  });
+
   it("pages companion agent messages backward from the newest turns", async () => {
     mocks.listAgentSessions.mockResolvedValue([
       {
@@ -712,6 +974,233 @@ describe("App shortcuts", () => {
     );
   });
 
+  it("returns canonical media references with companion agent history", async () => {
+    const session = agentSession("session-media", "Generated media");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listAgentItems.mockResolvedValue([
+      {
+        id: "message-media",
+        sessionId: session.id,
+        runId: "run-media",
+        sequence: 1,
+        kind: "message",
+        role: "assistant",
+        text: "Here is the result.",
+        status: "complete",
+        createdAt: "2026-07-28T10:00:00.000Z",
+      },
+    ]);
+    mocks.companionListAgentMedia.mockResolvedValue([
+      {
+        runId: "run-media",
+        createdAt: "2026-07-28T09:59:59.000Z",
+        reference: {
+          artifactId: "artifact-media",
+          kind: "image",
+          mediaType: "image/png",
+          widthPx: 1024,
+          heightPx: 1024,
+          sizeBytes: 4096,
+        },
+      },
+    ]);
+    render(<App />);
+
+    await waitFor(() =>
+      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+        true,
+      ),
+    );
+    act(() => {
+      for (const [event, handler] of mocks.listen.mock.calls) {
+        if (event === "june://companion-request") {
+          handler({
+            payload: {
+              operationId: "operation-media",
+              intent: {
+                type: "agentMessagesList",
+                data: { storedSessionId: session.id, limit: 50 },
+              },
+            },
+          });
+        }
+      }
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-media", {
+        type: "agentMessages",
+        data: {
+          items: [
+            expect.objectContaining({
+              id: "message-media",
+              media: [
+                expect.objectContaining({
+                  artifactId: "artifact-media",
+                  kind: "image",
+                  mediaType: "image/png",
+                }),
+              ],
+            }),
+          ],
+        },
+      }),
+    );
+    expect(mocks.companionListAgentMedia).toHaveBeenCalledWith(session.id);
+  });
+
+  it("returns a verified media chunk through the partition-scoped frontend boundary", async () => {
+    const session = agentSession("session-media-fetch", "Generated media");
+    const chunk = {
+      artifactId: "artifact-media",
+      offsetBytes: 31 * 1024,
+      totalSizeBytes: 31 * 1024 + 4,
+      sha256: "a".repeat(64),
+      bytes: "dGFpbA==",
+      complete: true,
+    };
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.companionReadAgentMediaChunk.mockResolvedValue(chunk);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-fetch",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: chunk.artifactId,
+              offsetBytes: chunk.offsetBytes,
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith("operation-media-fetch", {
+        type: "mediaChunk",
+        data: chunk,
+      }),
+    );
+    expect(mocks.companionReadAgentMediaChunk).toHaveBeenCalledWith(
+      session.id,
+      chunk.artifactId,
+      chunk.offsetBytes,
+    );
+  });
+
+  it("discards a media chunk when the active partition changes during the read", async () => {
+    const session = agentSession("session-media-partition-a", "Partition A media");
+    const chunk = deferred<{
+      artifactId: string;
+      offsetBytes: number;
+      totalSizeBytes: number;
+      sha256: string;
+      bytes: string;
+      complete: boolean;
+    }>();
+    setCurrentDataPartitionName("partition-a");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: session.id, profile: "partition-a" },
+    ]);
+    mocks.companionReadAgentMediaChunk.mockReturnValue(chunk.promise);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-partition",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: "artifact-private",
+              offsetBytes: 0,
+            },
+          },
+        },
+      });
+    });
+    await waitFor(() =>
+      expect(mocks.companionReadAgentMediaChunk).toHaveBeenCalledWith(
+        session.id,
+        "artifact-private",
+        0,
+      ),
+    );
+
+    setCurrentDataPartitionName("partition-b");
+    chunk.resolve({
+      artifactId: "artifact-private",
+      offsetBytes: 0,
+      totalSizeBytes: 1,
+      sha256: "b".repeat(64),
+      bytes: "AA==",
+      complete: true,
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-media-partition",
+        expect.objectContaining({
+          type: "error",
+          data: expect.objectContaining({ code: "not_found" }),
+        }),
+      ),
+    );
+    expect(mocks.companionCompleteFrontendRequest).not.toHaveBeenCalledWith(
+      "operation-media-partition",
+      expect.objectContaining({ type: "mediaChunk" }),
+    );
+  });
+
+  it("preserves a missing media artifact as a non-retryable not-found result", async () => {
+    const session = agentSession("session-media-missing", "Missing media");
+    mocks.listAgentSessions.mockResolvedValue([session]);
+    mocks.companionReadAgentMediaChunk.mockRejectedValue({
+      code: "companion_media_not_found",
+      message: "That generated media is no longer available.",
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-media-missing",
+          intent: {
+            type: "mediaFetch",
+            data: {
+              storedSessionId: session.id,
+              artifactId: "artifact-missing",
+              offsetBytes: 0,
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-media-missing",
+        {
+          type: "error",
+          data: {
+            code: "not_found",
+            message: "That generated media is no longer available.",
+            retryable: false,
+          },
+        },
+      ),
+    );
+  });
+
   it("opens the stored agent session requested by the companion", async () => {
     const focusedSession = {
       id: "session-companion",
@@ -799,6 +1288,127 @@ describe("App shortcuts", () => {
         data: { storedSessionId: sandboxed.id },
       },
     );
+  });
+
+  it("hands resolved companion attachments to the normal agent run and consumes references", async () => {
+    const target = agentSession("session-with-phone-file", "Attachment session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-attachment-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Read the attached brief",
+              attachments: [
+                {
+                  path: "/tmp/companion/content",
+                  name: "photo.png",
+                  mediaType: "image/png",
+                },
+              ],
+              attachmentReferenceIds: ["00000000-0000-0000-0000-000000000003"],
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: target.id,
+          attachments: ["/tmp/companion/content"],
+          attachmentMetadata: [{ name: "photo.png", mediaType: "image/png" }],
+        }),
+      ),
+    );
+    expect(mocks.companionConsumeAttachments).toHaveBeenCalledWith([
+      "00000000-0000-0000-0000-000000000003",
+    ]);
+    expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+      "operation-attachment-send",
+      {
+        type: "agentAccepted",
+        data: { storedSessionId: target.id },
+      },
+    );
+  });
+
+  it("applies and clears a companion-staged model at the companion run boundary", async () => {
+    const target = agentSession("session-staged-companion", "Staged model session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    rememberSessionModel(target.id, "model-staged-by-phone");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-staged-model-send",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Use the staged model",
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.startAgentRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: target.id,
+          model: "model-staged-by-phone",
+        }),
+      ),
+    );
+    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({});
+  });
+
+  it("reports acceptance when attachment cleanup fails after run dispatch", async () => {
+    const target = agentSession("session-cleanup-failure", "Cleanup failure session");
+    mocks.listAgentSessions.mockResolvedValue([target]);
+    mocks.getAgentSession.mockResolvedValue(target);
+    mocks.companionConsumeAttachments.mockRejectedValueOnce(new Error("cleanup failed"));
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    act(() => {
+      mocks.listeners.get("june://companion-request")?.({
+        payload: {
+          operationId: "operation-cleanup-failure",
+          intent: {
+            type: "agentSend",
+            data: {
+              storedSessionId: target.id,
+              message: "Dispatch once",
+              attachmentReferenceIds: ["00000000-0000-0000-0000-000000000004"],
+            },
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.companionCompleteFrontendRequest).toHaveBeenCalledWith(
+        "operation-cleanup-failure",
+        {
+          type: "agentAccepted",
+          data: { storedSessionId: target.id },
+        },
+      ),
+    );
+    expect(mocks.startAgentRun).toHaveBeenCalledTimes(1);
   });
 
   it("prepares companion sends with current project context and clearing markers", async () => {
@@ -1658,6 +2268,12 @@ describe("App shortcuts", () => {
     mocks.listeners.clear();
     mocks.listen.mockClear();
     mocks.companionPairingEnabled = true;
+    mocks.listAgentSessions.mockResolvedValue([
+      agentSession("session-companion", "Companion session"),
+    ]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: "session-companion", profile: "default" },
+    ]);
     render(<App />);
 
     await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
@@ -1672,13 +2288,15 @@ describe("App shortcuts", () => {
         },
       });
     });
-    expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
-      type: "delta",
-      data: {
-        storedSessionId: "session-companion",
-        text: "Visible companion update",
-      },
-    });
+    await waitFor(() =>
+      expect(mocks.companionPublishAgentEvent).toHaveBeenCalledWith({
+        type: "delta",
+        data: {
+          storedSessionId: "session-companion",
+          text: "Visible companion update",
+        },
+      }),
+    );
     expect(
       appSettingsTabsForCompanionPairing(true).some((tab) => tab.id === "linked-devices"),
     ).toBe(true);
@@ -1690,6 +2308,78 @@ describe("App shortcuts", () => {
       mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
     });
     expect(await screen.findByRole("button", { name: "Linked devices" })).toBeInTheDocument();
+  });
+
+  it("does not publish any agent event from an inactive data partition", async () => {
+    const partitionASession = agentSession("session-partition-a", "Partition A session");
+    const partitionBSession = agentSession("session-partition-b", "Partition B session");
+    mocks.listAgentSessions.mockResolvedValue([partitionASession, partitionBSession]);
+    mocks.listSessionPartitions.mockResolvedValue([
+      { sessionId: partitionASession.id, profile: "partition-a" },
+      { sessionId: partitionBSession.id, profile: "partition-b" },
+    ]);
+    setCurrentDataPartitionName("partition-b");
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
+    mocks.companionPublishAgentEvent.mockClear();
+    mocks.listSessionPartitions.mockClear();
+
+    act(() => {
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-delta",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 1,
+          method: "message.delta",
+          data: {
+            itemId: "message-partition-a",
+            role: "assistant",
+            delta: "Private partition A text",
+            createdAt: now,
+          },
+        },
+      });
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-run-started",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 2,
+          method: "run.started",
+          data: { startedAt: now, model: "auto" },
+        },
+      });
+      mocks.listeners.get("june://agent-runtime-event")?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "event-partition-a-tool-completed",
+          sessionId: partitionASession.id,
+          runId: "run-partition-a",
+          sequence: 3,
+          method: "tool.completed",
+          data: {
+            itemId: "tool-result-partition-a",
+            callId: "call-partition-a",
+            name: "generate_image",
+            output: [],
+            createdAt: now,
+          },
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(mocks.listSessionPartitions.mock.calls.length).toBeGreaterThanOrEqual(3),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mocks.companionPublishAgentEvent).not.toHaveBeenCalled();
   });
 
   it("refreshes Accessibility after requesting access without opening settings over the native prompt", async () => {

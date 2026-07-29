@@ -1707,6 +1707,7 @@ export function AppSettings({
       unlocked: true,
       browser_use: experimentalFlags.browser_use,
       companion_pairing: experimentalFlags.companion_pairing,
+      companion_computer_use_approvals: experimentalFlags.companion_computer_use_approvals,
     })
       .then(() => toast("Experiments are unlocked"))
       .catch((error) => setExperimentalError(messageFromError(error)))
@@ -1719,6 +1720,7 @@ export function AppSettings({
     unlocked?: boolean;
     browser_use?: boolean;
     companion_pairing?: boolean;
+    companion_computer_use_approvals?: boolean;
   }) {
     setExperimentalOperation("flags");
     setExperimentalError(undefined);
@@ -1727,6 +1729,9 @@ export function AppSettings({
         unlocked: update.unlocked ?? experimentalFlags.unlocked,
         browser_use: update.browser_use ?? experimentalFlags.browser_use,
         companion_pairing: update.companion_pairing ?? experimentalFlags.companion_pairing,
+        companion_computer_use_approvals:
+          update.companion_computer_use_approvals ??
+          experimentalFlags.companion_computer_use_approvals,
       });
     } catch (error) {
       setExperimentalError(messageFromError(error));

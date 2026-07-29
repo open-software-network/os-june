@@ -1,4 +1,6 @@
 mod controller;
+mod files;
+mod media;
 mod transport;
 
 use crate::{commands::repositories, domain::types::AppError};
@@ -7,17 +9,25 @@ use base64::{
     Engine as _,
 };
 use june_companion_crypto::{generate_identity, KEY_BYTES};
-use june_companion_protocol::{AgentStatus, Capability, Event, ResultPayload, MAX_TEXT_BYTES};
+use june_companion_protocol::{
+    AgentStatus, Body, Capability, ComputerUseApprovalDecision, ComputerUseApprovalRequest,
+    ComputerUseApprovalStatus, ComputerUseApprovalStatusEvent, Event, Frame, MediaChunk,
+    ResultPayload, SessionModelSelection, COMPUTER_USE_APPROVAL_TTL_MS,
+    MAX_COMPUTER_USE_ACTION_BYTES, MAX_COMPUTER_USE_DESCRIPTION_BYTES,
+    MAX_COMPUTER_USE_TARGET_APP_BYTES, MAX_COMPUTER_USE_TARGET_URL_BYTES,
+    MAX_DEVICE_DISPLAY_NAME_BYTES, MAX_TEXT_BYTES,
+};
 use rand::{rngs::OsRng, RngCore};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager, State};
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -26,17 +36,20 @@ use uuid::Uuid;
 pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendIntent};
 
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
-const MAX_DEVICE_NAME_BYTES: usize = 128;
 const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
+const COMPUTER_USE_APPROVAL_EXPIRY_RETRY_ATTEMPTS: usize = 8;
+const COMPUTER_USE_APPROVAL_EXPIRY_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 pub struct CompanionRuntime {
     pub controller: Controller,
     pairings: Mutex<HashMap<Uuid, PendingPairing>>,
+    browse_references: Mutex<HashMap<Uuid, files::BrowseReference>>,
     pending_frontend: Mutex<HashMap<Uuid, oneshot::Sender<ResultPayload>>>,
     active_frontend_operations: Mutex<HashSet<Uuid>>,
     inflight_operations: Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>,
     event_sender: Mutex<Option<mpsc::Sender<Event>>>,
+    media_transfers: Mutex<media::MediaTransferCache>,
     transport_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     relay_connected: AtomicBool,
     relay_connection_changed: Notify,
@@ -44,7 +57,10 @@ pub struct CompanionRuntime {
     account_session_changed: Notify,
     account_activity: AtomicUsize,
     account_activity_changed: Notify,
+    peer_capabilities: Mutex<HashMap<Uuid, HashSet<Capability>>>,
+    computer_use_approvals: Mutex<ComputerUseApprovalRegistry>,
     effective_enabled: OnceLock<bool>,
+    desktop_display_name: OnceLock<String>,
 }
 
 impl Default for CompanionRuntime {
@@ -52,10 +68,12 @@ impl Default for CompanionRuntime {
         Self {
             controller: Controller::default(),
             pairings: Mutex::default(),
+            browse_references: Mutex::default(),
             pending_frontend: Mutex::default(),
             active_frontend_operations: Mutex::default(),
             inflight_operations: Mutex::default(),
             event_sender: Mutex::default(),
+            media_transfers: Mutex::default(),
             transport_task: Mutex::default(),
             relay_connected: AtomicBool::new(false),
             relay_connection_changed: Notify::new(),
@@ -63,7 +81,10 @@ impl Default for CompanionRuntime {
             account_session_changed: Notify::new(),
             account_activity: AtomicUsize::new(0),
             account_activity_changed: Notify::new(),
+            peer_capabilities: Mutex::default(),
+            computer_use_approvals: Mutex::default(),
             effective_enabled: OnceLock::new(),
+            desktop_display_name: OnceLock::new(),
         }
     }
 }
@@ -76,12 +97,123 @@ impl CompanionRuntime {
     fn effective_enabled(&self) -> bool {
         self.effective_enabled.get().copied().unwrap_or(false)
     }
+
+    fn latch_desktop_display_name(&self, display_name: String) -> &str {
+        self.desktop_display_name
+            .get_or_init(|| display_name)
+            .as_str()
+    }
+
+    pub(super) fn desktop_display_name(&self) -> String {
+        self.desktop_display_name
+            .get()
+            .cloned()
+            .unwrap_or_else(default_desktop_display_name)
+    }
+
+    fn set_peer_capabilities(&self, device_id: Uuid, capabilities: HashSet<Capability>) {
+        if let Ok(mut peers) = self.peer_capabilities.lock() {
+            peers.insert(device_id, capabilities);
+        }
+    }
+
+    fn remove_peer_capabilities(&self, device_id: Uuid) {
+        if let Ok(mut peers) = self.peer_capabilities.lock() {
+            peers.remove(&device_id);
+        }
+    }
+
+    fn clear_peer_capabilities(&self) {
+        if let Ok(mut peers) = self.peer_capabilities.lock() {
+            peers.clear();
+        }
+    }
+
+    fn has_peer_capability(&self, capability: Capability) -> bool {
+        self.peer_capabilities.lock().is_ok_and(|peers| {
+            peers
+                .values()
+                .any(|capabilities| capabilities.contains(&capability))
+        })
+    }
+
+    fn peer_has_capability(&self, device_id: Uuid, capability: Capability) -> bool {
+        self.peer_capabilities.lock().is_ok_and(|peers| {
+            peers
+                .get(&device_id)
+                .is_some_and(|capabilities| capabilities.contains(&capability))
+        })
+    }
 }
 
 struct PendingPairing {
     secret: [u8; KEY_BYTES],
     expires_at_ms: u64,
     approved_mobile: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComputerUseApprovalPhase {
+    Pending,
+    Approved,
+    Executing,
+    Resolved,
+}
+
+#[derive(Debug, Clone)]
+struct TrackedComputerUseApproval {
+    request: ComputerUseApprovalRequest,
+    tool_call_id: String,
+    published_target: Option<crate::computer_use::CompanionApprovalTarget>,
+    deadline: Instant,
+    expiry_armed: bool,
+    phase: ComputerUseApprovalPhase,
+    remote_permit_armed: bool,
+}
+
+#[derive(Debug, Default)]
+struct ComputerUseApprovalRegistry {
+    requests: HashMap<String, TrackedComputerUseApproval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComputerUsePermitTake {
+    Consumed {
+        request_id: String,
+        stored_session_id: String,
+    },
+    TargetMismatch {
+        request_id: String,
+        stored_session_id: String,
+    },
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ComputerUseApprovalOrigin {
+    Companion { device_id: String },
+    Timeout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComputerUseExecutionStatus {
+    Started,
+    Succeeded,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComputerUsePermitOutcome {
+    Approved,
+    TargetMismatch,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionComputerUseApprovalSettings {
+    enabled: bool,
+    available: bool,
 }
 
 struct CompanionAccountActivityGuard<'a> {
@@ -208,6 +340,20 @@ pub struct RenameDeviceRequest {
     pub display_name: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowseRootDto {
+    pub id: Uuid,
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GrantBrowseRootRequest {
+    pub path: String,
+}
+
 #[tauri::command]
 pub async fn companion_begin_pairing(
     runtime: State<'_, CompanionRuntime>,
@@ -218,16 +364,8 @@ pub async fn companion_begin_pairing(
     let identity = load_or_create_identity(&account_user_id)?;
     let mut secret = [0_u8; KEY_BYTES];
     OsRng.fill_bytes(&mut secret);
-    let status: PairingStatus = companion_post(
-        "/v1/companion/pairings",
-        &CreatePairingRequest {
-            desktop_device_id: identity.device_id,
-            desktop_public_key: identity.public_key()?.to_vec(),
-            display_name: desktop_display_name(),
-            pairing_proof: Sha256::digest(secret).to_vec(),
-        },
-    )
-    .await?;
+    let request = create_pairing_request(&runtime, &identity, &secret)?;
+    let status: PairingStatus = companion_post("/v1/companion/pairings", &request).await?;
     remember_pending_pairing(
         &runtime,
         status.pairing_id,
@@ -548,13 +686,158 @@ fn companion_capabilities() -> Vec<Capability> {
         Capability::AgentRead,
         Capability::AgentChat,
         Capability::AgentCancel,
+        Capability::ModelRead,
+        Capability::ModelEdit,
+        Capability::MediaRead,
         Capability::SettingsRead,
         Capability::SettingsEditSafe,
         Capability::RecordingControlExisting,
         Capability::AppFocus,
+        Capability::FilesUpload,
+        Capability::FilesBrowse,
         Capability::DevicesReadSelf,
         Capability::DevicesRevokeSelf,
+        Capability::ComputerUseApprove,
     ]
+}
+
+fn computer_use_approval_gate(
+    companion_enabled: bool,
+    browser_use_enabled: bool,
+    desktop_opt_in: bool,
+    capable_peer_connected: bool,
+) -> bool {
+    companion_enabled && browser_use_enabled && desktop_opt_in && capable_peer_connected
+}
+
+pub(crate) fn computer_use_approvals_enabled(app: &AppHandle) -> bool {
+    effective_pairing_enabled(app)
+        && crate::experimental_settings::browser_use_enabled(app)
+        && crate::experimental_settings::companion_computer_use_approvals_enabled(app)
+}
+
+fn computer_use_approval_routing_enabled(app: &AppHandle, runtime: &CompanionRuntime) -> bool {
+    computer_use_approval_gate(
+        effective_pairing_enabled(app),
+        crate::experimental_settings::browser_use_enabled(app),
+        crate::experimental_settings::companion_computer_use_approvals_enabled(app),
+        runtime.has_peer_capability(Capability::ComputerUseApprove),
+    )
+}
+
+#[tauri::command]
+pub fn companion_computer_use_approval_settings(
+    app: AppHandle,
+) -> CompanionComputerUseApprovalSettings {
+    CompanionComputerUseApprovalSettings {
+        enabled: crate::experimental_settings::companion_computer_use_approvals_enabled(&app),
+        available: effective_pairing_enabled(&app)
+            && crate::experimental_settings::browser_use_enabled(&app),
+    }
+}
+
+#[tauri::command]
+pub fn companion_set_computer_use_approval_enabled(
+    app: AppHandle,
+    state: State<'_, crate::experimental_settings::ExperimentalSettingsState>,
+    enabled: bool,
+) -> Result<CompanionComputerUseApprovalSettings, AppError> {
+    let available =
+        effective_pairing_enabled(&app) && crate::experimental_settings::browser_use_enabled(&app);
+    if enabled && !available {
+        return Err(AppError::new(
+            "companion_computer_use_approval_unavailable",
+            "Enable Companion pairing and Computer use before allowing linked approvals.",
+        ));
+    }
+    crate::experimental_settings::set_companion_computer_use_approvals_enabled(
+        &app, &state, enabled,
+    )?;
+    if !enabled {
+        retire_computer_use_approvals(&app, ComputerUseApprovalStatus::Cancelled);
+    }
+    tracing::info!(enabled, "companion Computer use approval setting changed");
+    Ok(CompanionComputerUseApprovalSettings { enabled, available })
+}
+
+#[tauri::command]
+pub async fn companion_list_browse_roots(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+) -> Result<Vec<BrowseRootDto>, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    Ok(
+        files::list_root_records(&repositories(&app).await?, &account_user_id)
+            .await?
+            .into_iter()
+            .map(|root| BrowseRootDto {
+                id: root.id,
+                name: root.display_name,
+                path: root.canonical_path.to_string_lossy().into_owned(),
+            })
+            .collect(),
+    )
+}
+
+#[tauri::command]
+pub async fn companion_grant_browse_root(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    request: GrantBrowseRootRequest,
+) -> Result<BrowseRootDto, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let account_user_id = crate::os_accounts::current_user_id().await?;
+    let root = files::grant_root(
+        &repositories(&app).await?,
+        &account_user_id,
+        std::path::Path::new(&request.path),
+    )
+    .await?;
+    Ok(BrowseRootDto {
+        id: root.id,
+        name: root.display_name,
+        path: root.canonical_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub async fn companion_revoke_browse_root(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    root_id: Uuid,
+) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    files::revoke_root(
+        &app,
+        &repositories(&app).await?,
+        &crate::os_accounts::current_user_id().await?,
+        root_id,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn companion_consume_attachments(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    reference_ids: Vec<Uuid>,
+) -> Result<(), AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    if reference_ids.len() > june_companion_protocol::MAX_ATTACHMENT_REFERENCES {
+        return Err(AppError::new(
+            "companion_attachment_invalid",
+            "Too many companion attachments were selected.",
+        ));
+    }
+    files::consume_attachments(
+        &app,
+        &repositories(&app).await?,
+        &crate::os_accounts::current_user_id().await?,
+        &reference_ids,
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -565,7 +848,7 @@ pub async fn companion_rename_device(
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
     let name = request.display_name.trim();
-    if name.is_empty() || name.len() > MAX_DEVICE_NAME_BYTES {
+    if name.is_empty() || name.len() > MAX_DEVICE_DISPLAY_NAME_BYTES {
         return Err(AppError::new(
             "companion_device_name_invalid",
             "Enter a shorter device name.",
@@ -595,6 +878,13 @@ pub async fn companion_revoke_device(
         .await?
         .revoke_companion_device(&account_user_id, &device_id.to_string())
         .await?;
+    files::cleanup_device_uploads(
+        &app,
+        &repositories(&app).await?,
+        &account_user_id,
+        &device_id.to_string(),
+    )
+    .await;
     Ok(())
 }
 
@@ -741,27 +1031,38 @@ pub enum CompanionAgentEventRequest {
     Status {
         stored_session_id: String,
         status: AgentStatus,
+        run_id: Option<String>,
+    },
+    ModelChanged {
+        selection: SessionModelSelection,
     },
 }
 
 #[tauri::command]
 pub async fn companion_publish_agent_event(
+    app: AppHandle,
     runtime: State<'_, CompanionRuntime>,
     request: CompanionAgentEventRequest,
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
-    let (stored_session_id, text) = match &request {
+    let (stored_session_id, text, run_id) = match &request {
         CompanionAgentEventRequest::Delta {
             stored_session_id,
             text,
-        } => (stored_session_id, Some(text)),
+        } => (stored_session_id, Some(text), None),
         CompanionAgentEventRequest::Status {
-            stored_session_id, ..
-        } => (stored_session_id, None),
+            stored_session_id,
+            run_id,
+            ..
+        } => (stored_session_id, None, run_id.as_ref()),
+        CompanionAgentEventRequest::ModelChanged { selection } => {
+            (&selection.stored_session_id, None, None)
+        }
     };
     if stored_session_id.is_empty()
         || stored_session_id.len() > 256
         || text.is_some_and(|text| text.is_empty() || text.len() > MAX_TEXT_BYTES)
+        || run_id.is_some_and(|run_id| run_id.is_empty() || run_id.len() > 256)
     {
         return Err(AppError::new(
             "companion_event_invalid",
@@ -779,11 +1080,44 @@ pub async fn companion_publish_agent_event(
         CompanionAgentEventRequest::Status {
             stored_session_id,
             status,
+            run_id,
         } => Event::AgentStatus {
+            media: if let Some(run_id) = run_id {
+                let repositories = repositories(&app).await?;
+                ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+                let references =
+                    media::run_references(&repositories, &stored_session_id, &run_id).await?;
+                ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+                references
+            } else {
+                Vec::new()
+            },
             stored_session_id,
             status,
         },
+        CompanionAgentEventRequest::ModelChanged { selection } => {
+            Event::SessionModelChanged { selection }
+        }
     };
+    publish_event(&runtime, event)
+}
+
+fn publish_event(runtime: &CompanionRuntime, event: Event) -> Result<(), AppError> {
+    let now_ms = current_time_ms();
+    Frame::new(
+        Uuid::nil(),
+        0,
+        now_ms,
+        event.capability(),
+        Body::Event(event.clone()),
+    )
+    .validate(now_ms)
+    .map_err(|_| {
+        AppError::new(
+            "companion_event_invalid",
+            "The companion event exceeded its size limit.",
+        )
+    })?;
     let sender = runtime
         .event_sender
         .lock()
@@ -808,10 +1142,821 @@ pub async fn companion_publish_agent_event(
     })
 }
 
+#[tauri::command]
+pub async fn companion_list_agent_media(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    stored_session_id: String,
+) -> Result<Vec<media::CompanionMediaProjection>, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let repositories = repositories(&app).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let projections = media::session_projections(&repositories, &stored_session_id).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    Ok(projections)
+}
+
+#[tauri::command]
+pub async fn companion_read_agent_media_chunk(
+    app: AppHandle,
+    runtime: State<'_, CompanionRuntime>,
+    stored_session_id: String,
+    artifact_id: String,
+    offset_bytes: u64,
+) -> Result<MediaChunk, AppError> {
+    ensure_companion_pairing_enabled(&runtime)?;
+    let repositories = repositories(&app).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let artifact =
+        media::resolve_fetch_artifact(&repositories, &stored_session_id, &artifact_id).await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    let chunk = media::read_chunk(
+        &runtime.media_transfers,
+        "companion-frontend",
+        artifact,
+        offset_bytes,
+    )
+    .await?;
+    ensure_companion_agent_session_exists(&repositories, &stored_session_id).await?;
+    Ok(chunk)
+}
+
+async fn ensure_companion_agent_session_exists(
+    repositories: &crate::db::repositories::Repositories,
+    stored_session_id: &str,
+) -> Result<(), AppError> {
+    let found = sqlx::query::query(
+        "SELECT 1
+         FROM agent_sessions
+         WHERE id = ?
+         LIMIT 1",
+    )
+    .bind(stored_session_id)
+    .fetch_optional(&repositories.pool)
+    .await?
+    .is_some();
+    if !found {
+        return Err(AppError::new(
+            "companion_agent_session_not_found",
+            "That agent session is no longer available.",
+        ));
+    }
+    Ok(())
+}
+
+fn status_event(
+    request_id: &str,
+    stored_session_id: &str,
+    status: ComputerUseApprovalStatus,
+) -> Event {
+    Event::ComputerUseApprovalStatusChanged(ComputerUseApprovalStatusEvent {
+        request_id: request_id.to_string(),
+        stored_session_id: stored_session_id.to_string(),
+        status,
+    })
+}
+
+fn publish_computer_use_status(
+    runtime: &CompanionRuntime,
+    request_id: &str,
+    stored_session_id: &str,
+    status: ComputerUseApprovalStatus,
+) {
+    if let Err(error) = publish_event(runtime, status_event(request_id, stored_session_id, status))
+    {
+        tracing::warn!(
+            code = %error.code,
+            request_id,
+            stored_session_id,
+            ?status,
+            "failed to publish companion Computer use approval status"
+        );
+    }
+}
+
+fn approval_description(action: &str, target_app: Option<&str>) -> String {
+    let target = target_app.unwrap_or("the selected app");
+    match action {
+        "capture" => format!("Capture {target}."),
+        "list_apps" => "List available app windows.".to_string(),
+        "wait" => "Wait before the next Computer use action.".to_string(),
+        "open_app" => format!("Open {target}."),
+        "focus_app" => format!("Focus {target}."),
+        "click" => format!("Click a control in {target}."),
+        "double_click" => format!("Double-click a control in {target}."),
+        "right_click" => format!("Right-click a control in {target}."),
+        "drag" => format!("Drag a control in {target}."),
+        "scroll" => format!("Scroll in {target}."),
+        "type" => format!("Type in {target}."),
+        "key" => format!("Press a key in {target}."),
+        "set_value" => format!("Set a control value in {target}."),
+        _ => unreachable!("approval actions are normalized before description generation"),
+    }
+}
+
+fn reject_overlong_approval_field(value: &str, max_bytes: usize) -> Result<(), AppError> {
+    if value.len() <= max_bytes {
+        return Ok(());
+    }
+    Err(AppError::new(
+        "companion_computer_use_approval_too_large",
+        "This Computer use approval cannot be shown safely on a linked device. Approve it on this Mac.",
+    ))
+}
+
+fn validate_computer_use_approval_fields(
+    request: &ComputerUseApprovalRequest,
+) -> Result<(), AppError> {
+    reject_overlong_approval_field(&request.action, MAX_COMPUTER_USE_ACTION_BYTES)?;
+    reject_overlong_approval_field(&request.description, MAX_COMPUTER_USE_DESCRIPTION_BYTES)?;
+    if let Some(target_app) = request.target_app.as_deref() {
+        reject_overlong_approval_field(target_app, MAX_COMPUTER_USE_TARGET_APP_BYTES)?;
+    }
+    if let Some(target_url) = request.target_url.as_deref() {
+        reject_overlong_approval_field(target_url, MAX_COMPUTER_USE_TARGET_URL_BYTES)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn register_computer_use_approval(
+    app: &AppHandle,
+    request_id: &str,
+    tool_call_id: &str,
+    stored_session_id: &str,
+    arguments: &serde_json::Value,
+) -> Result<bool, AppError> {
+    let runtime = app.state::<CompanionRuntime>();
+    if !computer_use_approval_routing_enabled(app, &runtime) {
+        return Ok(false);
+    }
+    if request_id.is_empty()
+        || request_id.len() > 128
+        || tool_call_id.is_empty()
+        || tool_call_id.len() > 128
+        || stored_session_id.is_empty()
+        || stored_session_id.len() > 128
+    {
+        return Err(AppError::new(
+            "companion_computer_use_approval_invalid",
+            "The Computer use approval identifiers exceed the protocol limit.",
+        ));
+    }
+    let requested_at_ms = current_time_ms();
+    let action = crate::computer_use::normalized_action(arguments)?;
+    let published_target =
+        crate::computer_use::companion_approval_target(app, arguments, &action).await?;
+    let target_app = published_target
+        .as_ref()
+        .map(|target| target.app_name().to_string());
+    let request = ComputerUseApprovalRequest {
+        request_id: request_id.to_string(),
+        stored_session_id: stored_session_id.to_string(),
+        description: approval_description(&action, target_app.as_deref()),
+        action,
+        target_app,
+        // The existing Computer use broker has no URL-targeted action. Never
+        // echo an untrusted extra argument onto the phone approval card.
+        target_url: None,
+        requested_at_ms,
+        expires_at_ms: requested_at_ms.saturating_add(COMPUTER_USE_APPROVAL_TTL_MS),
+    };
+    validate_computer_use_approval_fields(&request)?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(COMPUTER_USE_APPROVAL_TTL_MS))
+        .ok_or_else(|| {
+            AppError::new(
+                "companion_computer_use_approval_unavailable",
+                "Computer use approval deadline could not be created.",
+            )
+        })?;
+    let mut registry = runtime.computer_use_approvals.lock().map_err(|_| {
+        AppError::new(
+            "companion_computer_use_approval_unavailable",
+            "Computer use approval lock failed.",
+        )
+    })?;
+    registry.prune(requested_at_ms);
+    if registry.requests.contains_key(&request.request_id) {
+        return Err(AppError::new(
+            "companion_computer_use_approval_replay",
+            "This Computer use approval request was already registered.",
+        ));
+    }
+    if registry.requests.values().any(|approval| {
+        approval.request.stored_session_id == stored_session_id
+            && approval.tool_call_id == tool_call_id
+            && approval.phase != ComputerUseApprovalPhase::Resolved
+    }) {
+        return Err(AppError::new(
+            "companion_computer_use_approval_replay",
+            "This Computer use tool call already has a linked approval request.",
+        ));
+    }
+    registry.requests.insert(
+        request.request_id.clone(),
+        TrackedComputerUseApproval {
+            request: request.clone(),
+            tool_call_id: tool_call_id.to_string(),
+            published_target,
+            deadline,
+            expiry_armed: false,
+            phase: ComputerUseApprovalPhase::Pending,
+            remote_permit_armed: false,
+        },
+    );
+    if let Err(error) = publish_event(
+        &runtime,
+        Event::ComputerUseApprovalRequested(request.clone()),
+    ) {
+        registry.requests.remove(&request.request_id);
+        return Err(error);
+    }
+    drop(registry);
+    tracing::info!(
+        request_id = %request.request_id,
+        stored_session_id = %request.stored_session_id,
+        expires_at_ms = request.expires_at_ms,
+        "queued companion Computer use approval request"
+    );
+    Ok(true)
+}
+
+pub(crate) fn confirm_computer_use_approval_delivery(
+    app: &AppHandle,
+    request_id: &str,
+    stored_session_id: &str,
+) -> Result<(), AppError> {
+    let deadline = {
+        let runtime = app.state::<CompanionRuntime>();
+        let mut registry = runtime.computer_use_approvals.lock().map_err(|_| {
+            AppError::new(
+                "companion_computer_use_approval_unavailable",
+                "Computer use approval lock failed.",
+            )
+        })?;
+        registry.confirm_delivery(
+            request_id,
+            stored_session_id,
+            current_time_ms(),
+            Instant::now(),
+        )?
+    };
+    if let Some(deadline) = deadline {
+        spawn_computer_use_expiration(
+            app.clone(),
+            request_id.to_string(),
+            stored_session_id.to_string(),
+            deadline,
+        );
+        tracing::info!(
+            request_id,
+            stored_session_id,
+            "armed companion Computer use approval expiry after authenticated delivery receipt"
+        );
+    }
+    Ok(())
+}
+
+fn spawn_computer_use_expiration(
+    app: AppHandle,
+    request_id: String,
+    stored_session_id: String,
+    deadline: Instant,
+) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+        let result = retry_computer_use_expiration(
+            || {
+                let app = app.clone();
+                let request_id = request_id.clone();
+                let stored_session_id = stored_session_id.clone();
+                async move {
+                    crate::agent_runtime::api::resolve_companion_computer_use_approval(
+                        &app,
+                        &request_id,
+                        &stored_session_id,
+                        ComputerUseApprovalDecision::Deny,
+                        ComputerUseApprovalOrigin::Timeout,
+                    )
+                    .await
+                }
+            },
+            COMPUTER_USE_APPROVAL_EXPIRY_RETRY_ATTEMPTS,
+            COMPUTER_USE_APPROVAL_EXPIRY_RETRY_DELAY,
+        )
+        .await;
+        if let Err(error) = result {
+            if !matches!(
+                error.code.as_str(),
+                "companion_computer_use_approval_replay"
+                    | "companion_computer_use_approval_not_found"
+            ) {
+                tracing::warn!(
+                    code = %error.code,
+                    request_id,
+                    stored_session_id,
+                    "failed to expire companion Computer use approval"
+                );
+                // The interruption remains available on the Mac. Retire the
+                // remote request honestly instead of leaving a phone card
+                // pending after all bounded auto-deny attempts fail.
+                cancel_computer_use_resolution(&app, &request_id, &stored_session_id);
+            }
+        }
+    });
+}
+
+async fn retry_computer_use_expiration<F, Fut>(
+    mut resolve: F,
+    attempts: usize,
+    retry_delay: Duration,
+) -> Result<(), AppError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<serde_json::Value, AppError>>,
+{
+    let attempts = attempts.max(1);
+    for attempt in 1..=attempts {
+        match resolve().await {
+            Ok(_) => return Ok(()),
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "companion_computer_use_approval_replay"
+                        | "companion_computer_use_approval_not_found"
+                ) =>
+            {
+                return Err(error);
+            }
+            Err(error) if attempt == attempts => return Err(error),
+            Err(_) => tokio::time::sleep(retry_delay).await,
+        }
+    }
+    unreachable!("expiration resolution always returns from the bounded loop")
+}
+
+impl ComputerUseApprovalRegistry {
+    fn prune(&mut self, now_ms: u64) {
+        self.requests.retain(|_, approval| {
+            approval.phase != ComputerUseApprovalPhase::Resolved
+                || now_ms <= approval.request.expires_at_ms.saturating_add(5 * 60_000)
+        });
+        if self.requests.len() > 512 {
+            let mut resolved = self
+                .requests
+                .iter()
+                .filter(|(_, approval)| approval.phase == ComputerUseApprovalPhase::Resolved)
+                .map(|(id, approval)| (id.clone(), approval.request.expires_at_ms))
+                .collect::<Vec<_>>();
+            resolved.sort_by_key(|(_, expires_at_ms)| *expires_at_ms);
+            let remove_count = self.requests.len().saturating_sub(512);
+            for (id, _) in resolved.into_iter().take(remove_count) {
+                self.requests.remove(&id);
+            }
+        }
+    }
+
+    fn begin_resolution(
+        &mut self,
+        request_id: &str,
+        stored_session_id: &str,
+        now_ms: u64,
+        now: Instant,
+        origin: &ComputerUseApprovalOrigin,
+    ) -> Result<(), AppError> {
+        self.prune(now_ms);
+        let approval = self.requests.get_mut(request_id).ok_or_else(|| {
+            AppError::new(
+                "companion_computer_use_approval_not_found",
+                "This Computer use approval request is no longer pending.",
+            )
+        })?;
+        if approval.request.stored_session_id != stored_session_id {
+            return Err(AppError::new(
+                "companion_computer_use_approval_invalid",
+                "The Computer use approval does not belong to this session.",
+            ));
+        }
+        if approval.phase != ComputerUseApprovalPhase::Pending {
+            return Err(AppError::new(
+                "companion_computer_use_approval_replay",
+                "This Computer use approval was already resolved.",
+            ));
+        }
+        if *origin == ComputerUseApprovalOrigin::Timeout && !approval.expiry_armed {
+            return Err(AppError::new(
+                "companion_computer_use_approval_delivery_unconfirmed",
+                "This Computer use approval was not confirmed as delivered to a linked device.",
+            ));
+        }
+        if now < approval.deadline && *origin == ComputerUseApprovalOrigin::Timeout {
+            return Err(AppError::new(
+                "companion_computer_use_approval_not_expired",
+                "This Computer use approval has not expired yet.",
+            ));
+        }
+        if now >= approval.deadline && matches!(origin, ComputerUseApprovalOrigin::Companion { .. })
+        {
+            approval.phase = ComputerUseApprovalPhase::Resolved;
+            return Err(AppError::new(
+                "companion_computer_use_approval_expired",
+                "This Computer use approval expired.",
+            ));
+        }
+        Ok(())
+    }
+
+    fn confirm_delivery(
+        &mut self,
+        request_id: &str,
+        stored_session_id: &str,
+        now_ms: u64,
+        now: Instant,
+    ) -> Result<Option<Instant>, AppError> {
+        self.prune(now_ms);
+        let approval = self.requests.get_mut(request_id).ok_or_else(|| {
+            AppError::new(
+                "companion_computer_use_approval_not_found",
+                "This Computer use approval request is no longer pending.",
+            )
+        })?;
+        if approval.request.stored_session_id != stored_session_id {
+            return Err(AppError::new(
+                "companion_computer_use_approval_invalid",
+                "The Computer use approval does not belong to this session.",
+            ));
+        }
+        if approval.phase != ComputerUseApprovalPhase::Pending {
+            return Err(AppError::new(
+                "companion_computer_use_approval_replay",
+                "This Computer use approval was already resolved.",
+            ));
+        }
+        if now >= approval.deadline {
+            approval.phase = ComputerUseApprovalPhase::Resolved;
+            return Err(AppError::new(
+                "companion_computer_use_approval_expired",
+                "This Computer use approval expired before delivery was confirmed.",
+            ));
+        }
+        if approval.expiry_armed {
+            return Ok(None);
+        }
+        approval.expiry_armed = true;
+        Ok(Some(approval.deadline))
+    }
+
+    fn complete_resolution(
+        &mut self,
+        request_id: &str,
+        stored_session_id: &str,
+        approved: bool,
+        remote_permit: bool,
+    ) -> bool {
+        let Some(entry) = self.requests.get_mut(request_id) else {
+            return false;
+        };
+        if entry.request.stored_session_id != stored_session_id
+            || entry.phase != ComputerUseApprovalPhase::Pending
+        {
+            return false;
+        }
+        entry.phase = if approved {
+            ComputerUseApprovalPhase::Approved
+        } else {
+            ComputerUseApprovalPhase::Resolved
+        };
+        entry.remote_permit_armed = approved && remote_permit;
+        true
+    }
+
+    fn take_remote_permit(
+        &mut self,
+        tool_call_id: &str,
+        stored_session_id: &str,
+        resolved_target: &crate::computer_use::CompanionApprovalTarget,
+    ) -> ComputerUsePermitTake {
+        let Some(entry) = self.requests.values_mut().find(|entry| {
+            entry.tool_call_id == tool_call_id
+                && entry.request.stored_session_id == stored_session_id
+        }) else {
+            return ComputerUsePermitTake::Unavailable;
+        };
+        if !entry.remote_permit_armed
+            || !matches!(
+                entry.phase,
+                ComputerUseApprovalPhase::Approved | ComputerUseApprovalPhase::Executing
+            )
+        {
+            return ComputerUsePermitTake::Unavailable;
+        }
+        entry.remote_permit_armed = false;
+        let request_id = entry.request.request_id.clone();
+        let stored_session_id = entry.request.stored_session_id.clone();
+        if entry.published_target.as_ref() != Some(resolved_target) {
+            entry.phase = ComputerUseApprovalPhase::Resolved;
+            return ComputerUsePermitTake::TargetMismatch {
+                request_id,
+                stored_session_id,
+            };
+        }
+        entry.phase = ComputerUseApprovalPhase::Executing;
+        ComputerUsePermitTake::Consumed {
+            request_id,
+            stored_session_id,
+        }
+    }
+
+    fn request_for_tool_call(
+        &mut self,
+        tool_call_id: &str,
+        stored_session_id: &str,
+    ) -> Option<&mut TrackedComputerUseApproval> {
+        self.requests.values_mut().find(|entry| {
+            entry.tool_call_id == tool_call_id
+                && entry.request.stored_session_id == stored_session_id
+        })
+    }
+}
+
+pub(crate) fn begin_companion_computer_use_resolution(
+    app: &AppHandle,
+    request_id: &str,
+    stored_session_id: &str,
+    origin: ComputerUseApprovalOrigin,
+) -> Result<(), AppError> {
+    if !computer_use_approvals_enabled(app)
+        && matches!(&origin, ComputerUseApprovalOrigin::Companion { .. })
+    {
+        return Err(AppError::new(
+            "companion_computer_use_approval_disabled",
+            "Linked Computer use approvals are disabled on this Mac.",
+        ));
+    }
+    let runtime = app.state::<CompanionRuntime>();
+    let now_ms = current_time_ms();
+    let now = Instant::now();
+    let mut registry = runtime.computer_use_approvals.lock().map_err(|_| {
+        AppError::new(
+            "companion_computer_use_approval_unavailable",
+            "Computer use approval lock failed.",
+        )
+    })?;
+    let request = registry
+        .requests
+        .get(request_id)
+        .map(|approval| approval.request.clone());
+    if let Err(error) =
+        registry.begin_resolution(request_id, stored_session_id, now_ms, now, &origin)
+    {
+        drop(registry);
+        if error.code == "companion_computer_use_approval_expired" {
+            if let Some(request) = request {
+                publish_computer_use_status(
+                    &runtime,
+                    &request.request_id,
+                    &request.stored_session_id,
+                    ComputerUseApprovalStatus::Expired,
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn complete_computer_use_resolution(
+    app: &AppHandle,
+    request_id: &str,
+    stored_session_id: &str,
+    approved: bool,
+    remote_permit: bool,
+    origin: Option<ComputerUseApprovalOrigin>,
+) {
+    let runtime = app.state::<CompanionRuntime>();
+    let Ok(mut registry) = runtime.computer_use_approvals.lock() else {
+        return;
+    };
+    if !registry.complete_resolution(request_id, stored_session_id, approved, remote_permit) {
+        return;
+    }
+    let status = match (approved, origin.as_ref()) {
+        (true, _) => ComputerUseApprovalStatus::Approved,
+        (false, Some(ComputerUseApprovalOrigin::Timeout)) => ComputerUseApprovalStatus::Expired,
+        (false, _) => ComputerUseApprovalStatus::Denied,
+    };
+    drop(registry);
+    publish_computer_use_status(&runtime, request_id, stored_session_id, status);
+    tracing::info!(
+        request_id,
+        stored_session_id,
+        approved,
+        origin = ?origin,
+        "resolved companion Computer use approval"
+    );
+}
+
+pub(crate) fn cancel_computer_use_resolution(
+    app: &AppHandle,
+    request_id: &str,
+    stored_session_id: &str,
+) {
+    let runtime = app.state::<CompanionRuntime>();
+    let Ok(mut registry) = runtime.computer_use_approvals.lock() else {
+        return;
+    };
+    let Some(entry) = registry.requests.get_mut(request_id) else {
+        return;
+    };
+    if entry.request.stored_session_id != stored_session_id {
+        return;
+    }
+    entry.phase = ComputerUseApprovalPhase::Resolved;
+    entry.remote_permit_armed = false;
+    drop(registry);
+    publish_computer_use_status(
+        &runtime,
+        request_id,
+        stored_session_id,
+        ComputerUseApprovalStatus::Cancelled,
+    );
+}
+
+pub(crate) fn take_computer_use_remote_permit(
+    app: &AppHandle,
+    stored_session_id: &str,
+    tool_call_id: &str,
+    resolved_target: &crate::computer_use::CompanionApprovalTarget,
+) -> ComputerUsePermitOutcome {
+    if !computer_use_approvals_enabled(app) {
+        return ComputerUsePermitOutcome::Unavailable;
+    }
+    let runtime = app.state::<CompanionRuntime>();
+    let Ok(mut registry) = runtime.computer_use_approvals.lock() else {
+        return ComputerUsePermitOutcome::Unavailable;
+    };
+    match registry.take_remote_permit(tool_call_id, stored_session_id, resolved_target) {
+        ComputerUsePermitTake::Consumed {
+            request_id,
+            stored_session_id,
+        } => {
+            drop(registry);
+            publish_computer_use_status(
+                &runtime,
+                &request_id,
+                &stored_session_id,
+                ComputerUseApprovalStatus::Executing,
+            );
+            tracing::info!(
+                request_id,
+                stored_session_id,
+                tool_call_id,
+                "consumed target-bound companion Computer use permit"
+            );
+            ComputerUsePermitOutcome::Approved
+        }
+        ComputerUsePermitTake::TargetMismatch {
+            request_id,
+            stored_session_id,
+        } => {
+            drop(registry);
+            publish_computer_use_status(
+                &runtime,
+                &request_id,
+                &stored_session_id,
+                ComputerUseApprovalStatus::Denied,
+            );
+            tracing::warn!(
+                request_id,
+                stored_session_id,
+                tool_call_id,
+                "rejected companion Computer use permit after target mismatch"
+            );
+            ComputerUsePermitOutcome::TargetMismatch
+        }
+        ComputerUsePermitTake::Unavailable => ComputerUsePermitOutcome::Unavailable,
+    }
+}
+
+pub(crate) fn publish_computer_use_execution_status(
+    app: &AppHandle,
+    tool_call_id: &str,
+    stored_session_id: &str,
+    status: ComputerUseExecutionStatus,
+) {
+    let runtime = app.state::<CompanionRuntime>();
+    let Ok(mut registry) = runtime.computer_use_approvals.lock() else {
+        return;
+    };
+    let Some(entry) = registry.request_for_tool_call(tool_call_id, stored_session_id) else {
+        return;
+    };
+    if matches!(
+        entry.phase,
+        ComputerUseApprovalPhase::Pending | ComputerUseApprovalPhase::Resolved
+    ) {
+        return;
+    }
+    // The sidecar announces tool.started before the Rust host tool has
+    // re-resolved and compared the exact target. For targetful requests,
+    // permit consumption publishes Executing only after that comparison.
+    if status == ComputerUseExecutionStatus::Started
+        && entry.published_target.is_some()
+        && entry.remote_permit_armed
+    {
+        return;
+    }
+    let request_id = entry.request.request_id.clone();
+    let protocol_status = match status {
+        ComputerUseExecutionStatus::Started => {
+            entry.phase = ComputerUseApprovalPhase::Executing;
+            ComputerUseApprovalStatus::Executing
+        }
+        ComputerUseExecutionStatus::Succeeded => {
+            entry.phase = ComputerUseApprovalPhase::Resolved;
+            entry.remote_permit_armed = false;
+            ComputerUseApprovalStatus::Succeeded
+        }
+        ComputerUseExecutionStatus::Failed => {
+            entry.phase = ComputerUseApprovalPhase::Resolved;
+            entry.remote_permit_armed = false;
+            ComputerUseApprovalStatus::Failed
+        }
+    };
+    drop(registry);
+    publish_computer_use_status(&runtime, &request_id, stored_session_id, protocol_status);
+    tracing::info!(
+        request_id,
+        stored_session_id,
+        status = ?protocol_status,
+        "recorded companion Computer use execution status"
+    );
+}
+
+fn retire_computer_use_approvals(app: &AppHandle, status: ComputerUseApprovalStatus) {
+    let runtime = app.state::<CompanionRuntime>();
+    let requests = runtime
+        .computer_use_approvals
+        .lock()
+        .map(|mut registry| {
+            registry
+                .requests
+                .values_mut()
+                .filter(|entry| entry.phase != ComputerUseApprovalPhase::Resolved)
+                .map(|entry| {
+                    entry.phase = ComputerUseApprovalPhase::Resolved;
+                    entry.remote_permit_armed = false;
+                    (
+                        entry.request.request_id.clone(),
+                        entry.request.stored_session_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for (request_id, stored_session_id) in requests {
+        publish_computer_use_status(&runtime, &request_id, &stored_session_id, status);
+    }
+}
+
+pub(crate) fn cancel_computer_use_approvals_for_session(app: &AppHandle, stored_session_id: &str) {
+    let runtime = app.state::<CompanionRuntime>();
+    let requests = runtime
+        .computer_use_approvals
+        .lock()
+        .map(|mut registry| {
+            registry
+                .requests
+                .values_mut()
+                .filter(|entry| {
+                    entry.request.stored_session_id == stored_session_id
+                        && entry.phase != ComputerUseApprovalPhase::Resolved
+                })
+                .map(|entry| {
+                    entry.phase = ComputerUseApprovalPhase::Resolved;
+                    entry.remote_permit_armed = false;
+                    entry.request.request_id.clone()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for request_id in requests {
+        publish_computer_use_status(
+            &runtime,
+            &request_id,
+            stored_session_id,
+            ComputerUseApprovalStatus::Cancelled,
+        );
+    }
+}
+
 pub fn setup(app: &AppHandle) {
     let stored_enabled = crate::experimental_settings::companion_pairing_enabled(app);
-    app.state::<CompanionRuntime>()
-        .latch_effective_enabled(stored_enabled);
+    let runtime = app.state::<CompanionRuntime>();
+    runtime.latch_effective_enabled(stored_enabled);
+    runtime.latch_desktop_display_name(resolve_desktop_display_name());
+    files::start_cleanup(app);
+    media::start_cleanup(app);
     start(app);
 }
 
@@ -835,12 +1980,14 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     if let Ok(mut pairings) = runtime.pairings.lock() {
         pairings.clear();
     }
+    retire_computer_use_approvals(app, ComputerUseApprovalStatus::Cancelled);
+    media::clear_cache(app);
     transport::stop(app).await?;
 
     // A relay task may be awaiting a frontend-backed operation, or pairing may
     // be committing an authorization grant. Wait until all authorized account
     // work observes the sign-out boundary before revoking local state.
-    wait_for_account_activity(&runtime, ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT).await?;
+    wait_for_account_activity_then_clear_media(&runtime, ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT).await?;
 
     let repos = repositories(app).await?;
     let persisted_account_user_id = repos.companion_account_user_id().await?;
@@ -862,12 +2009,15 @@ pub async fn prepare_account_logout(app: &AppHandle) -> Result<(), AppError> {
     let mut remote_device_ids = HashSet::new();
     for account_user_id in account_user_ids {
         if let Ok(devices) = repos.list_companion_devices(&account_user_id).await {
-            remote_device_ids.extend(
-                devices
-                    .into_iter()
-                    .filter(|device| device.revoked_at.is_none())
-                    .filter_map(|device| Uuid::parse_str(&device.id).ok()),
-            );
+            for device in devices
+                .into_iter()
+                .filter(|device| device.revoked_at.is_none())
+            {
+                if let Ok(device_id) = Uuid::parse_str(&device.id) {
+                    remote_device_ids.insert(device_id);
+                }
+                files::cleanup_device_uploads(app, &repos, &account_user_id, &device.id).await;
+            }
         }
         repos
             .revoke_companion_devices_for_account(&account_user_id)
@@ -904,6 +2054,15 @@ async fn wait_for_account_activity(
             "Companion activity did not stop in time. Try signing out again.",
         )
     })
+}
+
+async fn wait_for_account_activity_then_clear_media(
+    runtime: &CompanionRuntime,
+    timeout: Duration,
+) -> Result<(), AppError> {
+    wait_for_account_activity(runtime, timeout).await?;
+    media::clear_transfer_cache(&runtime.media_transfers);
+    Ok(())
 }
 
 pub fn resume_account_transport(app: &AppHandle) {
@@ -974,7 +2133,20 @@ fn finish_pairing(runtime: &CompanionRuntime, pairing_id: Uuid) {
     }
 }
 
-fn desktop_display_name() -> String {
+fn create_pairing_request(
+    runtime: &CompanionRuntime,
+    identity: &StoredIdentity,
+    secret: &[u8; KEY_BYTES],
+) -> Result<CreatePairingRequest, AppError> {
+    Ok(CreatePairingRequest {
+        desktop_device_id: identity.device_id,
+        desktop_public_key: identity.public_key()?.to_vec(),
+        display_name: runtime.desktop_display_name(),
+        pairing_proof: Sha256::digest(secret).to_vec(),
+    })
+}
+
+fn resolve_desktop_display_name() -> String {
     #[cfg(target_os = "macos")]
     if let Ok(output) = std::process::Command::new("/usr/sbin/scutil")
         .args(["--get", "ComputerName"])
@@ -989,10 +2161,18 @@ fn desktop_display_name() -> String {
             return name;
         }
     }
-    std::env::var("COMPUTERNAME")
-        .ok()
-        .and_then(|value| normalized_device_name(&value))
-        .unwrap_or_else(|| "June on Mac".to_string())
+    ["COMPUTERNAME", "HOSTNAME"]
+        .into_iter()
+        .find_map(|key| {
+            std::env::var(key)
+                .ok()
+                .and_then(|value| normalized_device_name(&value))
+        })
+        .unwrap_or_else(default_desktop_display_name)
+}
+
+fn default_desktop_display_name() -> String {
+    "June on Mac".to_string()
 }
 
 fn normalized_device_name(value: &str) -> Option<String> {
@@ -1000,7 +2180,7 @@ fn normalized_device_name(value: &str) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    let mut end = value.len().min(MAX_DEVICE_NAME_BYTES);
+    let mut end = value.len().min(MAX_DEVICE_DISPLAY_NAME_BYTES);
     while !value.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }
@@ -1201,6 +2381,339 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn approval_registry() -> ComputerUseApprovalRegistry {
+        let now = Instant::now();
+        let request = ComputerUseApprovalRequest {
+            request_id: "call-1".to_string(),
+            stored_session_id: "session-1".to_string(),
+            action: "click".to_string(),
+            description: "Click a control in TextEdit.".to_string(),
+            target_app: Some("TextEdit".to_string()),
+            target_url: None,
+            requested_at_ms: 1_000,
+            expires_at_ms: 1_000 + COMPUTER_USE_APPROVAL_TTL_MS,
+        };
+        ComputerUseApprovalRegistry {
+            requests: HashMap::from([(
+                request.request_id.clone(),
+                TrackedComputerUseApproval {
+                    request,
+                    tool_call_id: "tool-call-1".to_string(),
+                    published_target: Some(crate::computer_use::CompanionApprovalTarget::fixture(
+                        "TextEdit", 100,
+                    )),
+                    deadline: now + Duration::from_millis(COMPUTER_USE_APPROVAL_TTL_MS),
+                    expiry_armed: false,
+                    phase: ComputerUseApprovalPhase::Pending,
+                    remote_permit_armed: false,
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn computer_use_approval_gate_requires_features_and_desktop_opt_in() {
+        assert!(computer_use_approval_gate(true, true, true, true));
+        assert!(!computer_use_approval_gate(false, true, true, true));
+        assert!(!computer_use_approval_gate(true, false, true, true));
+        assert!(!computer_use_approval_gate(true, true, false, true));
+        assert!(!computer_use_approval_gate(true, true, true, false));
+        assert!(companion_capabilities().contains(&Capability::ComputerUseApprove));
+    }
+
+    #[test]
+    fn computer_use_approval_rejects_wrong_id_session_expiry_and_replay() {
+        let expires_at_ms = 1_000 + COMPUTER_USE_APPROVAL_TTL_MS;
+        let mut registry = approval_registry();
+        let deadline = registry.requests["call-1"].deadline;
+        let companion = ComputerUseApprovalOrigin::Companion {
+            device_id: "phone-1".to_string(),
+        };
+        assert_eq!(
+            registry
+                .begin_resolution(
+                    "other-call",
+                    "session-1",
+                    1_001,
+                    deadline - Duration::from_millis(1),
+                    &companion,
+                )
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_not_found"
+        );
+        assert_eq!(
+            registry
+                .begin_resolution(
+                    "call-1",
+                    "other-session",
+                    1_001,
+                    deadline - Duration::from_millis(1),
+                    &companion,
+                )
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_invalid"
+        );
+        assert_eq!(
+            registry
+                .begin_resolution("call-1", "session-1", expires_at_ms, deadline, &companion,)
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_expired"
+        );
+        assert_eq!(
+            registry
+                .begin_resolution("call-1", "session-1", expires_at_ms, deadline, &companion,)
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_replay"
+        );
+    }
+
+    #[test]
+    fn timeout_denies_and_desktop_decisions_override_remote_prompts() {
+        let expires_at_ms = 1_000 + COMPUTER_USE_APPROVAL_TTL_MS;
+        let mut timeout = approval_registry();
+        let deadline = timeout.requests["call-1"].deadline;
+        assert_eq!(
+            timeout
+                .confirm_delivery(
+                    "call-1",
+                    "session-1",
+                    1_001,
+                    deadline - Duration::from_millis(1),
+                )
+                .unwrap(),
+            Some(deadline)
+        );
+        assert!(timeout
+            .begin_resolution(
+                "call-1",
+                "session-1",
+                expires_at_ms,
+                deadline,
+                &ComputerUseApprovalOrigin::Timeout,
+            )
+            .is_ok());
+        assert!(timeout.complete_resolution("call-1", "session-1", false, false));
+        assert_eq!(
+            timeout
+                .begin_resolution(
+                    "call-1",
+                    "session-1",
+                    expires_at_ms,
+                    deadline,
+                    &ComputerUseApprovalOrigin::Companion {
+                        device_id: "phone-1".to_string(),
+                    },
+                )
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_replay"
+        );
+
+        let mut desktop = approval_registry();
+        let desktop_deadline = desktop.requests["call-1"].deadline;
+        assert!(desktop.complete_resolution("call-1", "session-1", true, false));
+        assert_eq!(
+            desktop.take_remote_permit(
+                "tool-call-1",
+                "session-1",
+                &crate::computer_use::CompanionApprovalTarget::fixture("TextEdit", 100),
+            ),
+            ComputerUsePermitTake::Unavailable
+        );
+        assert_eq!(
+            desktop
+                .begin_resolution(
+                    "call-1",
+                    "session-1",
+                    1_001,
+                    desktop_deadline - Duration::from_millis(1),
+                    &ComputerUseApprovalOrigin::Companion {
+                        device_id: "phone-1".to_string(),
+                    },
+                )
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_replay"
+        );
+    }
+
+    #[test]
+    fn remote_permit_is_bound_to_one_matching_invocation() {
+        let mut registry = approval_registry();
+        let published = crate::computer_use::CompanionApprovalTarget::fixture("TextEdit", 100);
+        let other = crate::computer_use::CompanionApprovalTarget::fixture("Mail", 200);
+        assert!(registry.complete_resolution("call-1", "session-1", true, true));
+        assert_eq!(
+            registry.take_remote_permit("tool-call-1", "other-session", &published),
+            ComputerUsePermitTake::Unavailable
+        );
+        assert!(matches!(
+            registry.take_remote_permit("tool-call-1", "session-1", &published),
+            ComputerUsePermitTake::Consumed { .. }
+        ));
+        assert_eq!(
+            registry.take_remote_permit("tool-call-1", "session-1", &published),
+            ComputerUsePermitTake::Unavailable
+        );
+
+        let mut mismatch = approval_registry();
+        assert!(mismatch.complete_resolution("call-1", "session-1", true, true));
+        assert!(matches!(
+            mismatch.take_remote_permit("tool-call-1", "session-1", &other),
+            ComputerUsePermitTake::TargetMismatch { .. }
+        ));
+        assert_eq!(
+            mismatch.requests["call-1"].phase,
+            ComputerUseApprovalPhase::Resolved
+        );
+
+        let mut reused_window = approval_registry();
+        assert!(reused_window.complete_resolution("call-1", "session-1", true, true));
+        let replacement_process =
+            crate::computer_use::CompanionApprovalTarget::fixture_with_pid("TextEdit", 200, 100);
+        assert!(matches!(
+            reused_window.take_remote_permit("tool-call-1", "session-1", &replacement_process),
+            ComputerUsePermitTake::TargetMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn approval_expiry_requires_one_authenticated_delivery_receipt() {
+        let mut registry = approval_registry();
+        let deadline = registry.requests["call-1"].deadline;
+        assert_eq!(
+            registry
+                .begin_resolution(
+                    "call-1",
+                    "session-1",
+                    1_000 + COMPUTER_USE_APPROVAL_TTL_MS,
+                    deadline,
+                    &ComputerUseApprovalOrigin::Timeout,
+                )
+                .unwrap_err()
+                .code,
+            "companion_computer_use_approval_delivery_unconfirmed"
+        );
+        assert_eq!(
+            registry
+                .confirm_delivery(
+                    "call-1",
+                    "session-1",
+                    1_001,
+                    deadline - Duration::from_millis(1),
+                )
+                .unwrap(),
+            Some(deadline)
+        );
+        assert_eq!(
+            registry
+                .confirm_delivery(
+                    "call-1",
+                    "session-1",
+                    1_002,
+                    deadline - Duration::from_millis(1),
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn approval_description_omits_typed_text_and_stays_bounded() {
+        let arguments = serde_json::json!({
+            "action": "Type",
+            "app": "TextEdit",
+            "text": "private words",
+        });
+        let action = crate::computer_use::normalized_action(&arguments).unwrap();
+        let description = approval_description(&action, Some("TextEdit"));
+
+        assert_eq!(description, "Type in TextEdit.");
+        assert!(!description.contains("private words"));
+        assert!(description.len() <= MAX_COMPUTER_USE_DESCRIPTION_BYTES);
+    }
+
+    #[test]
+    fn monotonic_deadline_expires_even_when_wall_clock_moves_backward() {
+        let mut registry = approval_registry();
+        let deadline = registry.requests["call-1"].deadline;
+        registry
+            .confirm_delivery(
+                "call-1",
+                "session-1",
+                1,
+                deadline - Duration::from_millis(1),
+            )
+            .unwrap();
+
+        assert!(registry
+            .begin_resolution(
+                "call-1",
+                "session-1",
+                1,
+                deadline,
+                &ComputerUseApprovalOrigin::Timeout,
+            )
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn expiration_resolution_retries_transient_failures() {
+        let attempts = AtomicUsize::new(0);
+
+        retry_computer_use_expiration(
+            || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt < 2 {
+                        Err(AppError::new("temporary_failure", "Try again."))
+                    } else {
+                        Ok(serde_json::json!({ "status": "resolved" }))
+                    }
+                }
+            },
+            3,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn overlong_approval_fields_fail_closed_instead_of_being_truncated() {
+        let mut request = approval_registry()
+            .requests
+            .remove("call-1")
+            .expect("approval fixture")
+            .request;
+        request.target_url = Some(format!(
+            "https://trusted.example/{}",
+            "x".repeat(MAX_COMPUTER_USE_TARGET_URL_BYTES)
+        ));
+
+        let url_error = validate_computer_use_approval_fields(&request).unwrap_err();
+        assert_eq!(url_error.code, "companion_computer_use_approval_too_large");
+        assert!(request
+            .target_url
+            .as_deref()
+            .is_some_and(|url| url.len() > MAX_COMPUTER_USE_TARGET_URL_BYTES));
+
+        request.target_url = None;
+        request.description = "é".repeat((MAX_COMPUTER_USE_DESCRIPTION_BYTES / 2) + 1);
+        let description_error = validate_computer_use_approval_fields(&request).unwrap_err();
+        assert_eq!(
+            description_error.code,
+            "companion_computer_use_approval_too_large"
+        );
+        assert!(request.description.len() > MAX_COMPUTER_USE_DESCRIPTION_BYTES);
+    }
+
     #[test]
     fn begin_pairing_refuses_when_the_experiment_is_off() {
         let error = ensure_companion_pairing_enabled_with(false).unwrap_err();
@@ -1231,6 +2744,14 @@ mod tests {
             ensure_companion_pairing_enabled(&runtime).unwrap_err().code,
             "companion_experimental_disabled"
         );
+    }
+
+    #[test]
+    fn pairing_discloses_separate_model_read_and_edit_grants() {
+        let capabilities = companion_capabilities();
+
+        assert!(capabilities.contains(&Capability::ModelRead));
+        assert!(capabilities.contains(&Capability::ModelEdit));
     }
 
     #[tokio::test]
@@ -1313,16 +2834,37 @@ mod tests {
         );
         assert_eq!(normalized_device_name("  "), None);
 
-        let oversized = "a".repeat(MAX_DEVICE_NAME_BYTES + 1);
+        let oversized = "a".repeat(MAX_DEVICE_DISPLAY_NAME_BYTES + 1);
         assert_eq!(
             normalized_device_name(&oversized).unwrap().len(),
-            MAX_DEVICE_NAME_BYTES
+            MAX_DEVICE_DISPLAY_NAME_BYTES
         );
 
-        let unicode = "é".repeat(MAX_DEVICE_NAME_BYTES);
+        let unicode = "é".repeat(MAX_DEVICE_DISPLAY_NAME_BYTES);
         let normalized = normalized_device_name(&unicode).unwrap();
-        assert!(normalized.len() <= MAX_DEVICE_NAME_BYTES);
+        assert!(normalized.len() <= MAX_DEVICE_DISPLAY_NAME_BYTES);
         assert!(normalized.is_char_boundary(normalized.len()));
+    }
+
+    #[test]
+    fn pairing_request_uses_the_startup_cached_desktop_name() {
+        let runtime = CompanionRuntime::default();
+        runtime.latch_desktop_display_name("Studio Mac".to_string());
+        let identity = StoredIdentity {
+            account_user_id: "usr_test".to_string(),
+            device_id: Uuid::nil(),
+            private_key_b64: STANDARD_NO_PAD.encode([1_u8; KEY_BYTES]),
+            public_key_b64: STANDARD_NO_PAD.encode([2_u8; KEY_BYTES]),
+        };
+
+        let request = create_pairing_request(&runtime, &identity, &[3_u8; KEY_BYTES]).unwrap();
+        let serialized = serde_json::to_value(request).unwrap();
+
+        assert_eq!(serialized["displayName"], "Studio Mac");
+        assert_eq!(
+            serialized["desktopPublicKey"],
+            serde_json::json!(vec![2_u8; KEY_BYTES])
+        );
     }
 
     #[test]
@@ -1416,5 +2958,48 @@ mod tests {
         wait_for_account_activity(&runtime, Duration::from_millis(10))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn logout_clears_media_handles_inserted_by_draining_activity() {
+        let runtime = CompanionRuntime::default();
+        runtime.account_activity.store(1, Ordering::Release);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("media.png");
+        std::fs::write(&path, [1]).unwrap();
+
+        media::clear_transfer_cache(&runtime.media_transfers);
+        runtime
+            .media_transfers
+            .lock()
+            .unwrap()
+            .insert_test_transfer(path);
+        assert_eq!(
+            runtime
+                .media_transfers
+                .lock()
+                .unwrap()
+                .test_transfer_count(),
+            1
+        );
+
+        let drain =
+            wait_for_account_activity_then_clear_media(&runtime, Duration::from_millis(100));
+        tokio::pin!(drain);
+        assert!(tokio::time::timeout(Duration::ZERO, &mut drain)
+            .await
+            .is_err());
+
+        runtime.account_activity.store(0, Ordering::Release);
+        runtime.account_activity_changed.notify_one();
+        drain.await.unwrap();
+        assert_eq!(
+            runtime
+                .media_transfers
+                .lock()
+                .unwrap()
+                .test_transfer_count(),
+            0
+        );
     }
 }

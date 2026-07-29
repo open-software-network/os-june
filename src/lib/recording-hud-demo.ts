@@ -63,12 +63,12 @@ const HELP = [
   "seconds arg works.",
 ].join("\n");
 
-let timers: number[] = [];
-let statusTimer: number | undefined;
-let levelPhase = 0;
-
 export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") return { dispose() {} };
+
+  let timers: number[] = [];
+  let statusTimer: number | undefined;
+  let levelPhase = 0;
 
   function emitStatus(status: RecordingStatusDto) {
     if (local) {
@@ -223,20 +223,21 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
   // Standalone page only: the card's buttons invoke Tauri commands that don't
   // exist without the bridge, so mirror their outcome locally — either action
   // collapses the card back to the live pill.
-  if (local) {
-    for (const id of ["mhud-end-keep", "mhud-end-stop"]) {
-      document.getElementById(id)?.addEventListener("click", () => {
-        cancelTimers();
-        emitMeetingEnd(null);
-        recording();
-      });
-    }
+  const localMeetingEndButtons = local
+    ? ["mhud-end-keep", "mhud-end-stop"]
+        .map((id) => document.getElementById(id))
+        .filter((button): button is HTMLElement => button !== null)
+    : [];
+  const collapseLocalMeetingEnd = () => {
+    cancelTimers();
+    emitMeetingEnd(null);
+    recording();
+  };
+  for (const button of localMeetingEndButtons) {
+    button.addEventListener("click", collapseLocalMeetingEnd);
   }
 
-  (window as unknown as Record<string, unknown>).__recordingHud = (
-    state?: DemoState,
-    seconds?: number,
-  ) => {
+  const hook = (state?: DemoState, seconds?: number) => {
     switch (state) {
       case "recording":
         recording();
@@ -262,4 +263,19 @@ export function registerRecordingHudDemo({ local }: RecordingHudDemoOptions) {
         return HELP;
     }
   };
+
+  const demoWindow = window as unknown as Record<string, unknown>;
+  demoWindow.__recordingHud = hook;
+
+  function dispose() {
+    cancelTimers();
+    for (const button of localMeetingEndButtons) {
+      button.removeEventListener("click", collapseLocalMeetingEnd);
+    }
+    if (demoWindow.__recordingHud === hook) {
+      delete demoWindow.__recordingHud;
+    }
+  }
+
+  return { dispose };
 }

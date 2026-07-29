@@ -165,6 +165,8 @@ vi.mock("../lib/tauri", () => ({
   patchNote: mocks.patchNote,
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
+  companionListAgentMedia: vi.fn(async () => []),
+  companionReadAgentMediaChunk: vi.fn(),
   openPrivacySettings: mocks.openPrivacySettings,
   startRecording: mocks.startRecording,
   pauseRecording: mocks.pauseRecording,
@@ -528,8 +530,9 @@ describe("notes recording reliability", () => {
       });
     });
 
-    expect(await screen.findByText("Google Calendar")).toBeInTheDocument();
-    expect(screen.getByText("june@example.com")).toBeInTheDocument();
+    expect(
+      await screen.findByLabelText("Matched to Product review in Google Calendar"),
+    ).toBeInTheDocument();
   });
 
   it("flushes pending note edits and acknowledges the native app-quit barrier", async () => {
