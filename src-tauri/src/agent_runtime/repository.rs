@@ -197,6 +197,25 @@ impl AgentRepository {
         Ok(run_from_row(row))
     }
 
+    pub async fn pending_interruption_ids(&self, run_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        let rows = query(
+            "SELECT json_extract(payload_json, '$.id') AS interruption_id
+             FROM agent_items
+             WHERE run_id = ?
+               AND kind = 'interruption'
+               AND json_extract(payload_json, '$.status') = 'pending'
+             ORDER BY interruption_id",
+        )
+        .bind(run_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.get::<Option<String>, _>("interruption_id"))
+            .filter(|id| !id.is_empty())
+            .collect())
+    }
+
     pub async fn reset_run_sequence_for_resume(&self, run_id: &str) -> Result<(), sqlx::Error> {
         query("UPDATE agent_runs SET last_sequence = 0, updated_at = ? WHERE id = ?")
             .bind(now())
@@ -901,13 +920,32 @@ impl AgentRepository {
     /// longer active in the sidecar, so they cannot use the ordinary
     /// `run.cancel` path. Retire their pending cards in the same transaction
     /// that releases the session for another turn.
-    pub async fn cancel_waiting_run(&self, run_id: &str) -> Result<AgentRunDto, sqlx::Error> {
+    pub async fn cancel_waiting_run(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<AgentRunDto>, sqlx::Error> {
         let run = self.get_run(run_id).await?;
         if run.status != "waiting_for_user" {
-            return Ok(run);
+            return Ok(None);
         }
         let timestamp = now();
         let mut transaction = self.pool.begin().await?;
+        let retired = query(
+            "UPDATE agent_items
+             SET payload_json = json_set(payload_json, '$.status', 'expired', '$.resolvedAt', ?)
+             WHERE run_id = ?
+               AND kind = 'interruption'
+               AND json_extract(payload_json, '$.status') = 'pending'",
+        )
+        .bind(&timestamp)
+        .bind(run_id)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        if retired == 0 {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
         let updated = query(
             "UPDATE agent_runs
              SET status = 'cancelled', updated_at = ?, completed_at = ?, error_code = NULL, error_message = NULL
@@ -921,19 +959,8 @@ impl AgentRepository {
         .rows_affected();
         if updated == 0 {
             transaction.rollback().await?;
-            return self.get_run(run_id).await;
+            return Ok(None);
         }
-        query(
-            "UPDATE agent_items
-             SET payload_json = json_set(payload_json, '$.status', 'expired', '$.resolvedAt', ?)
-             WHERE run_id = ?
-               AND kind = 'interruption'
-               AND json_extract(payload_json, '$.status') = 'pending'",
-        )
-        .bind(&timestamp)
-        .bind(run_id)
-        .execute(&mut *transaction)
-        .await?;
         query(
             "UPDATE agent_sessions
              SET status = 'idle', updated_at = ?, last_error = NULL
@@ -950,7 +977,7 @@ impl AgentRepository {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        self.get_run(run_id).await
+        self.get_run(run_id).await.map(Some)
     }
 
     pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
@@ -1275,7 +1302,8 @@ mod tests {
         let cancelled = repository
             .cancel_waiting_run(&run.id)
             .await
-            .expect("cancel waiting run");
+            .expect("cancel waiting run")
+            .expect("cancellation won the pending interruption race");
 
         assert_eq!(cancelled.status, "cancelled");
         assert!(cancelled.completed_at.is_some());
@@ -1294,6 +1322,68 @@ mod tests {
                 if value.get("status").and_then(serde_json::Value::as_str) == Some("expired")
                     && value.get("resolvedAt").and_then(serde_json::Value::as_str).is_some()
         ));
+    }
+
+    #[tokio::test]
+    async fn waiting_run_cancellation_loses_to_an_already_resolved_interruption() {
+        let repository = repository().await;
+        let session = repository
+            .create_session("Resuming", "auto", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("resuming session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("resuming run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-1",
+                    "kind": "clarification",
+                    "status": "resolved",
+                    "question": "Which project?",
+                    "answer": "June"
+                })),
+                Some("interruption:clarify-1"),
+            )
+            .await
+            .expect("resolved interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting status");
+
+        let cancelled = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect("race check");
+
+        assert!(cancelled.is_none());
+        assert_eq!(
+            repository
+                .get_run(&run.id)
+                .await
+                .expect("unchanged run")
+                .status,
+            "waiting_for_user"
+        );
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("unchanged session")
+                .status,
+            "waiting_for_user"
+        );
     }
 
     #[tokio::test]

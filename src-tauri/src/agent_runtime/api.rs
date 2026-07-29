@@ -665,8 +665,19 @@ pub async fn cancel_agent_run(
     let repository = repository(&app).await?;
     let run = repository.get_run(&run_id).await?;
     if run.status == "waiting_for_user" {
-        repository.cancel_waiting_run(&run.id).await?;
+        let pending_interruption_ids = repository.pending_interruption_ids(&run.id).await?;
+        let mut _resolution_guards = Vec::with_capacity(pending_interruption_ids.len());
+        for interruption_id in pending_interruption_ids {
+            _resolution_guards.push(host.lock_interruption_resolution(&interruption_id).await);
+        }
+        if repository.cancel_waiting_run(&run.id).await?.is_none() {
+            return Err(AppError::new(
+                "agent_waiting_cancel_conflict",
+                "This request is already resuming. Wait for June to continue before stopping it.",
+            ));
+        }
         crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
+        host.cancel_run_streams(&run.id).await;
         crate::routines::mark_agent_run_terminal(&repository.pool, &run.id).await?;
         return Ok(());
     }
