@@ -501,13 +501,12 @@ async fn handle_runtime_request(
                 drop(scopes);
                 return poll_model_stream(model_streams, &stream_id).await;
             }
-            let session = repository.get_session(&frame.session_id).await?;
-            let workspace = session.workspace_path.map(PathBuf::from).ok_or_else(|| {
-                AppError::new(
-                    "agent_workspace_missing",
-                    "Session workspace is unavailable.",
-                )
-            })?;
+            let run = repository.get_run(&frame.run_id).await?;
+            validate_run_session(&run.session_id, &frame.session_id)?;
+            let session = repository.get_session(&run.session_id).await?;
+            let workspace = PathBuf::from(
+                super::api::authoritative_session_workspace(app, repository, &session.id).await?,
+            );
             dispatch_tool(
                 &ToolContext {
                     app: app.clone(),
@@ -1060,6 +1059,16 @@ fn steering_stable_id(params: &Value, event_id: &str) -> String {
     )
 }
 
+fn validate_run_session(run_session_id: &str, requested_session_id: &str) -> Result<(), AppError> {
+    if run_session_id != requested_session_id {
+        return Err(AppError::new(
+            "agent_run_session_mismatch",
+            "The agent run does not belong to the requested session.",
+        ));
+    }
+    Ok(())
+}
+
 fn sanitize_log(value: &str) -> String {
     let value = redact_bearer_tokens(value);
     let value = redact_key_tokens(&value);
@@ -1149,6 +1158,14 @@ fn redact_key_tokens(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_requests_must_match_the_persisted_run_session() {
+        assert!(validate_run_session("session-1", "session-1").is_ok());
+        let error = validate_run_session("session-1", "session-2")
+            .expect_err("a run cannot borrow another session's policy");
+        assert_eq!(error.code, "agent_run_session_mismatch");
+    }
 
     #[test]
     fn consumed_steering_uses_message_id_as_its_persisted_external_id() {

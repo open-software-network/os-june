@@ -6,11 +6,13 @@ use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
@@ -521,35 +523,14 @@ pub async fn start_agent_run(
     request: StartRunRequest,
 ) -> Result<Value, AppError> {
     let repository = repository(&app).await?;
-    let session = repository.get_session(&request.session_id).await?;
+    let session = start_run_session(&repository, &request.session_id, request.safety_mode).await?;
     let model = normalize_agent_model(&request.model);
-    if session.status == "running" || session.status == "waiting_for_user" {
-        return Err(AppError::new(
-            "agent_run_active",
-            "This session already has an active run.",
-        ));
-    }
-    let workspace = if request.workspace_path.trim().is_empty() {
-        session.workspace_path.clone().unwrap_or(
-            session_workspace(&app, Some(&session.id))?
-                .to_string_lossy()
-                .into_owned(),
-        )
-    } else {
-        request.workspace_path.clone()
-    };
-    tokio::fs::create_dir_all(&workspace)
-        .await
-        .map_err(io_error)?;
-    sqlx::query::query(
-        "UPDATE agent_sessions SET model = ?, safety_mode = ?, workspace_path = ? WHERE id = ?",
-    )
-    .bind(&model)
-    .bind(request.safety_mode.as_db())
-    .bind(&workspace)
-    .bind(&session.id)
-    .execute(&repository.pool)
-    .await?;
+    let workspace = authoritative_session_workspace(&app, &repository, &session.id).await?;
+    sqlx::query::query("UPDATE agent_sessions SET model = ? WHERE id = ?")
+        .bind(&model)
+        .bind(&session.id)
+        .execute(&repository.pool)
+        .await?;
     let prepared_attachments =
         prepare_attachments(&request.attachments, std::path::Path::new(&workspace)).await?;
     let available_skills = agent_skill_catalog(&app, &repository).await?;
@@ -580,7 +561,7 @@ pub async fn start_agent_run(
                 run_id: &run.id,
                 model: &model,
                 reasoning_effort,
-                safety_mode: request.safety_mode,
+                safety_mode: session.safety_mode,
                 workspace: &workspace,
                 input: &request.prompt,
                 skills: &requested_skills,
@@ -704,13 +685,21 @@ pub async fn retry_agent_run(
             )
         })?;
     let prompt = message.content;
-    let attachments = message.attachments;
-    let workspace = session.workspace_path.clone().ok_or_else(|| {
-        AppError::new(
-            "agent_workspace_missing",
-            "Session workspace is unavailable.",
-        )
-    })?;
+    let workspace = authoritative_session_workspace(&app, &repository, &session.id).await?;
+    let prepared_attachments = prepare_persisted_attachments(
+        &message.attachments,
+        Path::new(&workspace),
+        PersistedAttachmentPolicy::RetryStrict,
+    )
+    .await?;
+    let original_attachment_paths = prepared_attachments
+        .iter()
+        .map(|(original_path, _)| original_path.clone())
+        .collect::<Vec<_>>();
+    let attachments = prepared_attachments
+        .into_iter()
+        .map(|(_, attachment)| attachment)
+        .collect::<Vec<_>>();
     let model = normalize_agent_model(&session.model);
     if model != session.model {
         sqlx::query::query("UPDATE agent_sessions SET model = ? WHERE id = ?")
@@ -747,7 +736,7 @@ pub async fn retry_agent_run(
         repository
             .set_run_config(&run.id, &resumable_run_config(&params))
             .await?;
-        repository
+        let user_item = repository
             .append_item(
                 &session.id,
                 Some(&run.id),
@@ -755,7 +744,7 @@ pub async fn retry_agent_run(
                 &AgentItemPayload::UserMessage(super::MessagePayload {
                     role: "user".into(),
                     content: prompt.clone(),
-                    attachments,
+                    attachments: attachments.clone(),
                 }),
                 Some(&format!("user:{}", run.id)),
             )
@@ -766,6 +755,15 @@ pub async fn retry_agent_run(
                     "The user message could not be persisted.",
                 )
             })?;
+        persist_attachments(
+            &repository,
+            &session.id,
+            &run.id,
+            &user_item.id,
+            &attachments,
+            &original_attachment_paths,
+        )
+        .await?;
         Ok::<_, AppError>(params)
     }
     .await;
@@ -879,12 +877,7 @@ pub async fn resolve_agent_interruption(
             ));
         }
     };
-    let workspace = session.workspace_path.clone().ok_or_else(|| {
-        AppError::new(
-            "agent_workspace_missing",
-            "Session workspace is unavailable.",
-        )
-    })?;
+    let workspace = authoritative_session_workspace(&app, &repository, &session.id).await?;
     let model = normalize_agent_model(&run.model);
     let auto_run = crate::june_api::is_agent_auto_model(&model);
     let resolved_model = resolved_model_from_usage(run.usage.as_ref());
@@ -931,7 +924,7 @@ pub async fn resolve_agent_interruption(
             ),
         },
     };
-    params["model"] = json!(model);
+    reassert_run_policy(&mut params, &model, session.safety_mode, &workspace);
     params
         .as_object_mut()
         .expect("run params object")
@@ -1431,6 +1424,46 @@ fn normalize_reasoning_effort(effort: Option<&str>) -> Result<Option<&str>, AppE
     }
 }
 
+fn validate_requested_safety_mode(
+    stored: AgentSafetyMode,
+    requested: AgentSafetyMode,
+) -> Result<(), AppError> {
+    if requested != stored {
+        return Err(AppError::new(
+            "agent_safety_mode_mismatch",
+            "The requested safety mode does not match this session.",
+        ));
+    }
+    Ok(())
+}
+
+async fn start_run_session(
+    repository: &AgentRepository,
+    session_id: &str,
+    requested_safety_mode: AgentSafetyMode,
+) -> Result<super::AgentSessionDto, AppError> {
+    let session = repository.get_session(session_id).await?;
+    validate_requested_safety_mode(session.safety_mode, requested_safety_mode)?;
+    if matches!(session.status.as_str(), "running" | "waiting_for_user") {
+        return Err(AppError::new(
+            "agent_run_active",
+            "This session already has an active run.",
+        ));
+    }
+    Ok(session)
+}
+
+fn reassert_run_policy(
+    params: &mut Value,
+    model: &str,
+    safety_mode: AgentSafetyMode,
+    workspace: &str,
+) {
+    params["model"] = json!(model);
+    params["safetyMode"] = json!(safety_mode.as_db());
+    params["workspace"] = json!(workspace);
+}
+
 struct RunParamsInput<'a> {
     session_id: &'a str,
     run_id: &'a str,
@@ -1455,10 +1488,12 @@ async fn run_params(
         .context_tokens
         .unwrap_or(128_000)
         .max(1_024);
-    let mut history = runtime_history(
+    let mut history = normalized_runtime_history(
         repository.items(request.session_id).await?,
         request.excluded_history_run_id,
-    );
+        Path::new(request.workspace),
+    )
+    .await?;
     if !supports_vision {
         for item in &mut history {
             if let Some(object) = item.as_object_mut() {
@@ -1711,12 +1746,46 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 fn runtime_history(items: Vec<AgentItemDto>, excluded_run_id: Option<&str>) -> Vec<Value> {
     items
         .into_iter()
         .filter(|item| item.run_id.as_deref() != excluded_run_id)
         .filter_map(history_item)
         .collect()
+}
+
+async fn normalized_runtime_history(
+    items: Vec<AgentItemDto>,
+    excluded_run_id: Option<&str>,
+    workspace: &Path,
+) -> Result<Vec<Value>, AppError> {
+    let mut history = Vec::new();
+    for mut item in items {
+        if item.run_id.as_deref() == excluded_run_id {
+            continue;
+        }
+        match &mut item.payload {
+            AgentItemPayload::UserMessage(message)
+            | AgentItemPayload::AssistantMessage(message)
+            | AgentItemPayload::SystemMessage(message) => {
+                message.attachments = prepare_persisted_attachments(
+                    &message.attachments,
+                    workspace,
+                    PersistedAttachmentPolicy::HistoricalBestEffort,
+                )
+                .await?
+                .into_iter()
+                .map(|(_, attachment)| attachment)
+                .collect();
+            }
+            _ => {}
+        }
+        if let Some(item) = history_item(item) {
+            history.push(item);
+        }
+    }
+    Ok(history)
 }
 
 fn session_json(session: super::AgentSessionDto) -> Value {
@@ -1801,13 +1870,54 @@ fn item_json_with_active_run(
 }
 
 fn session_workspace(app: &AppHandle, session_id: Option<&str>) -> Result<PathBuf, AppError> {
-    let root = crate::app_paths::app_data_dir(app)
-        .map_err(|error| AppError::new("agent_workspace_failed", error.to_string()))?
-        .join("agent-workspaces");
-    Ok(session_id.map_or_else(
+    let data_dir = crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("agent_workspace_failed", error.to_string()))?;
+    Ok(session_workspace_in(&data_dir, session_id))
+}
+
+fn session_workspace_in(data_dir: &Path, session_id: Option<&str>) -> PathBuf {
+    let root = data_dir.join("agent-workspaces");
+    session_id.map_or_else(
         || root.join(uuid::Uuid::new_v4().to_string()),
-        |id| root.join(id),
-    ))
+        |id| root.join(session_workspace_component(id)),
+    )
+}
+
+fn session_workspace_component(session_id: &str) -> String {
+    if uuid::Uuid::parse_str(session_id).is_ok_and(|id| id.hyphenated().to_string() == session_id) {
+        return session_id.to_string();
+    }
+    format!("legacy-{:x}", Sha256::digest(session_id.as_bytes()))
+}
+
+pub(crate) async fn authoritative_session_workspace(
+    app: &AppHandle,
+    repository: &AgentRepository,
+    session_id: &str,
+) -> Result<String, AppError> {
+    let workspace = session_workspace(app, Some(session_id))?;
+    persist_authoritative_session_workspace(repository, session_id, &workspace).await?;
+    Ok(workspace.to_string_lossy().into_owned())
+}
+
+async fn persist_authoritative_session_workspace(
+    repository: &AgentRepository,
+    session_id: &str,
+    workspace: &Path,
+) -> Result<(), AppError> {
+    tokio::fs::create_dir_all(workspace)
+        .await
+        .map_err(io_error)?;
+    let workspace = workspace.to_string_lossy();
+    sqlx::query::query(
+        "UPDATE agent_sessions SET workspace_path = ? WHERE id = ? AND (workspace_path IS NULL OR workspace_path != ?)",
+    )
+    .bind(workspace.as_ref())
+    .bind(session_id)
+    .bind(workspace.as_ref())
+    .execute(&repository.pool)
+    .await?;
+    Ok(())
 }
 fn io_error(error: std::io::Error) -> AppError {
     AppError::new("agent_workspace_failed", error.to_string())
@@ -1838,54 +1948,223 @@ async fn prepare_attachments(
     if source_paths.is_empty() {
         return Ok(Vec::new());
     }
+    let mut attachments = Vec::with_capacity(source_paths.len());
+    for source_path in source_paths {
+        attachments.push(
+            prepare_attachment(source_path, workspace, None)
+                .await
+                .map_err(AttachmentStageError::into_app_error)?,
+        );
+    }
+    Ok(attachments)
+}
+
+enum AttachmentStageError {
+    SourceUnavailable(AppError),
+    Fatal(AppError),
+}
+
+impl AttachmentStageError {
+    fn source_unavailable(error: AppError) -> Self {
+        Self::SourceUnavailable(error)
+    }
+
+    fn into_app_error(self) -> AppError {
+        match self {
+            Self::SourceUnavailable(error) | Self::Fatal(error) => error,
+        }
+    }
+}
+
+fn retry_attachment_unavailable() -> AppError {
+    AppError::new(
+        "agent_attachment_unavailable",
+        "One or more attachments from this message are no longer available. Restore them before retrying.",
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PersistedAttachmentPolicy {
+    RetryStrict,
+    HistoricalBestEffort,
+}
+
+async fn copy_attachment_file(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), AttachmentStageError> {
+    let mut source_file = tokio::fs::File::open(source).await.map_err(|error| {
+        AttachmentStageError::source_unavailable(AppError::new(
+            "agent_workspace_failed",
+            error.to_string(),
+        ))
+    })?;
+    let mut destination_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .await
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let copy = async {
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = source_file.read(&mut buffer).await.map_err(|error| {
+                AttachmentStageError::source_unavailable(AppError::new(
+                    "agent_workspace_failed",
+                    error.to_string(),
+                ))
+            })?;
+            if read == 0 {
+                break;
+            }
+            destination_file
+                .write_all(&buffer[..read])
+                .await
+                .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+        }
+        destination_file
+            .flush()
+            .await
+            .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+        Ok(())
+    }
+    .await;
+    if copy.is_err() {
+        let _ = tokio::fs::remove_file(destination).await;
+    }
+    copy
+}
+
+async fn prepare_attachment(
+    source_path: &str,
+    workspace: &Path,
+    stable_key: Option<&str>,
+) -> Result<MessageAttachmentPayload, AttachmentStageError> {
     let destination_root = workspace.join("attachments");
     tokio::fs::create_dir_all(&destination_root)
         .await
-        .map_err(io_error)?;
-    let canonical_workspace = workspace.canonicalize().map_err(io_error)?;
-    let mut attachments = Vec::with_capacity(source_paths.len());
-    for source_path in source_paths {
-        let source = PathBuf::from(source_path)
-            .canonicalize()
-            .map_err(io_error)?;
-        if !source.is_file() {
-            return Err(AppError::new(
-                "agent_attachment_invalid",
-                "Attachment source is not a file.",
-            ));
-        }
-        let name = source
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                AppError::new(
-                    "agent_attachment_invalid",
-                    "Attachment source has no valid file name.",
-                )
-            })?
-            .to_string();
-        let destination = if source.starts_with(&canonical_workspace) {
-            source
-        } else {
-            let destination = destination_root.join(format!("{}-{name}", uuid::Uuid::new_v4()));
-            tokio::fs::copy(&source, &destination)
-                .await
-                .map_err(io_error)?;
-            destination
-        };
-        let metadata = tokio::fs::metadata(&destination).await.map_err(io_error)?;
-        attachments.push(MessageAttachmentPayload {
-            id: uuid::Uuid::new_v4().to_string(),
-            name,
-            path: destination.to_string_lossy().into_owned(),
-            mime_type: attachment_mime_type(&destination).map(str::to_string),
-            size_bytes: metadata.len() as i64,
-            available: true,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        });
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let destination_metadata = tokio::fs::symlink_metadata(&destination_root)
+        .await
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    let destination_root = destination_root
+        .canonicalize()
+        .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+    if destination_metadata.file_type().is_symlink()
+        || !destination_metadata.is_dir()
+        || !destination_root.starts_with(&canonical_workspace)
+    {
+        return Err(AttachmentStageError::Fatal(AppError::new(
+            "agent_attachment_invalid",
+            "Attachment destination is outside the session workspace.",
+        )));
     }
-    Ok(attachments)
+    let source = PathBuf::from(source_path)
+        .canonicalize()
+        .map_err(|error| AttachmentStageError::source_unavailable(io_error(error)))?;
+    if !source.is_file() {
+        return Err(AttachmentStageError::source_unavailable(AppError::new(
+            "agent_attachment_invalid",
+            "Attachment source is not a file.",
+        )));
+    }
+    let name = source
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AttachmentStageError::source_unavailable(AppError::new(
+                "agent_attachment_invalid",
+                "Attachment source has no valid file name.",
+            ))
+        })?
+        .to_string();
+    let source_in_workspace = source.starts_with(&canonical_workspace);
+    let destination = if source_in_workspace {
+        source
+    } else {
+        let destination_name = match stable_key {
+            Some(key) => {
+                let extension = source
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| {
+                        value.len() <= 10 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    })
+                    .map_or_else(String::new, |value| format!(".{value}"));
+                format!("persisted-{:x}{extension}", Sha256::digest(key.as_bytes()))
+            }
+            None => format!("{}-{name}", uuid::Uuid::new_v4()),
+        };
+        let destination = destination_root.join(destination_name);
+        if !destination.exists() {
+            let temporary = destination_root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+            copy_attachment_file(&source, &temporary).await?;
+            if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                if !destination.exists() {
+                    return Err(AttachmentStageError::Fatal(io_error(error)));
+                }
+            }
+        }
+        let destination = destination
+            .canonicalize()
+            .map_err(|error| AttachmentStageError::Fatal(io_error(error)))?;
+        if !destination.starts_with(&canonical_workspace) || !destination.is_file() {
+            return Err(AttachmentStageError::Fatal(AppError::new(
+                "agent_attachment_invalid",
+                "Attachment destination is outside the session workspace.",
+            )));
+        }
+        destination
+    };
+    let metadata = match tokio::fs::metadata(&destination).await {
+        Ok(metadata) => metadata,
+        Err(error) if source_in_workspace => {
+            return Err(AttachmentStageError::source_unavailable(io_error(error)));
+        }
+        Err(error) => return Err(AttachmentStageError::Fatal(io_error(error))),
+    };
+    Ok(MessageAttachmentPayload {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        path: destination.to_string_lossy().into_owned(),
+        mime_type: attachment_mime_type(&destination).map(str::to_string),
+        size_bytes: metadata.len() as i64,
+        available: true,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    })
+}
+
+async fn prepare_persisted_attachments(
+    attachments: &[MessageAttachmentPayload],
+    workspace: &Path,
+    policy: PersistedAttachmentPolicy,
+) -> Result<Vec<(String, MessageAttachmentPayload)>, AppError> {
+    let mut prepared = Vec::new();
+    for attachment in attachments {
+        if !attachment.available {
+            if matches!(policy, PersistedAttachmentPolicy::RetryStrict) {
+                return Err(retry_attachment_unavailable());
+            }
+            continue;
+        }
+        let original_path = attachment.path.clone();
+        let stable_key = format!("{}\0{}", attachment.id, original_path);
+        match prepare_attachment(&original_path, workspace, Some(&stable_key)).await {
+            Ok(copied) => prepared.push((original_path, copied)),
+            Err(AttachmentStageError::SourceUnavailable(_))
+                if matches!(policy, PersistedAttachmentPolicy::HistoricalBestEffort) => {}
+            Err(AttachmentStageError::SourceUnavailable(_)) => {
+                return Err(retry_attachment_unavailable());
+            }
+            Err(error) => return Err(error.into_app_error()),
+        }
+    }
+    Ok(prepared)
 }
 
 async fn persist_attachments(
@@ -1996,6 +2275,357 @@ fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_run_requires_the_stored_safety_mode() {
+        for (stored, requested) in [
+            (AgentSafetyMode::Sandboxed, AgentSafetyMode::Unrestricted),
+            (AgentSafetyMode::Unrestricted, AgentSafetyMode::Sandboxed),
+        ] {
+            let error = validate_requested_safety_mode(stored, requested)
+                .expect_err("a renderer cannot change the stored mode");
+            assert_eq!(error.code, "agent_safety_mode_mismatch");
+        }
+
+        assert!(validate_requested_safety_mode(
+            AgentSafetyMode::Sandboxed,
+            AgentSafetyMode::Sandboxed
+        )
+        .is_ok());
+        assert!(validate_requested_safety_mode(
+            AgentSafetyMode::Unrestricted,
+            AgentSafetyMode::Unrestricted
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn rejected_safety_mode_does_not_create_a_run_or_mutate_the_session() {
+        use sqlx::{query::query, row::Row};
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool.clone());
+        let session = repository
+            .create_session(
+                "Session",
+                "model-before",
+                AgentSafetyMode::Sandboxed,
+                Some("/workspace-before"),
+            )
+            .await
+            .expect("session");
+
+        let error = start_run_session(&repository, &session.id, AgentSafetyMode::Unrestricted)
+            .await
+            .expect_err("mismatched mode");
+
+        assert_eq!(error.code, "agent_safety_mode_mismatch");
+        let stored = repository
+            .get_session(&session.id)
+            .await
+            .expect("stored session");
+        assert_eq!(stored.safety_mode, AgentSafetyMode::Sandboxed);
+        assert_eq!(stored.model, "model-before");
+        assert_eq!(stored.workspace_path.as_deref(), Some("/workspace-before"));
+        let run_count: i64 = query("SELECT COUNT(*) AS count FROM agent_runs")
+            .fetch_one(&pool)
+            .await
+            .expect("run count")
+            .get("count");
+        assert_eq!(run_count, 0);
+    }
+
+    #[tokio::test]
+    async fn session_workspace_is_host_derived_created_and_persisted() {
+        use sqlx::query::query;
+        use sqlx_sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("memory database");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repository = AgentRepository::new(pool.clone());
+        let session = repository
+            .create_session("Session", "model", AgentSafetyMode::Sandboxed, None)
+            .await
+            .expect("session");
+        let data_dir = tempfile::tempdir().expect("data directory");
+        let expected = session_workspace_in(data_dir.path(), Some(&session.id));
+
+        persist_authoritative_session_workspace(&repository, &session.id, &expected)
+            .await
+            .expect("persist missing workspace");
+        assert!(expected.is_dir());
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("session with workspace")
+                .workspace_path
+                .as_deref(),
+            expected.to_str()
+        );
+
+        query("UPDATE agent_sessions SET workspace_path = '/forged/workspace' WHERE id = ?")
+            .bind(&session.id)
+            .execute(&pool)
+            .await
+            .expect("forge workspace");
+        persist_authoritative_session_workspace(&repository, &session.id, &expected)
+            .await
+            .expect("restore authoritative workspace");
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("restored session")
+                .workspace_path
+                .as_deref(),
+            expected.to_str()
+        );
+    }
+
+    #[test]
+    fn imported_session_ids_cannot_escape_or_collide_as_workspace_components() {
+        let data_dir = Path::new("/app-data");
+        let workspace_root = data_dir.join("agent-workspaces");
+        let canonical_id = "123e4567-e89b-12d3-a456-426614174000";
+        assert_eq!(session_workspace_component(canonical_id), canonical_id);
+        let long_id = "x".repeat(300);
+
+        for unsafe_id in [
+            "../escape",
+            "/absolute",
+            r"C:\escape",
+            r"\\server\share",
+            "CON",
+            &long_id,
+        ] {
+            let workspace = session_workspace_in(data_dir, Some(unsafe_id));
+            assert_eq!(workspace.parent(), Some(workspace_root.as_path()));
+        }
+        let hashed = session_workspace_component("../escape");
+        assert_ne!(session_workspace_component(&hashed), hashed);
+        assert_ne!(
+            session_workspace_component("LEGACY-ID"),
+            session_workspace_component("legacy-id")
+        );
+        assert_ne!(
+            session_workspace_component("legacy/a"),
+            session_workspace_component(r"legacy\a")
+        );
+    }
+
+    #[tokio::test]
+    async fn historical_attachments_are_copied_into_the_authoritative_workspace() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let source = source_directory.path().join("historical.png");
+        let missing = source_directory.path().join("missing.png");
+        tokio::fs::write(&source, b"old image")
+            .await
+            .expect("historical attachment");
+        let attachment = |id: &str, path: &Path, available: bool| MessageAttachmentPayload {
+            id: id.into(),
+            name: "historical.png".into(),
+            path: path.to_string_lossy().into_owned(),
+            mime_type: Some("image/png".into()),
+            size_bytes: 1,
+            available,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let item = AgentItemDto {
+            id: "message-1".into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 0,
+            payload: AgentItemPayload::UserMessage(super::super::MessagePayload {
+                role: "user".into(),
+                content: "Review this.".into(),
+                attachments: vec![
+                    attachment("available", &source, true),
+                    attachment("stale-positive", &missing, true),
+                    attachment("unavailable", &source, false),
+                ],
+            }),
+            external_id: None,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let history = normalized_runtime_history(vec![item.clone()], None, workspace.path())
+            .await
+            .expect("historical normalization");
+        let repeated = normalized_runtime_history(vec![item], None, workspace.path())
+            .await
+            .expect("repeated historical normalization");
+
+        let normalized = PathBuf::from(
+            history[0]["attachments"][0]["path"]
+                .as_str()
+                .expect("normalized path"),
+        );
+        assert!(normalized.starts_with(workspace.path()));
+        assert_eq!(history[0]["attachments"].as_array().unwrap().len(), 1);
+        assert_eq!(history[0]["attachments"][0]["sizeBytes"], 9);
+        assert!(history[0]["text"]
+            .as_str()
+            .expect("attachment manifest")
+            .contains(normalized.to_string_lossy().as_ref()));
+        assert_eq!(
+            repeated[0]["attachments"][0]["path"],
+            history[0]["attachments"][0]["path"]
+        );
+        assert_eq!(
+            std::fs::read_dir(workspace.path().join("attachments"))
+                .expect("attachment directory")
+                .count(),
+            1
+        );
+        assert_eq!(
+            tokio::fs::read(normalized)
+                .await
+                .expect("copied historical attachment"),
+            b"old image"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_attachment_preparation_fails_when_any_attachment_is_unavailable() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let source = source_directory.path().join("available.md");
+        let missing = source_directory.path().join("missing.md");
+        tokio::fs::write(&source, "available")
+            .await
+            .expect("available attachment");
+        let attachment = |id: &str, path: &Path, available: bool| MessageAttachmentPayload {
+            id: id.into(),
+            name: "brief.md".into(),
+            path: path.to_string_lossy().into_owned(),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: 1,
+            available,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+
+        for attachments in [
+            vec![
+                attachment("available", &source, true),
+                attachment("missing", &missing, true),
+            ],
+            vec![attachment("marked-unavailable", &source, false)],
+        ] {
+            let error = prepare_persisted_attachments(
+                &attachments,
+                workspace.path(),
+                PersistedAttachmentPolicy::RetryStrict,
+            )
+            .await
+            .expect_err("retry must preserve its complete attachment context");
+
+            assert_eq!(error.code, "agent_attachment_unavailable");
+        }
+    }
+
+    #[tokio::test]
+    async fn attachment_copy_classifies_a_source_open_race_as_unavailable() {
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let destination_directory = tempfile::tempdir().expect("destination directory");
+        let source = source_directory.path().join("removed.md");
+        let destination = destination_directory.path().join("copy.md");
+        tokio::fs::write(&source, "removed")
+            .await
+            .expect("source attachment");
+        tokio::fs::remove_file(&source)
+            .await
+            .expect("remove source before open");
+
+        let error = copy_attachment_file(&source, &destination)
+            .await
+            .expect_err("source open failures must remain best-effort eligible");
+
+        assert!(matches!(error, AttachmentStageError::SourceUnavailable(_)));
+        assert!(!destination.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn attachment_staging_rejects_a_symlinked_destination_directory() {
+        use std::os::unix::fs::symlink;
+
+        let source_directory = tempfile::tempdir().expect("source directory");
+        let workspace = tempfile::tempdir().expect("workspace");
+        let outside = tempfile::tempdir().expect("outside directory");
+        let source = source_directory.path().join("brief.md");
+        tokio::fs::write(&source, "private")
+            .await
+            .expect("source attachment");
+        symlink(outside.path(), workspace.path().join("attachments"))
+            .expect("symlinked attachment directory");
+
+        let error = prepare_attachments(&[source.to_string_lossy().into_owned()], workspace.path())
+            .await
+            .expect_err("symlinked destination must be rejected");
+
+        assert_eq!(error.code, "agent_attachment_invalid");
+        assert_eq!(
+            std::fs::read_dir(outside.path())
+                .expect("outside directory")
+                .count(),
+            0
+        );
+
+        let persisted = MessageAttachmentPayload {
+            id: "attachment-1".into(),
+            name: "brief.md".into(),
+            path: source.to_string_lossy().into_owned(),
+            mime_type: Some("text/markdown".into()),
+            size_bytes: 7,
+            available: true,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let error = prepare_persisted_attachments(
+            &[persisted],
+            workspace.path(),
+            PersistedAttachmentPolicy::HistoricalBestEffort,
+        )
+        .await
+        .expect_err("historical replay cannot suppress a containment failure");
+        assert_eq!(error.code, "agent_attachment_invalid");
+    }
+
+    #[test]
+    fn resume_reasserts_stored_policy_over_stale_run_configuration() {
+        let mut params = json!({
+            "model": "old-model",
+            "safetyMode": "unrestricted",
+            "workspace": "/stale/workspace",
+            "tools": [{ "name": "read_file" }]
+        });
+
+        reassert_run_policy(
+            &mut params,
+            "stored-model",
+            AgentSafetyMode::Sandboxed,
+            "/host/workspace",
+        );
+
+        assert_eq!(params["model"], "stored-model");
+        assert_eq!(params["safetyMode"], "sandboxed");
+        assert_eq!(params["workspace"], "/host/workspace");
+        assert_eq!(params["tools"][0]["name"], "read_file");
+    }
 
     #[test]
     fn extracts_a_concrete_model_from_persisted_usage() {
