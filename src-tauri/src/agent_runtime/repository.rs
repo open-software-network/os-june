@@ -2,6 +2,7 @@ use super::domain::{
     AgentArtifactDto, AgentItemDto, AgentItemPayload, AgentRunDto, AgentSafetyMode,
     AgentSessionDto, AgentSkillDto,
 };
+use crate::domain::types::AppError;
 use chrono::{SecondsFormat, Utc};
 use sqlx::{query::query, row::Row};
 use sqlx_sqlite::{SqlitePool, SqliteRow};
@@ -920,10 +921,7 @@ impl AgentRepository {
     /// longer active in the sidecar, so they cannot use the ordinary
     /// `run.cancel` path. Retire their pending cards in the same transaction
     /// that releases the session for another turn.
-    pub async fn cancel_waiting_run(
-        &self,
-        run_id: &str,
-    ) -> Result<Option<AgentRunDto>, sqlx::Error> {
+    pub async fn cancel_waiting_run(&self, run_id: &str) -> Result<Option<AgentRunDto>, AppError> {
         let run = self.get_run(run_id).await?;
         if run.status != "waiting_for_user" {
             return Ok(None);
@@ -976,8 +974,9 @@ impl AgentRepository {
         .bind(&run.session_id)
         .execute(&mut *transaction)
         .await?;
+        crate::routines::project_agent_run_terminal(&mut transaction, run_id, &timestamp).await?;
         transaction.commit().await?;
-        self.get_run(run_id).await.map(Some)
+        self.get_run(run_id).await.map(Some).map_err(Into::into)
     }
 
     pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
@@ -1384,6 +1383,134 @@ mod tests {
                 .status,
             "waiting_for_user"
         );
+    }
+
+    #[tokio::test]
+    async fn waiting_run_cancellation_rolls_back_when_routine_claim_release_fails() {
+        let repository = repository().await;
+        crate::routines::create(
+            &repository.pool,
+            crate::routines::CreateAgentRoutineRequest {
+                id: Some("routine-atomic".into()),
+                legacy_job_id: None,
+                name: Some("Atomic cancellation".into()),
+                prompt: "Prepare a brief".into(),
+                schedule: "every 1h".into(),
+                timezone: "UTC".into(),
+                repeat: None,
+                deliver: None,
+                model: "auto".into(),
+                safety_mode: Some(AgentSafetyMode::Sandboxed),
+                state: None,
+                enabled: None,
+                metadata: serde_json::json!({}),
+                enabled_toolsets: None,
+            },
+        )
+        .await
+        .expect("routine");
+        let claim = crate::routines::claim(&repository.pool, "routine-atomic", "manual", false)
+            .await
+            .expect("claim")
+            .expect("available claim");
+        let session = repository
+            .create_session(
+                "Atomic cancellation",
+                "auto",
+                AgentSafetyMode::Sandboxed,
+                None,
+            )
+            .await
+            .expect("session");
+        let run = repository
+            .create_run(&session.id, "auto", None)
+            .await
+            .expect("run");
+        repository
+            .append_item(
+                &session.id,
+                Some(&run.id),
+                1,
+                &AgentItemPayload::Interruption(serde_json::json!({
+                    "id": "clarify-atomic",
+                    "kind": "clarification",
+                    "status": "pending",
+                    "question": "Which project?"
+                })),
+                Some("interruption:clarify-atomic"),
+            )
+            .await
+            .expect("pending interruption");
+        repository
+            .update_run_status(
+                &run.id,
+                "waiting_for_user",
+                None,
+                Some(&serde_json::json!("serialized")),
+                None,
+            )
+            .await
+            .expect("waiting run");
+        let timestamp = now();
+        query(
+            "UPDATE routine_runs
+             SET agent_session_id = ?, agent_run_id = ?, status = 'waiting_for_user',
+                 started_at = ?, updated_at = ?
+             WHERE id = ? AND claim_token = ?",
+        )
+        .bind(&session.id)
+        .bind(&run.id)
+        .bind(&timestamp)
+        .bind(&timestamp)
+        .bind(&claim.routine_run_id)
+        .bind(&claim.token)
+        .execute(&repository.pool)
+        .await
+        .expect("attach run");
+        query("UPDATE routines SET schedule = 'not a schedule' WHERE id = 'routine-atomic'")
+            .execute(&repository.pool)
+            .await
+            .expect("invalid schedule");
+
+        let error = repository
+            .cancel_waiting_run(&run.id)
+            .await
+            .expect_err("claim release must fail");
+
+        assert_eq!(error.code, "routine_schedule_invalid");
+        assert_eq!(
+            repository
+                .get_run(&run.id)
+                .await
+                .expect("unchanged run")
+                .status,
+            "waiting_for_user"
+        );
+        assert!(matches!(
+            &repository.items(&session.id).await.expect("items")[0].payload,
+            AgentItemPayload::Interruption(value)
+                if value.get("status").and_then(serde_json::Value::as_str) == Some("pending")
+        ));
+        assert_eq!(
+            repository
+                .get_session(&session.id)
+                .await
+                .expect("unchanged session")
+                .status,
+            "waiting_for_user"
+        );
+        let routine_run = crate::routines::list_runs(&repository.pool, Some("routine-atomic"))
+            .await
+            .expect("routine runs")
+            .remove(0);
+        assert_eq!(routine_run.status, "waiting_for_user");
+        let claim_token: Option<String> =
+            query("SELECT claim_token FROM routines WHERE id = 'routine-atomic'")
+                .fetch_one(&repository.pool)
+                .await
+                .expect("routine claim")
+                .get("claim_token");
+        assert_eq!(claim_token.as_deref(), Some(claim.token.as_str()));
     }
 
     #[tokio::test]

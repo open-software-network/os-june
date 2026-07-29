@@ -681,16 +681,25 @@ pub async fn mark_agent_run_terminal(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(app_error)?;
+    project_agent_run_terminal(&mut transaction, agent_run_id, &timestamp).await?;
+    transaction.commit().await.map_err(app_error)
+}
+
+pub(crate) async fn project_agent_run_terminal(
+    transaction: &mut Transaction<'_, Sqlite>,
+    agent_run_id: &str,
+    timestamp: &str,
+) -> Result<(), AppError> {
     let changed = query("UPDATE routine_runs SET status = (SELECT status FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at = COALESCE((SELECT completed_at FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), completed_at), error_code = COALESCE((SELECT error_code FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_code), error_message = COALESCE((SELECT error_message FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id), error_message), updated_at = ? WHERE agent_run_id = ? AND status IN ('running', 'waiting_for_user') AND EXISTS (SELECT 1 FROM agent_runs WHERE agent_runs.id = routine_runs.agent_run_id AND agent_runs.status IN ('completed', 'cancelled', 'interrupted', 'failed'))")
-        .bind(&timestamp)
+        .bind(timestamp)
         .bind(agent_run_id)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await
         .map_err(app_error)?;
     if changed.rows_affected() != 0 {
-        release_terminal_claims(&mut transaction, &timestamp, Some(agent_run_id)).await?;
+        release_terminal_claims(transaction, timestamp, Some(agent_run_id)).await?;
     }
-    transaction.commit().await.map_err(app_error)
+    Ok(())
 }
 
 /// Start the single local scheduler for June-owned routines. Claims are stored

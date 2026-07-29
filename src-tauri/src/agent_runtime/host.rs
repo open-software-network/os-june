@@ -1,7 +1,7 @@
 use super::{
     protocol::{RpcFrame, PROTOCOL_VERSION},
     tools::{dispatch_tool, ToolCancellationRegistry, ToolContext},
-    AgentItemPayload, AgentRepository, TextPayload, ToolPayload,
+    AgentItemPayload, AgentRepository, AgentRunDto, TextPayload, ToolPayload,
 };
 use crate::domain::types::AppError;
 use serde_json::{json, Value};
@@ -26,6 +26,27 @@ pub const AGENT_RUNTIME_EVENT: &str = "june://agent-runtime-event";
 const RUNTIME_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const HISTORY_COMPACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>>;
+
+pub(crate) fn emit_persisted_run_cancelled(
+    app: &AppHandle,
+    run: &AgentRunDto,
+) -> Result<(), AppError> {
+    app.emit(
+        AGENT_RUNTIME_EVENT,
+        json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "sessionId": run.session_id,
+            "runId": run.id,
+            "sequence": run.last_sequence.saturating_add(1),
+            "eventId": Uuid::new_v4(),
+            "method": "run.cancelled",
+            "data": {
+                "completedAt": run.completed_at,
+            },
+        }),
+    )
+    .map_err(|error| AppError::new("agent_event_emit_failed", error.to_string()))
+}
 
 #[derive(Default)]
 pub struct AgentRuntimeHost {
