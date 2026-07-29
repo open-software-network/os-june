@@ -1037,7 +1037,7 @@ jobs:
             git checkout -B main origin/main
             current="$(node -e 'process.stdout.write(require("./package.json").version)')"
             if [ "$current" = "$VERSION" ]; then
-              node .pnpm-policy/scripts/set-build-version.mjs --check "$VERSION"
+              node scripts/set-build-version.mjs --check "$VERSION"
               echo "main is already at v$VERSION; nothing to record."
               exit 0
             fi
