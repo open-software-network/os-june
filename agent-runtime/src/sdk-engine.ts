@@ -177,9 +177,11 @@ export class OpenAIAgentsEngine implements AgentEngine {
     runId: string,
     emit: (event: EngineEvent) => void,
   ): Agent {
-    const descriptors = params.tools.some((descriptor) => descriptor.name === REQUEST_CLARIFICATION_TOOL.name)
-      ? params.tools
-      : [...params.tools, REQUEST_CLARIFICATION_TOOL];
+    const descriptors =
+      params.includeClarificationTool === false ||
+      params.tools.some((descriptor) => descriptor.name === REQUEST_CLARIFICATION_TOOL.name)
+        ? params.tools
+        : [...params.tools, REQUEST_CLARIFICATION_TOOL];
     const tools = descriptors.map((descriptor) =>
       this.createTool(descriptor, sessionId, runId, emit),
     );

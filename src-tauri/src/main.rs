@@ -1,6 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "acp" || argument == "--acp")
+    {
+        os_june_lib::run_acp();
+        return;
+    }
     #[cfg(target_os = "macos")]
     {
         let arguments: Vec<_> = std::env::args_os().collect();

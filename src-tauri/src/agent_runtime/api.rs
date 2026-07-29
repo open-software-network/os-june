@@ -656,6 +656,83 @@ pub async fn start_agent_run(
     Ok(run_json(repository.get_run(&run.id).await?))
 }
 
+/// Starts a turn for an ACP-owned session using only the MCP tools supplied by
+/// that client. The normal June desktop tool catalog is intentionally omitted:
+/// Buzz owns the execution boundary for these headless sessions, while June
+/// continues to own model routing, history, cancellation, and persistence.
+pub(crate) async fn start_acp_run(
+    app: &AppHandle,
+    host: &AgentRuntimeHost,
+    session_id: &str,
+    prompt: &str,
+    system_prompt: Option<&str>,
+    tools: &[crate::agent_mcp::RuntimeToolDescriptorJson],
+) -> Result<super::AgentRunDto, AppError> {
+    let repository = repository(app).await?;
+    let session = repository.get_session(session_id).await?;
+    if matches!(session.status.as_str(), "running" | "waiting_for_user") {
+        return Err(AppError::new(
+            "agent_run_active",
+            "This ACP session already has an active turn.",
+        ));
+    }
+    let workspace = session.workspace_path.as_deref().ok_or_else(|| {
+        AppError::new(
+            "agent_workspace_missing",
+            "The ACP workspace is unavailable.",
+        )
+    })?;
+    let model = crate::providers::AUTO_GENERATION_MODEL;
+    let capabilities = crate::providers::june_model_runtime_capabilities(model).await;
+    let context_window = capabilities.context_tokens.unwrap_or(128_000).max(1_024);
+    let history = runtime_history(repository.items(session_id).await?, None);
+    let instructions = system_prompt
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(|prompt| format!("{INSTRUCTIONS}\n\nACP host instructions:\n{prompt}"))
+        .unwrap_or_else(|| INSTRUCTIONS.to_string());
+    let run = repository.create_run(session_id, model, None).await?;
+    let params = json!({
+        "model": model,
+        "instructions": instructions,
+        "workspace": workspace,
+        "safetyMode": AgentSafetyMode::Unrestricted.as_db(),
+        "input": prompt,
+        "attachments": [],
+        "history": history,
+        "tools": tools,
+        "skills": [],
+        "contextWindow": context_window,
+        "maxOutputTokens": agent_model_output_reserve(context_window),
+        "includeClarificationTool": false,
+    });
+    repository
+        .set_run_config(&run.id, &resumable_run_config(&params))
+        .await?;
+    repository
+        .append_item(
+            session_id,
+            Some(&run.id),
+            0,
+            &AgentItemPayload::UserMessage(super::MessagePayload {
+                role: "user".into(),
+                content: prompt.to_string(),
+                attachments: Vec::new(),
+            }),
+            Some(&format!("user:{}", run.id)),
+        )
+        .await?;
+    if let Err(error) = host.ensure_started(app, repository.clone()).await {
+        mark_dispatch_failed(&repository, &run.id, &error).await;
+        return Err(error);
+    }
+    if let Err(error) = host.request("run.start", session_id, &run.id, params).await {
+        mark_dispatch_failed(&repository, &run.id, &error).await;
+        return Err(error);
+    }
+    repository.get_run(&run.id).await.map_err(AppError::from)
+}
+
 #[tauri::command]
 pub async fn cancel_agent_run(
     host: State<'_, AgentRuntimeHost>,
