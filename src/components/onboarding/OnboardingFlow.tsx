@@ -144,7 +144,10 @@ export function OnboardingFlow({ account, onAccountChanged, onComplete }: Props)
   }
 
   function completeOnboarding() {
-    void p3aRecord("onboarding.completed").finally(onComplete);
+    void Promise.allSettled([
+      p3aRecord("onboarding.completed"),
+      p3aRecord(`onboarding.area.${area}`),
+    ]).finally(onComplete);
   }
 
   function goBack() {

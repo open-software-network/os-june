@@ -261,7 +261,9 @@ describe("OnboardingFlow", () => {
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
     expect(onboardingArea()).toBe("work");
     expect(onboardingMood()).toBe("strategic");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.work");
+    expect(
+      mocks.p3aRecord.mock.calls.filter(([question]) => question.startsWith("onboarding.area.")),
+    ).toEqual([["onboarding.area.work"]]);
     expect(mocks.setJunePersona).toHaveBeenCalledWith({
       area: "work",
       voice: 45,
@@ -318,8 +320,39 @@ describe("OnboardingFlow", () => {
     await user.click(continueButton);
 
     expect(onboardingArea()).toBe("thinking");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.thinking");
+    expect(mocks.p3aRecord).not.toHaveBeenCalledWith("onboarding.area.thinking");
     await screen.findByRole("heading", { name: "Choose my personality" });
+  });
+
+  it("reports only the final area after going back and changing it", async () => {
+    const user = userEvent.setup();
+    const onComplete = vi.fn();
+    setOnboardingResumeStep("area");
+    render(<OnboardingFlow {...flowProps({ onComplete })} />);
+
+    await screen.findByRole("heading", { name: "Where could I help most?" });
+    await user.click(screen.getByRole("radio", { name: /Work/ }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Choose my personality" });
+
+    expect(mocks.p3aRecord).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("heading", { name: "Where could I help most?" });
+    await user.click(screen.getByRole("radio", { name: /Personal/ }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Choose my personality" });
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Let June listen and type" });
+
+    grantPermissions();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+
+    expect(
+      mocks.p3aRecord.mock.calls.filter(([question]) => question.startsWith("onboarding.area.")),
+    ).toEqual([["onboarding.area.personal"]]);
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
   });
 
   it("saves the selected mood before continuing to permissions", async () => {

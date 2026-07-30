@@ -11,7 +11,6 @@ import {
   saveOnboardingArea,
   type OnboardingArea,
 } from "../../../lib/onboarding";
-import { p3aRecord } from "../../../lib/tauri";
 import { StepActions, StepCard } from "../StepChrome";
 
 const AREA_PRESENTATION: Record<
@@ -51,7 +50,6 @@ export function AreaStep({ onContinue }: { onContinue: (area: OnboardingArea) =>
   function continueWithArea() {
     if (!selected) return;
     saveOnboardingArea(selected);
-    void p3aRecord(`onboarding.area.${selected}`);
     onContinue(selected);
   }
 
