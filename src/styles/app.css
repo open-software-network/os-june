@@ -13612,7 +13612,7 @@ button.agent-user-attachment:hover {
   background: var(--surface-subtle);
 }
 
-.settings-personality-option:has(input:focus-visible) {
+.settings-personality-option:focus-within {
   outline: none;
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
