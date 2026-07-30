@@ -236,13 +236,15 @@ export function NoteChatPanel({
   const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const modelPopoverRef = useRef<HTMLDivElement>(null);
   const modelSearchRef = useRef<HTMLInputElement>(null);
+  // Catalog hydration is presentation-only. The session-local staged choice
+  // is authoritative until a run applies it, including choices acknowledged
+  // to a linked companion while this panel is already open.
   useEffect(() => {
     let stale = false;
     void listVeniceModels("generation")
       .then((catalog) => {
         if (stale) return;
         setModels(catalog.models);
-        if (activeModelId === "auto" && catalog.selectedModel) setModel(catalog.selectedModel);
       })
       .catch(() => undefined);
     void providerModelSettings()
@@ -253,7 +255,7 @@ export function NoteChatPanel({
     return () => {
       stale = true;
     };
-  }, [activeModelId, setModel]);
+  }, []);
   const model = selectedModel(models, activeModelId);
   const textFundingContext: TextFundingModelContext = {
     activeModelId: activeModelId || undefined,

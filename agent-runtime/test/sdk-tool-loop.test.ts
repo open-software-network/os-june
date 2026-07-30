@@ -653,6 +653,7 @@ test("resumes a serialized approval and continues after the host tool result", a
   const modelRequests: JsonObject[] = [];
   let modelRequestCount = 0;
   let toolInvocationCount = 0;
+  const events: EngineEvent[] = [];
   const engine = new OpenAIAgentsEngine(async (input) => {
     if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
       toolInvocationCount += 1;
@@ -737,7 +738,7 @@ test("resumes a serialized approval and continues after the host tool result", a
     sessionId: "session-resume",
     runId: "run-resume",
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event) => events.push(event),
     takeSteering: () => [],
     params: {
       ...commonParams,
@@ -746,6 +747,10 @@ test("resumes a serialized approval and continues after the host tool result", a
     },
   });
   assert.equal(paused.interruptions.length, 1);
+  const approval = paused.interruptions[0]!;
+  if (approval.kind !== "approval") throw new Error("expected an approval interruption");
+  assert.equal(approval.id, "call-write-file-resume");
+  assert.equal(approval.callId, "call-write-file-resume");
   assert.ok(paused.serializedState);
   const nativeStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
   assert.equal(nativeStateEnvelope.juneVersion, 1);
@@ -755,7 +760,7 @@ test("resumes a serialized approval and continues after the host tool result", a
     sessionId: "session-resume",
     runId: "run-resume",
     signal: new AbortController().signal,
-    emit: () => {},
+    emit: (event) => events.push(event),
     takeSteering: () => [],
     params: {
       ...commonParams,
@@ -770,6 +775,13 @@ test("resumes a serialized approval and continues after the host tool result", a
   });
 
   assert.equal(toolInvocationCount, 1);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.type === "tool.started" &&
+        event.callId === approval.callId,
+    ),
+  );
   assert.equal(modelRequestCount, 2);
   assert.equal(resumed.finalOutput, "The file contains OK.");
   assert.equal(resumed.interruptions.length, 0);

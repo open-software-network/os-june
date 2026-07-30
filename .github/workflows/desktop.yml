@@ -322,78 +322,16 @@ jobs:
           restore-keys: |
             tauri-cargo-target-${{ runner.os }}-
 
-      - name: Build and smoke test agent runtime
+      - name: Build and verify unsigned Windows installer
         shell: pwsh
-        run: |
-          pnpm agent-runtime:build
-          node scripts/build-agent-runtime.mjs
-          if ($LASTEXITCODE -ne 0) {
-            throw "Agent runtime SEA build failed."
-          }
-          $runtime = Get-Item ".tauri-agent-runtime/june-agent-runtime.exe" -ErrorAction Stop
-          $digest = (Get-FileHash -Algorithm SHA256 $runtime.FullName).Hash.ToLowerInvariant()
-          $expected = (Get-Content -Raw "$($runtime.FullName).sha256").Trim()
-          if ($digest -ne $expected) {
-            throw "Agent runtime checksum does not match."
-          }
-          $smokeDir = Join-Path $env:RUNNER_TEMP "June agent runtime smoke"
-          New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
-          $smokeRuntime = Join-Path $smokeDir "june-agent-runtime.exe"
-          Copy-Item -LiteralPath $runtime.FullName -Destination $smokeRuntime -Force
-          node scripts/build-agent-runtime.mjs --smoke $smokeRuntime
-          if ($LASTEXITCODE -ne 0) {
-            throw "Agent runtime path-with-spaces smoke test failed."
-          }
-
-      - name: Tauri Windows bundle
-        env:
-          JUNE_AGENT_RUNTIME_PREBUILT: "1"
-        run: node scripts/tauri-build.mjs --debug --no-sign
-
-      - name: Verify Windows bundle
-        shell: pwsh
-        run: |
-          $exe = Get-Item "src-tauri/target/debug/os-june.exe" -ErrorAction Stop
-          if ($exe.Length -le 0) {
-            throw "Windows app executable is empty."
-          }
-
-          $setup = Get-ChildItem "src-tauri/target/debug/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
-          if ($null -eq $setup) {
-            throw "NSIS setup.exe was not produced."
-          }
-          if ($setup.Length -le 0) {
-            throw "NSIS setup.exe is empty."
-          }
-
-          $sevenZip = "${env:ProgramFiles}\7-Zip\7z.exe"
-          if (!(Test-Path $sevenZip)) {
-            throw "7-Zip was not installed at $sevenZip."
-          }
-          $listing = & $sevenZip l $setup.FullName
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not inspect NSIS installer payload."
-          }
-          if (($listing | Measure-Object).Count -le 0) {
-            throw "NSIS installer payload listing is empty."
-          }
-          $listingText = ($listing -join "`n").Replace("\", "/")
-          foreach ($expected in @("native/bin/june-agent-runtime.exe", "native/bin/june-agent-runtime.exe.sha256")) {
-            if ($listingText -notmatch [regex]::Escape($expected)) {
-              throw "NSIS installer payload does not include agent runtime file $expected."
-            }
-          }
-          foreach ($forbidden in @("native/hermes", "python.exe", ".pyd", "hermes-agent")) {
-            if ($listingText -match [regex]::Escape($forbidden)) {
-              throw "NSIS installer payload still includes forbidden Hermes or Python content: $forbidden."
-            }
-          }
+        run: ./scripts/build-windows.ps1
 
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: june-windows-debug-nsis
-          path: src-tauri/target/debug/bundle/nsis/*-setup.exe
+          name: june-windows-unsigned-release-nsis
+          path: artifacts/windows-unsigned/*-setup.exe
+          if-no-files-found: error
 
 # Coverage reruns of these suites live in coverage.yml (manual-only). They
 # duplicated this workflow's jobs on a macOS runner for every push and PR

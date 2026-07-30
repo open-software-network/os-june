@@ -32,6 +32,16 @@ the relay hashes that representation and compares it without retaining the
 plaintext. Noise separately authenticates the device's private key and protects
 all content.
 
+The linked device may put a bounded `PeerHello` JSON payload in its first Noise
+handshake message. Its `capabilities` array advertises optional event and
+response features that this app build can actually handle. An empty payload
+remains valid for older clients and advertises no optional capabilities.
+Unknown capability strings are ignored within the bounded array so a newer
+version-1 peer can add an optional feature without disabling capabilities both
+peers already understand.
+Desktop records the declaration only after the Noise static identity
+authenticates and clears it when that peer session or relay connection ends.
+
 The signed-in Desktop creates the pending pairing under its OS Accounts user.
 The matching pairing proof authorizes one phone proposal to that exact pairing,
 so the phone neither supplies an account id nor carries an account bearer. The
@@ -57,21 +67,54 @@ conflict.
 
 ## Capabilities
 
-The only grants are notes read/edit, agent read/chat/cancel, safe settings
-read/edit, existing-recording state/pause/resume/stop, app focus, and
-self-device read/revoke. Body-to-capability equality is validated before
-dispatch.
+The only grants are notes read/edit, agent read/chat/cancel, model read/edit,
+generated-media read, safe settings read/edit, existing-recording
+state/pause/resume/stop, app focus, and self-device read/revoke. Linked devices
+may also receive the separate `filesUpload` and `filesBrowse` grants described
+below, plus one-shot Computer use approval. Model discovery and current-session
+reads require `modelRead`; changing a session's next-run model requires
+`modelEdit`. Body-to-capability equality is validated before dispatch.
+
+The encrypted `deviceGetSelf` result may include the Desktop's user-facing
+device name as the optional `desktopDisplayName` field, bounded to 128 UTF-8
+bytes. Desktop resolves and caches the value at startup, then supplies it only
+after the Noise-authenticated `devicesReadSelf` request. Older companions ignore
+the additive field, and new companions retain their generic Mac fallback when
+an older Desktop omits it.
 
 Agent session and message reads go through typed frontend intents backed by
-the current Hermes session APIs. The companion receives the same sanitized
-display text as June Desktop: machine context, provider routing details,
-reasoning, tool calls/results, approvals, secrets, and media internals stay on
-the Mac. The always-mounted app shell serves reads even when the Agent screen
-is closed. Send and cancel intents wake the existing Agent workspace.
+June's current agent-runtime session APIs. The companion receives the same
+sanitized display text as June Desktop: machine context, provider routing
+details, reasoning, tool calls/results, approvals, secrets, and media internals
+stay on the Mac. The always-mounted app shell serves reads even when the Agent
+screen is closed. Send and cancel intents wake the existing Agent workspace.
 Wire session identifiers are qualified explicitly: agent data uses
 `storedSessionId`, while active-recording snapshots and controls use
-`recordingSessionId`. The companion protocol does not expose a Hermes runtime
+`recordingSessionId`. The companion protocol does not expose an agent-runtime
 session id.
+
+Model control uses the `modelsList`, `sessionModelGet`, and `sessionModelSet`
+body tags. The first two return `models` and `sessionModel` results under
+`modelRead`; the mutation also returns `sessionModel`, under `modelEdit`, so
+the phone can render the exact accepted selection. `sessionModelChanged`
+events publish desktop-originated picker changes under `modelRead`. A peer
+receives that additive event only after it has demonstrated `modelRead` or
+`modelEdit` on its current Noise connection, so an older companion is not sent
+a body tag it does not understand.
+
+The model catalog is bounded to eight entries. Desktop currently exposes Auto
+plus the available subset of its four recommended generation models, using the
+live catalog for canonical names, providers, privacy classes, and price
+labels. Model ids and names are capped at 256 UTF-8 bytes, providers at 64,
+descriptions at 512, and privacy/price labels at 128. A set request for any
+model outside that curated live set returns `unsupported`; a missing or
+partition-inaccessible stored session returns `not_found`.
+
+Desktop remains authoritative for model persistence and run boundaries.
+`sessionModelSet` stages the accepted selection in the same per-session store
+as the Mac picker. It does not cancel, restart, or reroute an active run. The
+staged value becomes authoritative when the next run starts, matching
+ADR-0018; later desktop and companion reads report that staged value.
 
 Agent transcript pagination starts with the newest page and walks backward;
 items within each page remain chronological so the mobile client can prepend
@@ -83,9 +126,94 @@ with an instruction to open them on the Mac; the companion never loads a
 truncated note into its editor, which prevents an edit from overwriting unseen
 content.
 
-There is no variant for arbitrary Tauri/Hermes calls, recording start, note
-delete, approvals, unrestricted mode, filesystem, shell, credentials,
-connectors, updates, account deletion, or adding a device.
+Agent history and status events may add up to eight **companion media result**
+references for canonical, tool-produced image/video artifacts. A reference
+contains an opaque artifact id, kind, MIME type, byte size, optional paired
+dimensions, and optional video duration. Empty media arrays are omitted, so
+version 1 clients that know only text/status keep their existing shape.
+References never contain paths or inline bytes.
+
+`mediaFetch` requires `mediaRead` and returns `mediaChunk` under the same
+capability. The source is capped at 100 MiB and each response at 31 KiB of raw
+bytes. Base64 expands a full chunk to 42,328 bytes; the contract's worst-case
+response test includes maximum identifiers, digest, and JSON syntax and keeps
+the plaintext below 44 KiB with at least 750 bytes spare. Each chunk repeats
+the source's lowercase SHA-256 digest, total size, offset, and exact completion
+state. The client advances by decoded byte count and verifies the complete
+file before display or photo-library save.
+
+Only the canonical full artifact is fetchable. June does not persist a
+canonical media thumbnail, so a thumbnail tier would create a second artifact
+and retention contract. Mobile may derive a local thumbnail only after the
+full artifact passes integrity verification.
+
+History and fetch are typed frontend intents. They check that the stored
+session is in the current data partition before artifact work and check again
+after awaited inspection or file IO; a partition switch discards the result.
+Fetch resolution always combines the stored session id with the opaque
+artifact id and never accepts a phone-supplied path.
+
+## Attachments and granted Mac roots
+
+Phone attachments use `uploadBegin`, `uploadChunk`, and `uploadCommit` under
+`filesUpload`. Begin declares a UUID reservation id, UTF-8 file name, optional
+media type, exact byte count, and lowercase hexadecimal SHA-256. A file is at
+most 25 MiB and a raw chunk is at most 32 KiB. Offsets are contiguous. Commit
+returns a short-lived opaque attachment reference only after the byte count and
+digest match.
+
+Mac browsing uses `browseRootsList`, paginated `browseDirList`, and
+`browseFileStat` under `filesBrowse`. Roots exist only after the signed-in user
+selects a directory in June Desktop Settings. Requests carry an opaque root id
+and a relative path; responses contain bounded display labels, names, entry
+kinds, sizes, modification times, and cursors. `browseFileStat` mints a
+short-lived opaque Mac-file attachment reference. Absolute paths never cross
+the companion protocol.
+
+`agentSend` accepts an additive optional `attachmentReferenceIds` array of at
+most eight unique non-nil UUIDs. Legacy payloads without the field still decode
+and an empty array is omitted when encoding. Desktop resolves each reference
+for the authenticated account and linked device, revalidates a Mac target
+against a still-granted canonical root, and passes the local path to the normal
+agent attachment copier. There is no `fileRead`, download, write, move, delete,
+symlink traversal, hidden-file traversal, or implicit root in protocol v1.
+
+The maximum 32 KiB chunk expands to 43,692 base64 characters. A worst-case
+request frame encodes to 43,988 bytes, leaving 1,068 bytes below the 44 KiB
+plaintext ceiling. Existing Noise and relay-envelope ceilings therefore remain
+unchanged.
+
+`computerUseApprove` is limited to the existing `computer_use` agent-runtime
+approval interruption. A pending event carries a request id, stored session id,
+bounded action and description, optional target app/URL, and a 60-second
+deadline. After receiving the event, a linked device may send the additive
+`computerUseApprovalReceived` mutation with both ids; approve/deny repeats the
+same pair. Status events report approved, denied, executing, succeeded, failed,
+expired, or cancelled. Desktop binds the request id to the distinct SDK
+tool-call id rather than assuming equality. Before
+publishing, Desktop resolves the exact process, window, and app identity; a
+contradictory app/window selector, changed target, or target that is not yet
+verifiable keeps the interruption desktop-local. Permit consumption compares
+that exact target again and falls back to the Mac-local authorization surface
+on mismatch. It consumes one app-authorization decision; a second decision in
+the same action remains desktop-local, and the permit never becomes a task or
+app grant. Desktop never truncates approval fields to fit those bounds: an
+oversized action, description, app, or URL keeps the interruption
+desktop-local. The default-off Linked devices toggle, Computer/Browser use
+experiment, authenticated live peer advertising `computerUseApprove`, active
+link, and Rust broker policy all gate it. The authoritative expiry uses a
+monotonic deadline; wall-clock values are display metadata. Auto-deny retries
+bounded transient failures, then retires the remote request and leaves the
+interruption Mac-local if dispatch cannot be completed. The timer is armed only
+after an authenticated `computerUseApprovalReceived` frame proves that a live,
+capable peer received this exact request; a historical handshake or successful
+relay write is insufficient. See ADR-0053.
+
+There is no variant for arbitrary Tauri or agent-harness calls, recording
+start, note delete, other approvals, unrestricted mode, general filesystem
+access, shell, credentials, connectors, updates, account deletion, or adding a
+device. The bounded browse variants above are not a general filesystem
+capability and do not return file contents.
 
 ## Idempotency and reconnect
 

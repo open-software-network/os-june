@@ -136,6 +136,23 @@ export type CompanionAgentMessageView = {
   text: string;
   createdAt: string;
   streaming: false;
+  media?: CompanionMediaReference[];
+};
+
+export type CompanionMediaReference = {
+  artifactId: string;
+  kind: "image" | "video";
+  mediaType: string;
+  widthPx?: number;
+  heightPx?: number;
+  durationMs?: number;
+  sizeBytes: number;
+};
+
+export type CompanionMediaProjection = {
+  runId?: string;
+  createdAt: string;
+  reference: CompanionMediaReference;
 };
 
 const COMPANION_MESSAGE_TEXT_BYTES = 30 * 1024;
@@ -162,8 +179,10 @@ export function boundedCompanionText(text: string, maxBytes: number, suffix = ".
  */
 export function companionAgentMessagesFromItems(
   items: AgentItemDto[],
+  mediaProjections: CompanionMediaProjection[] = [],
 ): CompanionAgentMessageView[] {
-  return items.flatMap((item) => {
+  const itemsById = new Map(items.map((item) => [item.id, item]));
+  const messages = items.flatMap((item) => {
     if (item.kind !== "message" || item.status !== "complete") return [];
     const text = (item.role === "user" ? stripProjectContext(item.text) : item.text).trim();
     if (!text) return [];
@@ -182,6 +201,35 @@ export function companionAgentMessagesFromItems(
     }
     return [message];
   });
+  const lastAssistantByRun = new Map<string, CompanionAgentMessageView>();
+  for (const message of messages) {
+    const item = itemsById.get(message.id);
+    if (item?.kind === "message" && item.role === "assistant" && item.runId) {
+      lastAssistantByRun.set(item.runId, message);
+    }
+  }
+  const overflow: CompanionMediaProjection[] = [];
+  for (const projection of mediaProjections) {
+    const target = projection.runId ? lastAssistantByRun.get(projection.runId) : undefined;
+    if (target && (target.media?.length ?? 0) < 8) {
+      target.media = [...(target.media ?? []), projection.reference];
+    } else {
+      overflow.push(projection);
+    }
+  }
+  const mediaOnlyMessages = overflow.map(
+    (projection): CompanionAgentMessageView => ({
+      id: `media:${projection.reference.artifactId}`,
+      role: "assistant",
+      text: "",
+      createdAt: projection.createdAt,
+      streaming: false,
+      media: [projection.reference],
+    }),
+  );
+  return [...messages, ...mediaOnlyMessages].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
 }
 
 const CONTRACTION_GLUE = /([A-Za-z])('(?:s|re|ve|ll|m|d|t))(?=[A-Za-z])/gi;

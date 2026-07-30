@@ -1264,8 +1264,35 @@ const MIGRATIONS: &[Migration] = &[
             columns: NOTE_CALENDAR_HTML_LINK_COLUMN,
         }],
     },
+    // The feature branch used catalog position 44, but main already shipped
+    // positions 44 and 45. Preserve those entries and append the file schema
+    // after them as required by ADR-0037.
     Migration {
         version: 46,
+        name: "companion_files",
+        requirements: &[
+            SchemaRequirement::Table("companion_browse_roots"),
+            SchemaRequirement::Table("companion_uploads"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_files.sql"
+        ))],
+    },
+    // The active Computer use fix branch also used catalog position 44.
+    // Preserve every earlier position and append its audit schema.
+    Migration {
+        version: 47,
+        name: "companion_computer_use_approval_audit",
+        requirements: &[
+            SchemaRequirement::Table("companion_computer_use_approval_audit"),
+            SchemaRequirement::Index("idx_companion_computer_use_approval_audit_request"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_computer_use_approval_audit.sql"
+        ))],
+    },
+    Migration {
+        version: 48,
         name: "linear_managed_mcp",
         requirements: &[
             SchemaRequirement::Table("linear_mcp_connection"),
@@ -1283,7 +1310,7 @@ const MIGRATIONS: &[Migration] = &[
         ))],
     },
     Migration {
-        version: 47,
+        version: 49,
         name: "linear_managed_mcp_repair",
         requirements: &[
             SchemaRequirement::Table("linear_mcp_connection"),
@@ -1615,26 +1642,26 @@ async fn repair_prerelease_linear_managed_mcp_stamp(
     applied: &[AppliedMigration],
     migrations: &[Migration],
 ) -> Result<bool, sqlx::Error> {
-    if !is_prerelease_linear_managed_mcp_stamp(applied, migrations) {
+    let Some(displaced_index) = prerelease_linear_managed_mcp_index(applied, migrations) else {
         return Ok(false);
-    }
-    let calendar_index = migrations
-        .iter()
-        .position(|migration| migration.name == "calendar_event_html_link")
-        .ok_or_else(|| {
-            sqlx::Error::Protocol(
-                "Linear managed MCP prerelease repair is missing the calendar migration".into(),
-            )
-        })?;
-    let calendar = &migrations[calendar_index];
+    };
 
-    validate_applied_migrations(&applied[..calendar_index], migrations)?;
-    let managed_mcp = migrations
+    validate_applied_migrations(&applied[..displaced_index], migrations)?;
+    let managed_mcp_index = migrations
         .iter()
-        .find(|migration| migration.name == "linear_managed_mcp")
+        .position(|migration| migration.name == "linear_managed_mcp")
         .ok_or_else(|| {
             sqlx::Error::Protocol(
                 "Linear managed MCP prerelease repair is missing its migration".into(),
+            )
+        })?;
+    let managed_mcp = &migrations[managed_mcp_index];
+    let managed_mcp_repair = migrations
+        .iter()
+        .find(|migration| migration.name == "linear_managed_mcp_repair")
+        .ok_or_else(|| {
+            sqlx::Error::Protocol(
+                "Linear managed MCP prerelease repair is missing its repair migration".into(),
             )
         })?;
     let snapshot = SchemaSnapshot::load(transaction).await?;
@@ -1646,15 +1673,18 @@ async fn repair_prerelease_linear_managed_mcp_stamp(
     {
         return Ok(false);
     }
-    apply_migration(transaction, calendar).await?;
 
     for (old_version, new_version, name) in [
         (
-            calendar.version + 1,
-            calendar.version + 2,
-            "linear_managed_mcp_repair",
+            applied[displaced_index + 1].version,
+            managed_mcp_repair.version,
+            managed_mcp_repair.name,
         ),
-        (calendar.version, calendar.version + 1, "linear_managed_mcp"),
+        (
+            applied[displaced_index].version,
+            managed_mcp.version,
+            managed_mcp.name,
+        ),
     ] {
         let result = query(
             "UPDATE schema_migrations
@@ -1672,37 +1702,53 @@ async fn repair_prerelease_linear_managed_mcp_stamp(
             )));
         }
     }
-    stamp_legacy_migrations(transaction, std::slice::from_ref(calendar)).await?;
+    for migration in &migrations[displaced_index..managed_mcp_index] {
+        apply_migration(transaction, migration).await?;
+        stamp_legacy_migrations(transaction, std::slice::from_ref(migration)).await?;
+    }
     Ok(true)
+}
+
+fn prerelease_linear_managed_mcp_index(
+    applied: &[AppliedMigration],
+    migrations: &[Migration],
+) -> Option<usize> {
+    let calendar_index = migrations
+        .iter()
+        .position(|migration| migration.name == "calendar_event_html_link")?;
+    let calendar = &migrations[calendar_index];
+    let displaced_index = if applied.len() == calendar_index + 2 {
+        calendar_index
+    } else if applied.len() == calendar_index + 3
+        && applied.get(calendar_index).is_some_and(|applied| {
+            applied.version == calendar.version && applied.name == calendar.name
+        })
+    {
+        calendar_index + 1
+    } else {
+        return None;
+    };
+    let managed_mcp = applied.get(displaced_index)?;
+    let managed_mcp_repair = applied.get(displaced_index + 1)?;
+
+    // Linear prerelease builds stamped 45/46 before the calendar migration,
+    // then 46/47 after the calendar repair. Main subsequently shipped two
+    // companion migrations at 46/47, so both exact branch histories must move
+    // to the append-only Linear positions without replaying provider state.
+    let displaced_version =
+        calendar.version + i64::try_from(displaced_index - calendar_index).ok()?;
+    (managed_mcp.version == displaced_version
+        && managed_mcp.name == "linear_managed_mcp"
+        && managed_mcp_repair.version == displaced_version + 1
+        && managed_mcp_repair.name == "linear_managed_mcp_repair")
+        .then_some(displaced_index)
 }
 
 fn is_prerelease_linear_managed_mcp_stamp(
     applied: &[AppliedMigration],
     migrations: &[Migration],
 ) -> bool {
-    let Some(calendar_index) = migrations
-        .iter()
-        .position(|migration| migration.name == "calendar_event_html_link")
-    else {
-        return false;
-    };
-    let calendar = &migrations[calendar_index];
-    let Some(managed_mcp) = applied.get(calendar_index) else {
-        return false;
-    };
-    let Some(managed_mcp_repair) = applied.get(calendar_index + 1) else {
-        return false;
-    };
-
-    // The Linear managed-MCP branch was exercised with versions 45 and 46
-    // before the calendar migration shipped at version 45. Move those exact
-    // prerelease identities forward so the released migration keeps its
-    // append-only position without replaying either Linear migration.
-    applied.len() == calendar_index + 2
-        && managed_mcp.version == calendar.version
-        && managed_mcp.name == "linear_managed_mcp"
-        && managed_mcp_repair.version == calendar.version + 1
-        && managed_mcp_repair.name == "linear_managed_mcp_repair"
+    prerelease_linear_managed_mcp_index(applied, migrations).is_some()
 }
 
 fn is_prerelease_agent_runtime_stamp(
@@ -2256,6 +2302,30 @@ mod tests {
 
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
+        assert!(table_exists(&pool, "companion_browse_roots").await);
+        assert!(table_exists(&pool, "companion_uploads").await);
+        assert!(table_exists(&pool, "companion_computer_use_approval_audit").await);
+        let companion_tail = query(
+            "SELECT version, name
+             FROM schema_migrations
+             WHERE version >= 46
+             ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("companion migration stamps")
+        .into_iter()
+        .map(|row| (row.get::<i64, _>("version"), row.get::<String, _>("name")))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            companion_tail,
+            vec![
+                (46, "companion_files".to_string()),
+                (47, "companion_computer_use_approval_audit".to_string()),
+                (48, "linear_managed_mcp".to_string()),
+                (49, "linear_managed_mcp_repair".to_string()),
+            ]
+        );
         assert_latest_stamp(&pool).await;
     }
 
@@ -2496,8 +2566,10 @@ mod tests {
             stamps,
             vec![
                 (45, "calendar_event_html_link".to_string()),
-                (46, "linear_managed_mcp".to_string()),
-                (47, "linear_managed_mcp_repair".to_string()),
+                (46, "companion_files".to_string()),
+                (47, "companion_computer_use_approval_audit".to_string()),
+                (48, "linear_managed_mcp".to_string()),
+                (49, "linear_managed_mcp_repair".to_string()),
             ]
         );
 
@@ -2591,6 +2663,9 @@ mod tests {
             .await
             .expect("accept repaired Linear stamps");
 
+        assert!(table_exists(&pool, "companion_browse_roots").await);
+        assert!(table_exists(&pool, "companion_uploads").await);
+        assert!(table_exists(&pool, "companion_computer_use_approval_audit").await);
         let state: String =
             query("SELECT state FROM linear_mcp_connection WHERE preset_id = 'builtin:linear'")
                 .fetch_one(&pool)

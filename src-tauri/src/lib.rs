@@ -220,11 +220,19 @@ pub fn run() {
             companion::companion_pairing_status,
             companion::companion_approve_pairing,
             companion::companion_list_devices,
+            companion::companion_list_browse_roots,
+            companion::companion_grant_browse_root,
+            companion::companion_revoke_browse_root,
+            companion::companion_consume_attachments,
+            companion::companion_computer_use_approval_settings,
+            companion::companion_set_computer_use_approval_enabled,
             companion::companion_rename_device,
             companion::companion_revoke_device,
             companion::companion_complete_frontend_request,
             companion::companion_cancel_frontend_request,
             companion::companion_publish_agent_event,
+            companion::companion_list_agent_media,
+            companion::companion_read_agent_media_chunk,
             commands::create_note,
             commands::list_notes,
             commands::get_note,
@@ -426,6 +434,7 @@ pub fn run() {
         .manage(connectors::NotionConnectFlow::default())
         .setup(|app| {
             browser::setup_on_app_start();
+            agent_runtime::tools::seed_bundled_skills(app.handle());
             setup_app_menu(app)?;
             menu_bar::setup(app)?;
             experimental_settings::setup(app)?;

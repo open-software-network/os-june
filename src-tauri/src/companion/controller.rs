@@ -20,26 +20,54 @@ const MAX_COMPANION_NOTE_CONTENT_BYTES: usize = 28 * 1024;
 const MAX_COMPANION_NOTE_CONTENT_JSON_BYTES: usize = 30 * 1024;
 
 /// Only these typed intents can cross from the companion controller into the
-/// frontend. Raw Hermes frames, arbitrary Tauri commands, paths, SQL, shell,
-/// approvals, provider credentials, and recording start have no variant here.
+/// frontend. Raw agent-harness frames, arbitrary Tauri commands or paths, SQL,
+/// shell, approvals, provider credentials, and recording start have no variant
+/// here. Attachment paths are injected only after the controller resolves
+/// authenticated, device-scoped opaque references.
 #[derive(Debug, Clone, serde::Serialize)]
-#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum FrontendIntent {
     AgentSessionsList {
+        #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
         limit: u16,
     },
     AgentMessagesList {
         stored_session_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
         limit: u16,
     },
     AgentSend {
+        #[serde(skip_serializing_if = "Option::is_none")]
         stored_session_id: Option<String>,
         message: String,
+        attachments: Vec<super::files::ResolvedAttachment>,
+        attachment_reference_ids: Vec<uuid::Uuid>,
+    },
+    MediaFetch {
+        stored_session_id: String,
+        artifact_id: String,
+        offset_bytes: u64,
     },
     AgentCancel {
         stored_session_id: String,
+    },
+    ModelsList,
+    SessionModelGet {
+        #[serde(rename = "storedSessionId")]
+        stored_session_id: String,
+    },
+    SessionModelSet {
+        #[serde(rename = "storedSessionId")]
+        stored_session_id: String,
+        #[serde(rename = "modelId")]
+        model_id: String,
     },
     RecordingPause {
         recording_session_id: String,
@@ -247,7 +275,11 @@ impl Controller {
                     })?;
                 ControllerOutcome::Immediate(response(
                     capability,
-                    ResultPayload::Device(device_self(device)?),
+                    ResultPayload::Device(device_self(
+                        device,
+                        app.state::<super::CompanionRuntime>()
+                            .desktop_display_name(),
+                    )?),
                 ))
             }
             Body::DeviceRevokeSelf => {
@@ -261,6 +293,8 @@ impl Controller {
                 repositories
                     .revoke_companion_device(account_user_id, device_id)
                     .await?;
+                super::files::cleanup_device_uploads(app, repositories, account_user_id, device_id)
+                    .await;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::AgentSessionsList(page) => {
@@ -277,12 +311,112 @@ impl Controller {
                 cursor: page.cursor,
                 limit: page.limit,
             }),
-            Body::AgentSend(request) => ControllerOutcome::Frontend(FrontendIntent::AgentSend {
+            Body::AgentSend(request) => {
+                let attachments = super::files::resolve_attachments(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request.attachment_reference_ids,
+                )
+                .await?;
+                ControllerOutcome::Frontend(FrontendIntent::AgentSend {
+                    stored_session_id: request.stored_session_id,
+                    message: request.message,
+                    attachments,
+                    attachment_reference_ids: request.attachment_reference_ids,
+                })
+            }
+            Body::UploadBegin(request) => {
+                let progress = super::files::begin_upload(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::UploadChunk(request) => {
+                let progress = super::files::append_upload_chunk(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    &request,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::UploadCommit { reservation_id } => {
+                let progress = super::files::commit_upload(
+                    app,
+                    repositories,
+                    account_user_id,
+                    device_id,
+                    reservation_id,
+                )
+                .await?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Upload(progress)))
+            }
+            Body::BrowseRootsList => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseRoots(
+                    super::files::protocol_roots(repositories, account_user_id).await?,
+                ),
+            )),
+            Body::BrowseDirList {
+                root_id,
+                relative_path,
+                page,
+            } => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseEntries(
+                    super::files::list_directory(
+                        repositories,
+                        account_user_id,
+                        root_id,
+                        &relative_path,
+                        &page,
+                    )
+                    .await?,
+                ),
+            )),
+            Body::BrowseFileStat {
+                root_id,
+                relative_path,
+            } => ControllerOutcome::Immediate(response(
+                capability,
+                ResultPayload::BrowseFile(
+                    super::files::stat_file(
+                        app,
+                        repositories,
+                        account_user_id,
+                        device_id,
+                        root_id,
+                        &relative_path,
+                    )
+                    .await?,
+                ),
+            )),
+            Body::MediaFetch(request) => ControllerOutcome::Frontend(FrontendIntent::MediaFetch {
                 stored_session_id: request.stored_session_id,
-                message: request.message,
+                artifact_id: request.artifact_id,
+                offset_bytes: request.offset_bytes,
             }),
             Body::AgentCancel { stored_session_id } => {
                 ControllerOutcome::Frontend(FrontendIntent::AgentCancel { stored_session_id })
+            }
+            Body::ModelsList => ControllerOutcome::Frontend(FrontendIntent::ModelsList),
+            Body::SessionModelGet { stored_session_id } => {
+                ControllerOutcome::Frontend(FrontendIntent::SessionModelGet { stored_session_id })
+            }
+            Body::SessionModelSet(request) => {
+                ControllerOutcome::Frontend(FrontendIntent::SessionModelSet {
+                    stored_session_id: request.stored_session_id,
+                    model_id: request.model_id,
+                })
             }
             Body::RecordingPause {
                 recording_session_id,
@@ -355,6 +489,66 @@ impl Controller {
                             format!("The requested view could not be opened: {error}"),
                         )
                     })?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
+            }
+            Body::ComputerUseApprovalReceived(receipt) => {
+                let device_uuid = device_id.parse().map_err(|_| {
+                    AppError::new(
+                        "companion_device_invalid",
+                        "The linked device identity is invalid.",
+                    )
+                })?;
+                if !app
+                    .state::<super::CompanionRuntime>()
+                    .peer_has_capability(device_uuid, Capability::ComputerUseApprove)
+                {
+                    return Err(AppError::new(
+                        "companion_computer_use_approval_disabled",
+                        "This linked device did not advertise Computer use approval support.",
+                    ));
+                }
+                super::confirm_computer_use_approval_delivery(
+                    app,
+                    &receipt.request_id,
+                    &receipt.stored_session_id,
+                )?;
+                ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
+            }
+            Body::ComputerUseApprovalRespond(request) => {
+                let device_uuid = device_id.parse().map_err(|_| {
+                    AppError::new(
+                        "companion_device_invalid",
+                        "The linked device identity is invalid.",
+                    )
+                })?;
+                if !app
+                    .state::<super::CompanionRuntime>()
+                    .peer_has_capability(device_uuid, Capability::ComputerUseApprove)
+                {
+                    return Err(AppError::new(
+                        "companion_computer_use_approval_disabled",
+                        "This linked device did not advertise Computer use approval support.",
+                    ));
+                }
+                let result = crate::agent_runtime::api::resolve_companion_computer_use_approval(
+                    app,
+                    &request.request_id,
+                    &request.stored_session_id,
+                    request.decision,
+                    super::ComputerUseApprovalOrigin::Companion {
+                        device_id: device_id.to_string(),
+                    },
+                )
+                .await;
+                tracing::info!(
+                    request_id = %request.request_id,
+                    stored_session_id = %request.stored_session_id,
+                    decision = ?request.decision,
+                    accepted = result.is_ok(),
+                    error_code = result.as_ref().err().map(|error| error.code.as_str()),
+                    "handled linked Computer use approval decision"
+                );
+                result?;
                 ControllerOutcome::Immediate(response(capability, ResultPayload::Accepted))
             }
             Body::Response(_) | Body::Event(_) => ControllerOutcome::Immediate(response(
@@ -619,12 +813,16 @@ fn protocol_style(style: DesktopDictationStyle) -> DictationStyle {
     }
 }
 
-fn device_self(device: CompanionDeviceRecord) -> Result<DeviceSelf, AppError> {
+fn device_self(
+    device: CompanionDeviceRecord,
+    desktop_display_name: String,
+) -> Result<DeviceSelf, AppError> {
     Ok(DeviceSelf {
         device_id: device.id.parse().map_err(|_| {
             AppError::new("companion_device_invalid", "Linked device id is invalid.")
         })?,
         display_name: device.display_name,
+        desktop_display_name: Some(desktop_display_name),
         linked_at: device.linked_at,
         last_seen_at: device.last_seen_at,
         revoked_at: device.revoked_at,
@@ -634,7 +832,10 @@ fn device_self(device: CompanionDeviceRecord) -> Result<DeviceSelf, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use june_companion_protocol::{AgentSendRequest, PageRequest};
+    use june_companion_protocol::{
+        AgentSendRequest, ComputerUseApprovalDecision, ComputerUseApprovalDecisionRequest,
+        ComputerUseApprovalReceipt, PageRequest,
+    };
     use uuid::Uuid;
 
     #[test]
@@ -644,25 +845,31 @@ mod tests {
             Body::AgentSend(AgentSendRequest {
                 stored_session_id: None,
                 message: "Hello".to_string(),
+                attachment_reference_ids: Vec::new(),
             }),
             Body::RecordingPause {
                 recording_session_id: "active".to_string(),
             },
             Body::DeviceRevokeSelf,
+            Body::ComputerUseApprovalReceived(ComputerUseApprovalReceipt {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+            }),
+            Body::ComputerUseApprovalRespond(ComputerUseApprovalDecisionRequest {
+                request_id: "call-1".to_string(),
+                stored_session_id: "session-1".to_string(),
+                decision: ComputerUseApprovalDecision::Deny,
+            }),
         ];
-        assert_eq!(allowed.len(), 4);
+        assert_eq!(allowed.len(), 6);
         // Compile-time exhaustiveness in `dispatch` is the real gate. This
         // regression assertion makes the most important exclusions visible.
         let encoded = serde_json::to_string(&allowed).unwrap();
-        for forbidden in [
-            "recordingStart",
-            "shell",
-            "filesystem",
-            "approval",
-            "deleteNote",
-        ] {
+        for forbidden in ["recordingStart", "shell", "filesystem", "deleteNote"] {
             assert!(!encoded.contains(forbidden));
         }
+        assert!(encoded.contains("computerUseApprovalRespond"));
+        assert!(encoded.contains("computerUseApprovalReceived"));
         assert_ne!(Uuid::nil(), Uuid::new_v4());
     }
 
@@ -674,6 +881,95 @@ mod tests {
         assert!(controller.accept_sequence("phone", 0).is_err());
         controller.accept_sequence("phone", 2).unwrap();
         controller.accept_sequence("tablet", 1).unwrap();
+    }
+
+    #[test]
+    fn model_frontend_intents_keep_the_typed_wire_boundary() {
+        let intents = [
+            FrontendIntent::ModelsList,
+            FrontendIntent::SessionModelGet {
+                stored_session_id: "session-1".to_string(),
+            },
+            FrontendIntent::SessionModelSet {
+                stored_session_id: "session-1".to_string(),
+                model_id: "kimi-k2-6".to_string(),
+            },
+        ];
+        let encoded = serde_json::to_value(intents).unwrap();
+
+        assert_eq!(encoded[0]["type"], "modelsList");
+        assert_eq!(encoded[1]["type"], "sessionModelGet");
+        assert_eq!(encoded[1]["data"]["storedSessionId"], "session-1");
+        assert_eq!(encoded[2]["type"], "sessionModelSet");
+        assert_eq!(encoded[2]["data"]["modelId"], "kimi-k2-6");
+    }
+
+    #[test]
+    fn frontend_intents_omit_absent_optional_fields() {
+        let sessions = serde_json::to_value(FrontendIntent::AgentSessionsList {
+            cursor: None,
+            limit: 50,
+        })
+        .unwrap();
+        assert_eq!(
+            sessions,
+            serde_json::json!({
+                "type": "agentSessionsList",
+                "data": { "limit": 50 },
+            })
+        );
+
+        let send = serde_json::to_value(FrontendIntent::AgentSend {
+            stored_session_id: None,
+            message: "Hello".to_string(),
+            attachments: Vec::new(),
+            attachment_reference_ids: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(
+            send,
+            serde_json::json!({
+                "type": "agentSend",
+                "data": {
+                    "message": "Hello",
+                    "attachments": [],
+                    "attachmentReferenceIds": [],
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn frontend_intents_use_camel_case_fields() {
+        let messages = serde_json::to_value(FrontendIntent::AgentMessagesList {
+            stored_session_id: "stored-1".to_string(),
+            cursor: Some("next".to_string()),
+            limit: 50,
+        })
+        .unwrap();
+        assert_eq!(
+            messages,
+            serde_json::json!({
+                "type": "agentMessagesList",
+                "data": {
+                    "storedSessionId": "stored-1",
+                    "cursor": "next",
+                    "limit": 50,
+                },
+            })
+        );
+
+        let cancel = serde_json::to_value(FrontendIntent::AgentCancel {
+            stored_session_id: "stored-1".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            cancel,
+            serde_json::json!({
+                "type": "agentCancel",
+                "data": { "storedSessionId": "stored-1" },
+            })
+        );
     }
 
     #[test]
@@ -700,6 +996,26 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn device_self_includes_the_cached_desktop_name() {
+        let device = CompanionDeviceRecord {
+            id: Uuid::nil().to_string(),
+            display_name: "Phone".to_string(),
+            public_key: vec![1_u8; 32],
+            linked_at: "2026-07-27T12:00:00Z".to_string(),
+            last_seen_at: None,
+            revoked_at: None,
+        };
+
+        let projected = device_self(device, "Studio Mac".to_string()).unwrap();
+
+        assert_eq!(projected.display_name, "Phone");
+        assert_eq!(
+            projected.desktop_display_name.as_deref(),
+            Some("Studio Mac")
+        );
     }
 
     #[test]

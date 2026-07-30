@@ -18,6 +18,9 @@ import { useReferralNudgeTriggers } from "./referral-nudge-triggers";
 import {
   checkRecordingSourceReadiness,
   companionCompleteFrontendRequest,
+  companionListAgentMedia,
+  companionPublishAgentEvent,
+  companionReadAgentMediaChunk,
   listAgentItems,
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
@@ -31,6 +34,7 @@ import {
   LIVE_TRANSCRIPT_EVENT,
   listSessionPartitions,
   listAgentSessions,
+  listVeniceModels,
   openPrivacySettings,
   osAccountsLogout,
   recoverRecording,
@@ -43,6 +47,7 @@ import {
   NOTE_SAVE_FLUSH_REQUESTED_EVENT,
   patchNote,
   queueMeetingEndFinishRequest,
+  providerModelSettings,
   type LiveTranscriptEventDto,
   type MeetingEndStatus,
 } from "../lib/tauri";
@@ -58,12 +63,24 @@ import {
 } from "../lib/agent-events";
 import { selectSessionProjectContext } from "../lib/agent-project-context";
 import { rememberSessionManuallyTitled } from "../lib/agent-session-titles";
-import { messageFromError } from "../lib/errors";
+import { errorCode, messageFromError } from "../lib/errors";
 import { boundedCompanionText, companionAgentMessagesFromItems } from "../lib/agent-chat-runtime";
 import {
   companionFrontendConsumerAvailable,
   queueCompanionFrontendRequest,
 } from "../lib/companion-frontend-router";
+import {
+  companionModelOptions,
+  companionSessionModelSelection,
+  companionStoredModelId,
+} from "../lib/companion-models";
+import { companionSessionInActivePartition } from "../lib/companion-partition";
+import {
+  AGENT_SESSION_MODEL_CHANGED_EVENT,
+  type AgentSessionModelChangedDetail,
+  loadSessionModels,
+  rememberSessionModel,
+} from "../lib/agent-session-models";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
@@ -1046,11 +1063,13 @@ export function App() {
   });
 
   const companionScopedSessions = useCallback(async () => {
+    const partition = getCurrentDataPartitionName();
     const [sessions, partitions] = await Promise.all([
       listAgentSessions(),
       refreshSessionPartitions(),
     ]);
-    const fresh = dataPartitionScopedAgentSessions(sessions, partitions);
+    if (getCurrentDataPartitionName() !== partition) return [];
+    const fresh = filterAgentSessionsForDataPartition(sessions, partitions, partition);
     const currentById = new Map(
       agentMenuBarSessionsRef.current.map((session) => [session.id, session]),
     );
@@ -1060,7 +1079,7 @@ export function App() {
     });
     scoped.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
     return scoped;
-  }, [dataPartitionScopedAgentSessions, refreshSessionPartitions]);
+  }, [refreshSessionPartitions]);
 
   const openCompanionAgentSession = useCallback(
     async (storedSessionId?: string | null) => {
@@ -1116,6 +1135,35 @@ export function App() {
 
   useEffect(() => {
     if (!companionPairingEnabled) return;
+    const publishModelChange = (event: Event) => {
+      const detail = (event as CustomEvent<AgentSessionModelChangedDetail>).detail;
+      if (!detail?.sessionId || !detail.storedModel) return;
+      void Promise.all([listVeniceModels("generation"), providerModelSettings()])
+        .then(async ([catalog, settings]) => {
+          const session = await companionSessionInActivePartition(detail.sessionId);
+          if (!session) return;
+          const currentStoredModel = loadSessionModels()[session.id] ?? session.model;
+          if (currentStoredModel !== detail.storedModel) return;
+          return companionPublishAgentEvent({
+            type: "modelChanged",
+            data: {
+              selection: companionSessionModelSelection(
+                session.id,
+                currentStoredModel,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            },
+          });
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
+    return () => window.removeEventListener(AGENT_SESSION_MODEL_CHANGED_EVENT, publishModelChange);
+  }, [companionPairingEnabled]);
+
+  useEffect(() => {
+    if (!companionPairingEnabled) return;
     let aborted = false;
     let unlisten: (() => void) | undefined;
 
@@ -1160,7 +1208,10 @@ export function App() {
               });
               return;
             }
-            const items = await listAgentItems(storedSessionId);
+            const [items, media] = await Promise.all([
+              listAgentItems(storedSessionId),
+              companionListAgentMedia(storedSessionId),
+            ]);
             const stillKnownSession = (await companionScopedSessions()).some(
               (session) => session.id === storedSessionId,
             );
@@ -1175,12 +1226,149 @@ export function App() {
               });
               return;
             }
-            const messages = companionAgentMessagesFromItems(items);
+            const messages = companionAgentMessagesFromItems(items, media);
             const page = companionByteBoundedPage([...messages].reverse(), cursor, limit);
             page?.items.reverse();
             await companionCompleteFrontendRequest(
               payload.operationId,
               page ? { type: "agentMessages", data: page } : companionCursorError("agent message"),
+            );
+            return;
+          }
+          case "modelsList": {
+            const catalog = await listVeniceModels("generation");
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "models",
+              data: { models: companionModelOptions(catalog.models) },
+            });
+            return;
+          }
+          case "sessionModelGet": {
+            const { storedSessionId } = payload.intent.data;
+            const [catalog, settings] = await Promise.all([
+              listVeniceModels("generation"),
+              providerModelSettings(),
+            ]);
+            const session = (await companionScopedSessions()).find(
+              (candidate) => candidate.id === storedSessionId,
+            );
+            if (!session) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "sessionModel",
+              data: companionSessionModelSelection(
+                session.id,
+                loadSessionModels()[session.id] ?? session.model,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            });
+            return;
+          }
+          case "sessionModelSet": {
+            const { storedSessionId, modelId } = payload.intent.data;
+            const [catalog, settings] = await Promise.all([
+              listVeniceModels("generation"),
+              providerModelSettings(),
+            ]);
+            const allowedModels = companionModelOptions(catalog.models);
+            if (!allowedModels.some((model) => model.id === modelId)) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "unsupported",
+                  message: "That model is not available in June's recommended model set.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const session = (await companionScopedSessions()).find(
+              (candidate) => candidate.id === storedSessionId,
+            );
+            if (!session) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That agent session is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            const storedModel = companionStoredModelId(modelId, settings.settings.costQuality);
+            rememberSessionModel(session.id, storedModel);
+            await companionCompleteFrontendRequest(payload.operationId, {
+              type: "sessionModel",
+              data: companionSessionModelSelection(
+                session.id,
+                storedModel,
+                catalog.models,
+                settings.settings.costQuality,
+              ),
+            });
+            return;
+          }
+          case "mediaFetch": {
+            const { storedSessionId, artifactId, offsetBytes } = payload.intent.data;
+            const knownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            if (!knownSession) {
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: "not_found",
+                  message: "That generated media is no longer available.",
+                  retryable: false,
+                },
+              });
+              return;
+            }
+            let chunk: Awaited<ReturnType<typeof companionReadAgentMediaChunk>>;
+            try {
+              chunk = await companionReadAgentMediaChunk(storedSessionId, artifactId, offsetBytes);
+            } catch (error) {
+              const code = errorCode(error);
+              const notFound =
+                code === "companion_media_not_found" ||
+                code === "companion_agent_session_not_found";
+              const unsupported = code === "companion_media_chunk_invalid";
+              await companionCompleteFrontendRequest(payload.operationId, {
+                type: "error",
+                data: {
+                  code: notFound ? "not_found" : unsupported ? "unsupported" : "internal",
+                  message: messageFromError(error),
+                  retryable: !notFound && !unsupported,
+                },
+              });
+              return;
+            }
+            const stillKnownSession = (await companionScopedSessions()).some(
+              (session) => session.id === storedSessionId,
+            );
+            await companionCompleteFrontendRequest(
+              payload.operationId,
+              stillKnownSession
+                ? { type: "mediaChunk", data: chunk }
+                : {
+                    type: "error",
+                    data: {
+                      code: "not_found",
+                      message: "That generated media is no longer available.",
+                      retryable: false,
+                    },
+                  },
             );
             return;
           }

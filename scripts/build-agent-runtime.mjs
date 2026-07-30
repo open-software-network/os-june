@@ -21,6 +21,16 @@ if (args.smoke) {
   await smoke(resolve(args.smoke), args.smokeArch);
   process.exit(0);
 }
+if (args.finalize) {
+  await finalize(resolve(args.finalize));
+  process.exit(0);
+}
+if (args.verify) {
+  const executable = resolve(args.verify);
+  await verifyChecksum(executable);
+  await smoke(executable);
+  process.exit(0);
+}
 
 const target = args.target ?? process.env.JUNE_AGENT_RUNTIME_TARGET ?? defaultTarget();
 const output = resolve(
@@ -100,20 +110,40 @@ if (target === "universal-apple-darwin") {
   fail(`Unsupported target: ${target}`);
 }
 
-await writeChecksum(output);
-await smoke(output);
+await finalize(output);
 process.stdout.write(`Built June agent runtime: ${output}\n`);
 
 function parseArgs(raw) {
+  const supported = new Set([
+    "smoke",
+    "smokeArch",
+    "finalize",
+    "verify",
+    "target",
+    "output",
+    "node",
+    "nodeX64",
+    "nodeArm64",
+  ]);
   const parsed = {};
   for (let index = 0; index < raw.length; index += 1) {
     const key = raw[index];
     if (!key?.startsWith("--")) fail(`Unknown argument: ${key}`);
     const name = key.slice(2).replaceAll(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+    if (!supported.has(name)) fail(`Unknown option: ${key}`);
+    if (name in parsed) fail(`Option may only be specified once: ${key}`);
     const value = raw[index + 1];
     if (!value || value.startsWith("--")) fail(`${key} requires a value`);
     parsed[name] = value;
     index += 1;
+  }
+  const operationModes = ["smoke", "finalize", "verify"].filter((name) => parsed[name]);
+  if (operationModes.length > 1) fail("--smoke, --finalize, and --verify are mutually exclusive");
+  if (parsed.smokeArch && !parsed.smoke) fail("--smoke-arch requires --smoke");
+  if (operationModes.length > 0) {
+    const allowed = new Set([...operationModes, ...(parsed.smoke ? ["smokeArch"] : [])]);
+    const invalid = Object.keys(parsed).filter((name) => !allowed.has(name));
+    if (invalid.length > 0) fail(`Mode option cannot be combined with --${invalid[0]}`);
   }
   return parsed;
 }
@@ -182,6 +212,13 @@ async function writeChecksum(executable) {
     .update(await readFile(executable))
     .digest("hex");
   await writeFile(`${executable}.sha256`, `${digest}\n`);
+}
+
+async function finalize(executable) {
+  await assertFile(executable, "Runtime executable does not exist");
+  await writeChecksum(executable);
+  await verifyChecksum(executable);
+  await smoke(executable);
 }
 
 async function verifyChecksum(executable) {

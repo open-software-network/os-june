@@ -7,6 +7,12 @@
  */
 
 const STORAGE_KEY = "june.agent.sessionModels";
+export const AGENT_SESSION_MODEL_CHANGED_EVENT = "june:agent:session-model-changed";
+
+export type AgentSessionModelChangedDetail = {
+  sessionId: string;
+  storedModel: string;
+};
 
 function readStore(): Record<string, string> {
   try {
@@ -44,8 +50,14 @@ export function rememberSessionModel(sessionId: string, model: string) {
   const normalized = model.trim();
   if (!sessionId || !normalized) return;
   const store = readStore();
+  if (store[sessionId] === normalized) return;
   store[sessionId] = normalized;
   writeStore(store);
+  window.dispatchEvent(
+    new CustomEvent<AgentSessionModelChangedDetail>(AGENT_SESSION_MODEL_CHANGED_EVENT, {
+      detail: { sessionId, storedModel: normalized },
+    }),
+  );
 }
 
 export function forgetSessionModel(sessionId: string) {

@@ -3513,7 +3513,7 @@ dependencies = [
 
 [[package]]
 name = "os-june"
-version = "0.0.37"
+version = "0.0.38"
 dependencies = [
  "anyhow",
  "apple-metal",
@@ -3529,6 +3529,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "hound",
+ "imagesize",
  "june-companion-crypto",
  "june-companion-protocol",
  "keyring",

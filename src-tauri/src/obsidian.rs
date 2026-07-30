@@ -101,6 +101,37 @@ pub(crate) fn discovery_for_app(app: &AppHandle) -> Result<ObsidianDiscovery, Ap
     Ok(discovery_from_config(&config))
 }
 
+/// Returns the canonical absolute path of the currently connected and available
+/// Obsidian vault, or `None` when disconnected or unavailable. Reads
+/// `obsidian.json` and validates at invocation time so vault changes and
+/// disconnects affect the next host tool call. The returned path is the
+/// raw canonical form (matching `Path::canonicalize()`) so it can be used
+/// for component-wise containment checks in path resolution.
+pub(crate) fn current_vault_root(app: &AppHandle) -> Option<PathBuf> {
+    let config = read_config_optional(app).ok().flatten()?;
+    canonical_vault_root_from_config(&config)
+}
+
+/// Extracts the raw canonical vault root from a config, without the external-use
+/// normalization that strips Windows `\\?\` prefixes. Returns `None` when the
+/// vault path is invalid, missing, or lacks an `.obsidian` directory.
+fn canonical_vault_root_from_config(config: &ObsidianConfig) -> Option<PathBuf> {
+    let path = Path::new(&config.vault_path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.is_dir() {
+        return None;
+    }
+    let obsidian_dir = canonical.join(".obsidian");
+    let metadata = fs::symlink_metadata(&obsidian_dir).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    Some(canonical)
+}
+
 fn discovery_from_config(config: &ObsidianConfig) -> ObsidianDiscovery {
     let name = vault_name(&config.vault_path);
     match validate_vault_path(Path::new(&config.vault_path)) {
@@ -254,24 +285,9 @@ fn validate_vault_path(path: &Path) -> Result<PathBuf, AppError> {
             "Choose a folder that contains an .obsidian directory.",
         ));
     }
-    Ok(normalize_vault_path_for_external_use(canonical))
-}
-
-#[cfg(target_os = "windows")]
-fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
-    let path = path.to_string_lossy();
-    if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{unc}"));
-    }
-    if let Some(drive_path) = path.strip_prefix(r"\\?\") {
-        return PathBuf::from(drive_path);
-    }
-    PathBuf::from(path.as_ref())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn normalize_vault_path_for_external_use(path: PathBuf) -> PathBuf {
-    path
+    Ok(crate::filesystem::normalize_path_for_external_use(
+        &canonical,
+    ))
 }
 
 fn ensure_readable(path: &Path) -> Result<(), AppError> {
@@ -301,12 +317,15 @@ mod tests {
     use super::{discovery_from_config, status_from_config, validate_vault_path, ObsidianConfig};
 
     #[test]
-    fn validates_real_vault_and_canonicalizes() {
+    fn validates_real_vault_and_returns_external_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         let vault = temp.path().join("My Vault");
         std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
         let validated = validate_vault_path(&vault).expect("valid vault");
-        assert_eq!(validated, vault.canonicalize().expect("canonical"));
+        let expected = crate::filesystem::normalize_path_for_external_use(
+            &vault.canonicalize().expect("canonical"),
+        );
+        assert_eq!(validated, expected);
     }
 
     #[test]
@@ -319,16 +338,12 @@ mod tests {
         });
         assert!(connected.connected);
         assert!(connected.available);
-        assert_eq!(
-            connected.vault.and_then(|vault| vault.path),
-            Some(
-                vault
-                    .canonicalize()
-                    .expect("canonical")
-                    .to_string_lossy()
-                    .into_owned()
-            )
-        );
+        let expected = crate::filesystem::normalize_path_for_external_use(
+            &vault.canonicalize().expect("canonical"),
+        )
+        .to_string_lossy()
+        .into_owned();
+        assert_eq!(connected.vault.and_then(|vault| vault.path), Some(expected));
 
         let unavailable = discovery_from_config(&ObsidianConfig {
             vault_path: "/missing/Work".to_string(),
@@ -354,5 +369,36 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let err = validate_vault_path(temp.path()).expect_err("not a vault");
         assert_eq!(err.code, "obsidian_vault_invalid");
+    }
+
+    #[test]
+    fn canonical_root_returns_canonical_for_available_vault() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let vault = temp.path().join("My Vault");
+        std::fs::create_dir_all(vault.join(".obsidian")).expect("vault");
+        let config = ObsidianConfig {
+            vault_path: vault.to_string_lossy().into_owned(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, Some(vault.canonicalize().expect("canonical")));
+    }
+
+    #[test]
+    fn canonical_root_returns_none_for_missing_vault() {
+        let config = ObsidianConfig {
+            vault_path: "/missing/Does Not Exist".to_string(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, None);
+    }
+
+    #[test]
+    fn canonical_root_returns_none_for_non_vault_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let config = ObsidianConfig {
+            vault_path: temp.path().to_string_lossy().into_owned(),
+        };
+        let root = super::canonical_vault_root_from_config(&config);
+        assert_eq!(root, None);
     }
 }
