@@ -275,6 +275,7 @@ export type StartAgentRunRequest = {
   workspacePath: string;
   enabledSkillIds: string[];
   attachments: string[];
+  attachmentMetadata?: Array<{ name: string; mediaType?: string }>;
 };
 
 export type ResolveAgentInterruptionRequest = {

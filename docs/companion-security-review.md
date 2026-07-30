@@ -22,6 +22,13 @@
 - Confirm desktop capability equality, no generic executor, note CAS, durable
   pre-dispatch mutation reservations, separate completed/pending retention
   bounds, sequence reset only after handshake, and immediate online revocation.
+- Confirm Computer use remote approvals are default-off, bound to one tool-call
+  id plus its SDK interruption id, exact verified target, and stored session;
+  require an authenticated live peer advertising `computerUseApprove`; expire
+  against a monotonic 60-second deadline; serialize same-interruption local and
+  remote resolution without blocking unrelated interruptions; persist a
+  device-attributed decision receipt; create no task-scoped app grant; and
+  never bypass Rust target or action policy.
 - Confirm APNs payload is content-free and correctness does not depend on wake.
 - Confirm production runs one companion relay replica until shared pairing,
   routing, and revocation propagation have an independent review.

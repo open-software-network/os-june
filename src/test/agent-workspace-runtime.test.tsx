@@ -37,6 +37,7 @@ import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
+import { rememberSessionModel } from "../lib/agent-session-models";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
@@ -1850,6 +1851,18 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
   });
 
+  it("updates the desktop picker when a companion stages a session model", async () => {
+    render(<AgentWorkspace initialSession={session} />);
+    await screen.findByText("Earlier answer");
+    expect(screen.getByRole("button", { name: "Model: Fast" })).toBeEnabled();
+
+    act(() => rememberSessionModel(session.id, "__june_auto_generation__:20"));
+
+    expect(screen.getByRole("button", { name: "Model: Auto" }).getAttribute("title")).toContain(
+      "Preference: Economy",
+    );
+  });
+
   it("resolves clarification interruptions through the typed host command", async () => {
     render(<AgentWorkspace initialSession={session} />);
     await screen.findByText("Earlier answer");
@@ -1890,6 +1903,100 @@ describe("AgentWorkspace runtime wiring", () => {
         },
       }),
     );
+  });
+
+  it("lets a user stop a waiting clarification and continue with a new message", async () => {
+    const user = userEvent.setup();
+    const waitingSession: AgentSessionDto = {
+      ...session,
+      status: "waiting_for_user",
+    };
+    let cancelled = false;
+    let finishCancellation: (() => void) | undefined;
+    const cancellation = new Promise<void>((resolve) => {
+      finishCancellation = resolve;
+    });
+    const interruption = () => ({
+      id: "clarify-item",
+      sessionId: session.id,
+      runId: "run-waiting",
+      sequence: 2,
+      createdAt: "2026-07-22T12:00:02Z",
+      kind: "interruption" as const,
+      interruption: {
+        id: "clarify-1",
+        kind: "clarification" as const,
+        sessionId: session.id,
+        runId: "run-waiting",
+        status: cancelled ? ("expired" as const) : ("pending" as const),
+        createdAt: "2026-07-22T12:00:02Z",
+        question: "Which project?",
+        choices: [],
+      },
+    });
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_sessions") {
+        return Promise.resolve([
+          cancelled ? { ...waitingSession, status: "idle" } : waitingSession,
+        ]);
+      }
+      if (command === "get_agent_session") {
+        return Promise.resolve(cancelled ? { ...waitingSession, status: "idle" } : waitingSession);
+      }
+      if (command === "get_latest_agent_run") {
+        return Promise.resolve({
+          id: "run-waiting",
+          sessionId: session.id,
+          status: cancelled ? "cancelled" : "waiting_for_user",
+          model: "__june_auto_generation__:20",
+          startedAt: "2026-07-22T12:00:01Z",
+          ...(cancelled ? { completedAt: "2026-07-22T12:00:03Z" } : {}),
+        });
+      }
+      if (command === "list_agent_items") return Promise.resolve([interruption()]);
+      if (command === "list_agent_artifacts" || command === "list_agent_skills") {
+        return Promise.resolve([]);
+      }
+      if (command === "list_venice_models") {
+        return Promise.resolve({ mode: "generation", models: [] });
+      }
+      if (command === "provider_model_settings") {
+        return Promise.resolve({
+          settings: { costQuality: 100 },
+          effectiveSettings: { veniceApiKeyConfigured: false },
+        });
+      }
+      if (command === "cancel_agent_run") {
+        return cancellation.then(() => {
+          cancelled = true;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<AgentWorkspace initialSession={waitingSession} />);
+
+    expect(await screen.findByText("Which project?")).toBeVisible();
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Continue from here");
+    expect(screen.queryByRole("button", { name: "Send message" })).not.toBeInTheDocument();
+    const stopButton = screen.getByRole("button", { name: "Stop June" });
+    await user.click(stopButton);
+    expect(stopButton).toBeDisabled();
+    fireEvent.click(stopButton);
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "cancel_agent_run"),
+    ).toHaveLength(1);
+    finishCancellation?.();
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("cancel_agent_run", { runId: "run-waiting" }),
+    );
+    expect(await screen.findByText("Skipped")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "Continue from here",
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
   });
 
   it("presents retryable runtime failures as a retry action and resumes through the typed host command", async () => {

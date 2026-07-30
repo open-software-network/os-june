@@ -203,9 +203,13 @@ pub async fn dispatch_tool(
         }
         "request_clarification" => consume_clarification_answer(context).await,
         "request_secret" => consume_secret_reference(context).await,
-        "computer_use" => {
-            Ok(crate::computer_use::handle_proxy_action(&context.app, arguments).await)
-        }
+        "computer_use" => Ok(crate::computer_use::handle_proxy_action_for_call(
+            &context.app,
+            arguments,
+            &context.session_id,
+            context.call_id.as_deref(),
+        )
+        .await),
         name if crate::connectors::notion::runtime_name_to_provider(name).is_some() => {
             notion_tool(context, name, &arguments).await
         }
@@ -624,7 +628,7 @@ async fn generate_video(context: &ToolContext, arguments: &Value) -> Result<Valu
                     .await?;
                 return Ok(json!({
                     "mediaType": "video",
-                    "path": destination,
+                    "path": crate::filesystem::normalize_path_for_external_use(&destination),
                     "mimeType": mime_type,
                     "model": model,
                     "prompt": prompt,
@@ -667,7 +671,7 @@ async fn persist_generated_image(
     Ok(json!({
         "mediaType": "image",
         "dataUrl": format!("data:{};base64,{}", generated.mime_type, generated.image_base64),
-        "path": path,
+        "path": crate::filesystem::normalize_path_for_external_use(&path),
         "mimeType": generated.mime_type,
         "model": generated.model,
         "prompt": prompt,
@@ -765,25 +769,34 @@ fn web_request(arguments: &Value, call_id: Option<&str>) -> Value {
 }
 
 async fn list_files(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
-    let path = resolve_path(
+    let path = resolve_path_with_scope(
         context,
         arguments.get("path").and_then(Value::as_str).unwrap_or("."),
         true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
     )?;
     let mut entries = tokio::fs::read_dir(&path).await.map_err(io_error)?;
     let mut result = Vec::new();
     while let Some(entry) = entries.next_entry().await.map_err(io_error)? {
         let metadata = entry.metadata().await.map_err(io_error)?;
-        result.push(json!({ "name": entry.file_name().to_string_lossy(), "path": entry.path(), "directory": metadata.is_dir(), "sizeBytes": metadata.len() }));
+        let entry_path = entry.path();
+        result.push(json!({ "name": entry.file_name().to_string_lossy(), "path": crate::filesystem::normalize_path_for_external_use(&entry_path), "directory": metadata.is_dir(), "sizeBytes": metadata.len() }));
         if result.len() >= 500 {
             break;
         }
     }
-    Ok(json!({ "path": path, "entries": result }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "entries": result }),
+    )
 }
 
 async fn read_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
-    let path = resolve_path(context, required_string(arguments, "path")?, true)?;
+    let path = resolve_path_with_scope(
+        context,
+        required_string(arguments, "path")?,
+        true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
+    )?;
     let bytes = tokio::fs::read(&path).await.map_err(io_error)?;
     if bytes.len() > MAX_TOOL_OUTPUT_BYTES {
         return Err(AppError::new(
@@ -793,7 +806,9 @@ async fn read_file(context: &ToolContext, arguments: &Value) -> Result<Value, Ap
     }
     let content = String::from_utf8(bytes)
         .map_err(|_| AppError::new("agent_file_not_text", "File is not UTF-8 text."))?;
-    Ok(json!({ "path": path, "content": content }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "content": content }),
+    )
 }
 
 async fn write_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -804,7 +819,9 @@ async fn write_file(context: &ToolContext, arguments: &Value) -> Result<Value, A
     }
     tokio::fs::write(&path, content).await.map_err(io_error)?;
     record_artifact(context, &path, "created", None).await?;
-    Ok(json!({ "path": path, "sizeBytes": content.len() }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "sizeBytes": content.len() }),
+    )
 }
 
 async fn patch_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -823,7 +840,9 @@ async fn patch_file(context: &ToolContext, arguments: &Value) -> Result<Value, A
         .await
         .map_err(io_error)?;
     record_artifact(context, &path, "updated", None).await?;
-    Ok(json!({ "path": path, "updated": true }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "updated": true }),
+    )
 }
 
 async fn import_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -851,7 +870,9 @@ async fn import_file(context: &ToolContext, arguments: &Value) -> Result<Value, 
         .await
         .map_err(io_error)?;
     record_artifact(context, &destination, "imported", Some(&source)).await?;
-    Ok(json!({ "path": destination, "sourcePath": source }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&destination), "sourcePath": crate::filesystem::normalize_path_for_external_use(&source) }),
+    )
 }
 
 async fn preview_file(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
@@ -862,7 +883,9 @@ async fn preview_file(context: &ToolContext, arguments: &Value) -> Result<Value,
     } else {
         None
     };
-    Ok(json!({ "path": path, "sizeBytes": metadata.len(), "text": preview }))
+    Ok(
+        json!({ "path": crate::filesystem::normalize_path_for_external_use(&path), "sizeBytes": metadata.len(), "text": preview }),
+    )
 }
 
 async fn record_artifact(
@@ -896,10 +919,11 @@ async fn record_artifact_with_mime(
 
 async fn search_files(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
     let needle = required_string(arguments, "query")?.to_string();
-    let root = resolve_path(
+    let root = resolve_path_with_scope(
         context,
         arguments.get("path").and_then(Value::as_str).unwrap_or("."),
         true,
+        PathScope::WorkspaceOrCurrentObsidianVaultRead,
     )?;
     let result = tokio::task::spawn_blocking(move || search_text_files(&root, &needle))
         .await
@@ -971,7 +995,12 @@ fn search_text_files(root: &Path, needle: &str) -> FileSearchResult {
             if !line.contains(needle) {
                 continue;
             }
-            let entry = format!("{}:{}:{}\n", path.display(), line_index + 1, line);
+            let entry = format!(
+                "{}:{}:{}\n",
+                crate::filesystem::normalize_path_for_external_use(&path).display(),
+                line_index + 1,
+                line
+            );
             if match_count >= MAX_SEARCH_MATCHES
                 || output.len().saturating_add(entry.len()) > MAX_TOOL_OUTPUT_BYTES
             {
@@ -1273,6 +1302,28 @@ fn resolve_path(
     requested: &str,
     must_exist: bool,
 ) -> Result<PathBuf, AppError> {
+    resolve_path_with_scope(context, requested, must_exist, PathScope::WorkspaceOnly)
+}
+
+#[derive(Clone, Copy)]
+enum PathScope {
+    WorkspaceOnly,
+    WorkspaceOrCurrentObsidianVaultRead,
+}
+
+/// Component-wise containment check: returns true if `path` is `root` or a
+/// descendant of `root`. Uses `Path::components()` so textual-prefix collisions
+/// (e.g. `/Vault` vs `/Vault-backup`) are rejected.
+fn is_within(path: &Path, root: &Path) -> bool {
+    path.starts_with(root)
+}
+
+fn resolve_path_with_scope(
+    context: &ToolContext,
+    requested: &str,
+    must_exist: bool,
+    scope: PathScope,
+) -> Result<PathBuf, AppError> {
     let requested = Path::new(requested);
     let joined = if requested.is_absolute() {
         requested.to_path_buf()
@@ -1296,7 +1347,14 @@ fn resolve_path(
     };
     if context.safety_mode == AgentSafetyMode::Sandboxed {
         let workspace = context.workspace.canonicalize().map_err(io_error)?;
-        if !resolved.starts_with(workspace) {
+        if !is_within(&resolved, &workspace) {
+            if let PathScope::WorkspaceOrCurrentObsidianVaultRead = scope {
+                if let Some(vault_root) = crate::obsidian::current_vault_root(&context.app) {
+                    if is_within(&resolved, &vault_root) {
+                        return Ok(resolved);
+                    }
+                }
+            }
             return Err(AppError::new(
                 "agent_path_denied",
                 "Path is outside this session's workspace.",
@@ -1316,6 +1374,61 @@ fn skill_roots(app: &AppHandle) -> Vec<PathBuf> {
         roots.push(PathBuf::from(home).join(".agents").join("skills"));
     }
     roots
+}
+
+/// Seeds bundled agent skills (packaged as Tauri resources) into the managed
+/// skill directory. Copies only when the managed destination is absent so user
+/// edits and enable/disable settings are preserved across app launches.
+pub fn seed_bundled_skills(app: &AppHandle) {
+    let Some(managed_root) = crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|path| path.join("agents").join("skills"))
+    else {
+        return;
+    };
+    let resource_root = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|dir| dir.join("native").join("agent-skills"));
+    let debug_root = std::env::var("CARGO_MANIFEST_DIR").ok().map(|manifest| {
+        PathBuf::from(manifest)
+            .join("resources")
+            .join("agent-skills")
+    });
+    let source_root = resource_root.filter(|path| path.is_dir()).or(debug_root);
+    let Some(source_root) = source_root else {
+        tracing::warn!("could not resolve bundled agent-skills resource directory");
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&source_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let skill_file = entry.path().join("SKILL.md");
+        if !skill_file.is_file() {
+            continue;
+        }
+        let skill_id = entry.file_name().to_string_lossy().into_owned();
+        let dest_dir = managed_root.join(&skill_id);
+        let dest_file = dest_dir.join("SKILL.md");
+        if dest_file.is_file() {
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(&dest_dir) {
+            tracing::warn!(?error, skill = %skill_id, "could not create managed skill directory");
+            continue;
+        }
+        let temp = dest_dir.join(".SKILL.md.tmp");
+        if let Err(error) = std::fs::copy(&skill_file, &temp) {
+            tracing::warn!(?error, skill = %skill_id, "could not copy bundled skill");
+            continue;
+        }
+        if let Err(error) = std::fs::rename(&temp, &dest_file) {
+            tracing::warn!(?error, skill = %skill_id, "could not finalize bundled skill");
+            let _ = std::fs::remove_file(&temp);
+        }
+    }
 }
 
 pub(crate) fn sandbox_profile(workspace: &Path) -> String {
@@ -1517,5 +1630,27 @@ mod tests {
         assert!(result.matches.contains("second.txt:2:needle two"));
         assert!(!result.matches.contains("binary.bin"));
         assert!(!result.matches.contains("hidden.txt"));
+    }
+
+    #[test]
+    fn is_within_accepts_root_and_descendants() {
+        let root = Path::new("/Users/example/Vault");
+        assert!(is_within(root, root));
+        assert!(is_within(&root.join("notes"), root));
+        assert!(is_within(&root.join("notes").join("daily.md"), root));
+    }
+
+    #[test]
+    fn is_within_rejects_textual_prefix_collisions() {
+        let vault = Path::new("/Users/example/Vault");
+        let sibling = Path::new("/Users/example/Vault-backup");
+        assert!(!is_within(sibling, vault));
+    }
+
+    #[test]
+    fn is_within_rejects_unrelated_paths() {
+        let vault = Path::new("/Users/example/Vault");
+        let other = Path::new("/Users/other/Documents");
+        assert!(!is_within(other, vault));
     }
 }

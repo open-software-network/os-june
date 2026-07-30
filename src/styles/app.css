@@ -28981,6 +28981,38 @@ button.connector-approvals-info {
   gap: var(--sp-4);
 }
 
+.companion-browse-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-4);
+}
+
+.companion-root-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.companion-root-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding-top: var(--sp-3);
+  border-top: var(--line-width) solid var(--border-subtle);
+}
+
+.companion-root-path {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
 .companion-device-card {
   display: flex;
   flex-direction: column;

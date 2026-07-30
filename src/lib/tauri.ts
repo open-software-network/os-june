@@ -2326,12 +2326,18 @@ export type CompanionCapability =
   | "agentRead"
   | "agentChat"
   | "agentCancel"
+  | "modelRead"
+  | "modelEdit"
+  | "mediaRead"
   | "settingsRead"
   | "settingsEditSafe"
   | "recordingControlExisting"
   | "appFocus"
+  | "filesUpload"
+  | "filesBrowse"
   | "devicesReadSelf"
-  | "devicesRevokeSelf";
+  | "devicesRevokeSelf"
+  | "computerUseApprove";
 
 export type CompanionPairingQr = {
   pairingId: string;
@@ -2379,6 +2385,46 @@ export async function companionListDevices() {
   return invoke<LinkedCompanionDevice[]>("companion_list_devices");
 }
 
+export type CompanionBrowseRoot = {
+  id: string;
+  name: string;
+  path: string;
+};
+
+export async function companionListBrowseRoots() {
+  return invoke<CompanionBrowseRoot[]>("companion_list_browse_roots");
+}
+
+export async function companionGrantBrowseRoot(path: string) {
+  return invoke<CompanionBrowseRoot>("companion_grant_browse_root", {
+    request: { path },
+  });
+}
+
+export async function companionRevokeBrowseRoot(rootId: string) {
+  return invoke<void>("companion_revoke_browse_root", { rootId });
+}
+
+export async function companionConsumeAttachments(referenceIds: string[]) {
+  return invoke<void>("companion_consume_attachments", { referenceIds });
+}
+
+export type CompanionComputerUseApprovalSettings = {
+  enabled: boolean;
+  available: boolean;
+};
+
+export async function companionComputerUseApprovalSettings() {
+  return invoke<CompanionComputerUseApprovalSettings>("companion_computer_use_approval_settings");
+}
+
+export async function companionSetComputerUseApprovalEnabled(enabled: boolean) {
+  return invoke<CompanionComputerUseApprovalSettings>(
+    "companion_set_computer_use_approval_enabled",
+    { enabled },
+  );
+}
+
 export async function companionRenameDevice(deviceId: string, displayName: string) {
   return invoke<void>("companion_rename_device", {
     request: { deviceId, displayName },
@@ -2399,10 +2445,55 @@ export type CompanionAgentStatus =
 
 export type CompanionAgentEventRequest =
   | { type: "delta"; data: { storedSessionId: string; text: string } }
-  | { type: "status"; data: { storedSessionId: string; status: CompanionAgentStatus } };
+  | {
+      type: "status";
+      data: { storedSessionId: string; status: CompanionAgentStatus; runId?: string };
+    }
+  | { type: "modelChanged"; data: { selection: CompanionSessionModelSelection } };
 
 export async function companionPublishAgentEvent(request: CompanionAgentEventRequest) {
   return invoke<void>("companion_publish_agent_event", { request });
+}
+
+export type CompanionMediaReference = {
+  artifactId: string;
+  kind: "image" | "video";
+  mediaType: string;
+  widthPx?: number;
+  heightPx?: number;
+  durationMs?: number;
+  sizeBytes: number;
+};
+
+export type CompanionMediaProjection = {
+  runId?: string;
+  createdAt: string;
+  reference: CompanionMediaReference;
+};
+
+export async function companionListAgentMedia(storedSessionId: string) {
+  return invoke<CompanionMediaProjection[]>("companion_list_agent_media", { storedSessionId });
+}
+
+export type CompanionMediaChunk = {
+  artifactId: string;
+  offsetBytes: number;
+  totalSizeBytes: number;
+  sha256: string;
+  bytes: string;
+  complete: boolean;
+};
+
+export async function companionReadAgentMediaChunk(
+  storedSessionId: string,
+  artifactId: string,
+  offsetBytes: number,
+) {
+  return invoke<CompanionMediaChunk>("companion_read_agent_media_chunk", {
+    storedSessionId,
+    artifactId,
+    offsetBytes,
+  });
 }
 
 export type CompanionFrontendIntent =
@@ -2411,8 +2502,23 @@ export type CompanionFrontendIntent =
       type: "agentMessagesList";
       data: { storedSessionId: string; cursor?: string; limit: number };
     }
-  | { type: "agentSend"; data: { storedSessionId?: string; message: string } }
-  | { type: "agentCancel"; data: { storedSessionId: string } };
+  | {
+      type: "agentSend";
+      data: {
+        storedSessionId?: string;
+        message: string;
+        attachments: Array<{ path: string; name: string; mediaType?: string }>;
+        attachmentReferenceIds: string[];
+      };
+    }
+  | { type: "agentCancel"; data: { storedSessionId: string } }
+  | { type: "modelsList" }
+  | { type: "sessionModelGet"; data: { storedSessionId: string } }
+  | { type: "sessionModelSet"; data: { storedSessionId: string; modelId: string } }
+  | {
+      type: "mediaFetch";
+      data: { storedSessionId: string; artifactId: string; offsetBytes: number };
+    };
 
 export type CompanionFrontendRequest = {
   operationId: string;
@@ -2442,11 +2548,15 @@ export type CompanionResultPayload =
           text: string;
           createdAt: string;
           streaming: boolean;
+          media?: CompanionMediaReference[];
         }>;
         nextCursor?: string;
       };
     }
   | { type: "agentAccepted"; data: { storedSessionId: string } }
+  | { type: "models"; data: { models: CompanionModelOption[] } }
+  | { type: "sessionModel"; data: CompanionSessionModelSelection }
+  | { type: "mediaChunk"; data: CompanionMediaChunk }
   | {
       type: "error";
       data: {
@@ -2461,11 +2571,34 @@ export type CompanionResultPayload =
           | "conflict"
           | "mac_offline"
           | "busy"
+          | "outcome_unknown"
+          | "limit_exceeded"
+          | "integrity_mismatch"
           | "internal";
         message: string;
         retryable: boolean;
       };
     };
+
+export type CompanionModelPrivacy = "endToEndEncrypted" | "private" | "anonymous";
+
+export type CompanionModelOption = {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  routing: "automatic" | "remote";
+  privacy?: CompanionModelPrivacy;
+  privacyLabel?: string;
+  priceLabel?: string;
+};
+
+export type CompanionSessionModelSelection = {
+  storedSessionId: string;
+  modelId: string;
+  modelName: string;
+  costQuality?: number;
+};
 
 export async function companionCompleteFrontendRequest(
   operationId: string,

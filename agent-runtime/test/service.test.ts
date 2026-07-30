@@ -85,7 +85,7 @@ test("serializes an approval interruption for durable host persistence", async (
   const engine = new FakeEngine({
     history: [],
     usage: { resolvedModel: "z-ai/glm-5.2" },
-    interruptions: [{ id: "approval-1", kind: "approval", toolName: "write_file", arguments: { path: "a" } }],
+    interruptions: [{ id: "approval-1", callId: "call-1", kind: "approval", toolName: "write_file", arguments: { path: "a" } }],
     serializedState: "{\"state\":true}",
   });
   const { service, frames } = harness(engine);
@@ -105,6 +105,7 @@ test("serializes an approval interruption for durable host persistence", async (
     "z-ai/glm-5.2",
   );
   assert.equal(interruption?.params.id, "approval-1");
+  assert.equal(interruption?.params.callId, "call-1");
 });
 
 test("cancels an active run with its abort signal", async () => {

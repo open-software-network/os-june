@@ -273,6 +273,7 @@
     "sandboxedBaseToolsets": [
       "web",
       "vision",
+      "skills",
       "todo",
       "memory",
       "session_search",

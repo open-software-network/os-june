@@ -394,25 +394,25 @@ is UI; the reference is the token).
 
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
-group; an MCP server is an external tool provider (June ships `june_context`,
-`june_web`, `june_image`, `june_recorder`, `june_video`, and the connector
-servers `june_gmail`, `june_gcal`, `june_linear`, and `june_notion`, plus their
-`*_actions` counterparts). `june_notion` is the hosted Notion MCP read toolset;
-`june_notion_actions` is the separately approval-gated create/update toolset.
+group; an MCP server is an external tool provider (June ships no June-managed
+MCP servers after ADR-0040; June-owned capabilities are host tools in the agent
+loop). User-supplied external MCP servers remain supported through the `mcp_`
+dispatch prefix.
 _Avoid_: using "tool" for all three.
 
 **Obsidian plugin**:
 The June-owned local capability for discovering the user-selected Obsidian vault
-at task time through the `june_obsidian` MCP server. The vault selection is
+at task time through the `get_obsidian_vault` host tool. The vault selection is
 stored in June-owned `obsidian.json`; it is not a runtime environment variable.
-Discovery is current state, not write authorization. Disconnect removes future
-discovery but cannot revoke a path already disclosed to a live unrestricted
-runtime.
-_Avoid_: Obsidian connector, `OBSIDIAN_VAULT_PATH`.
+Discovery is current state, not write authorization. In Sandboxed mode, only
+`list_files`, `read_file`, and `search_files` may access the vault; writes are
+host-denied. Disconnect removes future discovery but cannot revoke a path
+already disclosed to a live unrestricted runtime.
+_Avoid_: Obsidian connector, `OBSIDIAN_VAULT_PATH`, `june_obsidian` MCP server.
 
 **Plugin**:
 A user-facing capability bundle in June's Plugins area. A plugin may combine
-Skills, Toolsets, app-owned MCP servers, routine templates, and optional
+Skills, Toolsets, June-owned host tools, routine templates, and optional
 Connectors around one job. Enabling or installing the bundle is distinct from
 connecting a third-party account and from choosing a routine's trust mode.
 The ranked portfolio and shared product contract live in
@@ -665,6 +665,13 @@ A versioned, capability-scoped, expiring application message encrypted between
 linked devices. Only routing metadata and ciphertext are visible to the
 **companion relay**.
 _Avoid_: raw command, Hermes frame, Tauri command.
+
+**Companion media result**:
+A bounded metadata reference to a canonical image or video artifact generated
+by June's agent for one stored session and run. The reference is not the media
+itself; a linked device with `mediaRead` fetches the verified full artifact in
+chunks.
+_Avoid_: media upload, attachment path, inline media.
 
 ### Desktop shell & updates
 

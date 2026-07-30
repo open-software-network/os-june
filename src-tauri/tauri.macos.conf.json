@@ -12,7 +12,8 @@
       "../.tauri-helper/June Computer Use Driver.app": "native/bin/June Computer Use Driver.app",
       "../.tauri-agent-runtime/june-agent-runtime": "native/bin/june-agent-runtime",
       "../.tauri-agent-runtime/june-agent-runtime.sha256": "native/bin/june-agent-runtime.sha256",
-      "../extension/dist": "native/extension"
+      "../extension/dist": "native/extension",
+      "resources/agent-skills": "native/agent-skills"
     },
     "macOS": {
       "bundleName": "June",

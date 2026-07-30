@@ -76,3 +76,27 @@ validate and persist or delete the selected vault, then refresh UI state.
   lets a running runtime discover current state without a restart.
 
 2026-07-27 addendum: ADR-0040 supersedes this ADR's `june_obsidian` MCP-server integration shape; the Obsidian vault-discovery product scope remains binding.
+
+## 2026-07-28 addendum: Post-Hermes host-tool enforcement
+
+ADR-0040 retired the `june_obsidian` MCP-server integration shape.
+`get_obsidian_vault` is now a direct June-owned host tool dispatched in
+the trusted Rust host (`agent_runtime/tools.rs`), not an MCP server.
+
+June bundles and seeds the `june-obsidian` skill into the June-owned
+managed skill catalog from a Tauri-packaged resource at app startup. The
+skill references the unprefixed `get_obsidian_vault` host tool.
+
+In Sandboxed mode, only `list_files`, `read_file`, and `search_files`
+receive a read grant for the currently configured and available canonical
+vault root. The host revalidates that root on each invocation by reading
+`obsidian.json`; a model-visible path is not itself a capability.
+`write_file`, `patch_file`, `preview_file`, `edit_image`, `import_file`,
+and `run_shell` remain workspace-only in Sandboxed mode. No Sandboxed
+external write root is granted.
+
+Unrestricted behavior and approval requirements remain unchanged.
+
+This is the post-Hermes enforcement of this ADR's existing
+read-without-write intent, implemented through the host-tool path
+authorization established by ADR-0040.

@@ -1264,6 +1264,33 @@ const MIGRATIONS: &[Migration] = &[
             columns: NOTE_CALENDAR_HTML_LINK_COLUMN,
         }],
     },
+    // The feature branch used catalog position 44, but main already shipped
+    // positions 44 and 45. Preserve those entries and append the file schema
+    // after them as required by ADR-0037.
+    Migration {
+        version: 46,
+        name: "companion_files",
+        requirements: &[
+            SchemaRequirement::Table("companion_browse_roots"),
+            SchemaRequirement::Table("companion_uploads"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_files.sql"
+        ))],
+    },
+    // The active Computer use fix branch also used catalog position 44.
+    // Preserve every earlier position and append its audit schema.
+    Migration {
+        version: 47,
+        name: "companion_computer_use_approval_audit",
+        requirements: &[
+            SchemaRequirement::Table("companion_computer_use_approval_audit"),
+            SchemaRequirement::Index("idx_companion_computer_use_approval_audit_request"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/033_companion_computer_use_approval_audit.sql"
+        ))],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -2115,6 +2142,28 @@ mod tests {
 
         assert!(table_exists(&pool, "browser_action_outcomes").await);
         assert!(table_exists(&pool, "connector_actions").await);
+        assert!(table_exists(&pool, "companion_browse_roots").await);
+        assert!(table_exists(&pool, "companion_uploads").await);
+        assert!(table_exists(&pool, "companion_computer_use_approval_audit").await);
+        let companion_tail = query(
+            "SELECT version, name
+             FROM schema_migrations
+             WHERE version >= 46
+             ORDER BY version",
+        )
+        .fetch_all(&pool)
+        .await
+        .expect("companion migration stamps")
+        .into_iter()
+        .map(|row| (row.get::<i64, _>("version"), row.get::<String, _>("name")))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            companion_tail,
+            vec![
+                (46, "companion_files".to_string()),
+                (47, "companion_computer_use_approval_audit".to_string()),
+            ]
+        );
         assert_latest_stamp(&pool).await;
     }
 

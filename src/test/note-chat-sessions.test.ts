@@ -2,10 +2,12 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRunDto, AgentSessionDto } from "../lib/agent-runtime-contract";
+import { AGENT_RUN_AUTO_MODEL_PREFIX, AUTO_MODEL_ID } from "../lib/agent-model-selection";
 import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
+import { loadSessionModels, rememberSessionModel } from "../lib/agent-session-models";
 import {
   forgetNoteChatSession,
   noteChatSessionIdFor,
@@ -152,6 +154,57 @@ describe("note chat sessions", () => {
       type: "text",
       text: "The decision is to ship Friday.",
     });
+  });
+
+  it("uses a companion-staged model at the next note chat run boundary", async () => {
+    rememberNoteChatSession("note-1", "note-session");
+    rememberSessionModel("note-session", "model-b");
+    mocks.getSession.mockResolvedValue(session());
+    mocks.listItems.mockResolvedValue([]);
+    mocks.startRun.mockResolvedValue(run({ model: "model-b" }));
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Planning" }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.model).toBe("model-b");
+    await act(async () => {
+      await result.current.submit("Use the staged model.");
+    });
+
+    expect(mocks.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "note-session", model: "model-b" }),
+    );
+    expect(loadSessionModels()["note-session"]).toBeUndefined();
+  });
+
+  it("keeps a companion-staged Auto policy across later note chat runs", async () => {
+    const stagedAuto = `${AGENT_RUN_AUTO_MODEL_PREFIX}20`;
+    rememberNoteChatSession("note-1", "note-session");
+    rememberSessionModel("note-session", stagedAuto);
+    mocks.getSession.mockResolvedValue(session());
+    mocks.listItems.mockResolvedValue([]);
+    mocks.startRun.mockResolvedValue(run({ model: stagedAuto, status: "completed" }));
+    const { result } = renderHook(() => useNoteChat({ id: "note-1", title: "Planning" }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.model).toBe(AUTO_MODEL_ID);
+    await act(async () => {
+      await result.current.submit("Use the staged Auto policy.");
+    });
+
+    expect(mocks.startRun).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ sessionId: "note-session", model: stagedAuto }),
+    );
+    expect(loadSessionModels()["note-session"]).toBeUndefined();
+
+    await act(async () => {
+      await result.current.submit("Keep using the same Auto policy.");
+    });
+
+    expect(mocks.startRun).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ sessionId: "note-session", model: stagedAuto }),
+    );
   });
 
   it("cancels the active runtime run", async () => {
