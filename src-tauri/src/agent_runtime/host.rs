@@ -209,13 +209,13 @@ impl AgentRuntimeHost {
         );
         let (send, receive) = oneshot::channel();
         let pending = runtime.pending.clone();
-        if opens_model_scope(method) {
-            self.model_scopes.lock().await.insert(run_id.to_string());
-        }
+        let opens_scope = opens_model_scope(method);
+        let owns_model_scope =
+            opens_scope && self.model_scopes.lock().await.insert(run_id.to_string());
         pending.lock().await.insert(id.clone(), send);
         if let Err(error) = write_frame(&runtime.stdin, &frame).await {
             pending.lock().await.remove(&id);
-            if opens_model_scope(method) {
+            if owns_model_scope {
                 self.cancel_run_streams(run_id).await;
             }
             return Err(error);
@@ -227,7 +227,8 @@ impl AgentRuntimeHost {
             receive,
             runtime_request_timeout(method),
             run_id,
-            opens_model_scope(method),
+            owns_model_scope,
+            cancels_existing_scope_on_timeout(method),
         )
         .await
     }
@@ -239,14 +240,16 @@ impl AgentRuntimeHost {
         receive: oneshot::Receiver<Result<Value, AppError>>,
         timeout: std::time::Duration,
         run_id: &str,
-        cancel_scope_on_error: bool,
+        owns_model_scope: bool,
+        cancel_existing_scope_on_timeout: bool,
     ) -> Result<Value, AppError> {
         let response = await_runtime_response(pending, id, receive, timeout).await;
         if response.is_err()
-            && (cancel_scope_on_error
-                || response
-                    .as_ref()
-                    .is_err_and(|error| error.code == "agent_runtime_request_timed_out"))
+            && (owns_model_scope
+                || (cancel_existing_scope_on_timeout
+                    && response
+                        .as_ref()
+                        .is_err_and(|error| error.code == "agent_runtime_request_timed_out")))
         {
             self.cancel_run_streams(run_id).await;
         }
@@ -287,6 +290,10 @@ impl AgentRuntimeHost {
 
 fn opens_model_scope(method: &str) -> bool {
     matches!(method, "run.start" | "run.resume" | "history.compact")
+}
+
+fn cancels_existing_scope_on_timeout(method: &str) -> bool {
+    !opens_model_scope(method) || method == "run.resume"
 }
 
 fn runtime_request_timeout(method: &str) -> std::time::Duration {
@@ -1294,6 +1301,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resume_timeouts_cancel_preexisting_model_scopes() {
+        assert!(cancels_existing_scope_on_timeout("run.resume"));
+        assert!(!cancels_existing_scope_on_timeout("run.start"));
+        assert!(!cancels_existing_scope_on_timeout("history.compact"));
+        assert!(cancels_existing_scope_on_timeout("run.cancel"));
+    }
+
     #[tokio::test]
     async fn timed_out_control_requests_drop_pending_and_cancel_the_model_scope() {
         let host = AgentRuntimeHost::default();
@@ -1313,6 +1328,7 @@ mod tests {
                 std::time::Duration::ZERO,
                 scope,
                 false,
+                true,
             )
             .await
             .expect_err("the pending response must time out");
@@ -1321,6 +1337,45 @@ mod tests {
         assert!(!pending.lock().await.contains_key(id));
         assert!(!host.model_scopes.lock().await.contains(scope));
         assert_eq!(host.cancellations.registration_count(scope), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_duplicate_resume_keeps_the_preexisting_model_scope_active() {
+        let host = AgentRuntimeHost::default();
+        let pending: PendingRequests = Arc::new(Mutex::new(HashMap::new()));
+        let id = "duplicate-resume";
+        let scope = "run-resume";
+        host.model_scopes.lock().await.insert(scope.into());
+        let _registration = host.cancellations.register(scope).await;
+        let (send, receive) = oneshot::channel();
+        pending.lock().await.insert(id.into(), send);
+        pending
+            .lock()
+            .await
+            .remove(id)
+            .expect("pending duplicate resume")
+            .send(Err(AppError::new(
+                "agent_runtime_request_failed",
+                "Run is already active",
+            )))
+            .expect("duplicate response receiver");
+
+        let error = host
+            .await_request_response(
+                &pending,
+                id,
+                receive,
+                std::time::Duration::from_secs(1),
+                scope,
+                false,
+                false,
+            )
+            .await
+            .expect_err("the duplicate resume must be rejected");
+
+        assert_eq!(error.code, "agent_runtime_request_failed");
+        assert!(host.model_scopes.lock().await.contains(scope));
+        assert_eq!(host.cancellations.registration_count(scope), 1);
     }
 
     #[tokio::test]

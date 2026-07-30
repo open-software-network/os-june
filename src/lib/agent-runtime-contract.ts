@@ -38,6 +38,8 @@ export type AgentUsageDto = {
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
+  requests?: number;
+  latestInputTokens?: number;
   provider?: string;
   privacyLevel?: string;
   endpoint?: string;

@@ -2111,7 +2111,7 @@ export function AgentWorkspace({
   );
   const runUsage = projection.run?.usage;
   const contextLimit = usageModel?.contextTokens;
-  const contextUsed = runUsage?.inputTokens;
+  const contextUsed = runUsage?.latestInputTokens ?? runUsage?.inputTokens;
   const contextPercent =
     contextUsed !== undefined && contextLimit !== undefined && contextLimit > 0
       ? Math.min(100, (contextUsed / contextLimit) * 100)
