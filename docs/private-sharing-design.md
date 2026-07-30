@@ -81,11 +81,14 @@ rows.
 
 ### Rate-limit bounds
 
-Share requests keep the deployed fixed-window budget of 60 requests per
-minute. Authenticated endpoints consume both `user:{user_id}` and
-`ip:{client_address}` counters. Anonymous link views use
+Authenticated share requests use a fixed-window budget of 60 requests per
+minute keyed by `user:{user_id}`. They do not also consume an IP budget, which
+prevents unrelated signed-in users behind the same NAT or VPN exit from
+exhausting one another's allowance. Anonymous link views use
 `link-ip:{client_address}`, while viewer token exchanges use
-`ip:{client_address}`.
+`ip:{client_address}`. These unauthenticated client-address counters allow 300
+requests per minute, preserving an abuse ceiling while accommodating shared
+networks.
 
 The in-memory limiter has 64 independently locked shards, tracks at most
 100,000 keys across them, and caps each shard at 4,096 keys so retained hash

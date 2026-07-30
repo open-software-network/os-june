@@ -248,7 +248,7 @@ pub(crate) async fn view(
 ) -> Result<Json<ApiResponse<ShareViewResponse>>, ApiError> {
     let service = state.share().ok_or(ApiError::SharingUnavailable)?;
     let user = authenticated_user_with_scope(&state, &headers, PROFILE_READ_SCOPE).await?;
-    enforce_share_rate(&state, &headers, &user)?;
+    enforce_share_rate(&state, &user)?;
     let token = bearer_token(&headers)?.to_string();
     let record = service
         .view(&user, &token, &share_id, query.invite.as_deref())
@@ -284,7 +284,7 @@ pub(crate) async fn link_view(
 ) -> Result<Json<ApiResponse<ShareViewResponse>>, ApiError> {
     let service = state.share().ok_or(ApiError::SharingUnavailable)?;
     let client_key = format!("link-ip:{}", client_address(&headers));
-    if !state.share_rate().allow(&client_key) {
+    if !state.share_rate().allow_client(&client_key) {
         return Err(ApiError::AuthorizationDenied);
     }
     let record = service.view_link(&share_id, &query.link).await?;
@@ -308,18 +308,13 @@ async fn share_context<'a>(
 ) -> Result<(&'a ShareService, UserId), ApiError> {
     let service = state.share().ok_or(ApiError::SharingUnavailable)?;
     let user = authenticated_user(state, headers).await?;
-    enforce_share_rate(state, headers, &user)?;
+    enforce_share_rate(state, &user)?;
     Ok((service, user))
 }
 
-fn enforce_share_rate(
-    state: &ApiState,
-    headers: &HeaderMap,
-    user: &UserId,
-) -> Result<(), ApiError> {
+fn enforce_share_rate(state: &ApiState, user: &UserId) -> Result<(), ApiError> {
     let user_key = format!("user:{}", user.0);
-    let client_key = format!("ip:{}", client_address(headers));
-    if !state.share_rate().allow(&user_key) || !state.share_rate().allow(&client_key) {
+    if !state.share_rate().allow(&user_key) {
         return Err(ApiError::AuthorizationDenied);
     }
     Ok(())

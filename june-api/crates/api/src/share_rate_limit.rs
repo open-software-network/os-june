@@ -12,7 +12,8 @@ const SHARD_COUNT: usize = 64;
 const MAX_TRACKED_KEYS: usize = 100_000;
 const MAX_KEYS_PER_SHARD: usize = 4_096;
 const WINDOW: Duration = Duration::from_mins(1);
-const MAX_PER_WINDOW: u32 = 60;
+const MAX_PER_USER_WINDOW: u32 = 60;
+const MAX_PER_CLIENT_WINDOW: u32 = 300;
 const CLEANUP_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy)]
@@ -31,11 +32,13 @@ struct ShareRateLimiterInner {
 
 /// Fixed-window limiter for public-share endpoints.
 ///
-/// Keys retain the deployed 60 requests/minute semantics. A keyed request
-/// locks only one of 64 shards, while a detached maintenance task expires one
-/// shard at a time outside the request path. The table tracks at most 100,000
-/// keys; once full, unknown keys fail closed instead of evicting an active
-/// counter that an attacker could deliberately reset.
+/// Authenticated users retain a 60 requests/minute budget. Unauthenticated
+/// client-address keys receive a larger 300 requests/minute budget so users
+/// sharing a NAT or VPN exit do not exhaust one another's allowance as easily.
+/// A keyed request locks only one of 64 shards, while a detached maintenance
+/// task expires one shard at a time outside the request path. The table tracks
+/// at most 100,000 keys; once full, unknown keys fail closed instead of
+/// evicting an active counter that an attacker could deliberately reset.
 #[derive(Clone)]
 pub struct ShareRateLimiter {
     inner: Arc<ShareRateLimiterInner>,
@@ -67,10 +70,16 @@ impl ShareRateLimiter {
     /// Returns false when the caller is over budget or the bounded table
     /// cannot safely admit a new key.
     pub fn allow(&self, key: &str) -> bool {
-        self.allow_at(key, Instant::now())
+        self.allow_at(key, Instant::now(), MAX_PER_USER_WINDOW)
     }
 
-    fn allow_at(&self, key: &str, now: Instant) -> bool {
+    /// Applies the more permissive budget used for unauthenticated requests
+    /// that can only be attributed to a client address.
+    pub(crate) fn allow_client(&self, key: &str) -> bool {
+        self.allow_at(key, Instant::now(), MAX_PER_CLIENT_WINDOW)
+    }
+
+    fn allow_at(&self, key: &str, now: Instant, max_per_window: u32) -> bool {
         let shard_index = self.shard_index(key);
         // A poisoned lock must not fail OPEN on a security gate. HashMap
         // operations preserve structural validity across unwinding, so recover
@@ -88,7 +97,7 @@ impl ShareRateLimiter {
                 return true;
             }
             counter.hits = counter.hits.saturating_add(1);
-            return counter.hits <= MAX_PER_WINDOW;
+            return counter.hits <= max_per_window;
         }
 
         // The global count bounds live key strings. The per-shard ceiling also
@@ -192,7 +201,9 @@ async fn cleanup_loop(inner: Weak<ShareRateLimiterInner>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_KEYS_PER_SHARD, MAX_PER_WINDOW, ShareRateLimiter, WINDOW};
+    use super::{
+        MAX_KEYS_PER_SHARD, MAX_PER_CLIENT_WINDOW, MAX_PER_USER_WINDOW, ShareRateLimiter, WINDOW,
+    };
     use std::{
         collections::HashMap,
         sync::{
@@ -218,7 +229,7 @@ mod tests {
                 *entry = (now, 0);
             }
             entry.1 += 1;
-            entry.1 <= MAX_PER_WINDOW
+            entry.1 <= MAX_PER_USER_WINDOW
         }
     }
 
@@ -234,7 +245,7 @@ mod tests {
             for identity in identities {
                 for _ in 0..75 {
                     assert_eq!(
-                        limiter.allow_at(identity, now),
+                        limiter.allow_at(identity, now, MAX_PER_USER_WINDOW),
                         reference.allow_at(identity, now),
                         "semantic drift for {identity} at second {second}"
                     );
@@ -248,16 +259,28 @@ mod tests {
         let limiter = ShareRateLimiter::with_capacity(2);
         let start = Instant::now();
 
-        for _ in 0..MAX_PER_WINDOW {
-            assert!(limiter.allow_at("ip:198.51.100.7", start));
+        for _ in 0..MAX_PER_USER_WINDOW {
+            assert!(limiter.allow_at("user:usr_owner", start, MAX_PER_USER_WINDOW));
         }
         assert!(!limiter.allow_at(
-            "ip:198.51.100.7",
-            start + WINDOW.saturating_sub(Duration::from_nanos(1))
+            "user:usr_owner",
+            start + WINDOW.saturating_sub(Duration::from_nanos(1)),
+            MAX_PER_USER_WINDOW,
         ));
-        assert!(limiter.allow_at("user:usr_other", start));
-        assert!(limiter.allow_at("ip:198.51.100.7", start + WINDOW));
+        assert!(limiter.allow_at("user:usr_other", start, MAX_PER_USER_WINDOW));
+        assert!(limiter.allow_at("user:usr_owner", start + WINDOW, MAX_PER_USER_WINDOW));
         assert_eq!(limiter.tracked_key_count(), 2);
+    }
+
+    #[test]
+    fn client_address_budget_accommodates_shared_vpn_exits() {
+        let limiter = ShareRateLimiter::with_capacity(1);
+        let shared_exit = "link-ip:198.51.100.7";
+
+        for _ in 0..MAX_PER_CLIENT_WINDOW {
+            assert!(limiter.allow_client(shared_exit));
+        }
+        assert!(!limiter.allow_client(shared_exit));
     }
 
     #[test]
@@ -266,24 +289,32 @@ mod tests {
         let start = Instant::now();
         let attacker = "link-ip:203.0.113.9";
 
-        for _ in 0..MAX_PER_WINDOW {
-            assert!(limiter.allow_at(attacker, start));
+        for _ in 0..MAX_PER_USER_WINDOW {
+            assert!(limiter.allow_at(attacker, start, MAX_PER_USER_WINDOW));
         }
-        assert!(!limiter.allow_at(attacker, start));
+        assert!(!limiter.allow_at(attacker, start, MAX_PER_USER_WINDOW));
         for index in 0..3 {
-            assert!(limiter.allow_at(&format!("ip:198.51.100.{index}"), start));
+            assert!(limiter.allow_at(
+                &format!("ip:198.51.100.{index}"),
+                start,
+                MAX_PER_USER_WINDOW,
+            ));
         }
 
         for index in 0..1_000 {
             assert!(
-                !limiter.allow_at(&format!("link-ip:192.0.2.{index}"), start),
+                !limiter.allow_at(
+                    &format!("link-ip:192.0.2.{index}"),
+                    start,
+                    MAX_PER_USER_WINDOW,
+                ),
                 "a churn key was admitted after the table reached its cap"
             );
         }
 
         assert_eq!(limiter.tracked_key_count(), 4);
         assert!(
-            !limiter.allow_at(attacker, start),
+            !limiter.allow_at(attacker, start, MAX_PER_USER_WINDOW),
             "key churn evicted and reset the attacker's blocked counter"
         );
     }
@@ -292,14 +323,22 @@ mod tests {
     fn expiry_cleanup_reclaims_capacity_without_evicting_live_keys() {
         let limiter = ShareRateLimiter::with_capacity(2);
         let start = Instant::now();
-        assert!(limiter.allow_at("ip:expired", start));
-        assert!(limiter.allow_at("ip:live", start + Duration::from_secs(30)));
-        assert!(!limiter.allow_at("ip:new", start + Duration::from_secs(30)));
+        assert!(limiter.allow_at("ip:expired", start, MAX_PER_USER_WINDOW));
+        assert!(limiter.allow_at(
+            "ip:live",
+            start + Duration::from_secs(30),
+            MAX_PER_USER_WINDOW,
+        ));
+        assert!(!limiter.allow_at(
+            "ip:new",
+            start + Duration::from_secs(30),
+            MAX_PER_USER_WINDOW,
+        ));
 
         limiter.cleanup_all_at(start + WINDOW);
 
         assert_eq!(limiter.tracked_key_count(), 1);
-        assert!(limiter.allow_at("ip:new", start + WINDOW));
+        assert!(limiter.allow_at("ip:new", start + WINDOW, MAX_PER_USER_WINDOW));
         assert_eq!(limiter.tracked_key_count(), 2);
     }
 
@@ -357,7 +396,10 @@ mod tests {
             assert!(worker.join().is_ok(), "worker thread panicked");
         }
 
-        assert_eq!(allowed.load(Ordering::Relaxed), MAX_PER_WINDOW as usize);
+        assert_eq!(
+            allowed.load(Ordering::Relaxed),
+            MAX_PER_USER_WINDOW as usize
+        );
     }
 
     #[test]

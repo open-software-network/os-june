@@ -118,11 +118,11 @@ pub(crate) async fn token_exchange(
     // our ingress appended); earlier entries are client-controlled and
     // spoofable, so a caller cannot vary this to escape their own budget. A
     // single global counter is deliberately NOT used here: sizing one small
-    // enough to bound abuse would let one client's 60/min exhaust it and lock
+    // enough to bound abuse would let one client's budget exhaust it and lock
     // every recipient out of sign-in platform-wide, and the non-spoofable
     // per-address key already caps each source.
     let client_key = format!("ip:{}", client_address(&headers));
-    if !state.share_rate().allow(&client_key) {
+    if !state.share_rate().allow_client(&client_key) {
         return Err(ApiError::AuthorizationDenied);
     }
     if request.code.len() > 4096

@@ -360,6 +360,30 @@ fn invite_wire(email: &str) -> Value {
 const OWNER: &str = "user:usr_owner|owner@example.com";
 const RECIPIENT: &str = "user:usr_friend|friend@example.com";
 const STRANGER: &str = "user:usr_stranger|stranger@example.com";
+const SHARED_VPN_ADDRESS: &str = "198.51.100.42";
+
+fn list_request(token: &str) -> Request<Body> {
+    authed(Request::builder().method("GET").uri("/v1/shares"), token)
+        .header("x-forwarded-for", SHARED_VPN_ADDRESS)
+        .body(Body::empty())
+        .expect("request builds")
+}
+
+#[tokio::test]
+async fn authenticated_users_behind_one_vpn_have_independent_budgets() {
+    let router = share_router();
+
+    for _ in 0..60 {
+        let (status, _) = call(&router, list_request(OWNER)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    let (other_user_status, _) = call(&router, list_request(STRANGER)).await;
+    assert_eq!(other_user_status, StatusCode::OK);
+
+    let (owner_over_limit_status, _) = call(&router, list_request(OWNER)).await;
+    assert_eq!(owner_over_limit_status, StatusCode::TOO_MANY_REQUESTS);
+}
 
 #[tokio::test]
 async fn share_endpoints_answer_501_until_configured() {
