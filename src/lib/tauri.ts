@@ -42,6 +42,25 @@ export type JuneHomeChatOptions = {
   onDelta?: (content: string) => void;
 };
 
+export type JunePersonaArea = "work" | "personal" | "thinking" | "play";
+
+export type JunePersonaSettings = {
+  schemaVersion: number;
+  area: JunePersonaArea;
+  voice: number;
+  detail: number;
+  initiative: number;
+  humor: number;
+};
+
+export async function junePersona() {
+  return invoke<JunePersonaSettings>("june_persona");
+}
+
+export async function setJunePersona(request: Omit<JunePersonaSettings, "schemaVersion">) {
+  return invoke<JunePersonaSettings>("set_june_persona", { request });
+}
+
 /** Lightweight private conversation path for Home. Concrete work is returned
  * as a structured handoff and continues in a normal June agent session. */
 export async function juneHomeChat(

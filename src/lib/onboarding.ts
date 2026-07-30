@@ -10,6 +10,8 @@ const ONBOARDING_VERSION = 8;
 const COMPLETED_KEY = "june.onboarding.completedVersion";
 const RESUME_KEY = "june.onboarding.resumeStep";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
+const AREA_KEY = "june.onboarding.area";
+const MOOD_KEY = "june.onboarding.mood";
 const USE_CASES_KEY = "june.onboarding.useCases";
 const CUSTOM_USE_CASE_KEY = "june.onboarding.customUseCase";
 const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
@@ -29,6 +31,68 @@ export const ONBOARDING_USE_CASES = [
 export type OnboardingUseCase = (typeof ONBOARDING_USE_CASES)[number];
 
 const ONBOARDING_USE_CASE_SET = new Set<string>(ONBOARDING_USE_CASES);
+
+export const ONBOARDING_MOODS = ["calm", "clearheaded", "quick-witted", "strategic"] as const;
+export type OnboardingMood = (typeof ONBOARDING_MOODS)[number];
+
+export const ONBOARDING_AREAS = ["work", "personal", "thinking", "play"] as const;
+export type OnboardingArea = (typeof ONBOARDING_AREAS)[number];
+
+export type OnboardingPersonality = {
+  voice: number;
+  detail: number;
+  initiative: number;
+  humor: number;
+};
+
+const ONBOARDING_MOOD_SET = new Set<string>(ONBOARDING_MOODS);
+const ONBOARDING_AREA_SET = new Set<string>(ONBOARDING_AREAS);
+export const DEFAULT_ONBOARDING_MOOD: OnboardingMood = "clearheaded";
+
+export const ONBOARDING_AREA_MOOD_PRESETS = {
+  work: "clearheaded",
+  personal: "calm",
+  thinking: "strategic",
+  play: "quick-witted",
+} as const satisfies Record<OnboardingArea, OnboardingMood>;
+
+/**
+ * The four visual moods are the approachable face of Gaut's original
+ * personality vectors. These values are intentionally stable because the
+ * native runtime turns them into durable behavioral instructions.
+ */
+export const ONBOARDING_MOOD_PERSONALITY_PRESETS = {
+  calm: { voice: 80, detail: 55, initiative: 70, humor: 45 },
+  clearheaded: { voice: 10, detail: 40, initiative: 85, humor: 20 },
+  "quick-witted": { voice: 85, detail: 70, initiative: 80, humor: 95 },
+  strategic: { voice: 45, detail: 90, initiative: 75, humor: 20 },
+} as const satisfies Record<OnboardingMood, OnboardingPersonality>;
+
+/**
+ * Native persona settings may contain a custom numeric vector written by an
+ * older build. The settings UI still needs a stable visual selection, so map
+ * that vector to the nearest of the four current personality presets without
+ * overwriting it until the user explicitly saves.
+ */
+export function closestOnboardingMood(personality: OnboardingPersonality): OnboardingMood {
+  let closest: OnboardingMood = ONBOARDING_MOODS[0];
+  let closestDistance = Number.POSITIVE_INFINITY;
+
+  for (const mood of ONBOARDING_MOODS) {
+    const preset = ONBOARDING_MOOD_PERSONALITY_PRESETS[mood];
+    const distance =
+      (personality.voice - preset.voice) ** 2 +
+      (personality.detail - preset.detail) ** 2 +
+      (personality.initiative - preset.initiative) ** 2 +
+      (personality.humor - preset.humor) ** 2;
+    if (distance < closestDistance) {
+      closest = mood;
+      closestDistance = distance;
+    }
+  }
+
+  return closest;
+}
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
@@ -156,6 +220,44 @@ export function setOnboardingResumeStep(stepId: string) {
     window.localStorage.setItem(RESUME_KEY, stepId);
   } catch {
     // Ignore; worst case the wizard restarts from the top.
+  }
+}
+
+export function onboardingArea(): OnboardingArea | null {
+  try {
+    const value = window.localStorage.getItem(AREA_KEY);
+    return value && ONBOARDING_AREA_SET.has(value) ? (value as OnboardingArea) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveOnboardingArea(area: OnboardingArea) {
+  try {
+    if (ONBOARDING_AREA_SET.has(area)) {
+      window.localStorage.setItem(AREA_KEY, area);
+    }
+  } catch {
+    // Ignore; this choice personalizes onboarding but never gates completion.
+  }
+}
+
+export function onboardingMood(fallback: OnboardingMood = DEFAULT_ONBOARDING_MOOD): OnboardingMood {
+  try {
+    const value = window.localStorage.getItem(MOOD_KEY);
+    return value && ONBOARDING_MOOD_SET.has(value) ? (value as OnboardingMood) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveOnboardingMood(mood: OnboardingMood) {
+  try {
+    if (ONBOARDING_MOOD_SET.has(mood)) {
+      window.localStorage.setItem(MOOD_KEY, mood);
+    }
+  } catch {
+    // Ignore; the balanced default remains available if storage is unavailable.
   }
 }
 

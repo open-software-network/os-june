@@ -6,10 +6,12 @@ import {
   finishRecording,
   getNote,
   juneOpenCommunityPage,
+  junePersona,
   patchNote,
   recoverRecording,
   retryProcessing,
   startRecording,
+  setJunePersona,
   updateNote,
 } from "../lib/tauri";
 
@@ -127,5 +129,27 @@ describe("Tauri command contracts", () => {
     await juneOpenCommunityPage();
 
     expect(mocks.invoke).toHaveBeenCalledWith("june_open_community_page");
+  });
+
+  it("loads and saves June's persona through stable native commands", async () => {
+    await junePersona();
+    await setJunePersona({
+      area: "thinking",
+      voice: 45,
+      detail: 90,
+      initiative: 75,
+      humor: 20,
+    });
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, "june_persona");
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, "set_june_persona", {
+      request: {
+        area: "thinking",
+        voice: 45,
+        detail: 90,
+        initiative: 75,
+        humor: 20,
+      },
+    });
   });
 });

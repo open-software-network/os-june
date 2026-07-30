@@ -8,8 +8,8 @@ import {
   isOnboardingComplete,
   markOnboardingComplete,
   ONBOARDING_COMPLETED_EVENT,
-  onboardingCustomUseCase,
-  onboardingUseCases,
+  onboardingArea,
+  onboardingMood,
   onboardingResumeStep,
   resetOnboardingForReplay,
   setOnboardingResumeStep,
@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   setDictationShortcut: vi.fn(),
   setP3aEnabled: vi.fn(),
   p3aRecord: vi.fn(),
+  setJunePersona: vi.fn(),
   osAccountsLogin: vi.fn(),
   juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
@@ -55,6 +56,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationShortcut: mocks.setDictationShortcut,
   setP3aEnabled: mocks.setP3aEnabled,
   p3aRecord: mocks.p3aRecord,
+  setJunePersona: mocks.setJunePersona,
   osAccountsLogin: mocks.osAccountsLogin,
   juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
@@ -172,6 +174,7 @@ describe("OnboardingFlow", () => {
       }),
     );
     mocks.p3aRecord.mockResolvedValue(undefined);
+    mocks.setJunePersona.mockResolvedValue(undefined);
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: shortcut("fn"),
@@ -196,10 +199,11 @@ describe("OnboardingFlow", () => {
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
     await screen.findByRole("heading", { name: "Help improve June" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Work" }));
+    await screen.findByRole("heading", { name: "Where could I help most?" });
+    await userEvent.click(screen.getByRole("radio", { name: /Work/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Choose my personality" });
+    await userEvent.click(screen.getByRole("radio", { name: /Strategic/ }));
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
     return onComplete;
@@ -252,16 +256,19 @@ describe("OnboardingFlow", () => {
     grantPermissions();
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    // The next step is hands-on practice. Onboarding no longer opens billing
-    // or asks for a card before the user tries the product.
-    const input = await screen.findByPlaceholderText(/Tell June what to do/i);
-    await user.type(input, "hello there");
-    await screen.findByRole("status", { name: "Dictation is working" });
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
 
-    expect(onComplete).toHaveBeenCalledOnce();
     expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.completed");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
+    expect(onboardingArea()).toBe("work");
+    expect(onboardingMood()).toBe("strategic");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.work");
+    expect(mocks.setJunePersona).toHaveBeenCalledWith({
+      area: "work",
+      voice: 45,
+      detail: 90,
+      initiative: 75,
+      humor: 20,
+    });
     // Completion is the caller's job (App marks it), not the flow's.
     expect(isOnboardingComplete()).toBe(false);
   });
@@ -282,9 +289,7 @@ describe("OnboardingFlow", () => {
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(false);
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
   it("saves anonymous usage statistics consent when selected", async () => {
@@ -296,80 +301,50 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(mocks.setP3aEnabled).toHaveBeenCalledWith(true);
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
-  it("asks what the user wants to use June for", async () => {
+  it("asks where June should help before choosing a personality", async () => {
     const user = userEvent.setup();
-    setOnboardingResumeStep("usage-intent");
+    setOnboardingResumeStep("area");
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+    await screen.findByRole("heading", { name: "Where could I help most?" });
     const continueButton = screen.getByRole("button", { name: "Continue" });
     expect(continueButton).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Work" }));
-    await user.click(screen.getByRole("button", { name: "Personal" }));
+    await user.click(screen.getByRole("radio", { name: /Thinking/ }));
     expect(continueButton).toBeEnabled();
-
     await user.click(continueButton);
 
-    expect(onboardingUseCases()).toEqual(["work", "personal"]);
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.work");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.personal");
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    expect(onboardingArea()).toBe("thinking");
+    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.area.thinking");
+    await screen.findByRole("heading", { name: "Choose my personality" });
   });
 
-  it("saves a custom onboarding use case locally", async () => {
+  it("saves the selected mood before continuing to permissions", async () => {
     const user = userEvent.setup();
-    setOnboardingResumeStep("usage-intent");
+    setOnboardingResumeStep("mood");
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
+    await screen.findByRole("heading", { name: "Choose my personality" });
     const continueButton = screen.getByRole("button", { name: "Continue" });
-
-    await user.click(screen.getByRole("button", { name: "Other" }));
-    expect(continueButton).toBeDisabled();
-
-    await user.type(screen.getByPlaceholderText("Type your own use case"), "  family admin  ");
     expect(continueButton).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /Clearheaded/ })).toBeChecked();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Clearheaded tone. What should we make clearer first?",
+    );
+    expect(screen.getByText("What should we make clearer first?")).toHaveClass("shimmer");
 
+    await user.click(screen.getByRole("radio", { name: /Quick-witted/ }));
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Quick-witted tone. All right, what's first?",
+    );
+    expect(screen.getByText("All right, what's first?")).toHaveClass("shimmer");
     await user.click(continueButton);
 
-    expect(onboardingUseCases()).toEqual(["other"]);
-    expect(onboardingCustomUseCase()).toBe("family admin");
-    expect(mocks.p3aRecord).toHaveBeenCalledWith("onboarding.use-case.other");
-    expect(mocks.p3aRecord.mock.calls.flat()).not.toContain("family admin");
+    expect(onboardingMood()).toBe("quick-witted");
     await screen.findByRole("heading", { name: "Let June listen and type" });
-  });
-
-  async function walkToPractice(user: ReturnType<typeof userEvent.setup>) {
-    grantPermissions();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
-    await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByPlaceholderText(/Tell June what to do/i);
-  }
-
-  it("enables practice completion for a one-character reply", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
-
-    const startButton = screen.getByRole("button", {
-      name: "Start using June",
-    });
-    expect(startButton).toBeDisabled();
-
-    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "h");
-
-    await screen.findByRole("status", { name: "Dictation is working" });
-    expect(startButton).toBeEnabled();
   });
 
   it("normalizes the factory-default shortcut to fn", async () => {
@@ -396,9 +371,8 @@ describe("OnboardingFlow", () => {
         language: undefined,
       },
     });
-    setOnboardingResumeStep("dictation-practice");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
+    await screen.findByRole("heading", { name: "Help improve June" });
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
@@ -410,7 +384,7 @@ describe("OnboardingFlow", () => {
 
   it("keeps a customized shortcut on a wizard replay", async () => {
     // A version bump replays the wizard for existing users; a key they set
-    // in Settings must survive untouched and show in the hint keycaps.
+    // in Settings must survive untouched.
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: {
@@ -432,81 +406,11 @@ describe("OnboardingFlow", () => {
         language: undefined,
       },
     });
-    setOnboardingResumeStep("dictation-practice");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
+    await screen.findByRole("heading", { name: "Help improve June" });
 
-    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
+    await waitFor(() => expect(mocks.dictationSettings).toHaveBeenCalledOnce());
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
-  });
-
-  it("rebinds the dictation key from the practice screen", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
-    mocks.setDictationShortcut.mockClear();
-
-    // "Change key" hands the helper the capture; the chord comes back as a
-    // shortcut_captured event and lands in the setting.
-    await user.click(screen.getByRole("button", { name: "Change key" }));
-    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
-      type: "start_shortcut_capture",
-      kind: "push_to_talk",
-      pressCount: 1,
-    });
-    await screen.findByText(/Press shortcut/);
-
-    emitDictationEvent?.({
-      payload: JSON.stringify({
-        type: "shortcut_captured",
-        payload: {
-          shortcut: {
-            code: "F5",
-            label: "F5",
-            pressCount: 1,
-            modifiers: {
-              command: false,
-              control: false,
-              option: false,
-              shift: false,
-              function: false,
-            },
-          },
-        },
-      }),
-    });
-
-    await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
-        "push_to_talk",
-        expect.objectContaining({ code: "F5", label: "F5" }),
-      ),
-    );
-    // Both the instruction row and the composer-corner chip show the new key.
-    await waitFor(() => expect(screen.getAllByText("F5")).toHaveLength(2));
-  });
-
-  it("cancels a shortcut capture with Escape", async () => {
-    const user = userEvent.setup();
-    await renderFlow();
-    await walkToPractice(user);
-
-    await user.click(screen.getByRole("button", { name: "Change key" }));
-    await screen.findByText(/Press shortcut/);
-    await user.keyboard("{Escape}");
-
-    await waitFor(() =>
-      expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
-        type: "cancel_shortcut_capture",
-      }),
-    );
-    // Back to the idle instruction with the key unchanged (the keycaps
-    // render the fn glyph lowercase).
-    await waitFor(() => expect(screen.getAllByText("fn")).toHaveLength(2));
-    expect(mocks.setDictationShortcut).not.toHaveBeenCalledWith(
-      "push_to_talk",
-      expect.objectContaining({ code: "F5" }),
-    );
   });
 
   it("signs the user in from the first step", async () => {
@@ -549,14 +453,10 @@ describe("OnboardingFlow", () => {
       render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
 
       await screen.findByRole("heading", { name: "Welcome to June" });
-      expect(screen.getByText("Speak instead of type")).toBeInTheDocument();
-      expect(
-        screen.getByText(
-          "June turns your voice into polished writing in any app on your computer.",
-        ),
-      ).toBeInTheDocument();
-      expect(screen.getByText("Effortlessly capture meetings")).toBeInTheDocument();
-      expect(screen.getByText("Chat and work with June")).toBeInTheDocument();
+      expect(screen.getByText("Write with your voice")).toBeInTheDocument();
+      expect(screen.getByText("Turn speech into polished text in any app.")).toBeInTheDocument();
+      expect(screen.getByText("Capture meetings")).toBeInTheDocument();
+      expect(screen.getByText("Delegate real work")).toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -564,43 +464,33 @@ describe("OnboardingFlow", () => {
 
   it("does not ask unsubscribed users for a card during onboarding", async () => {
     const user = userEvent.setup();
-    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount })} />);
+    const onComplete = vi.fn();
+    render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount, onComplete })} />);
     await screen.findByRole("heading", { name: "Help improve June" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", {
-      name: "What are you interested in using June for?",
-    });
-    await user.click(screen.getByRole("button", { name: "Work" }));
+    await screen.findByRole("heading", { name: "Where could I help most?" });
+    await user.click(screen.getByRole("radio", { name: /Work/ }));
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    await screen.findByRole("heading", { name: "Choose my personality" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Let June listen and type" });
 
     grantPermissions();
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByPlaceholderText(/Tell June what to do/i);
+    await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
 
     expect(screen.queryByRole("heading", { name: /free trial/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Start free trial/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Talk to June" })).toBeNull();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
-  it("resumes a half-finished run at the saved step", async () => {
+  it("resumes a legacy practice step at permissions", async () => {
     setOnboardingResumeStep("dictation-practice");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
-  });
-
-  it("does not collect onboarding source metadata", async () => {
-    const user = userEvent.setup();
-    setOnboardingResumeStep("dictation-practice");
-    render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Talk to June" });
-
-    expect(screen.queryByRole("listbox")).toBeNull();
-    expect(screen.queryByRole("option")).toBeNull();
-
-    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "hello there");
-    await user.click(screen.getByRole("button", { name: "Start using June" }));
+    await screen.findByRole("heading", { name: "Let June listen and type" });
+    expect(onboardingResumeStep()).toBe("permissions");
   });
 
   it("resets only onboarding progress when replaying the wizard", () => {
@@ -687,7 +577,8 @@ describe("OnboardingFlow", () => {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     );
     try {
-      await renderFlow();
+      const onComplete = vi.fn();
+      await renderFlow(onComplete);
 
       expect(
         screen.getByText("Dictation and meeting notes need microphone access."),
@@ -706,7 +597,8 @@ describe("OnboardingFlow", () => {
       await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
-      await screen.findByRole("heading", { name: "Talk to June" });
+      await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
+      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }

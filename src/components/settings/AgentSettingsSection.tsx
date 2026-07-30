@@ -26,6 +26,7 @@ import { Dialog } from "../ui/Dialog";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
+import { JunePersonalitySettingsSection } from "./JunePersonalitySettingsSection";
 
 /** Settings owned by June's local agent harness. Messaging compatibility,
  * raw runtime diagnostics, and the legacy filesystem browser are
@@ -125,8 +126,18 @@ export function AgentSettingsSection({
         <SettingsPageHeader
           id="agent-heading"
           title="Agent"
-          blurb="Configure June's local agent experience."
+          blurb="Configure June's personality and local agent experience."
         />
+        <JunePersonalitySettingsSection />
+      </section>
+
+      <section className="settings-group" aria-labelledby="agent-experience-heading">
+        <h2 id="agent-experience-heading" className="settings-group-heading">
+          Experience
+        </h2>
+        <p className="settings-group-description">
+          Control how June keeps you informed while she works.
+        </p>
         <div className="settings-card">
           <div className="settings-rows">
             <div className="settings-row">

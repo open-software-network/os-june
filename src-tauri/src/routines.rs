@@ -1155,6 +1155,8 @@ struct UnattendedRunRequest<'a> {
     enabled_toolsets: &'a [String],
 }
 
+const UNATTENDED_RUN_INSTRUCTIONS: &str = "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.";
+
 async fn unattended_run_params(
     app: &AppHandle,
     repository: &AgentRepository,
@@ -1184,8 +1186,10 @@ async fn unattended_run_params(
     crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
+    let instructions =
+        crate::agent_runtime::persona::instructions_for_app(app, UNATTENDED_RUN_INSTRUCTIONS);
     Ok(
-        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.", "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": instructions, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": [], "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
 }
 

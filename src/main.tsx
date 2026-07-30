@@ -25,7 +25,7 @@ declare global {
 }
 
 // `june.replayOnboarding()` in the webview console re-runs the wizard;
-// pass a step id ("permissions", "dictation-practice", ...) to land on that step.
+// pass a step id ("permissions", "mood", ...) to land on that step.
 if (import.meta.env.DEV) {
   window.june = { replayOnboarding };
 }

@@ -2,7 +2,7 @@
 <!--
   Dev-only onboarding preview. Runs the real wizard in a plain browser by
   faking the Tauri IPC bridge inline: signed in, permissions grant on
-  request, and the dictation practice can be watched in isolation. Nothing
+  request, and each remaining step can be viewed in isolation. Nothing
   here ships: vite builds only index.html, and no app code references this
   file.
 
@@ -14,15 +14,12 @@
     june.replayOnboarding()            restart the wizard from step 1
     june.replayOnboarding("permissions")
                                        jump to a step (sign-in, permissions,
-                                       telemetry, usage-intent,
-                                       dictation-practice)
+                                       telemetry, area, mood)
     __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
     localStorage.setItem("os-june:theme", "dark"); location.reload()
 
   The preview opens signed out — the real first-run experience. Clicking
-  "Continue with OpenSoftware" fake-signs-in as Sam Carter. "Change key" on
-  the practice step pretends the user presses F5 a beat after recording
-  starts.
+  "Continue with OpenSoftware" fake-signs-in as Sam Carter.
 
   URL params (for scripted screenshots): ?theme=dark, ?step=<step id>
   (a step jump implies a signed-in account), ?perms=missing|denied
@@ -41,9 +38,11 @@
       // override so scripted screenshots can pick a theme per URL).
       (function () {
         try {
-          var stored =
-            new URLSearchParams(location.search).get("theme") ||
-            localStorage.getItem("os-june:theme");
+          var requested = new URLSearchParams(location.search).get("theme");
+          if (requested === "light" || requested === "dark") {
+            localStorage.setItem("os-june:theme", requested);
+          }
+          var stored = requested || localStorage.getItem("os-june:theme");
           var resolved =
             stored === "light" || stored === "dark"
               ? stored
@@ -107,8 +106,8 @@
         // A plainly-not-June account for the signed-in preview path.
         const stubUser = { id: "u1", handle: "sam", displayName: "Sam Carter" };
 
-        // The dictation key, rebindable from the practice step. A "capture"
-        // pretends the user pressed F5 a beat after recording starts.
+        // The existing dictation key lets onboarding preserve a customized
+        // shortcut while normalizing only the untouched factory default.
         let pushToTalkShortcut = {
           code: "Fn",
           label: "fn",
@@ -121,7 +120,6 @@
             function: true,
           },
         };
-        let captureTimer;
         function dictationSettings() {
           return {
             pushToTalkShortcut,
@@ -274,36 +272,6 @@
               }
               case "dictation_helper_command": {
                 const type = args.command && args.command.type;
-                if (type === "start_shortcut_capture") {
-                  clearTimeout(captureTimer);
-                  captureTimer = setTimeout(() => {
-                    emitEvent(
-                      "dictation-event",
-                      JSON.stringify({
-                        type: "shortcut_captured",
-                        payload: {
-                          shortcut: {
-                            code: "F5",
-                            label: "F5",
-                            pressCount: 1,
-                            modifiers: {
-                              command: false,
-                              control: false,
-                              option: false,
-                              shift: false,
-                              function: false,
-                            },
-                          },
-                        },
-                      }),
-                    );
-                  }, 1400);
-                  return null;
-                }
-                if (type === "cancel_shortcut_capture") {
-                  clearTimeout(captureTimer);
-                  return null;
-                }
                 if (
                   type === "request_microphone_permission" &&
                   perms.microphone === "undetermined"

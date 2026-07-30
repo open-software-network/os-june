@@ -63,6 +63,22 @@ const P3A_QUESTIONS: &[P3aQuestionDef] = &[
         bucket_count: 1,
     },
     P3aQuestionDef {
+        id: "onboarding.area.work",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.area.personal",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.area.thinking",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
+        id: "onboarding.area.play",
+        bucket_count: 1,
+    },
+    P3aQuestionDef {
         id: "onboarding.use-case.work",
         bucket_count: 1,
     },
@@ -277,6 +293,31 @@ mod tests {
             })
             .await
             .expect("onboarding use case report accepted");
+
+        assert_eq!(sink.reports()[0].question_id, question_id);
+    }
+
+    #[rstest]
+    #[case("onboarding.area.work")]
+    #[case("onboarding.area.personal")]
+    #[case("onboarding.area.thinking")]
+    #[case("onboarding.area.play")]
+    #[tokio::test]
+    async fn accepts_onboarding_area_questions(#[case] question_id: &str) {
+        let sink = Arc::new(RecordingP3aSink::default());
+        let service = P3aReportService::new(P3aReportServiceDeps { sink: sink.clone() });
+
+        service
+            .record(P3aReportParams {
+                schema: 1,
+                question_id: question_id.to_string(),
+                epoch: "2026-W31".to_string(),
+                platform: "macos".to_string(),
+                version_series: "0.0.x".to_string(),
+                bucket: 0,
+            })
+            .await
+            .expect("onboarding area report accepted");
 
         assert_eq!(sink.reports()[0].question_id, question_id);
     }

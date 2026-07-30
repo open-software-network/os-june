@@ -13577,6 +13577,165 @@ button.agent-user-attachment:hover {
   gap: var(--sp-2);
 }
 
+/* June personality settings carry the four onboarding characters forward in
+ * a denser form. The options stay neutral like the rest of Settings; color is
+ * reserved for each character so the card chrome does not become noisy. */
+.settings-personality-card {
+  display: grid;
+  gap: var(--sp-5);
+}
+
+.settings-personality-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-2);
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-personality-option {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-2);
+  color: var(--foreground);
+  text-align: center;
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.settings-personality-option:hover {
+  background: var(--surface-subtle);
+}
+
+.settings-personality-option:has(input:focus-visible) {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.settings-personality-option[data-selected="true"] {
+  background: var(--surface-subtle);
+}
+
+.settings-personality-option .onboarding-character {
+  --onboarding-sticker-card-size: calc(var(--control-xl) + var(--sp-5));
+}
+
+.settings-personality-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--sp-1);
+}
+
+.settings-personality-option-name {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+}
+
+.settings-personality-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+
+.settings-personality-preview {
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-4);
+  border-radius: var(--r-lg);
+  background: var(--surface-subtle);
+}
+
+.settings-personality-preview-speaker {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+}
+
+.settings-personality-preview-greeting {
+  margin: var(--sp-1) 0 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.settings-personality-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.settings-personality-feedback {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.settings-personality-feedback > p {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.settings-personality-feedback > .settings-row-error {
+  color: var(--destructive);
+}
+
+.settings-personality-status {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
+.settings-personality-loading {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.settings-personality-skeleton {
+  width: 100%;
+  height: var(--control-sm);
+  border-radius: var(--r-sm);
+  background: var(--muted);
+  opacity: 0.55;
+}
+
+.settings-personality-skeleton-short {
+  width: 42%;
+}
+
+.settings-personality-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-4);
+}
+
+.settings-personality-load-error .settings-row-error {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .settings-personality-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-personality-option {
+    transition: none;
+  }
+}
+
 .settings-agent-card {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
@@ -24624,18 +24783,45 @@ button.memory-project:hover {
   width: min(100%, 360px);
 }
 
-/* Welcome step lays its four what-is-June points out as a 2x2 grid rather
- * than a tall single column, so the card needs a touch more width. Cells
- * top-align (align-items: start in .onboarding-points li) so uneven body
- * lengths sit cleanly rather than centering against each other. */
+/* Welcome step gathers the four promises into one quiet, settings-like panel.
+ * The shared perimeter and internal dividers make the group scan as a single
+ * introduction instead of four unrelated callouts. */
 .welcome-card-intro {
-  width: min(100%, 500px);
+  width: min(100%, 520px);
 }
 
 .welcome-card-intro .onboarding-points {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--sp-6) var(--sp-6);
+  gap: 0;
+  margin-top: var(--sp-5);
+  overflow: hidden;
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: color-mix(in oklch, var(--card) 84%, transparent);
+  box-shadow: var(--shadow-inset);
+}
+
+.welcome-card-intro .onboarding-points li {
+  align-items: start;
+  padding: var(--sp-6);
+}
+
+.welcome-card-intro .onboarding-point-icon {
+  margin-top: calc(var(--sp-1) * -1);
+}
+
+.welcome-card-intro .onboarding-points li:nth-child(odd) {
+  border-right: var(--border-width) solid var(--border-subtle);
+}
+
+.welcome-card-intro .onboarding-points li:nth-child(-n + 2) {
+  border-bottom: var(--border-width) solid var(--border-subtle);
+}
+
+.welcome-card-intro .onboarding-points li:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+  border-right: 0;
 }
 
 /* The 2x2 grid wants the full card width, but the sign-in button and footer
@@ -24653,46 +24839,9 @@ button.memory-project:hover {
 }
 
 .onboarding-privacy-choice {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--sp-5);
   width: min(100%, 480px);
   margin: var(--sp-2) auto 0;
-  padding: var(--sp-4);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: color-mix(in oklch, var(--muted) 35%, transparent);
   text-align: left;
-}
-
-.onboarding-privacy-copy {
-  display: grid;
-  gap: var(--sp-1);
-}
-
-.onboarding-privacy-copy h2 {
-  margin: 0;
-  color: var(--foreground);
-  font-size: var(--fs-lg);
-  font-weight: 400;
-  letter-spacing: 0;
-}
-
-.onboarding-privacy-copy p {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.5;
-}
-
-.onboarding-privacy-copy a {
-  width: max-content;
-  color: var(--foreground);
-  font-size: var(--fs-md);
-  text-decoration: underline;
-  text-decoration-color: color-mix(in oklch, var(--foreground) 28%, transparent);
-  text-underline-offset: 3px;
 }
 
 .onboarding-card-privacy .welcome-providers,
@@ -24817,11 +24966,7 @@ button.memory-project:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .onboarding-card,
-  .onboarding-practice-message,
-  .onboarding-practice-text,
-  .onboarding-practice-success,
-  .onboarding-typing span {
+  .onboarding-card {
     animation: none;
   }
 }
@@ -24896,20 +25041,20 @@ button.memory-project:hover {
 
 .onboarding-points li {
   display: grid;
-  grid-template-columns: 28px 1fr;
-  column-gap: var(--sp-4);
-  align-items: start;
+  grid-template-columns: var(--control-md) minmax(0, 1fr);
+  column-gap: var(--sp-3);
+  align-items: center;
 }
 
 .onboarding-point-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
+  width: var(--control-md);
+  height: var(--control-md);
+  border: 0;
   border-radius: 50%;
-  background: var(--card);
+  background: var(--warm-soft);
   color: var(--warm-strong);
 }
 
@@ -24990,126 +25135,351 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
-.onboarding-intent-grid {
-  display: grid;
+.onboarding-card-moods {
+  width: min(100%, var(--onboarding-moods-max-w));
+}
+
+.onboarding-mood-grid.onboarding-area-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--sp-2);
+}
+
+.onboarding-mood-option.onboarding-area-option {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: var(--sp-4);
+  padding: var(--sp-6);
+  text-align: left;
+}
+
+.onboarding-area-icon {
+  display: inline-grid;
+  width: var(--control-lg);
+  height: var(--control-lg);
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--mood-accent) var(--onboarding-area-icon-tint), transparent);
+  color: var(--mood-accent);
+}
+
+.onboarding-area-option .onboarding-mood-copy {
+  flex: 1 1 auto;
+}
+
+.onboarding-mood-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-3);
   min-inline-size: 0;
-  margin: var(--sp-2) 0 0;
+  margin: var(--sp-4) 0 0;
   padding: 0;
   border: 0;
 }
 
-.onboarding-intent-option {
+.onboarding-mood-option,
+.onboarding-character {
+  --mood-accent: var(--onboarding-mood-clearheaded);
+}
+
+.onboarding-mood-option[data-mood="calm"],
+.onboarding-character[data-mood="calm"] {
+  --mood-accent: var(--onboarding-mood-calm);
+}
+
+.onboarding-mood-option[data-mood="quick-witted"],
+.onboarding-character[data-mood="quick-witted"] {
+  --mood-accent: var(--onboarding-mood-quick-witted);
+}
+
+.onboarding-mood-option[data-mood="strategic"],
+.onboarding-character[data-mood="strategic"] {
+  --mood-accent: var(--onboarding-mood-strategic);
+}
+
+.onboarding-mood-option {
+  --mood-line-strong: color-mix(in oklch, var(--mood-accent) 30%, var(--card));
+
+  position: relative;
   display: flex;
   min-width: 0;
-  min-height: var(--control-xl);
+  flex-direction: column;
   align-items: center;
-  gap: var(--sp-3);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--card);
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: color-mix(in oklch, var(--mood-accent) 4%, var(--card));
   color: var(--foreground);
   font: inherit;
-  font-size: var(--fs-md);
-  text-align: left;
+  text-align: center;
   cursor: pointer;
-  /* Hover/selection carry on the fill only; the border is static chrome and
-   * never transitions (see docs/design/conventions.md). */
+  box-shadow: var(--shadow-inset);
   transition:
     background-color var(--t-fast) var(--ease-out),
     box-shadow var(--t-fast) var(--ease-out);
 }
 
-.onboarding-intent-option:nth-last-child(1):nth-child(odd) {
-  grid-column: 1 / -1;
+.onboarding-mood-option:hover {
+  background: color-mix(in oklch, var(--mood-accent) 9%, var(--card));
 }
 
-/* Warm-soft wash, matching the onboarding surface's own hover idiom
- * (.onboarding-back:hover). Background only — the border stays put. */
-.onboarding-intent-option:hover {
-  background: color-mix(in oklch, var(--warm-soft) 20%, var(--card));
-}
-
-.onboarding-intent-option:focus-visible {
+.onboarding-mood-option[data-focus-visible="true"] {
   outline: none;
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  box-shadow:
+    var(--shadow-inset),
+    0 0 0 3px var(--focus-ring);
 }
 
-.onboarding-intent-option[aria-pressed="true"] {
-  border-color: color-mix(in oklch, var(--warm-strong) 34%, var(--border));
-  background: color-mix(in oklch, var(--warm-soft) 34%, var(--card));
+.onboarding-mood-option[data-selected="true"] {
+  background: color-mix(in oklch, var(--mood-accent) 12%, var(--card));
+  box-shadow:
+    inset 0 0 0 var(--border-width) var(--mood-line-strong),
+    var(--shadow-sm);
 }
 
-/* Selected + hover deepens rather than lightens, so the ramp reads
- * card -> hover -> selected -> selected-hover. */
-.onboarding-intent-option[aria-pressed="true"]:hover {
-  background: color-mix(in oklch, var(--warm-soft) 44%, var(--card));
+.onboarding-area-option {
+  background: var(--card);
 }
 
-.onboarding-intent-option span:last-child {
-  min-width: 0;
-  overflow-wrap: anywhere;
+.onboarding-area-option:hover {
+  background: var(--accent);
 }
 
-/* A rounded-square checkbox (multiple can be picked), mirroring the
- * canonical .folder-note-select-box: unchecked outline, filled on select. */
-.onboarding-intent-check {
-  flex: 0 0 auto;
+.onboarding-area-option[data-selected="true"] {
+  background: var(--card);
+  box-shadow:
+    inset 0 0 0 var(--border-width) var(--mood-line-strong),
+    var(--shadow-sm);
+}
+
+.onboarding-area-option[data-selected="true"]:hover {
+  background: var(--accent);
+}
+
+.onboarding-mood-check {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
   display: inline-grid;
+  width: var(--control-xs);
+  height: var(--control-xs);
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-xs);
-  background: var(--card);
+  border-radius: var(--r-pill);
+  background: var(--mood-accent);
   color: var(--on-solid);
-  transition: background-color var(--t-fast) var(--ease-out);
-}
-
-.onboarding-intent-option[aria-pressed="true"] .onboarding-intent-check {
-  border-color: var(--warm-strong);
-  background: var(--warm-strong);
-}
-
-.onboarding-intent-other {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-  margin-block-start: var(--sp-3);
-  color: var(--foreground);
-  font-size: var(--fs-sm);
-}
-
-.onboarding-intent-other input {
-  height: var(--control-xl);
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-md);
-  padding: 0 var(--sp-3);
-  outline: 0;
+  opacity: 0;
+  transform: scale(0.82);
   transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out);
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
 }
 
-.onboarding-intent-other input::placeholder {
+.onboarding-mood-check[data-visible="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.onboarding-character {
+  --onboarding-sticker-keyline: var(--on-solid);
+
+  position: relative;
+  isolation: isolate;
+  display: inline-block;
+  width: var(--onboarding-sticker-card-size);
+  height: var(--onboarding-sticker-card-size);
+  flex: 0 0 auto;
+  border-radius: var(--r-2xl);
+  background: radial-gradient(
+    circle at center,
+    color-mix(in oklch, var(--mood-accent) 18%, transparent),
+    transparent 68%
+  );
+}
+
+[data-theme="dark"] .onboarding-character {
+  --onboarding-sticker-keyline: color-mix(
+    in oklch,
+    var(--mood-accent) var(--onboarding-sticker-keyline-dark-tint),
+    var(--on-solid)
+  );
+}
+
+.onboarding-character-art {
+  position: absolute;
+  inset: var(--sp-2);
+  z-index: 1;
+  display: block;
+  width: calc(100% - var(--sp-2) - var(--sp-2));
+  height: calc(100% - var(--sp-2) - var(--sp-2));
+  overflow: visible;
+}
+
+.onboarding-character-keyline {
+  fill: var(--onboarding-sticker-keyline);
+  stroke: var(--onboarding-sticker-keyline);
+}
+
+.onboarding-character-ink {
+  fill: var(--mood-accent);
+}
+
+.onboarding-mood-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--sp-1);
+}
+
+.onboarding-mood-name {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-medium);
+  line-height: 1.2;
+}
+
+.onboarding-mood-description {
   color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+  text-wrap: balance;
 }
 
-.onboarding-intent-other input:hover {
-  border-color: var(--ring);
+.onboarding-mood-preview {
+  --onboarding-preview-character-size: calc(var(--control-xl) + var(--sp-5));
+
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  width: 100%;
+  margin: var(--sp-2) auto 0;
+  padding: var(--sp-6);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: color-mix(in oklch, var(--card) 96%, var(--muted));
+  box-shadow: var(--shadow-sm);
+  text-align: left;
 }
 
-.onboarding-intent-other input:focus,
-.onboarding-intent-other input:focus-visible {
-  border-color: var(--ring-focus);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+.onboarding-mood-preview::before {
+  position: absolute;
+  inset: 45% 0 0;
+  z-index: -1;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in oklch, var(--warm-soft) 18%, transparent)
+  );
+  content: "";
+  pointer-events: none;
+}
+
+.onboarding-mood-preview-stack {
+  position: relative;
+  z-index: 1;
+  display: grid;
+}
+
+.onboarding-mood-preview-content {
+  display: grid;
+  grid-area: 1 / 1;
+  grid-template-columns: var(--onboarding-preview-character-size) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--sp-3);
+  opacity: 0;
+  filter: blur(var(--onboarding-preview-swap-blur));
+  pointer-events: none;
+  transition:
+    opacity var(--t-med) var(--ease-in-out),
+    filter var(--t-med) var(--ease-in-out);
+  will-change: opacity, filter;
+}
+
+.onboarding-mood-preview-content[data-active="true"] {
+  opacity: 1;
+  filter: blur(0);
+}
+
+.onboarding-mood-preview .onboarding-character.onboarding-mood-preview-character {
+  width: var(--onboarding-preview-character-size);
+  height: var(--onboarding-preview-character-size);
+  border-radius: var(--r-xl);
+}
+
+.onboarding-mood-preview-character .onboarding-character-art {
+  inset: var(--sp-1);
+  width: calc(100% - var(--sp-1) - var(--sp-1));
+  height: calc(100% - var(--sp-1) - var(--sp-1));
+}
+
+.onboarding-mood-preview-copy {
+  min-width: 0;
+  padding-top: var(--sp-2);
+}
+
+.onboarding-mood-preview-speaker {
+  display: block;
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.2;
+}
+
+.onboarding-mood-preview-greeting {
+  margin: var(--sp-1) 0 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.onboarding-mood-save-error {
+  margin: 0;
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+.onboarding-card-moods .welcome-providers {
+  width: 100%;
+  max-width: 320px;
+  margin-inline: auto;
+}
+
+@media (max-width: 680px) {
+  .welcome-card-intro .onboarding-points {
+    grid-template-columns: 1fr;
+  }
+
+  .welcome-card-intro .onboarding-points li:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .welcome-card-intro .onboarding-points li:not(:last-child) {
+    border-bottom: var(--border-width) solid var(--border-subtle);
+  }
+
+  .welcome-card-intro .onboarding-points li:last-child:nth-child(odd) {
+    grid-column: auto;
+  }
+
+  .onboarding-mood-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .onboarding-mood-grid.onboarding-area-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-mood-option,
+  .onboarding-mood-check {
+    transition: none;
+  }
+
+  .onboarding-mood-preview-content {
+    transition: none;
+  }
 }
 
 /* Permissions: one bordered card, one row per permission — icon chip, a
@@ -25238,259 +25608,6 @@ button.memory-project:hover {
 .onboarding-perm-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--focus-ring);
-}
-
-/* Practice: a small slice of the real June chat surface. */
-.onboarding-practice-card {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  margin-top: var(--sp-2);
-  border: 1px solid var(--border-subtle);
-  border-radius: calc(var(--r-xl) + var(--sp-4));
-  background: color-mix(in oklch, var(--card) 96%, var(--muted));
-  box-shadow: var(--shadow-sm);
-  padding: var(--sp-4);
-  text-align: left;
-}
-
-.onboarding-practice-card::before {
-  content: "";
-  position: absolute;
-  inset: 42% 0 0;
-  z-index: -1;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in oklch, var(--warm-soft) 24%, transparent) 54%,
-    color-mix(in oklch, var(--brand) 10%, transparent)
-  );
-  pointer-events: none;
-}
-
-.onboarding-practice-thread {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  align-items: start;
-  gap: var(--sp-3);
-  padding: var(--sp-1) var(--sp-1) var(--sp-4);
-}
-
-.onboarding-practice-avatar {
-  display: inline-grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--r-md);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--brand) 94%, white 6%),
-    color-mix(in oklch, var(--brand) 86%, black 12%)
-  );
-  color: var(--on-solid);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 22%, transparent),
-    0 1px 4px color-mix(in oklch, var(--brand) 18%, transparent);
-}
-
-.onboarding-practice-avatar svg {
-  width: 10px;
-  height: 12px;
-}
-
-.onboarding-practice-message {
-  display: grid;
-  gap: 2px;
-  max-width: 88%;
-  padding: 0;
-  font-size: var(--fs-md);
-  line-height: 1.6;
-  color: var(--foreground);
-  transform-origin: bottom left;
-  animation: onboarding-rise var(--t-slow) var(--ease-out) 150ms backwards;
-}
-
-.onboarding-practice-sender {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-medium);
-  color: var(--muted-foreground);
-}
-
-.onboarding-practice-text {
-  animation: onboarding-fade var(--t-med) var(--ease-out);
-}
-
-/* June "typing": three dots breathing in sequence until the greeting lands. */
-.onboarding-typing {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 5px 0 4px;
-}
-
-.onboarding-typing span {
-  width: 4px;
-  height: 4px;
-  border-radius: var(--r-pill);
-  background: var(--muted-foreground);
-  opacity: 0.35;
-  animation: onboarding-typing-dot 1.1s ease-in-out infinite;
-}
-
-.onboarding-typing span:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.onboarding-typing span:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes onboarding-typing-dot {
-  0%,
-  55%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  25% {
-    opacity: 0.9;
-    transform: translateY(-2px);
-  }
-}
-
-@keyframes onboarding-rise {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.97);
-  }
-}
-
-@keyframes onboarding-fade {
-  from {
-    opacity: 0;
-  }
-}
-
-.onboarding-practice-input {
-  display: block;
-  width: 100%;
-  min-height: 52px;
-  padding: 7px var(--sp-5);
-  border: 0;
-  background: transparent;
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--fs-lg);
-  line-height: 1.5;
-  resize: none;
-  outline: none;
-}
-
-.onboarding-practice-input::placeholder {
-  color: var(--muted-foreground);
-}
-
-.onboarding-practice-composer {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-1);
-  border: 1px solid transparent;
-  border-radius: var(--r-xl);
-  background: color-mix(in oklch, var(--card) 96%, white 4%);
-  /* Same hairline-ring edge, resting elevation, and ring-only focus as
-   * .agent-composer-box. */
-  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--border-subtle) 60%, transparent);
-  box-shadow: var(--shadow-md), var(--composer-ring);
-  transition: box-shadow var(--t-med) var(--ease-out);
-}
-
-.onboarding-practice-composer:focus-within {
-  --composer-ring: 0 0 0 1px color-mix(in oklch, var(--ring-focus) 20%, var(--border-subtle));
-}
-
-.onboarding-practice-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-3);
-  min-height: var(--control-md);
-  padding: 0 var(--sp-2) var(--sp-1) var(--sp-3);
-  color: var(--muted-foreground);
-  font-size: var(--fs-sm);
-}
-
-/* The dictation instruction + rebind control ride in a gray tray attached
-   to the practice card's top edge — the card overlaps the tray's tucked
-   bottom, so the tray reads as part of the card, not a floating row. */
-.onboarding-practice-stack {
-  display: flex;
-  flex-direction: column;
-  margin-top: var(--sp-2);
-}
-
-.onboarding-shortcut-row {
-  display: flex;
-  align-items: center;
-  /* Label left, control right — the settings-row layout, and the edges line
-     up with the composer box below. */
-  justify-content: space-between;
-  gap: var(--sp-3);
-  /* A touch more x-inset than the card padding — the big corner radius eats
-     into the row, so flush-to-padding reads cramped. */
-  padding: var(--sp-3) var(--sp-6);
-  /* Tuck the tray's bottom under the card: reserve the overlap in padding,
-     then pull the card up over it. */
-  padding-bottom: calc(var(--sp-3) + var(--r-xl) + var(--sp-4));
-  /* Narrower than the card, so the tab reads as peeking out from behind it
-     rather than a second full-width surface. */
-  margin: 0 var(--sp-6) calc(-1 * (var(--r-xl) + var(--sp-4)));
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px 16px 0 0;
-  /* White, with the slightest terracotta breath hugging the visible
-     bottom — the gradient starts low and peaks right where the card
-     overlaps, echoing the card's own warm fade. */
-  background: linear-gradient(
-    180deg,
-    var(--card) 60%,
-    color-mix(in oklch, var(--warm-soft) 14%, var(--card)) calc(100% - var(--r-xl) - var(--sp-4))
-  );
-  color: var(--foreground);
-  font-size: var(--fs-md);
-}
-
-.onboarding-shortcut-label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-
-.onboarding-shortcut-row .btn {
-  font-size: var(--fs-sm);
-}
-
-.onboarding-practice-stack .onboarding-practice-card {
-  margin-top: 0;
-}
-
-/* The composer corner keeps a quiet reminder of the key: just the keycap
-   chip, no frame. */
-.onboarding-practice-hint .keycap-frame {
-  height: auto;
-  padding: 0;
-  border-color: transparent;
-}
-
-.onboarding-practice-success {
-  flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--success) 12%, transparent);
-  color: var(--success);
-  animation: onboarding-rise var(--t-med) var(--ease-out);
 }
 
 /* Skills Hub browser (retired agent admin surface). Reuses the settings-group

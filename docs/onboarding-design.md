@@ -178,17 +178,18 @@ desktop app.
 
 ### Current funnel
 
-Progress bar: **Sign in -> Permissions -> Try it**
+Progress bar: **Sign in -> Privacy -> Focus -> Mood -> Permissions**
 
 1. **Sign-in stays inside onboarding.** The first step sends the user through
    OS Accounts and returns via the `osjune://` deep link. After the account
    snapshot refreshes, the wizard continues without asking for card details.
-2. **Permissions come before practice.** Microphone, accessibility, and
-   platform-specific setup still happen before the hands-on step so the first
-   real action can work.
-3. **Practice is the value proof.** The user reaches dictation practice with
-   the starting credits that OS Accounts grants to new accounts. Onboarding
-   never opens Stripe, the OS Accounts portal, or a trial checkout.
+2. **Personalization stays lightweight.** One focus choice and one mood choice
+   shape June without turning setup into a survey.
+3. **Permissions finish onboarding.** Microphone, accessibility, and
+   platform-specific setup are ready before the user enters the product. The
+   first real action happens in June itself instead of a simulated practice
+   screen. Onboarding never opens Stripe, the OS Accounts portal, or a trial
+   checkout.
 
 ### Post-onboarding gates
 

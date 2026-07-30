@@ -194,6 +194,8 @@ pub fn run() {
             agent_runtime::api::read_agent_skill,
             agent_runtime::api::update_agent_skill,
             agent_runtime::api::set_agent_skill_enabled,
+            agent_runtime::persona::june_persona,
+            agent_runtime::persona::set_june_persona,
             agent_recorder::resolve_agent_recorder_request,
             browser_broker::browser_approvals_pending,
             browser_broker::browser_approval_respond,

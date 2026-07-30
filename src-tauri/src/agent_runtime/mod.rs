@@ -5,6 +5,7 @@ pub mod domain;
 pub mod host;
 pub mod migration;
 pub mod native_connectors;
+pub mod persona;
 pub mod protocol;
 pub mod repository;
 pub mod secrets;

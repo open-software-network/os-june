@@ -507,7 +507,7 @@ export function App() {
     applyOnboardingReplayFlag();
     return isOnboardingComplete();
   });
-  // The wizard handles sign-in, permissions, and hands-on practice. Funding
+  // The wizard handles sign-in, personalization, and permissions. Funding
   // only blocks once the account snapshot positively reports no spendable
   // credits.
   const onboardingRequired = !accountLoading && !onboardingDone;

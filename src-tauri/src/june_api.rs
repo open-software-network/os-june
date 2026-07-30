@@ -1700,6 +1700,22 @@ pub async fn suggest_agent_session_title(
 }
 
 const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: June is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+
+fn june_home_chat_system_prompt_with_persona(
+    persona: &crate::agent_runtime::persona::JunePersonaSettings,
+) -> String {
+    crate::agent_runtime::persona::append_persona_instructions(
+        JUNE_HOME_CHAT_SYSTEM_PROMPT,
+        persona,
+    )
+}
+
+fn june_home_chat_system_prompt(app: &AppHandle) -> String {
+    june_home_chat_system_prompt_with_persona(
+        &crate::agent_runtime::persona::load_june_persona_or_default(app),
+    )
+}
+
 const JUNE_HOME_MEMORY_MAX_ITEMS: usize = 12;
 const JUNE_HOME_MEMORY_MAX_ITEM_CHARS: usize = 400;
 const JUNE_HOME_MEMORY_MAX_TOTAL_CHARS: usize = 4_000;
@@ -2202,9 +2218,10 @@ pub async fn june_home_chat(
         .map(str::trim)
         .filter(|profile| !profile.is_empty())
         .map(str::to_string);
+    let system_prompt = june_home_chat_system_prompt(&app);
     let mut messages = vec![serde_json::json!({
         "role": "system",
-        "content": JUNE_HOME_CHAT_SYSTEM_PROMPT,
+        "content": system_prompt,
     })];
     if let Some(memory_context) = june_home_memory_context(&app, profile.as_deref()).await {
         messages.push(serde_json::json!({
@@ -4535,6 +4552,25 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("only source of new intent"));
         assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("work mentioned only in an earlier turn"));
         assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey June' is conversation"));
+    }
+
+    #[test]
+    fn home_chat_prompt_includes_the_shared_personality_without_losing_routing_rules() {
+        let prompt = june_home_chat_system_prompt_with_persona(
+            &crate::agent_runtime::persona::JunePersonaSettings {
+                schema_version: crate::agent_runtime::persona::JUNE_PERSONA_SCHEMA_VERSION,
+                area: crate::agent_runtime::persona::JunePersonaArea::Personal,
+                voice: 80,
+                detail: 55,
+                initiative: 70,
+                humor: 45,
+            },
+        );
+
+        assert!(prompt.contains("Polish 20/100"));
+        assert!(prompt.contains("help managing personal life"));
+        assert!(prompt.contains("only source of new intent"));
+        assert!(prompt.contains("call start_task exactly once"));
     }
 
     #[test]

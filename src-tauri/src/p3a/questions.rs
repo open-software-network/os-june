@@ -8,6 +8,10 @@ pub enum Question {
     AgentPrivacyGuard,
     ModelsPrivacyMode,
     OnboardingCompleted,
+    OnboardingAreaWork,
+    OnboardingAreaPersonal,
+    OnboardingAreaThinking,
+    OnboardingAreaPlay,
     OnboardingUseCaseWork,
     OnboardingUseCasePersonal,
     OnboardingUseCaseSchool,
@@ -83,6 +87,34 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
         prompt: "Onboarding completed",
         buckets: &["completed"],
         decision: "Onboarding funnel health",
+    },
+    QuestionDef {
+        question: Question::OnboardingAreaWork,
+        id: "onboarding.area.work",
+        prompt: "Primary onboarding area selected: work",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingAreaPersonal,
+        id: "onboarding.area.personal",
+        prompt: "Primary onboarding area selected: personal life",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingAreaThinking,
+        id: "onboarding.area.thinking",
+        prompt: "Primary onboarding area selected: thinking and reflection",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
+    },
+    QuestionDef {
+        question: Question::OnboardingAreaPlay,
+        id: "onboarding.area.play",
+        prompt: "Primary onboarding area selected: play and creativity",
+        buckets: &["selected"],
+        decision: "New-user intent and activation segmentation",
     },
     QuestionDef {
         question: Question::OnboardingUseCaseWork,
@@ -187,6 +219,10 @@ impl Question {
             }
             Self::ModelsPrivacyMode => raw.min(2) as u8,
             Self::OnboardingCompleted
+            | Self::OnboardingAreaWork
+            | Self::OnboardingAreaPersonal
+            | Self::OnboardingAreaThinking
+            | Self::OnboardingAreaPlay
             | Self::OnboardingUseCaseWork
             | Self::OnboardingUseCasePersonal
             | Self::OnboardingUseCaseSchool

@@ -30,23 +30,34 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
       wide
       className="onboarding-card-privacy"
     >
-      <div className="onboarding-privacy-choice">
-        <div className="onboarding-privacy-copy">
-          <h2>Share anonymous usage statistics</h2>
-          <p>
-            Anonymous counts of feature usage, like how many dictation sessions happen in a week.
-            Never your recordings, notes, or anything you write, and nothing that can identify you.
-          </p>
-          <a href={TELEMETRY_INFO_URL} target="_blank" rel="noreferrer">
-            Learn how it works
-          </a>
+      <div className="onboarding-privacy-choice settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h2 className="settings-row-title">Share anonymous usage statistics</h2>
+              <p className="settings-row-description">
+                Anonymous counts of feature usage, like how many dictation sessions happen in a
+                week. Never your recordings, notes, or anything you write.{" "}
+                <a
+                  className="settings-inline-link"
+                  href={TELEMETRY_INFO_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Learn how it works
+                </a>
+              </p>
+            </div>
+            <div className="settings-row-control">
+              <Switch
+                checked={enabled}
+                disabled={saving}
+                aria-label="Share anonymous usage statistics"
+                onCheckedChange={setEnabled}
+              />
+            </div>
+          </div>
         </div>
-        <Switch
-          checked={enabled}
-          disabled={saving}
-          aria-label="Share anonymous usage statistics"
-          onCheckedChange={setEnabled}
-        />
       </div>
       {error ? <p className="welcome-status">{error}</p> : null}
       <StepActions

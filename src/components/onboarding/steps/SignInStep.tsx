@@ -16,36 +16,36 @@ import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 const JUNE_POINTS = [
   {
     icon: IconSparkle,
-    title: "Chat and work with June",
-    detail: "Hand June real work. It runs the session and comes back done.",
+    title: "Delegate real work",
+    detail: "Give June a task and come back to the result.",
   },
   {
     icon: IconMicrophone,
-    title: "Speak instead of type",
-    detail: "June turns your voice into polished writing in any app on your computer.",
+    title: "Write with your voice",
+    detail: "Turn speech into polished text in any app.",
   },
   {
     icon: IconCalendar1,
-    title: "Effortlessly capture meetings",
-    detail: "June takes meeting notes without ever having to join the meeting.",
+    title: "Capture meetings",
+    detail: "Keep clear notes without inviting a bot.",
   },
   {
     icon: IconLock,
     title: "Private by default",
-    detail: "Prompts leverage private, zero-retention Venice AI models by default.",
+    detail: "Zero-retention models protect what you share.",
   },
 ];
 
 const WINDOWS_JUNE_POINTS = [
   {
     icon: IconSparkle,
-    title: "Desktop notes for your work",
-    detail: "Keep meeting notes and projects together in one app.",
+    title: "Keep work together",
+    detail: "Bring meeting notes and projects into one place.",
   },
   {
     icon: IconMicrophone,
-    title: "Meeting notes from your mic",
-    detail: "Record meetings from your microphone and turn them into notes.",
+    title: "Capture meetings",
+    detail: "Turn microphone recordings into clear notes.",
   },
   JUNE_POINTS[3],
 ];

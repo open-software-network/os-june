@@ -169,6 +169,11 @@
   --companion-pairing-copy-min-w: 220px;
   --companion-pairing-qr-size: 256px;
   --companion-pairing-qr-canvas: oklch(100% 0 none);
+  --onboarding-moods-max-w: 620px;
+  --onboarding-preview-swap-blur: 3px;
+  --onboarding-sticker-card-size: 78px;
+  --onboarding-sticker-keyline-dark-tint: 16%;
+  --onboarding-area-icon-tint: 14%;
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
    * the bar and inset their scrollbar tracks below it. */
@@ -317,6 +322,13 @@
    * neutrals mix from this so clay's high chroma doesn't over-cream the greys;
    * the Appearance picker overrides both --brand and --brand-wash together. */
   --brand-wash: #976851;
+  /* Each onboarding mood borrows a shipped theme accent: ocean for calm,
+   * sage for clearheaded, clay for quick-witted, and plum for strategic.
+   * The card uses these as a wash while the sticker gets the solid swatch. */
+  --onboarding-mood-calm: #3d7b9a;
+  --onboarding-mood-clearheaded: #527f4d;
+  --onboarding-mood-quick-witted: #b5551f;
+  --onboarding-mood-strategic: #965d84;
   /* Luminous accent for brief clay details (the image-gen mark's glint and its
    * press ripple). Mixing --brand with white lifts lightness but drops chroma,
    * which reads as dusty *mud* the moment it's painted over the light dot

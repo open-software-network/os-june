@@ -1514,8 +1514,9 @@ async fn run_params(
     crate::agent_mcp::snapshot_run_policies(&repository.pool, request.run_id, &mcp_descriptors)
         .await
         .map_err(|error| AppError::new("agent_mcp_policy_snapshot_failed", error.to_string()))?;
+    let instructions = super::persona::instructions_for_app(app, INSTRUCTIONS);
     Ok(
-        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": INSTRUCTIONS, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
+        json!({ "model": request.model, "reasoningEffort": request.reasoning_effort, "instructions": instructions, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": message_with_attachment_context(request.input, request.attachments), "attachments": vision_attachments, "history": history, "tools": tools, "skills": request.skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": context_window, "maxOutputTokens": agent_model_output_reserve(context_window) }),
     )
 }
 
@@ -2075,15 +2076,29 @@ mod tests {
 
     #[test]
     fn resumable_configuration_excludes_replayed_input_but_keeps_policy() {
+        let instructions = crate::agent_runtime::persona::append_persona_instructions(
+            "Focused run policy.",
+            &crate::agent_runtime::persona::JunePersonaSettings {
+                schema_version: crate::agent_runtime::persona::JUNE_PERSONA_SCHEMA_VERSION,
+                area: crate::agent_runtime::persona::JunePersonaArea::Thinking,
+                voice: 45,
+                detail: 90,
+                initiative: 75,
+                humor: 20,
+            },
+        );
         let config = resumable_run_config(&json!({
             "input": "user prompt",
             "history": [{ "role": "user", "text": "old" }],
-            "instructions": "Routine policy",
+            "instructions": instructions,
             "tools": [{ "name": "read_file" }]
         }));
         assert!(config.get("input").is_none());
         assert!(config.get("history").is_none());
-        assert_eq!(config["instructions"], "Routine policy");
+        assert!(config["instructions"].as_str().is_some_and(|instructions| {
+            instructions.contains("Depth 90/100")
+                && instructions.contains("Instruction order and untrusted content")
+        }));
         assert_eq!(config["tools"][0]["name"], "read_file");
     }
 
