@@ -28,6 +28,7 @@ export function JunePersonalitySettingsSection() {
   const [error, setError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const persistedSelection = useRef<SavedSelection | null>(null);
   const queuedSelection = useRef<SavedSelection | null>(null);
   const saveInFlight = useRef(false);
   const mounted = useRef(true);
@@ -50,6 +51,7 @@ export function JunePersonalitySettingsSection() {
       .then((persona) => {
         if (cancelled) return;
         const loadedMood = closestOnboardingMood(persona);
+        persistedSelection.current = { area: persona.area, mood: loadedMood };
         setArea(persona.area);
         setMood(loadedMood);
         setLoaded(true);
@@ -89,6 +91,7 @@ export function JunePersonalitySettingsSection() {
           ...ONBOARDING_MOOD_PERSONALITY_PRESETS[selection.mood],
         });
         const confirmedMood = closestOnboardingMood(persona);
+        persistedSelection.current = { area: persona.area, mood: confirmedMood };
         saveOnboardingArea(persona.area);
         saveOnboardingMood(confirmedMood);
 
@@ -99,6 +102,11 @@ export function JunePersonalitySettingsSection() {
         }
       } catch (cause) {
         if (mounted.current && queuedSelection.current === null) {
+          const persisted = persistedSelection.current;
+          if (persisted) {
+            setArea(persisted.area);
+            setMood(persisted.mood);
+          }
           setError(messageFromError(cause, "Unable to save June's personality."));
           setStatus(undefined);
         }
