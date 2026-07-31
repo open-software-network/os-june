@@ -2116,7 +2116,9 @@ describe("AgentWorkspace runtime wiring", () => {
 
     render(<AgentWorkspace initialSession={session} />);
 
-    expect(await screen.findByText("June could not complete this request.")).toBeVisible();
+    expect(
+      await screen.findByText("The model service could not finish this request."),
+    ).toBeVisible();
     expect(screen.queryByText("upstream_provider_failed")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 

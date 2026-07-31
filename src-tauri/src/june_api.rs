@@ -38,6 +38,7 @@ const BROWSER_TRANSPORT_POLICY_TIMEOUT: Duration = Duration::from_secs(10);
 // large request-body transfer and the terminal SSE event. This is not a
 // second server budget.
 const ISSUE_REPORT_MULTIPART_TIMEOUT: Duration = Duration::from_secs(900);
+const AGENT_DIAGNOSTICS_ATTACHMENT_NAME: &str = "june-agent-diagnostics.txt";
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
 const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
@@ -2450,6 +2451,7 @@ fn parse_explicit_classification(text: &str) -> Option<bool> {
 pub async fn submit_issue_report(
     request: &crate::domain::types::SubmitIssueReportRequest,
     app_version: &str,
+    agent_diagnostics: Option<&str>,
 ) -> Result<crate::domain::types::SubmitIssueReportResponse, AppError> {
     let description = request.description.trim();
     if description.is_empty() {
@@ -2464,9 +2466,20 @@ pub async fn submit_issue_report(
         included_names,
         skipped_names,
     } = issue_attachment_parts(&request.attachment_paths).await?;
-    let mut form = issue_report_form(request, app_version);
+    let mut form = issue_report_form(request, app_version, agent_diagnostics);
     for part in parts {
         form = form.part("attachment", part);
+    }
+    if let Some(diagnostics) = agent_diagnostics {
+        form = form.part(
+            "attachment",
+            Part::text(diagnostics.to_string())
+                .file_name(AGENT_DIAGNOSTICS_ATTACHMENT_NAME)
+                .mime_str("text/plain; charset=utf-8")
+                .map_err(|error| {
+                    AppError::new("issue_report_attachment_invalid", error.to_string())
+                })?,
+        );
     }
 
     let first_response = send_multipart("/v1/issue-reports", form, false).await?;
@@ -2487,9 +2500,15 @@ pub async fn submit_issue_report(
         let mut omitted_names = request.attachment_names.clone();
         extend_unique_names(&mut omitted_names, skipped_names);
         extend_unique_names(&mut omitted_names, included_names);
+        if agent_diagnostics.is_some() {
+            extend_unique_names(
+                &mut omitted_names,
+                vec![AGENT_DIAGNOSTICS_ATTACHMENT_NAME.to_string()],
+            );
+        }
         let retry_response = send_multipart(
             "/v1/issue-reports",
-            issue_report_form(request, app_version),
+            issue_report_form(request, app_version, agent_diagnostics),
             false,
         )
         .await?;
@@ -2508,6 +2527,7 @@ pub async fn submit_issue_report(
 fn issue_report_form(
     request: &crate::domain::types::SubmitIssueReportRequest,
     app_version: &str,
+    agent_diagnostics: Option<&str>,
 ) -> Form {
     let mut form = Form::new()
         .text("description", request.description.trim().to_string())
@@ -2542,6 +2562,12 @@ fn issue_report_form(
     }
     for name in &request.attachment_names {
         form = form.text("attachmentName", name.clone());
+    }
+    if agent_diagnostics.is_some() {
+        form = form.text(
+            "attachmentName",
+            AGENT_DIAGNOSTICS_ATTACHMENT_NAME.to_string(),
+        );
     }
     form
 }

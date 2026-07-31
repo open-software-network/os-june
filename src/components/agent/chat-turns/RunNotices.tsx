@@ -23,13 +23,21 @@ export function CreditsNoticePart({ onTopUp }: { onTopUp?: () => void; [key: str
 
 export function UpstreamProviderFailureNoticePart({
   onRetry,
+  kind = "upstream-provider",
 }: {
   onRetry?: () => void;
+  kind?: "upstream-provider" | "tool" | "runtime";
   [key: string]: unknown;
 }) {
+  const message =
+    kind === "tool"
+      ? "A tool June used could not finish this request."
+      : kind === "runtime"
+        ? "June's local agent stopped unexpectedly."
+        : "The model service could not finish this request.";
   return (
     <div className="agent-system-notice">
-      June could not complete this request.
+      {message}
       {onRetry ? (
         <button type="button" onClick={onRetry}>
           Try again

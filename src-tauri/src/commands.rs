@@ -938,7 +938,46 @@ pub async fn submit_issue_report(
     request: SubmitIssueReportRequest,
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
-    crate::june_api::submit_issue_report(&request, &app_version).await
+    let diagnostics = issue_report_agent_diagnostics(&app, request.session_id.as_deref()).await?;
+    crate::june_api::submit_issue_report(&request, &app_version, diagnostics.as_deref()).await
+}
+
+async fn issue_report_agent_diagnostics(
+    app: &AppHandle,
+    session_id: Option<&str>,
+) -> Result<Option<String>, AppError> {
+    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let repositories = repositories(app).await?;
+    let row = sqlx::query::query(
+        "SELECT id, error_code, error_message, completed_at
+         FROM agent_runs
+         WHERE session_id = ? AND error_code IS NOT NULL
+         ORDER BY started_at DESC
+         LIMIT 1",
+    )
+    .bind(session_id)
+    .fetch_optional(&repositories.pool)
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    use sqlx::row::Row as _;
+    let run_id = row.get::<String, _>("id");
+    let error_code = row
+        .get::<Option<String>, _>("error_code")
+        .unwrap_or_else(|| "agent_runtime_failed".into());
+    let error_message = crate::agent_runtime::host::sanitize_log(
+        row.get::<Option<String>, _>("error_message")
+            .as_deref()
+            .unwrap_or("Agent run failed."),
+    );
+    let completed_at = row.get::<Option<String>, _>("completed_at");
+    Ok(Some(format!(
+        "June agent runtime diagnostics\n\nSession ID: {session_id}\nRun ID: {run_id}\nError code: {error_code}\nError message: {error_message}\nCompleted at: {}\n",
+        completed_at.as_deref().unwrap_or("unknown")
+    )))
 }
 
 #[tauri::command]

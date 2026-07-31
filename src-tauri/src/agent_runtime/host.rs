@@ -409,7 +409,7 @@ fn spawn_stdout_reader(
         let _ = repository
             .mark_active_runs_interrupted("The local agent runtime stopped unexpectedly.")
             .await;
-        let _ = app.emit(AGENT_RUNTIME_EVENT, json!({ "protocolVersion": PROTOCOL_VERSION, "sessionId": "runtime", "runId": "runtime", "sequence": 0, "eventId": Uuid::new_v4(), "method": "run.failed", "data": { "completedAt": now(), "message": "The local agent runtime stopped unexpectedly.", "retryable": true } }));
+        let _ = app.emit(AGENT_RUNTIME_EVENT, json!({ "protocolVersion": PROTOCOL_VERSION, "sessionId": "runtime", "runId": "runtime", "sequence": 0, "eventId": Uuid::new_v4(), "method": "run.failed", "data": { "completedAt": now(), "message": "The local agent runtime stopped unexpectedly.", "category": "runtime", "code": "runtime_crashed", "retryable": true } }));
     });
 }
 
@@ -948,7 +948,31 @@ async fn persist_and_emit_event(
             None
         }
         "run.failed" => {
-            data = json!({ "completedAt": created_at, "message": params.get("error").cloned().unwrap_or_else(|| json!("Agent run failed.")), "retryable": true });
+            let message = params
+                .get("error")
+                .and_then(Value::as_str)
+                .map(sanitize_log)
+                .unwrap_or_else(|| "Agent run failed.".into());
+            let category = params
+                .get("category")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    matches!(
+                        *value,
+                        "tool" | "provider" | "runtime" | "context" | "credits"
+                    )
+                })
+                .unwrap_or("runtime");
+            let code = params
+                .get("code")
+                .and_then(Value::as_str)
+                .filter(|value| value.starts_with("agent_") || *value == "runtime_crashed")
+                .unwrap_or("agent_runtime_failed");
+            let retryable = params
+                .get("retryable")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            data = json!({ "completedAt": created_at, "message": message, "category": category, "code": code, "retryable": retryable });
             repository
                 .update_run_status(
                     &frame.run_id,
@@ -956,7 +980,7 @@ async fn persist_and_emit_event(
                     None,
                     None,
                     Some((
-                        "agent_run_failed",
+                        code,
                         data["message"].as_str().unwrap_or("Agent run failed."),
                     )),
                 )
@@ -1180,7 +1204,7 @@ fn steering_stable_id(params: &Value, event_id: &str) -> String {
     )
 }
 
-fn sanitize_log(value: &str) -> String {
+pub(crate) fn sanitize_log(value: &str) -> String {
     let value = redact_bearer_tokens(value);
     let value = redact_key_tokens(&value);
     value.chars().take(2_000).collect()

@@ -1,0 +1,42 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ReportDialog } from "../components/agent/ReportDialog";
+
+const mocks = vi.hoisted(() => ({ submitIssueReport: vi.fn() }));
+
+vi.mock("../lib/tauri", () => ({ submitIssueReport: mocks.submitIssueReport }));
+
+describe("ReportDialog", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.submitIssueReport.mockResolvedValue({ received: true });
+  });
+
+  it("submits the selected session so native diagnostics can be attached", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReportDialog
+        category="bug"
+        sessionId="session-failed"
+        onCategoryChange={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "June stopped");
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "June stopped",
+        attachmentNames: [],
+        attachmentPaths: [],
+        sessionId: "session-failed",
+      }),
+    );
+    expect(await screen.findByText(/Your report was sent to the June team/)).toBeVisible();
+  });
+});

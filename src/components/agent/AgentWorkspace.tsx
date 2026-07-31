@@ -131,6 +131,8 @@ import { Dialog } from "../ui/Dialog";
 import { Spinner } from "../ui/Spinner";
 import { JuneBloom } from "../brand/JuneBloom";
 import { ShareDialog } from "../share/ShareDialog";
+import { ReportDialog } from "./ReportDialog";
+import type { ReportCategory } from "./composer/reportCategory";
 import { buildSessionPayload } from "../../lib/share-payload";
 import {
   type AgentNewSessionDetail,
@@ -320,6 +322,12 @@ export function AgentWorkspace({
   const { companionPairingEnabled } = useExperimentalFlags();
   const initialAgentSession = initialSession;
   const pendingRequestRef = useRef(pendingNewSessionRequest());
+  const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory | undefined>(
+    pendingRequestRef.current?.category,
+  );
+  const [reportSessionId, setReportSessionId] = useState<string | undefined>(
+    pendingRequestRef.current?.category ? (initialSession?.id ?? initialSessionId) : undefined,
+  );
   const [sessions, setSessions] = useState<AgentSessionDto[]>(
     initialAgentSession ? [initialAgentSession] : [],
   );
@@ -477,6 +485,10 @@ export function AgentWorkspace({
 
   const startNewSession = useCallback(
     (request?: AgentNewSessionDetail) => {
+      if (request?.category) {
+        setReportSessionId(selectedIdRef.current);
+        setReportDialogCategory(request.category);
+      }
       hydrationRequestRef.current = undefined;
       setHydratedSelectionId(undefined);
       pendingSessionCreationRef.current = undefined;
@@ -2515,6 +2527,17 @@ export function AgentWorkspace({
           </div>
         )}
       </section>
+      {reportDialogCategory ? (
+        <ReportDialog
+          category={reportDialogCategory}
+          sessionId={reportSessionId}
+          onCategoryChange={setReportDialogCategory}
+          onClose={() => {
+            setReportDialogCategory(undefined);
+            setReportSessionId(undefined);
+          }}
+        />
+      ) : null}
       {artifactPanel ? (
         <AgentArtifactPanel
           artifacts={renderedArtifacts}

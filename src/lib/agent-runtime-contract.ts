@@ -114,6 +114,8 @@ export type AgentInterruptionItemDto = AgentItemBase & {
 export type AgentErrorItemDto = AgentItemBase & {
   kind: "error";
   message: string;
+  category?: "tool" | "provider" | "runtime" | "context" | "credits";
+  code?: string;
   retryable: boolean;
 };
 
@@ -262,7 +264,13 @@ export type AgentRuntimeEvent = RuntimeFrameBase &
     | {
         eventId: string;
         method: "run.failed";
-        data: { completedAt: string; message: string; retryable: boolean };
+        data: {
+          completedAt: string;
+          message: string;
+          category?: "tool" | "provider" | "runtime" | "context" | "credits";
+          code?: string;
+          retryable: boolean;
+        };
       }
   );
 

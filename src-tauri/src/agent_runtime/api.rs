@@ -2174,7 +2174,7 @@ fn item_json_with_active_run(
         }
         AgentItemPayload::Interruption(v) => json!({ "kind": "interruption", "interruption": v }),
         AgentItemPayload::Error(v) => {
-            json!({ "kind": "error", "message": v.get("message").cloned().unwrap_or_else(|| json!("Agent run failed.")), "retryable": v.get("retryable").cloned().unwrap_or(Value::Bool(true)) })
+            json!({ "kind": "error", "message": v.get("message").cloned().unwrap_or_else(|| json!("Agent run failed.")), "category": v.get("category").cloned().unwrap_or_else(|| json!("provider")), "code": v.get("code").cloned().unwrap_or_else(|| json!("agent_run_failed")), "retryable": v.get("retryable").cloned().unwrap_or(Value::Bool(true)) })
         }
     };
     object.extend(fields.as_object().cloned().expect("fields object"));

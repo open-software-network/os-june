@@ -584,6 +584,28 @@ describe("agent runtime adapter", () => {
     ]);
   });
 
+  it("maps persisted failure categories to specific notices", () => {
+    const base = {
+      sessionId: "session-1",
+      runId: "run-1",
+      createdAt: "2026-07-22T12:00:00Z",
+      kind: "error" as const,
+      message: "sanitized detail",
+      retryable: true,
+    };
+    const turns = agentItemsToChatTurns([
+      { ...base, id: "tool", sequence: 1, category: "tool" },
+      { ...base, id: "runtime", sequence: 2, category: "runtime" },
+      { ...base, id: "provider", sequence: 3, category: "provider" },
+    ]);
+
+    expect(turns.map((turn) => turn.parts[0])).toMatchObject([
+      { type: "notice", kind: "tool" },
+      { type: "notice", kind: "runtime" },
+      { type: "notice", kind: "upstream-provider" },
+    ]);
+  });
+
   it("rejects an incompatible protocol version", () => {
     const event = {
       ...frame,

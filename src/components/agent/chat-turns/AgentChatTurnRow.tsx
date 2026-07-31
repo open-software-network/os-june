@@ -535,9 +535,12 @@ export function AgentChatTurnRow({
           ) : part.type === "notice" ? (
             part.kind === "context-overflow" ? (
               <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
-            ) : part.kind === "upstream-provider" ? (
+            ) : part.kind === "upstream-provider" ||
+              part.kind === "tool" ||
+              part.kind === "runtime" ? (
               <UpstreamProviderFailureNoticePart
                 key={`${turn.id}:notice:${index}`}
+                kind={part.kind}
                 attempted={upstreamFailureRetryAttempted}
                 disabled={upstreamFailureRetryDisabled}
                 onRetry={onRetryUpstreamFailure ? () => onRetryUpstreamFailure(turn.id) : undefined}

@@ -1,6 +1,6 @@
 import { compactHistory } from "./compaction.js";
 import { HOST_REQUEST_METHODS, ProtocolError, type RpcRequest, type RuntimeEventMethod } from "./protocol.js";
-import { errorMessage, sanitizeForLog } from "./sanitize.js";
+import { errorMessage, runtimeFailureDetails, sanitizeForLog } from "./sanitize.js";
 import type { NdjsonRpcPeer } from "./transport.js";
 import type {
   AgentEngine,
@@ -288,7 +288,18 @@ export class RuntimeService {
       if (active?.controller.signal.aborted || isAbortError(error)) {
         this.emit("run.cancelled", {}, sessionId, runId);
       } else {
-        this.emit("run.failed", { error: errorMessage(error) }, sessionId, runId);
+        const failure = runtimeFailureDetails(error);
+        this.emit(
+          "run.failed",
+          {
+            error: failure.message,
+            category: failure.category,
+            code: failure.code,
+            retryable: failure.retryable,
+          },
+          sessionId,
+          runId,
+        );
         void this.log("error", "Agent run failed", { error: sanitizeForLog(error) }, sessionId, runId);
       }
     } finally {
