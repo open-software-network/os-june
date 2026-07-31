@@ -979,15 +979,6 @@ impl AgentRepository {
         self.get_run(run_id).await.map(Some).map_err(Into::into)
     }
 
-    pub async fn mark_active_runs_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
-        let now = now();
-        let result = query("UPDATE agent_runs SET status = 'interrupted', updated_at = ?, completed_at = ?, error_code = 'runtime_crashed', error_message = ? WHERE status IN ('queued', 'running')")
-            .bind(&now).bind(&now).bind(message).execute(&self.pool).await?;
-        query("UPDATE agent_sessions SET status = 'interrupted', updated_at = ?, last_error = ? WHERE status = 'running'")
-            .bind(&now).bind(message).execute(&self.pool).await?;
-        Ok(result.rows_affected())
-    }
-
     /// Repairs non-routine work left active by a previous app process. Waiting
     /// runs keep their serialized interruption state and routine runs are
     /// reconciled by the scheduler's lease-aware recovery path.

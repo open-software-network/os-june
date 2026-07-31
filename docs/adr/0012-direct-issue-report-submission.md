@@ -94,3 +94,32 @@ Reports no longer run a client-side model turn at all.
   replay ambiguous transport or malformed-envelope failures. The legacy
   project-to-org Issue fallback is retained only after a parsed, explicit
   project rejection proves the first create did not succeed.
+
+## Addendum: 2026-07-31
+
+### Decision
+
+- A bug report opened from a stored agent session may include a generated
+  `june-agent-diagnostics.txt` attachment. The dialog shows this attachment
+  before submission and lets the user omit it. Feedback and feature reports
+  do not attach agent diagnostics.
+- Diagnostics are limited to the latest run in that stored session, and are
+  attached only when that run failed. They contain qualified stored session
+  and agent run IDs, a bounded stable error code, and completion time.
+  They do not contain prompts, transcript content, tool output, or user files.
+- The desktop does not transmit the persisted free-form error message. It
+  bounds and sanitizes the identifiers and stable error code before the
+  existing June API attachment contract carries the generated text, so
+  diagnosis remains server-side and no backend deployment is required.
+- Diagnostic lookup is best-effort. Database or migration failures are logged
+  without report content, and the user-authored report is still submitted.
+
+### Consequences
+
+- The team receives actionable local failure context without asking a user to
+  run a command or collect logs.
+- Sending a report can disclose bounded internal identifiers, a stable error
+  code, and completion time, but the dialog makes that disclosure visible and
+  removable.
+- Report payloads stay within the server's 20-attachment budget. The dialog
+  accepts up to 19 user-selected files while generated diagnostics are selected.

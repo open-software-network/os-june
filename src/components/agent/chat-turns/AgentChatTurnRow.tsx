@@ -543,7 +543,11 @@ export function AgentChatTurnRow({
                 kind={part.kind}
                 attempted={upstreamFailureRetryAttempted}
                 disabled={upstreamFailureRetryDisabled}
-                onRetry={onRetryUpstreamFailure ? () => onRetryUpstreamFailure(turn.id) : undefined}
+                onRetry={
+                  part.retryable !== false && onRetryUpstreamFailure
+                    ? () => onRetryUpstreamFailure(turn.id)
+                    : undefined
+                }
               />
             ) : (
               <CreditsNoticePart

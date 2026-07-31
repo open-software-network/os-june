@@ -33,7 +33,7 @@ export function UpstreamProviderFailureNoticePart({
     kind === "tool"
       ? "A tool June used could not finish this request."
       : kind === "runtime"
-        ? "June's local agent stopped unexpectedly."
+        ? "June stopped unexpectedly."
         : "The model service could not finish this request.";
   return (
     <div className="agent-system-notice">

@@ -64,6 +64,7 @@ use tokio::sync::OnceCell;
 
 const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
+const ISSUE_REPORT_ATTACHMENT_LIMIT: usize = 20;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -938,46 +939,76 @@ pub async fn submit_issue_report(
     request: SubmitIssueReportRequest,
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
-    let diagnostics = issue_report_agent_diagnostics(&app, request.session_id.as_deref()).await?;
+    let diagnostics = if request.attachment_names.len() >= ISSUE_REPORT_ATTACHMENT_LIMIT
+        || request.attachment_paths.len() >= ISSUE_REPORT_ATTACHMENT_LIMIT
+    {
+        None
+    } else {
+        match issue_report_agent_diagnostics(&app, request.stored_session_id.as_deref()).await {
+            Ok(diagnostics) => diagnostics,
+            Err(error) => {
+                tracing::warn!(
+                    error_code = %error.code,
+                    "issue report diagnostics were unavailable; submitting the report without them"
+                );
+                None
+            }
+        }
+    };
     crate::june_api::submit_issue_report(&request, &app_version, diagnostics.as_deref()).await
 }
 
 async fn issue_report_agent_diagnostics(
     app: &AppHandle,
-    session_id: Option<&str>,
+    stored_session_id: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    let Some(session_id) = session_id.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(stored_session_id) = stored_session_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
         return Ok(None);
     };
     let repositories = repositories(app).await?;
     let row = sqlx::query::query(
-        "SELECT id, error_code, error_message, completed_at
+        "SELECT id, status, error_code, completed_at
          FROM agent_runs
-         WHERE session_id = ? AND error_code IS NOT NULL
+         WHERE session_id = ?
          ORDER BY started_at DESC
          LIMIT 1",
     )
-    .bind(session_id)
+    .bind(stored_session_id)
     .fetch_optional(&repositories.pool)
     .await?;
     let Some(row) = row else {
         return Ok(None);
     };
     use sqlx::row::Row as _;
-    let run_id = row.get::<String, _>("id");
-    let error_code = row
-        .get::<Option<String>, _>("error_code")
-        .unwrap_or_else(|| "agent_runtime_failed".into());
-    let error_message = crate::agent_runtime::host::sanitize_log(
-        row.get::<Option<String>, _>("error_message")
+    if row.get::<String, _>("status") != "failed" {
+        return Ok(None);
+    }
+    let Some(error_code) = row.get::<Option<String>, _>("error_code") else {
+        return Ok(None);
+    };
+    let stored_session_id = diagnostic_field(stored_session_id, 128);
+    let agent_run_id = diagnostic_field(&row.get::<String, _>("id"), 128);
+    let error_code = diagnostic_field(&error_code, 128);
+    let completed_at = diagnostic_field(
+        row.get::<Option<String>, _>("completed_at")
             .as_deref()
-            .unwrap_or("Agent run failed."),
+            .unwrap_or("unknown"),
+        64,
     );
-    let completed_at = row.get::<Option<String>, _>("completed_at");
     Ok(Some(format!(
-        "June agent runtime diagnostics\n\nSession ID: {session_id}\nRun ID: {run_id}\nError code: {error_code}\nError message: {error_message}\nCompleted at: {}\n",
-        completed_at.as_deref().unwrap_or("unknown")
+        "June agent runtime diagnostics\n\nStored session ID: {stored_session_id}\nAgent run ID: {agent_run_id}\nError code: {error_code}\nCompleted at: {completed_at}\n"
     )))
+}
+
+fn diagnostic_field(value: &str, max_chars: usize) -> String {
+    crate::agent_runtime::host::sanitize_log(value)
+        .replace(['\r', '\n'], " ")
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 #[tauri::command]

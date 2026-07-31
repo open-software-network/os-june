@@ -20,14 +20,14 @@ import { FileTypeIcon } from "./FileTypeIcon";
 
 type ReportDialogProps = {
   category: ReportCategory;
-  sessionId?: string;
+  storedSessionId?: string;
   onCategoryChange: (category: ReportCategory) => void;
   onClose: () => void;
 };
 
 export function ReportDialog({
   category,
-  sessionId,
+  storedSessionId,
   onCategoryChange,
   onClose,
 }: ReportDialogProps) {
@@ -35,6 +35,7 @@ export function ReportDialog({
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
+  const [includeFailureDetails, setIncludeFailureDetails] = useState(true);
   const [error, setError] = useState<string>();
   const descriptionId = useId();
   const categoryOptions = useMemo(
@@ -53,12 +54,19 @@ export function ReportDialog({
   );
   const trimmedDescription = description.trim();
   const canSubmit = Boolean(trimmedDescription || attachmentPaths.length);
+  const canAttachFailureDetails =
+    category === "bug" && Boolean(storedSessionId) && attachmentPaths.length < 20;
 
   async function pickAttachments() {
     const selected = await openFileDialog({ multiple: true, title: "Add report files" });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
-    setAttachmentPaths((current) => [...new Set([...current, ...paths])].slice(0, 20));
+    setAttachmentPaths((current) =>
+      [...new Set([...current, ...paths])].slice(
+        0,
+        category === "bug" && storedSessionId && includeFailureDetails ? 19 : 20,
+      ),
+    );
   }
 
   async function send() {
@@ -71,7 +79,7 @@ export function ReportDialog({
         description: trimmedDescription || ISSUE_REPORT_ATTACHMENTS_ONLY_DESCRIPTION,
         attachmentNames: attachmentPaths.map((path) => path.split(/[\\/]/).pop() || path),
         attachmentPaths,
-        ...(sessionId ? { sessionId } : {}),
+        ...(canAttachFailureDetails && includeFailureDetails ? { storedSessionId } : {}),
       });
       if (category === "feedback") recordPositiveFeedbackSent();
       setSent(true);
@@ -143,6 +151,24 @@ export function ReportDialog({
               onChange={(event) => setDescription(event.currentTarget.value)}
             />
           </DialogField>
+          {category === "bug" && storedSessionId ? (
+            <label
+              className="report-dialog-diagnostics"
+              data-disabled={!canAttachFailureDetails || undefined}
+            >
+              <input
+                type="checkbox"
+                checked={includeFailureDetails && canAttachFailureDetails}
+                disabled={!canAttachFailureDetails || submitting}
+                onChange={(event) => setIncludeFailureDetails(event.currentTarget.checked)}
+              />
+              <span>
+                Include recent failure details (june-agent-diagnostics.txt). This contains a stable
+                error code and technical stored session and run IDs, not conversation content or
+                tool output.
+              </span>
+            </label>
+          ) : null}
           {attachmentPaths.length ? (
             <ul className="report-dialog-file-list" aria-label="Attached files">
               {attachmentPaths.map((path) => {

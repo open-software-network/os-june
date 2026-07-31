@@ -19,7 +19,7 @@ describe("ReportDialog", () => {
     render(
       <ReportDialog
         category="bug"
-        sessionId="session-failed"
+        storedSessionId="session-failed"
         onCategoryChange={vi.fn()}
         onClose={vi.fn()}
       />,
@@ -34,9 +34,34 @@ describe("ReportDialog", () => {
         description: "June stopped",
         attachmentNames: [],
         attachmentPaths: [],
-        sessionId: "session-failed",
+        storedSessionId: "session-failed",
       }),
     );
     expect(await screen.findByText(/Your report was sent to the June team/)).toBeVisible();
+  });
+
+  it("lets the user omit generated failure diagnostics", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReportDialog
+        category="bug"
+        storedSessionId="session-failed"
+        onCategoryChange={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("checkbox", { name: /Include recent failure details/ }));
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "June stopped");
+    await user.click(screen.getByRole("button", { name: "Send report" }));
+
+    await waitFor(() =>
+      expect(mocks.submitIssueReport).toHaveBeenCalledWith({
+        category: "bug",
+        description: "June stopped",
+        attachmentNames: [],
+        attachmentPaths: [],
+      }),
+    );
   });
 });

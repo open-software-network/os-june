@@ -8340,6 +8340,30 @@ button.agent-user-attachment:hover {
   list-style: none;
 }
 
+.report-dialog-diagnostics {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.report-dialog-diagnostics input {
+  flex: 0 0 auto;
+  margin: var(--sp-1) 0 0;
+  accent-color: var(--brand);
+}
+
+.report-dialog-diagnostics[data-disabled="true"] {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .report-dialog-file {
   display: grid;
   /* 18px = the 14px file icon plus optical breathing room (a one-off; icon

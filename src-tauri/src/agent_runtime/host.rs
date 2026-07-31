@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     process::Stdio,
     sync::{
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc, Weak,
     },
 };
@@ -26,6 +26,7 @@ pub const AGENT_RUNTIME_EVENT: &str = "june://agent-runtime-event";
 const RUNTIME_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const HISTORY_COMPACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>>;
+type OwnedRuns = Arc<Mutex<HashSet<(String, String)>>>;
 
 pub(crate) fn emit_persisted_run_cancelled(
     app: &AppHandle,
@@ -68,9 +69,24 @@ struct ModelStream {
 }
 
 struct RunningRuntime {
+    id: Uuid,
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: PendingRequests,
+    expected_exit: Arc<AtomicBool>,
+    owned_runs: OwnedRuns,
+}
+
+struct RuntimeReaderContext {
+    app: AppHandle,
+    repository: AgentRepository,
+    stdin: Arc<Mutex<ChildStdin>>,
+    pending: PendingRequests,
+    model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
+    model_scopes: Arc<Mutex<HashSet<String>>>,
+    cancellations: ToolCancellationRegistry,
+    expected_exit: Arc<AtomicBool>,
+    owned_runs: OwnedRuns,
 }
 
 impl AgentRuntimeHost {
@@ -139,15 +155,22 @@ impl AgentRuntimeHost {
             )
         })?;
         let pending = Arc::new(Mutex::new(HashMap::new()));
+        let runtime_id = Uuid::new_v4();
+        let expected_exit = Arc::new(AtomicBool::new(false));
+        let owned_runs = Arc::new(Mutex::new(HashSet::new()));
         spawn_stdout_reader(
-            app.clone(),
-            repository.clone(),
             stdout,
-            stdin.clone(),
-            pending.clone(),
-            self.model_streams.clone(),
-            self.model_scopes.clone(),
-            self.cancellations.clone(),
+            RuntimeReaderContext {
+                app: app.clone(),
+                repository: repository.clone(),
+                stdin: stdin.clone(),
+                pending: pending.clone(),
+                model_streams: self.model_streams.clone(),
+                model_scopes: self.model_scopes.clone(),
+                cancellations: self.cancellations.clone(),
+                expected_exit: expected_exit.clone(),
+                owned_runs: owned_runs.clone(),
+            },
         );
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
@@ -156,9 +179,12 @@ impl AgentRuntimeHost {
             }
         });
         *guard = Some(RunningRuntime {
+            id: runtime_id,
             child,
             stdin,
             pending,
+            expected_exit,
+            owned_runs,
         });
         drop(guard);
         let initialized = self
@@ -183,6 +209,7 @@ impl AgentRuntimeHost {
         let Some(mut runtime) = guard.take() else {
             return;
         };
+        runtime.expected_exit.store(true, Ordering::Release);
         let _ = runtime.child.kill().await;
         let _ = runtime.child.wait().await;
     }
@@ -198,6 +225,7 @@ impl AgentRuntimeHost {
         let runtime = guard.as_ref().ok_or_else(|| {
             AppError::new("agent_runtime_unavailable", "Agent runtime is not running.")
         })?;
+        let runtime_id = runtime.id;
         let id = Uuid::new_v4().to_string();
         let frame = RpcFrame::request(
             id.clone(),
@@ -209,27 +237,77 @@ impl AgentRuntimeHost {
         );
         let (send, receive) = oneshot::channel();
         let pending = runtime.pending.clone();
+        let owned_runs = runtime.owned_runs.clone();
+        let owns_run = matches!(method, "run.start" | "run.resume");
+        if owns_run {
+            runtime
+                .owned_runs
+                .lock()
+                .await
+                .insert((session_id.to_string(), run_id.to_string()));
+        }
         if opens_model_scope(method) {
             self.model_scopes.lock().await.insert(run_id.to_string());
         }
         pending.lock().await.insert(id.clone(), send);
         if let Err(error) = write_frame(&runtime.stdin, &frame).await {
             pending.lock().await.remove(&id);
+            if owns_run && error.code == "agent_protocol_encode_failed" {
+                runtime
+                    .owned_runs
+                    .lock()
+                    .await
+                    .remove(&(session_id.to_string(), run_id.to_string()));
+            }
             if opens_model_scope(method) {
                 self.cancel_run_streams(run_id).await;
             }
             return Err(error);
         }
         drop(guard);
-        self.await_request_response(
-            &pending,
-            &id,
-            receive,
-            runtime_request_timeout(method),
-            run_id,
-            opens_model_scope(method),
-        )
-        .await
+        let response = self
+            .await_request_response(
+                &pending,
+                &id,
+                receive,
+                runtime_request_timeout(method),
+                run_id,
+                opens_model_scope(method),
+            )
+            .await;
+        if response
+            .as_ref()
+            .is_err_and(|error| error.code == "agent_runtime_request_timed_out")
+        {
+            self.terminate_timed_out_runtime(runtime_id).await;
+        }
+        if owns_run
+            && response
+                .as_ref()
+                .is_err_and(|error| error.code == "agent_runtime_request_failed")
+        {
+            owned_runs
+                .lock()
+                .await
+                .remove(&(session_id.to_string(), run_id.to_string()));
+        }
+        response
+    }
+
+    async fn terminate_timed_out_runtime(&self, runtime_id: Uuid) {
+        let mut guard = self.inner.lock().await;
+        if !guard
+            .as_ref()
+            .is_some_and(|runtime| runtime.id == runtime_id)
+        {
+            return;
+        }
+        let Some(mut runtime) = guard.take() else {
+            return;
+        };
+        tracing::warn!(%runtime_id, "terminating an unresponsive agent runtime");
+        let _ = runtime.child.kill().await;
+        let _ = runtime.child.wait().await;
     }
 
     async fn await_request_response(
@@ -261,6 +339,7 @@ impl AgentRuntimeHost {
         let Some(mut runtime) = guard.take() else {
             return;
         };
+        runtime.expected_exit.store(true, Ordering::Release);
         let frame = RpcFrame::request(
             Uuid::new_v4().to_string(),
             "runtime.shutdown",
@@ -317,17 +396,19 @@ async fn await_runtime_response(
     }
 }
 
-fn spawn_stdout_reader(
-    app: AppHandle,
-    repository: AgentRepository,
-    stdout: tokio::process::ChildStdout,
-    stdin: Arc<Mutex<ChildStdin>>,
-    pending: PendingRequests,
-    model_streams: Arc<Mutex<HashMap<String, ModelStream>>>,
-    model_scopes: Arc<Mutex<HashSet<String>>>,
-    cancellations: ToolCancellationRegistry,
-) {
+fn spawn_stdout_reader(stdout: tokio::process::ChildStdout, context: RuntimeReaderContext) {
     tauri::async_runtime::spawn(async move {
+        let RuntimeReaderContext {
+            app,
+            repository,
+            stdin,
+            pending,
+            model_streams,
+            model_scopes,
+            cancellations,
+            expected_exit,
+            owned_runs,
+        } = context;
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let frame = match serde_json::from_str::<RpcFrame>(&line) {
@@ -359,13 +440,20 @@ fn spawn_stdout_reader(
                 continue;
             }
             if frame.event_id.is_some() {
-                if let Err(error) = persist_and_emit_event(&app, &repository, &frame).await {
-                    tracing::warn!(%error.message, "Failed to persist agent event");
-                }
-                if matches!(
-                    frame.method.as_deref(),
-                    Some("run.completed" | "run.cancelled" | "run.failed")
-                ) {
+                let persisted = match persist_and_emit_event(&app, &repository, &frame).await {
+                    Ok(()) => true,
+                    Err(error) => {
+                        tracing::warn!(%error.message, "Failed to persist agent event");
+                        false
+                    }
+                };
+                if runtime_event_releases_run(frame.method.as_deref()) {
+                    if persisted {
+                        owned_runs
+                            .lock()
+                            .await
+                            .remove(&(frame.session_id.clone(), frame.run_id.clone()));
+                    }
                     cancel_model_scope(
                         &model_streams,
                         &model_scopes,
@@ -394,7 +482,13 @@ fn spawn_stdout_reader(
                 .await;
                 let response_frame = match response {
                     Ok(value) => RpcFrame::success(&frame, value),
-                    Err(error) => RpcFrame::failure(&frame, -32603, error.message),
+                    Err(error) => {
+                        let mut response = RpcFrame::failure(&frame, -32603, error.message);
+                        if let Some(rpc_error) = response.error.as_mut() {
+                            rpc_error.data = Some(json!({ "appErrorCode": error.code }));
+                        }
+                        response
+                    }
                 };
                 let _ = write_frame(&request_stdin, &response_frame).await;
             });
@@ -405,12 +499,64 @@ fn spawn_stdout_reader(
                 "Agent runtime disconnected.",
             )));
         }
-        cancel_all_model_scopes(&model_streams, &model_scopes, &cancellations).await;
-        let _ = repository
-            .mark_active_runs_interrupted("The local agent runtime stopped unexpectedly.")
-            .await;
-        let _ = app.emit(AGENT_RUNTIME_EVENT, json!({ "protocolVersion": PROTOCOL_VERSION, "sessionId": "runtime", "runId": "runtime", "sequence": 0, "eventId": Uuid::new_v4(), "method": "run.failed", "data": { "completedAt": now(), "message": "The local agent runtime stopped unexpectedly.", "category": "runtime", "code": "runtime_crashed", "retryable": true } }));
+        if !expected_exit.load(Ordering::Acquire) {
+            let runs = owned_runs.lock().await.drain().collect::<Vec<_>>();
+            for (stored_session_id, agent_run_id) in runs {
+                cancel_model_scope(&model_streams, &model_scopes, &cancellations, &agent_run_id)
+                    .await;
+                match repository.get_run(&agent_run_id).await {
+                    Ok(run)
+                        if run.session_id == stored_session_id
+                            && matches!(
+                                run.status.as_str(),
+                                "queued" | "running" | "waiting_for_user"
+                            ) =>
+                    {
+                        let frame = RpcFrame {
+                            jsonrpc: "2.0".into(),
+                            protocol_version: PROTOCOL_VERSION,
+                            session_id: stored_session_id,
+                            run_id: agent_run_id,
+                            sequence: run.last_sequence.saturating_add(1),
+                            id: None,
+                            event_id: Some(Uuid::new_v4().to_string()),
+                            method: Some("run.failed".into()),
+                            params: Some(json!({
+                                "error": "June stopped unexpectedly.",
+                                "category": "runtime",
+                                "code": "runtime_crashed",
+                                "retryable": true,
+                            })),
+                            result: None,
+                            error: None,
+                        };
+                        if let Err(error) = persist_and_emit_event(&app, &repository, &frame).await
+                        {
+                            tracing::warn!(
+                                agent_run_id = %frame.run_id,
+                                stored_session_id = %frame.session_id,
+                                error_code = %error.code,
+                                "failed to settle an agent run after the runtime stopped"
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        agent_run_id,
+                        %error,
+                        "failed to load an agent run after its owning runtime stopped"
+                    ),
+                }
+            }
+        }
     });
+}
+
+fn runtime_event_releases_run(method: Option<&str>) -> bool {
+    matches!(
+        method,
+        Some("interruption.requested" | "run.completed" | "run.cancelled" | "run.failed")
+    )
 }
 
 async fn handle_runtime_request(
@@ -1207,7 +1353,85 @@ fn steering_stable_id(params: &Value, event_id: &str) -> String {
 pub(crate) fn sanitize_log(value: &str) -> String {
     let value = redact_bearer_tokens(value);
     let value = redact_key_tokens(&value);
+    let value = redact_named_secrets(&value);
     value.chars().take(2_000).collect()
+}
+
+fn redact_named_secrets(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut copy_from = 0;
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        if matches!(bytes[cursor], b':' | b'=') {
+            let mut key_end = cursor;
+            while key_end > 0 && bytes[key_end - 1].is_ascii_whitespace() {
+                key_end -= 1;
+            }
+            if key_end > 0 && matches!(bytes[key_end - 1], b'\'' | b'"') {
+                key_end -= 1;
+            }
+            let mut key_start = key_end;
+            while key_start > 0
+                && matches!(bytes[key_start - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-')
+            {
+                key_start -= 1;
+            }
+            let key = value[key_start..key_end].to_ascii_lowercase();
+            if matches!(
+                key.as_str(),
+                "authorization"
+                    | "api-key"
+                    | "api_key"
+                    | "apikey"
+                    | "cookie"
+                    | "password"
+                    | "secret"
+            ) || key.contains("token")
+            {
+                let redact_through_line = matches!(key.as_str(), "authorization" | "cookie");
+                let mut value_start = cursor + 1;
+                while value_start < bytes.len() && bytes[value_start].is_ascii_whitespace() {
+                    value_start += 1;
+                }
+                output.push_str(&value[copy_from..value_start]);
+                if value_start < bytes.len() && matches!(bytes[value_start], b'\'' | b'"') {
+                    let quote = bytes[value_start];
+                    output.push(char::from(quote));
+                    output.push_str("[redacted]");
+                    let mut value_end = value_start + 1;
+                    while value_end < bytes.len()
+                        && bytes[value_end] != quote
+                        && !matches!(bytes[value_end], b'\r' | b'\n')
+                    {
+                        value_end += 1;
+                    }
+                    if value_end < bytes.len() && bytes[value_end] == quote {
+                        output.push(char::from(quote));
+                        value_end += 1;
+                    }
+                    copy_from = value_end;
+                    cursor = value_end;
+                } else {
+                    output.push_str("[redacted]");
+                    let mut value_end = value_start;
+                    while value_end < bytes.len()
+                        && !matches!(bytes[value_end], b'\r' | b'\n')
+                        && (redact_through_line
+                            || !matches!(bytes[value_end], b',' | b';' | b'}' | b']'))
+                    {
+                        value_end += 1;
+                    }
+                    copy_from = value_end;
+                    cursor = value_end;
+                }
+                continue;
+            }
+        }
+        cursor += 1;
+    }
+    output.push_str(&value[copy_from..]);
+    output
 }
 
 fn runtime_process_running(child: &mut Child) -> bool {
@@ -1318,6 +1542,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parked_and_terminal_events_release_runtime_run_ownership() {
+        for method in [
+            "interruption.requested",
+            "run.completed",
+            "run.cancelled",
+            "run.failed",
+        ] {
+            assert!(runtime_event_releases_run(Some(method)), "{method}");
+        }
+        assert!(!runtime_event_releases_run(Some("run.started")));
+        assert!(!runtime_event_releases_run(Some("tool.failed")));
+    }
+
     #[tokio::test]
     async fn timed_out_control_requests_drop_pending_and_cancel_the_model_scope() {
         let host = AgentRuntimeHost::default();
@@ -1380,13 +1618,22 @@ mod tests {
     #[test]
     fn runtime_logs_remove_credentials_and_bound_unicode_safely() {
         let sanitized = sanitize_log(&format!(
-            "Authorization: Bearer live.token-123 osk_abcdefghijklmnop sk_abcdefghijklmnop {}",
+            "Authorization: Basic dXNlcjpwYXNz\nCookie: session=abc; csrf=def\nBearer live.token-123 osk_abcdefghijklmnop sk_abcdefghijklmnop\npassword=plain\napi_key='second key'\n{{\"access_token\":\"third-token\"}}\n{}",
             "é".repeat(2_100)
         ));
         assert!(!sanitized.contains("live.token-123"));
+        assert!(!sanitized.contains("dXNlcjpwYXNz"));
+        assert!(!sanitized.contains("csrf=def"));
         assert!(!sanitized.contains("osk_abcdefghijklmnop"));
         assert!(!sanitized.contains("sk_abcdefghijklmnop"));
-        assert!(sanitized.contains("Bearer [redacted]"));
+        assert!(!sanitized.contains("password=plain"));
+        assert!(!sanitized.contains("second key"));
+        assert!(!sanitized.contains("third-token"));
+        assert!(sanitized.contains("Authorization: [redacted]"));
+        assert!(sanitized.contains("Cookie: [redacted]"));
+        assert!(sanitized.contains("password=[redacted]"));
+        assert!(sanitized.contains("api_key='[redacted]'"));
+        assert!(sanitized.contains("\"access_token\":\"[redacted]\""));
         assert!(sanitized.chars().count() <= 2_000);
     }
 

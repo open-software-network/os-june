@@ -459,18 +459,17 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
             ...base,
             role: "system",
             parts: [
-              item.retryable
-                ? {
-                    type: "notice",
-                    kind:
-                      item.category === "tool"
-                        ? "tool"
-                        : item.category === "runtime"
-                          ? "runtime"
-                          : "upstream-provider",
-                    text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
-                  }
-                : { type: "text", text: item.message, status: "complete" },
+              {
+                type: "notice",
+                kind:
+                  item.category === "tool"
+                    ? "tool"
+                    : item.category === "runtime"
+                      ? "runtime"
+                      : "upstream-provider",
+                text: UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY,
+                retryable: item.retryable,
+              },
             ],
           };
         default:

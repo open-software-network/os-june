@@ -2544,13 +2544,13 @@ fn issue_report_form(
     {
         form = form.text("category", category.to_string());
     }
-    if let Some(session_id) = request
-        .session_id
+    if let Some(stored_session_id) = request
+        .stored_session_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        form = form.text("sessionId", session_id.to_string());
+        form = form.text("sessionId", stored_session_id.to_string());
     }
     if let Some(diagnosis) = request
         .agent_diagnosis

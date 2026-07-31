@@ -325,7 +325,7 @@ export function AgentWorkspace({
   const [reportDialogCategory, setReportDialogCategory] = useState<ReportCategory | undefined>(
     pendingRequestRef.current?.category,
   );
-  const [reportSessionId, setReportSessionId] = useState<string | undefined>(
+  const [reportStoredSessionId, setReportStoredSessionId] = useState<string | undefined>(
     pendingRequestRef.current?.category ? (initialSession?.id ?? initialSessionId) : undefined,
   );
   const [sessions, setSessions] = useState<AgentSessionDto[]>(
@@ -486,7 +486,7 @@ export function AgentWorkspace({
   const startNewSession = useCallback(
     (request?: AgentNewSessionDetail) => {
       if (request?.category) {
-        setReportSessionId(selectedIdRef.current);
+        setReportStoredSessionId(selectedIdRef.current);
         setReportDialogCategory(request.category);
       }
       hydrationRequestRef.current = undefined;
@@ -2530,11 +2530,11 @@ export function AgentWorkspace({
       {reportDialogCategory ? (
         <ReportDialog
           category={reportDialogCategory}
-          sessionId={reportSessionId}
+          storedSessionId={reportStoredSessionId}
           onCategoryChange={setReportDialogCategory}
           onClose={() => {
             setReportDialogCategory(undefined);
-            setReportSessionId(undefined);
+            setReportStoredSessionId(undefined);
           }}
         />
       ) : null}

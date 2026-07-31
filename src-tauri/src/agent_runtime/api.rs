@@ -655,6 +655,15 @@ pub async fn start_agent_run(
         .request("run.start", &session.id, &run.id, params)
         .await
     {
+        if runtime_dispatch_is_ambiguous(&error) {
+            tracing::warn!(
+                agent_run_id = %run.id,
+                stored_session_id = %session.id,
+                error_code = %error.code,
+                "agent run dispatch outcome is ambiguous; waiting for its owned runtime to settle"
+            );
+            return Ok(run_json(repository.get_run(&run.id).await?));
+        }
         mark_dispatch_failed(&repository, &run.id, &error).await;
         return Err(error);
     }
@@ -819,6 +828,15 @@ pub async fn retry_agent_run(
         .request("run.start", &session.id, &run.id, params)
         .await
     {
+        if runtime_dispatch_is_ambiguous(&error) {
+            tracing::warn!(
+                agent_run_id = %run.id,
+                stored_session_id = %session.id,
+                error_code = %error.code,
+                "agent retry dispatch outcome is ambiguous; waiting for its owned runtime to settle"
+            );
+            return Ok(run_json(repository.get_run(&run.id).await?));
+        }
         mark_dispatch_failed(&repository, &run.id, &error).await;
         return Err(error);
     }
@@ -1343,6 +1361,15 @@ async fn resolve_agent_interruption_inner(
         .request("run.resume", &session.id, &run.id, params)
         .await
     {
+        if runtime_dispatch_is_ambiguous(&error) {
+            tracing::warn!(
+                agent_run_id = %run.id,
+                stored_session_id = %session.id,
+                error_code = %error.code,
+                "agent resume dispatch outcome is ambiguous; waiting for its owned runtime to settle"
+            );
+            return Ok(run_json(repository.get_run(&run.id).await?));
+        }
         let restore_result: Result<bool, sqlx::Error> = async {
             let mut transaction = repository.pool.begin_with("BEGIN IMMEDIATE").await?;
             let run_restored = sqlx::query::query(
@@ -1444,6 +1471,13 @@ fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|model| crate::june_api::is_canonical_agent_model(model))
+}
+
+fn runtime_dispatch_is_ambiguous(error: &AppError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "agent_runtime_disconnected" | "agent_runtime_request_timed_out"
+    )
 }
 
 async fn mark_dispatch_failed(repository: &AgentRepository, run_id: &str, error: &AppError) {
@@ -2427,6 +2461,27 @@ mod tests {
             None
         );
         assert_eq!(resolved_model_from_usage(None), None);
+    }
+
+    #[test]
+    fn only_transport_uncertainty_is_an_ambiguous_runtime_dispatch() {
+        for code in [
+            "agent_runtime_disconnected",
+            "agent_runtime_request_timed_out",
+        ] {
+            assert!(runtime_dispatch_is_ambiguous(&AppError::new(
+                code,
+                "uncertain"
+            )));
+        }
+        assert!(!runtime_dispatch_is_ambiguous(&AppError::new(
+            "agent_runtime_request_failed",
+            "rejected"
+        )));
+        assert!(!runtime_dispatch_is_ambiguous(&AppError::new(
+            "agent_protocol_encode_failed",
+            "not sent"
+        )));
     }
 
     #[test]

@@ -3,10 +3,11 @@ import type { JsonValue } from "./types.js";
 const SENSITIVE_KEY = /authorization|api[-_]?key|cookie|password|secret|token/i;
 const BEARER_VALUE = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
 const KEY_VALUE = /\b(?:sk|osk)_[A-Za-z0-9_-]{12,}\b/g;
+const SENSITIVE_HEADER_VALUE = /\b((?:authorization|cookie)\s*[:=]\s*)[^\r\n]*/gi;
 const NAMED_SECRET_QUOTED =
   /((?:["']?(?:authorization|api[-_]?key|cookie|password|secret|[a-z0-9_-]*token[a-z0-9_-]*)["']?)\s*[:=]\s*)(["'])[^"'\r\n]*\2/gi;
 const NAMED_SECRET_BARE =
-  /\b((?:authorization|api[-_]?key|cookie|password|secret|[a-z0-9_-]*token[a-z0-9_-]*)\s*[:=]\s*)[^\s,;}\]]+/gi;
+  /\b((?:authorization|api[-_]?key|cookie|password|secret|[a-z0-9_-]*token[a-z0-9_-]*)\s*[:=]\s*)[^\r\n,;}\]]+/gi;
 
 export function sanitizeForLog(value: unknown, depth = 0): JsonValue {
   if (depth > 8) return "[truncated]";
@@ -18,7 +19,8 @@ export function sanitizeForLog(value: unknown, depth = 0): JsonValue {
       .replace(NAMED_SECRET_QUOTED, (_match, prefix: string, quote: string) =>
         `${prefix}${quote}[redacted]${quote}`,
       )
-      .replace(NAMED_SECRET_BARE, "$1[redacted]");
+      .replace(NAMED_SECRET_BARE, "$1[redacted]")
+      .replace(SENSITIVE_HEADER_VALUE, "$1[redacted]");
   }
   if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeForLog(item, depth + 1));
   if (typeof value === "object") {
@@ -46,14 +48,19 @@ export type RuntimeFailureDetails = {
 };
 
 export function runtimeFailureDetails(error: unknown): RuntimeFailureDetails {
-  const message = errorMessage(error);
-  const tagged = error as { failureCategory?: unknown; failureCode?: unknown } | null;
-  if (tagged?.failureCategory === "tool") {
+  const tagged = taggedRuntimeFailure(error);
+  const message = errorMessage(tagged ?? error);
+  if (tagged) {
     return {
       message,
-      category: "tool",
-      code: typeof tagged.failureCode === "string" ? tagged.failureCode : "agent_tool_failed",
-      retryable: true,
+      category: tagged.failureCategory,
+      code:
+        typeof tagged.failureCode === "string"
+          ? tagged.failureCode
+          : tagged.failureCategory === "credits"
+            ? "agent_credits_required"
+            : "agent_tool_failed",
+      retryable: tagged.retryable === true,
     };
   }
 
@@ -72,4 +79,35 @@ export function runtimeFailureDetails(error: unknown): RuntimeFailureDetails {
     return { message, category: "provider", code: "agent_provider_failed", retryable: true };
   }
   return { message, category: "runtime", code: "agent_runtime_failed", retryable: true };
+}
+
+function taggedRuntimeFailure(
+  error: unknown,
+): {
+  failureCategory: "tool" | "credits";
+  failureCode?: unknown;
+  retryable?: unknown;
+} | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  for (let depth = 0; depth < 8 && current != null && !seen.has(current); depth += 1) {
+    seen.add(current);
+    if (typeof current !== "object") return undefined;
+    const candidate = current as {
+      failureCategory?: unknown;
+      failureCode?: unknown;
+      retryable?: unknown;
+      error?: unknown;
+      cause?: unknown;
+    };
+    if (candidate.failureCategory === "tool" || candidate.failureCategory === "credits") {
+      return candidate as {
+        failureCategory: "tool" | "credits";
+        failureCode?: unknown;
+        retryable?: unknown;
+      };
+    }
+    current = candidate.error ?? candidate.cause;
+  }
+  return undefined;
 }

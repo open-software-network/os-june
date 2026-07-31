@@ -26,6 +26,15 @@ test("redacts named secrets embedded in error and shell-output strings", () => {
   );
 });
 
+test("redacts complete authorization and cookie header values", () => {
+  assert.equal(
+    sanitizeForLog(
+      "Authorization: Basic dXNlcjpwYXNz\nCookie: session=abc; csrf=def\nstatus=failed",
+    ),
+    "Authorization: [redacted]\nCookie: [redacted]\nstatus=failed",
+  );
+});
+
 test("bounds deeply nested log payloads", () => {
   let value: unknown = "leaf";
   for (let index = 0; index < 12; index += 1) value = { child: value };
@@ -42,7 +51,7 @@ test("classifies tagged tool failures without exposing credentials", () => {
     message: "tool failed with Bearer [redacted]",
     category: "tool",
     code: "agent_tool_failed",
-    retryable: true,
+    retryable: false,
   });
 });
 

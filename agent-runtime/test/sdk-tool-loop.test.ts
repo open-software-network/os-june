@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { OpenAIAgentsEngine } from "../src/sdk-engine.ts";
+import { ProtocolError } from "../src/protocol.ts";
 import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
+import { runtimeFailureDetails } from "../src/sanitize.ts";
 import type { EngineEvent, EngineRunInput, JsonObject, JsonValue } from "../src/types.ts";
 
 const AUTO_RUN_MODEL = "__june_auto_generation__:73";
@@ -126,6 +128,234 @@ test("continues model inference after a host tool result", async () => {
   assert.equal(result.usage.provider, "phala");
   assert.equal(result.usage.privacyLevel, "tee");
   assert.equal(result.usage.endpoint, "phala-glm-5.2");
+});
+
+test("surfaces a host tool exception as a terminal tagged failure", async () => {
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new Error("tool transport failed");
+    }
+    if (!("request" in input.arguments)) {
+      throw new Error("The test streams complete in one page");
+    }
+    return streamPage("tool-failure-stream", {
+      id: "completion-tool-failure",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-failing-tool",
+                type: "function",
+                function: { name: "failing_tool", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  const events: EngineEvent[] = [];
+
+  await assert.rejects(
+    engine.start({
+      sessionId: "session-tool-failure",
+      runId: "run-tool-failure",
+      signal: new AbortController().signal,
+      emit: (event) => events.push(event),
+      takeSteering: () => [],
+      params: {
+        model: "private-auto",
+        instructions: "Use the tool.",
+        workspace: "/tmp/june-workspace",
+        safetyMode: "sandboxed",
+        input: "Run it",
+        history: [],
+        tools: [
+          {
+            name: "failing_tool",
+            description: "Always fails.",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        ],
+        skills: [],
+        contextWindow: 16_000,
+      },
+    }),
+    (error: unknown) => {
+      const failure = runtimeFailureDetails(error);
+      return failure.category === "tool" && failure.code === "agent_tool_failed";
+    },
+  );
+  assert.ok(
+    events.some(
+      (event) => event.type === "tool.failed" && event.error === "Tool execution failed.",
+    ),
+  );
+  assert.ok(!JSON.stringify(events).includes("tool transport failed"));
+});
+
+test("preserves credit classification from a native host tool failure", async () => {
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      throw new ProtocolError(-32603, "Your balance is too low. Upgrade to continue.", {
+        appErrorCode: "insufficient_credits",
+      });
+    }
+    return streamPage("credit-failure-stream", {
+      id: "completion-credit-failure",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "tool_calls",
+          delta: {
+            role: "assistant",
+            tool_calls: [
+              {
+                index: 0,
+                id: "call-credit-tool",
+                type: "function",
+                function: { name: "generate_image", arguments: "{}" },
+              },
+            ],
+          },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  await assert.rejects(
+    engine.start({
+      sessionId: "session-credit-failure",
+      runId: "run-credit-failure",
+      signal: new AbortController().signal,
+      emit: () => {},
+      takeSteering: () => [],
+      params: {
+        model: "private-auto",
+        instructions: "Use the tool.",
+        workspace: "/tmp/june-workspace",
+        safetyMode: "sandboxed",
+        input: "Generate an image",
+        history: [],
+        tools: [
+          {
+            name: "generate_image",
+            description: "Generate an image.",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        ],
+        skills: [],
+        contextWindow: 16_000,
+      },
+    }),
+    (error: unknown) => {
+      const failure = runtimeFailureDetails(error);
+      return (
+        failure.category === "credits" &&
+        failure.code === "agent_credits_required" &&
+        !failure.retryable
+      );
+    },
+  );
+});
+
+test("returns invalid model tool arguments for self-correction", async () => {
+  const modelRequests: JsonObject[] = [];
+  let hostToolCalls = 0;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    if (input.name !== MODEL_CHAT_COMPLETIONS_TOOL) {
+      hostToolCalls += 1;
+      return {};
+    }
+    if (!("request" in input.arguments)) throw new Error("request missing");
+    modelRequests.push(input.arguments.request);
+    if (modelRequests.length === 1) {
+      return streamPage("invalid-arguments-stream", {
+        id: "completion-invalid-arguments",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "private-auto",
+        choices: [
+          {
+            index: 0,
+            finish_reason: "tool_calls",
+            delta: {
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call-invalid-arguments",
+                  type: "function",
+                  function: { name: "write_value", arguments: "{" },
+                },
+              ],
+            },
+          },
+        ],
+      });
+    }
+    return streamPage("corrected-answer-stream", {
+      id: "completion-corrected-answer",
+      object: "chat.completion.chunk",
+      created: 2,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "I could not write without a value." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "June", clientVersion: "test" });
+
+  const result = await engine.start({
+    sessionId: "session-invalid-arguments",
+    runId: "run-invalid-arguments",
+    signal: new AbortController().signal,
+    emit: () => {},
+    takeSteering: () => [],
+    params: {
+      model: "private-auto",
+      instructions: "Use the tool.",
+      workspace: "/tmp/june-workspace",
+      safetyMode: "sandboxed",
+      input: "Write a value",
+      history: [],
+      tools: [
+        {
+          name: "write_value",
+          description: "Write a value.",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      ],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(result.finalOutput, "I could not write without a value.");
+  assert.equal(modelRequests.length, 2);
+  assert.equal(hostToolCalls, 0);
 });
 
 test("replays a persisted tool group into the next model turn", async () => {

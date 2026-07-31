@@ -913,7 +913,8 @@ pub struct SubmitIssueReportRequest {
     #[serde(default)]
     pub attachment_paths: Vec<String>,
     #[serde(default)]
-    pub session_id: Option<String>,
+    #[serde(alias = "sessionId")]
+    pub stored_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

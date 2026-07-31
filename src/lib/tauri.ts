@@ -1055,7 +1055,7 @@ export type SubmitIssueReportRequest = {
   /** Original local paths from the report picker or workspace paths created
    * for DOM-dropped files; their bytes are sent with the report. */
   attachmentPaths: string[];
-  sessionId?: string;
+  storedSessionId?: string;
 };
 
 export type SubmitIssueReportResponse = {

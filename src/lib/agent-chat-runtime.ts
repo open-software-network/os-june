@@ -68,6 +68,7 @@ export type AgentChatNoticePart = {
   type: "notice";
   kind: "credits" | "context-overflow" | "upstream-provider" | "tool" | "runtime";
   text: string;
+  retryable?: boolean;
 };
 export type AgentChatSteeringPart = { type: "steering"; text: string };
 export type AgentChatAttachmentPart = {
