@@ -75,8 +75,8 @@
     "agentation": "^3.0.2",
     "jsdom": "^25.0.1",
     "playwright": "^1.61.1",
-    "typescript": "^5.6.3",
+    "typescript": "^7.0.2",
     "vite": "^6.0.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.10"
   }
 }
