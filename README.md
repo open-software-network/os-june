@@ -214,3 +214,12 @@ report security vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
 June is MIT licensed. See [LICENSE](LICENSE). Bundled third-party runtime
 notices are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## OS Platform
+
+Agents and humans share product knowledge (memory, Issues, team timeline) through
+the OS Platform. Connect the MCP endpoint `https://platform-api.opensoftware.co/mcp`
+(OAuth via OS Accounts) in your agent client, or export an API key as
+`OS_PLATFORM_API_KEY` for REST access (`https://app.opensoftware.co/api`, keys
+under your platform profile → API keys). Conventions agents follow live in
+[`AGENTS.md`](AGENTS.md) → "OS Platform (shared brain)".

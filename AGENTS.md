@@ -24,6 +24,42 @@ inside a TEE (Phala) so prompt data is not readable by its own infra.
 > Read **[CONTEXT.md](CONTEXT.md)** before naming anything, and
 > **[docs/index.md](docs/index.md)** to find the doc for the area you touch.
 
+## OS Platform (shared brain)
+
+Platform-enabled repo — Product `june`, Team `os-core`, Issue prefix `JUN`.
+Use the `os_platform_*` MCP tools (https://platform-api.opensoftware.co/mcp);
+REST fallback `https://app.opensoftware.co/api` + `Authorization: Bearer
+$OS_PLATFORM_API_KEY`. Never print or store credentials.
+
+**Before work that will produce a branch** (skip for Q&A, typos, exploration, CI):
+1. `os_platform_get_product{handle:"june"}` — response embeds the Product
+   Memory index; `os_platform_get_memory` only entries whose description touches
+   your task.
+2. Find-or-create the Issue: `os_platform_search_product_issues` first; create
+   only if no open Issue matches the outcome. One Issue per independently
+   reviewable outcome; reuse it across sessions.
+3. Set the Issue `in_progress` (`os_platform_set_issue_status` with the Product
+   handle, Issue number, and status), branch `JUN-<number>-<slug>`, and
+   put `JUN-<number>` in commit subjects and the PR title/body. PR-Links
+   advances in_review/completed automatically where installed; if it doesn't,
+   set them yourself. Leave unfinished work in its true status.
+
+**After the work lands**: for each durable fact (decision, convention, gotcha
+that cost >10 min) — check the memory index, then `os_platform_create_memory` or
+`os_platform_update_memory` the existing slug; never a near-duplicate, never
+secrets, never a local notes file.
+
+**Posts** (`os_platform_create_post{team:"os-core"}`): only when a teammate
+would act differently for reading it — blocked and stopping, a decision that
+changes someone's work, a shipped result the derived events don't convey, or a
+start of cross-person/cross-session work. Normally ≤1 per Issue per day. Read
+`os_platform_get_team_timeline` before asking anyone "what's the status?".
+
+**No access** (no MCP tools, no key): say once — "OS Platform not configured;
+see README → OS Platform" — then work normally, fully offline. No local memory
+substitute; put durable learnings in the PR description. At handoff, state
+"platform sync skipped"; never imply the platform steps ran.
+
 ## Structure
 
 ```
