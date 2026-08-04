@@ -1,11 +1,15 @@
 ---
 name: os-platform
-description: Query and update live Open Software os-platform production data through the platform API. Use when an agent needs current Issues/Bounties, Orgs, Projects, Submissions, Comments, Activity, Contributors, or API status, or needs to create, assign, move, or comment on tracked work.
+description: Query and update live Open Software os-platform production data through the platform API. Use when an agent needs current Issues/Bounties, Orgs, Projects, Submissions, Comments, Activity, Contributors, Product Memory, the team Timeline, or API status, or needs to create, assign, move, or comment on tracked work.
 ---
 
 # os-platform
 
-Use this skill when the user asks about current Open Software / os-platform state or an agent needs to keep tracked work current: Issues, Bounties, Projects, Orgs, Submissions, Comments, Activity, Contributors, or whether API endpoints are real-backed. Prefer the bundled script over reading code, seed data, frontend fixtures, or docs when the question is about production data.
+Use this skill when the user asks about current Open Software / os-platform state or an agent needs to keep tracked work current: Issues, Bounties, Projects, Orgs, Submissions, Comments, Activity, Contributors, Product Memory, the team Timeline, or whether API endpoints are real-backed. Prefer the bundled script over reading code, seed data, frontend fixtures, or docs when the question is about production data.
+
+The authoritative workflow convention (memory before work, one Issue per
+reviewable outcome, milestone posts, offline degrade) is AGENTS.md → "OS
+Platform (shared brain)". This skill is the REST tooling that implements it.
 
 ## Quick Start
 
@@ -72,6 +76,34 @@ Use the platform as the source of truth for tracked work whenever it is availabl
 - Reference the Issue id in the PR, for example `JUN-123` or a `Closes JUN-123` line. The Org's GitHub `pr-links` webhook integration creates the platform PR link automatically; there is no CLI PR-link write command. If the integration does not link it, add the PR URL with `comments add`.
 - Add comments for durable progress or handoff context when useful. Do not replace or rewrite the Issue body to record progress.
 - Read the Issue after each write to verify the platform applied it. A write response alone is not durable evidence.
+
+## Product Memory, Teams, Timeline (live since 2026-08)
+
+The platform now carries per-Product Memory (distilled facts: decision |
+convention | context | reference), Teams (platform-level rosters), and a
+team-scoped Timeline (derived Issue/Memory/membership events + posted updates).
+
+Reads via the script's `raw` escape hatch (GET-only):
+
+```bash
+python3 scripts/os_platform.py raw GET /v1/orgs/june/memories
+python3 scripts/os_platform.py raw GET /v1/orgs/june/memories/<slug>
+python3 scripts/os_platform.py raw GET /v1/teams/os-core/timeline --query actor=<handle> --query since=<iso>
+python3 scripts/os_platform.py raw GET /v1/me/teams
+```
+
+Writes: prefer the `os_platform_*` MCP tools when connected (schema-validated).
+On raw REST (curl), field gotchas: memories take `body`, posts take
+`body_markdown` + `product_handle`; the API silently ignores unknown JSON
+fields by design, so verify the response echoes what you set.
+
+- Read the Product Memory index (embedded in `GET /v1/orgs/<org>`
+  via MCP `os_platform_get_product`) before non-trivial work; write durable
+  learnings back instead of local notes files.
+- Post to the team wall only at milestones a teammate would act on (blocked and
+  stopping, consequential decision, non-obvious ship, cross-person start) —
+  routine status flips are already derived timeline events.
+- Read the timeline before asking a human "what's the status?".
 
 ## Specific Issue Triage
 
