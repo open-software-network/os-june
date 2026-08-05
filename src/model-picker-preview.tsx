@@ -1,7 +1,10 @@
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { ComposerModelPicker } from "./components/agent/composer/ModelPicker";
+import {
+  ComposerModelPicker,
+  useComposerModelPopoverPosition,
+} from "./components/agent/composer/ModelPicker";
 import {
   type ModelPickerFlyout,
   ModelPickerPopover,
@@ -15,6 +18,7 @@ const autoModel: VeniceModelDto = {
   id: "open-software/auto",
   name: "Auto",
   modelType: "text",
+  privacy: "private",
   traits: [],
   capabilities: ["supportsFunctionCalling"],
 };
@@ -48,6 +52,14 @@ function Preview() {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const anchorRef = useRef<HTMLElement>(null);
+
+  useComposerModelPopoverPosition({
+    open,
+    triggerRef,
+    popoverRef,
+    anchorRef,
+  });
 
   return (
     <main
@@ -59,7 +71,7 @@ function Preview() {
         background: "var(--background)",
       }}
     >
-      <section style={{ width: "480px" }}>
+      <section ref={anchorRef} style={{ position: "relative", width: "480px" }}>
         <div className="agent-composer-box">
           <div style={{ minHeight: "72px", padding: "12px" }}>Ask June anything</div>
           <div className="agent-composer-toolbar">
@@ -89,6 +101,8 @@ function Preview() {
             search=""
             popoverRef={popoverRef}
             searchRef={searchRef}
+            suggestedModelIds={generationModels.map((option) => option.id)}
+            showAutoToggle={false}
             onFlyoutChange={setFlyout}
             onSearchChange={() => undefined}
             onSelect={() => undefined}

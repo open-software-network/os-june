@@ -9,7 +9,7 @@ import { IconNvidia } from "central-icons/IconNvidia";
 import { IconOllama } from "central-icons/IconOllama";
 import { IconOpenai } from "central-icons/IconOpenai";
 import { IconPerplexity } from "central-icons/IconPerplexity";
-import { JuneMark } from "../brand/JuneWordmark";
+import { JuneGlyph } from "../brand/JuneWordmark";
 
 type ProviderLogoProps = {
   provider: string;
@@ -22,7 +22,7 @@ export function ProviderLogo({ provider, id, name = "", size = 18 }: ProviderLog
   const kind = classifyProvider(provider, id, name);
   switch (kind) {
     case "june":
-      return <JuneMark size={size} />;
+      return <JuneGlyph size={size} />;
     case "openai":
       return <IconOpenai size={size} aria-label="OpenAI" />;
     case "anthropic":

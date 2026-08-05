@@ -654,7 +654,12 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(await screen.findByRole("button", { name: "Model: Fast" }));
 
     const suggested = screen.getByRole("listbox", { name: "Suggested text models" });
-    expect(within(suggested).getByRole("option", { name: /Auto/ })).toBeVisible();
+    const autoOption = within(suggested).getByRole("option", { name: /Auto/ });
+    expect(autoOption).toBeVisible();
+    expect(autoOption.querySelector('.model-row-privacy[data-mode="private"]')).toHaveAttribute(
+      "aria-label",
+      expect.stringMatching(/^Private mode:/),
+    );
     expect(within(suggested).queryByText("GLM 5.2")).not.toBeInTheDocument();
     expect(within(suggested).queryByText("Kimi K3")).not.toBeInTheDocument();
 

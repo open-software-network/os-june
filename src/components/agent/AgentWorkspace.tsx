@@ -119,7 +119,11 @@ import {
 } from "./agent-workspace-config";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
 import { agentComposerClearance } from "./composer/layout";
-import { ComposerModelPicker, heroPrivacyFootnote } from "./composer/ModelPicker";
+import {
+  ComposerModelPicker,
+  heroPrivacyFootnote,
+  useComposerModelPopoverPosition,
+} from "./composer/ModelPicker";
 import { modelPrivacyBadge } from "../../lib/model-privacy";
 import { autoPillDesignation } from "../../lib/suggested-models";
 import { getCurrentDataPartitionName } from "../../lib/data-partition";
@@ -200,6 +204,7 @@ const AGENT_AUTO_MODEL: VeniceModelDto = {
   name: "Auto",
   description: "Chooses the best available model for each request.",
   modelType: "text",
+  privacy: "private",
   traits: [],
   capabilities: [],
 };
@@ -2828,6 +2833,13 @@ function AgentComposer({
   const pickerModels = models.some((option) => option.id === AUTO_MODEL_ID)
     ? models
     : [AGENT_AUTO_MODEL, ...models];
+
+  useComposerModelPopoverPosition({
+    open: modelOpen,
+    triggerRef: modelTriggerRef,
+    popoverRef: modelPopoverRef,
+    anchorRef: formRef,
+  });
 
   useEffect(() => {
     if (appliedDraftRevisionRef.current === draftRevision && draft === publishedDraftRef.current) {
