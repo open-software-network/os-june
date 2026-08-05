@@ -375,6 +375,7 @@ export function AgentWorkspace({
     function onKey(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         setUsageOpen(false);
         return;
       }
@@ -396,11 +397,11 @@ export function AgentWorkspace({
         first.focus();
       }
     }
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
       document.body.style.overflow = previousOverflow;
     };
   }, [usageOpen]);
