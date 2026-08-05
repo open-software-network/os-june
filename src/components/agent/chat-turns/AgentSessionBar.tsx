@@ -63,6 +63,7 @@ export function AgentSessionBar({
   const [menuOpen, setMenuOpen] = useState(false);
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const menuWrapRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -188,6 +189,7 @@ export function AgentSessionBar({
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button
+              ref={menuTriggerRef}
               type="button"
               className="icon-button agent-session-menu-trigger"
               aria-label="Session actions"
@@ -231,6 +233,7 @@ export function AgentSessionBar({
                     type="button"
                     role="menuitem"
                     onClick={() => {
+                      menuTriggerRef.current?.focus();
                       setMenuOpen(false);
                       onUsage();
                     }}

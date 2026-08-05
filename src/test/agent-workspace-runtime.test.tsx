@@ -997,7 +997,7 @@ describe("AgentWorkspace runtime wiring", () => {
 
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
-    const usagePanel = screen.getByLabelText("Session usage");
+    const usagePanel = screen.getByRole("dialog", { name: "Usage" });
     const usageOverlay = usagePanel.closest(".agent-usage-overlay");
     expect(usageOverlay).not.toBeNull();
     expect(usageOverlay?.parentElement).toBe(document.querySelector(".app-shell"));
@@ -1010,16 +1010,46 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(usagePanel).toHaveTextContent("phala-glm-5.2");
 
     await user.click(usagePanel);
-    expect(screen.getByLabelText("Session usage")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Usage" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Close usage" }));
-    expect(screen.queryByLabelText("Session usage")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Usage" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
-    const reopenedOverlay = screen.getByLabelText("Session usage").closest(".agent-usage-overlay");
+    const reopenedOverlay = screen
+      .getByRole("dialog", { name: "Usage" })
+      .closest(".agent-usage-overlay");
     expect(reopenedOverlay).not.toBeNull();
     await user.click(reopenedOverlay as HTMLElement);
-    expect(screen.queryByLabelText("Session usage")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Usage" })).not.toBeInTheDocument();
+  });
+
+  it("traps focus in Usage and restores it to Session actions after Escape", async () => {
+    const user = userEvent.setup();
+    render(
+      <div className="app-shell">
+        <AgentWorkspace initialSession={session} />
+      </div>,
+    );
+    await screen.findByText("Earlier answer");
+
+    const sessionActions = screen.getByRole("button", { name: "Session actions" });
+    await user.click(sessionActions);
+    await user.click(screen.getByRole("menuitem", { name: "Usage" }));
+
+    const usageDialog = screen.getByRole("dialog", { name: "Usage" });
+    const closeUsage = within(usageDialog).getByRole("button", { name: "Close usage" });
+    expect(usageDialog).toHaveAttribute("aria-modal", "true");
+    expect(closeUsage).toHaveFocus();
+
+    await user.tab();
+    expect(closeUsage).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(closeUsage).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Usage" })).not.toBeInTheDocument();
+    expect(sessionActions).toHaveFocus();
   });
 
   it("shows route-only persisted usage without crashing", async () => {
@@ -1064,7 +1094,7 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
 
-    const usagePanel = screen.getByLabelText("Session usage");
+    const usagePanel = screen.getByRole("dialog", { name: "Usage" });
     expect(usagePanel).toHaveTextContent("qa-fixture");
     expect(usagePanel).toHaveTextContent("isolated");
     expect(usagePanel).toHaveTextContent("localhost");

@@ -20,6 +20,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -210,6 +211,8 @@ const AGENT_AUTO_MODEL: VeniceModelDto = {
   capabilities: [],
 };
 const projectContextSignaturesBySessionId = new ProjectContextSignatureStore();
+const USAGE_FOCUSABLE =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function composerInSteerStateFor(input: {
   selectedSessionId?: string;
@@ -348,11 +351,60 @@ export function AgentWorkspace({
   const [shareOpen, setShareOpen] = useState(false);
   const [shareUrl, setShareUrl] = useState<string>();
   const [usageOpen, setUsageOpen] = useState(false);
+  const usagePanelRef = useRef<HTMLElement>(null);
+  const usageReturnFocusRef = useRef<HTMLElement | null>(null);
+  const usageTitleId = useId();
   const [compactOpen, setCompactOpen] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [compactResult, setCompactResult] = useState<string>();
   const [models, setModels] = useState<VeniceModelDto[]>([]);
   const [veniceApiKeyConfigured, setVeniceApiKeyConfigured] = useState(false);
+
+  useLayoutEffect(() => {
+    if (!usageOpen || !usagePanelRef.current) return;
+    usageReturnFocusRef.current = document.activeElement as HTMLElement | null;
+    usagePanelRef.current.querySelector<HTMLElement>(USAGE_FOCUSABLE)?.focus();
+    return () => {
+      usageReturnFocusRef.current?.focus?.();
+      usageReturnFocusRef.current = null;
+    };
+  }, [usageOpen]);
+
+  useEffect(() => {
+    if (!usageOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setUsageOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !usagePanelRef.current) return;
+      const focusables = Array.from(
+        usagePanelRef.current.querySelectorAll<HTMLElement>(USAGE_FOCUSABLE),
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!usagePanelRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [usageOpen]);
+
   const focusedHomeModelRef = useRef(DEFAULT_MODEL);
   const focusedHomeThinkingLevelRef = useRef(loadThinkingLevel());
   const initialModelSelection = agentModelSelection(initialAgentSession?.model || DEFAULT_MODEL);
@@ -2563,9 +2615,17 @@ export function AgentWorkspace({
                 if (event.target === event.currentTarget) setUsageOpen(false);
               }}
             >
-              <aside className="agent-usage-panel" aria-label="Session usage">
+              <aside
+                ref={usagePanelRef}
+                className="agent-usage-panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={usageTitleId}
+              >
                 <div className="agent-usage-header">
-                  <h2 className="agent-usage-title">Usage</h2>
+                  <h2 id={usageTitleId} className="agent-usage-title">
+                    Usage
+                  </h2>
                   <button
                     type="button"
                     className="icon-button"
