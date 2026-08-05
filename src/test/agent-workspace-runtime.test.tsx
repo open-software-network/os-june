@@ -943,7 +943,11 @@ describe("AgentWorkspace runtime wiring", () => {
 
   it("shows context, estimated charge, and per-tool usage for the latest run", async () => {
     const user = userEvent.setup();
-    render(<AgentWorkspace initialSession={session} />);
+    render(
+      <div className="app-shell">
+        <AgentWorkspace initialSession={session} />
+      </div>,
+    );
     await screen.findByText("Earlier answer");
     const composer = screen.getByRole("textbox", { name: "Message June" });
     await user.type(composer, "Use a tool");
@@ -994,6 +998,9 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
     const usagePanel = screen.getByLabelText("Session usage");
+    const usageOverlay = usagePanel.closest(".agent-usage-overlay");
+    expect(usageOverlay).not.toBeNull();
+    expect(usageOverlay?.parentElement).toBe(document.querySelector(".app-shell"));
     expect(usagePanel).toHaveTextContent("10,000 of 200,000 (5.0%)");
     expect(usagePanel).toHaveTextContent("28 credits (about $0.0280)");
     expect(usagePanel).toHaveTextContent("read_file");
@@ -1001,6 +1008,18 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(usagePanel).toHaveTextContent("phala");
     expect(usagePanel).toHaveTextContent("tee");
     expect(usagePanel).toHaveTextContent("phala-glm-5.2");
+
+    await user.click(usagePanel);
+    expect(screen.getByLabelText("Session usage")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close usage" }));
+    expect(screen.queryByLabelText("Session usage")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Usage" }));
+    const reopenedOverlay = screen.getByLabelText("Session usage").closest(".agent-usage-overlay");
+    expect(reopenedOverlay).not.toBeNull();
+    await user.click(reopenedOverlay as HTMLElement);
+    expect(screen.queryByLabelText("Session usage")).not.toBeInTheDocument();
   });
 
   it("shows route-only persisted usage without crashing", async () => {
