@@ -17,6 +17,14 @@ describe("dialog layering", () => {
     expect(zIndexFor(".dialog-backdrop")).toBeGreaterThan(zIndexFor(".chrome-sidebar-toggle"));
   });
 
+  it("keeps the Usage overlay on the canonical modal layer above app chrome", () => {
+    const usageOverlay = zIndexFor(".agent-usage-overlay");
+
+    expect(usageOverlay).toBe(zIndexFor(".dialog-backdrop"));
+    expect(usageOverlay).toBe(zIndexFor(".command-prompt-backdrop"));
+    expect(usageOverlay).toBeGreaterThan(zIndexFor(".chrome-sidebar-toggle"));
+  });
+
   it("keeps hover tips above dialogs", () => {
     expect(zIndexFor(".hover-tip")).toBeGreaterThan(zIndexFor(".dialog-backdrop"));
   });

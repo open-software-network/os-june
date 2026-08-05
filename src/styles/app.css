@@ -4484,7 +4484,7 @@ button.agent-user-attachment:hover {
 .agent-usage-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: 112;
   display: flex;
   align-items: center;
   justify-content: center;
