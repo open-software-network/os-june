@@ -11,26 +11,34 @@ const iconTemplate = readFileSync(
 const macosConfig = JSON.parse(
   readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8"),
 );
+const tauriConfig = JSON.parse(
+  readFileSync(resolve(process.cwd(), "src-tauri/tauri.conf.json"), "utf8"),
+);
+const windowsConfig = JSON.parse(
+  readFileSync(resolve(process.cwd(), "src-tauri/tauri.windows.conf.json"), "utf8"),
+);
 const macosInfoPlist = readFileSync(resolve(process.cwd(), "src-tauri/Info.plist"), "utf8");
+const stableUpdaterEndpoint =
+  "https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json";
 
 describe("development app identity", () => {
-  it("names a Codex issue branch with its issue and harness suffix", () => {
+  it("keeps the visible name stable on a Codex issue branch", () => {
     expect(devAppIdentityForBranch("codex/jun-278-computer-use")).toEqual({
-      productName: "Clovy JUN-278 Codex",
+      productName: "Clovy",
       identifier: "co.opensoftware.june.codex.jun278",
     });
   });
 
-  it("normalizes the issue key while preserving its numeric identity", () => {
+  it("normalizes the internal issue identity without exposing it in the name", () => {
     expect(devAppIdentityForBranch("codex/fix-JUN-00278-permissions")).toEqual({
-      productName: "Clovy JUN-00278 Codex",
+      productName: "Clovy",
       identifier: "co.opensoftware.june.codex.jun00278",
     });
   });
 
-  it("supports Claude issue worktrees without conflating their identity", () => {
+  it("isolates Claude worktrees under the same visible name", () => {
     expect(devAppIdentityForBranch("claude/jun-278-computer-use")).toEqual({
-      productName: "Clovy JUN-278 Claude",
+      productName: "Clovy",
       identifier: "co.opensoftware.june.claude.jun278",
     });
   });
@@ -53,6 +61,71 @@ describe("macOS release identity", () => {
     expect(macosConfig.productName).toBe("June");
     expect(macosConfig.bundle.macOS.bundleName).toBe("Clovy");
     expect(macosInfoPlist).toContain("<key>CFBundleDisplayName</key>\n  <string>Clovy</string>");
+  });
+});
+
+describe("retained production identities", () => {
+  it("locks fleet-critical identities to their shipped June-era values", () => {
+    expect(tauriConfig.identifier).toBe("co.opensoftware.june");
+    expect(tauriConfig.plugins["deep-link"].desktop.schemes).toEqual(["osjune"]);
+    expect(tauriConfig.plugins["deep-link"].mobile).toEqual([
+      { scheme: ["osjune"], appLink: false },
+    ]);
+    expect(tauriConfig.plugins.updater).toEqual({
+      pubkey:
+        "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUwMDUxRDBGNzYyRDU0MTgKUldRWVZDMTJEeDBGVUZWQ3VsVWxCdmhFbk9McWFVWjBGTEZZZHN0NFZRQjFZaFZRVzF4Sm9NdnkK",
+      endpoints: [stableUpdaterEndpoint],
+    });
+    expect(macosConfig.productName).toBe("June");
+    expect(windowsConfig.productName).toBe("June");
+    for (const platformConfig of [macosConfig, windowsConfig]) {
+      expect(platformConfig.identifier).toBeUndefined();
+      expect(platformConfig.plugins?.updater).toBeUndefined();
+      expect(platformConfig.plugins?.["deep-link"]).toBeUndefined();
+    }
+
+    const sourceIdentities = {
+      "src-tauri/src/updates.rs": [`const STABLE_ENDPOINT: &str = "${stableUpdaterEndpoint}";`],
+      "src-tauri/src/os_accounts.rs": [
+        'const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.accounts";',
+        'const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.accounts";',
+      ],
+      "src-tauri/src/agent_runtime/secrets.rs": [
+        'const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.agent-secrets";',
+        'const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june.dev.agent-secrets";',
+      ],
+      "src-tauri/src/agent_mcp.rs": [
+        'const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.agent-mcp";',
+        'const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.agent-mcp";',
+      ],
+      "src-tauri/src/connectors/store.rs": [
+        'const KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june";',
+        'const DEV_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june-dev";',
+      ],
+      "src-tauri/src/connectors/notion.rs": [
+        'const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.notion-hosted-mcp";',
+        'const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.notion-hosted-mcp";',
+      ],
+      "src-tauri/src/companion/mod.rs": [
+        'const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";',
+      ],
+      "src-tauri/src/extension_host.rs": [
+        'pub const NATIVE_HOST_NAME: &str = "co.opensoftware.june.extension";',
+        'pub const EXTENSION_ID: &str = "jfpogffllplkfoooiaibjkojkngbdnik";',
+      ],
+      "extension/src/protocol.ts": [
+        'export const NATIVE_HOST_NAME = "co.opensoftware.june.extension";',
+      ],
+    };
+
+    for (const [path, identities] of Object.entries(sourceIdentities)) {
+      const sourceLines = readFileSync(resolve(process.cwd(), path), "utf8")
+        .split("\n")
+        .map((line) => line.trim());
+      for (const identity of identities) {
+        expect(sourceLines.filter((line) => line === identity)).toHaveLength(1);
+      }
+    }
   });
 });
 

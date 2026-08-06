@@ -48,6 +48,13 @@ renaming could affect compatibility. This includes, without limitation:
   fixtures; and
 - the OS Platform product handle `june` and issue prefix `JUN`.
 
+The installed macOS bundle path is retained for DMG installs, not because the
+updater depends on the archive name. The updater strips the archive's top-level
+path component and writes the result back to the running app's existing path. A
+fresh DMG named `Clovy.app`, however, would install beside an existing
+`June.app`; because both copies share a bundle identifier and updater feed, the
+user would have two independently updating installations.
+
 Clovy Companion is the presentation name. Existing companion crate, target,
 scheme, FFI, protocol, credential, and bundle identities remain stable unless a
 separate pre-release provisioning decision proves that a rename is safe.

@@ -574,7 +574,7 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
     let pkg_info = handle.package_info();
     let config = handle.config();
     let about_metadata = AboutMetadata {
-        name: Some(pkg_info.name.clone()),
+        name: Some("Clovy".into()),
         version: Some(pkg_info.version.to_string()),
         copyright: config.bundle.copyright.clone(),
         authors: config

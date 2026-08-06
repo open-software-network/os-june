@@ -1,7 +1,4 @@
-const DEV_HARNESS_NAMES = new Map([
-  ["codex", "Codex"],
-  ["claude", "Claude"],
-]);
+const ISOLATED_DEV_NAMESPACES = new Set(["codex", "claude"]);
 
 export function devAppIdentityForBranch(
   branchName,
@@ -9,17 +6,15 @@ export function devAppIdentityForBranch(
 ) {
   const normalized = `${branchName ?? ""}`.trim();
   const namespace = normalized.split("/", 1)[0]?.toLowerCase();
-  const harnessName = DEV_HARNESS_NAMES.get(namespace);
   const issueMatch = normalized.match(/\bjun-(\d+)\b/i);
 
-  if (!harnessName || !issueMatch) {
+  if (!ISOLATED_DEV_NAMESPACES.has(namespace) || !issueMatch) {
     return { productName: baseName, identifier: baseIdentifier };
   }
 
   const issueNumber = issueMatch[1];
-  const issueKey = `JUN-${issueNumber}`;
   return {
-    productName: `${baseName} ${issueKey} ${harnessName}`,
+    productName: baseName,
     identifier: `${baseIdentifier}.${namespace}.jun${issueNumber}`,
   };
 }
