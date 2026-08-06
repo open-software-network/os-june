@@ -39,6 +39,11 @@ services:
   clovy-api:
     image: ${CLOVY_IMAGE}
     restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          # June-era compose peers keep resolving the shipped service name.
+          - june-api
     # No published ports: dstack-ingress is the sole external entry point
     # (https://june-api.opensoftware.co). The ingress reaches the app over the
     # internal compose network via TARGET_ENDPOINT=http://clovy-api:8080.

@@ -1,7 +1,7 @@
 //! Identity-only integration with OS Accounts (Login with Open Software).
 //!
 //! Tokens live in the OS keychain (never the webview). Debug builds use a
-//! separate keychain service by default. Metering goes through June API,
+//! separate keychain service by default. Metering goes through Clovy API,
 //! which holds the App API key — never this binary.
 //!
 //! Debug builds can opt into a plaintext token file for local development via
@@ -32,7 +32,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
 // Scopes June needs. profile:read/profile:write for /me and the User's avatar
 // seed, billing:read for /billing/balance, billing:write for subscription
-// checkout, and credits:spend so June API can authorize-and-charge against the
+// checkout, and credits:spend so Clovy API can authorize-and-charge against the
 // user's credits for note transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read profile:write billing:read billing:write credits:spend";
 // June's OS Accounts token store. Keep this app-scoped so June does not

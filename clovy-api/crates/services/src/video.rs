@@ -780,7 +780,7 @@ pub enum VideoStatusOutput {
 // --- Registry ----------------------------------------------------------------
 //
 // KNOWN BOUNDARY (ADR 0015 Decision 3): this registry is per-process memory. A
-// June API restart mid-job orphans the Venice job (the poll loop dies, the hold
+// Clovy API restart mid-job orphans the Venice job (the poll loop dies, the hold
 // expires, the user is not charged, and Venice may still bill June). Accepted
 // for the first cut and tied to durable-request-state follow-up #613. The fix is
 // NOT to derive the settlement key from the client request id (that reopens the

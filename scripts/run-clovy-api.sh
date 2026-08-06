@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 API_DIR="$ROOT_DIR/clovy-api"
-PORT="${CLOVY_API_PORT:-8080}"
+PORT="${CLOVY_API_PORT:-${JUNE_API_PORT:-8080}}"
 
 if [[ ! -f "$API_DIR/Cargo.toml" ]]; then
   echo "Could not find clovy-api/Cargo.toml under $ROOT_DIR" >&2

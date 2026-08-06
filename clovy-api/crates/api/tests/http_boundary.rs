@@ -966,7 +966,7 @@ async fn integration_issue_report_delivers_attachments_to_the_sink() -> Result<(
     });
     let router = router(test_state_with_issue_sink(sink.clone(), test_attestation()));
     // The legacy June-only cap was 10 MiB. Crossing it proves the video bytes
-    // now reach the authenticated June API boundary instead of being dropped
+    // now reach the authenticated Clovy API boundary instead of being dropped
     // by the desktop before submission.
     let recording_bytes = vec![0x5a; (10 * 1024 * 1024) + 1];
 

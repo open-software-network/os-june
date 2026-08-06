@@ -89,18 +89,26 @@ tauri-test:  ## cargo test
 companion-fmt:  ## rustfmt companion crates (write)
 	cargo fmt --manifest-path crates/clovy-companion-protocol/Cargo.toml --all
 	cargo fmt --manifest-path crates/clovy-companion-crypto/Cargo.toml --all
+	cargo fmt --manifest-path crates/june-companion-protocol/Cargo.toml --all
+	cargo fmt --manifest-path crates/june-companion-crypto/Cargo.toml --all
 
 companion-fmt-check:  ## rustfmt companion crates (check only)
 	cargo fmt --manifest-path crates/clovy-companion-protocol/Cargo.toml --all -- --check
 	cargo fmt --manifest-path crates/clovy-companion-crypto/Cargo.toml --all -- --check
+	cargo fmt --manifest-path crates/june-companion-protocol/Cargo.toml --all -- --check
+	cargo fmt --manifest-path crates/june-companion-crypto/Cargo.toml --all -- --check
 
 companion-lint:  ## clippy companion crates (warnings = errors)
 	cargo clippy --manifest-path crates/clovy-companion-protocol/Cargo.toml --all-targets --locked -- -D warnings
 	cargo clippy --manifest-path crates/clovy-companion-crypto/Cargo.toml --all-targets --locked -- -D warnings
+	cargo clippy --manifest-path crates/june-companion-protocol/Cargo.toml --all-targets --locked -- -D warnings
+	cargo clippy --manifest-path crates/june-companion-crypto/Cargo.toml --all-targets --locked -- -D warnings
 
 companion-test:  ## cargo test companion crates
 	cargo test --manifest-path crates/clovy-companion-protocol/Cargo.toml --locked
 	cargo test --manifest-path crates/clovy-companion-crypto/Cargo.toml --locked
+	cargo test --manifest-path crates/june-companion-protocol/Cargo.toml --locked
+	cargo test --manifest-path crates/june-companion-crypto/Cargo.toml --locked
 
 .PHONY: benchmark-note-transcription-latency benchmark-calendar-account-poll benchmark-share-rate-limiter
 benchmark-note-transcription-latency:

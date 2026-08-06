@@ -353,7 +353,7 @@ async fn handle_timeout_error(error: BoxError) -> axum::response::Response {
 
 /// Header-only bearer authentication and admission run BEFORE the body extractor on the
 /// large-body routes (those whose cap exceeds the shared 512 KiB small-JSON
-/// cap). Without it, an unauthenticated client could force June API to buffer
+/// cap). Without it, an unauthenticated client could force Clovy API to buffer
 /// and JSON-parse a multi-MiB body — up to `max_agent_chat_bytes` (12 MiB),
 /// `max_share_body_bytes` (~14 MiB), `max_image_edit_bytes` (~66 MiB), or
 /// `max_audio_bytes` (25 MiB) — before the handler's own `authenticated_user`

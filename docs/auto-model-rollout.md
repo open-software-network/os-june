@@ -5,8 +5,8 @@ cost-to-quality preference and forwards it through the Clovy-owned agent runtime
 generation.
 
 The rollout remains reversible. Production compose pins
-`JUNE__UPSTREAMS__VENICE__BASE_URL` to `https://api.opensoftware.co/v1`; Phala's sealed
-`JUNE__UPSTREAMS__VENICE__API_KEY` contains Clovy's dedicated os-api service key.
+`CLOVY__UPSTREAMS__VENICE__BASE_URL` to `https://api.opensoftware.co/v1`; Phala's sealed
+`CLOVY__UPSTREAMS__VENICE__API_KEY` contains Clovy's dedicated os-api service key.
 
 Clovy API sends `X-Confidential-Compute: preferred` on service-managed text inference. This is an
 intentional zero-retention policy, not a TEE guarantee: os-api tries Venice private first and falls
@@ -32,5 +32,5 @@ response when replaying assistant history, rather than deriving the provider wir
 model ID. A later user-initiated agent run evaluates Auto again. Provider, privacy, and endpoint
 metadata remain observational and are not continuation tokens.
 
-Build the desktop release with `OS_JUNE_AUTO_MODE_DEFAULT=true`. Existing users retain their saved
+Build the desktop release with `OS_CLOVY_AUTO_MODE_DEFAULT=true`. Existing users retain their saved
 model. Roll back by restoring the Venice URL in production compose and removing the build flag.

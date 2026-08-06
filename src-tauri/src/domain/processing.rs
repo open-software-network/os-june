@@ -5373,7 +5373,7 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        // Every transient class June API can surface without a provider result
+        // Every transient class Clovy API can surface without a provider result
         // must recover on retry rather than fail the whole note: an
         // invalid/empty envelope and explicit transient request failures.
         let transient_errors = [
@@ -5521,7 +5521,7 @@ mod tests {
             "operation timed out"
         )));
         // `upstream_provider_failed` is not precise enough for desktop retry:
-        // June API uses the same envelope for transient 5xxs and deterministic
+        // Clovy API uses the same envelope for transient 5xxs and deterministic
         // provider 4xxs after taking a Hold.
         assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",

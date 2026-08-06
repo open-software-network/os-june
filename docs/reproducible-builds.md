@@ -126,22 +126,22 @@ ENV CARGO_INCREMENTAL=0 \
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin june
+RUN cargo build --release --locked --bin clovy-api
 ```
 
 ### 3. Replace apt certs with a copy — `clovy-api/Dockerfile` (runtime stage)
 
 ```dockerfile
 FROM debian:bookworm-slim@sha256:<…> AS runtime
-RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin june
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin clovy
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 WORKDIR /app
-COPY --from=builder /app/target/release/june /usr/local/bin/june
-COPY config.toml /app/config.toml
-USER june
+COPY --from=builder /app/target/release/clovy-api /usr/local/bin/clovy-api
+COPY clovy-api/config.toml /app/config.toml
+USER clovy
 EXPOSE 8080
-ENV RUST_LOG=june=info,clovy_api=info,june_services=info,june_providers=info,tower_http=info
-ENTRYPOINT ["june"]
+ENV RUST_LOG=clovy_api=info,clovy_services=info,clovy_providers=info,tower_http=info
+ENTRYPOINT ["clovy-api"]
 CMD ["serve"]
 ```
 

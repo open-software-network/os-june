@@ -44,7 +44,7 @@ pub struct VideoGenerateRequest {
 
 /// An image-to-video (animate) request. `image` is the source frame as raw
 /// base64 (no `data:` prefix), like `/v1/image/edit`. `model` is optional —
-/// omitted requests use June API's default animate model.
+/// omitted requests use Clovy API's default animate model.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoAnimateRequest {

@@ -1,4 +1,4 @@
-//! Shared HTTP-boundary test harness: the full June API router wired to
+//! Shared HTTP-boundary test harness: the full Clovy API router wired to
 //! happy-path fakes, plus request/response builders. Used by both the
 //! boundary suite (`http_boundary.rs`) and the client compatibility suite
 //! (`client_contract.rs`).

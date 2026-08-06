@@ -1,6 +1,6 @@
 //! Model-picker state. The Tauri side persists which transcription /
 //! generation models the user selected. Remote provider keys and URLs live in
-//! June API; the opt-in "bring your own inference" local model stores an
+//! Clovy API; the opt-in "bring your own inference" local model stores an
 //! OpenAI-compatible endpoint (any http/https host) here. Advanced users may
 //! also store their own Venice API key locally; responses only expose whether
 //! one is present, never the key itself.
@@ -442,11 +442,11 @@ pub struct ClovyModelRuntimeCapabilities {
 }
 
 /// Whether the configured generation model reports vision (image input) support
-/// in the June API catalog. The agent runtime uses this to decide whether an
+/// in the Clovy API catalog. The agent runtime uses this to decide whether an
 /// image can be attached directly to model context. Returns `false`
 /// when the catalog is unreachable (offline, signed out) or the model reports no
 /// vision capability. In local dev, a persisted Auto selection can use the same
-/// catalog-backed capability fallback as June API when Auto is absent. The
+/// catalog-backed capability fallback as Clovy API when Auto is absent. The
 /// conservative default keeps image attachment fail-closed.
 pub async fn generation_model_supports_vision() -> bool {
     if generation_provider() == PROVIDER_LOCAL {
@@ -765,7 +765,7 @@ pub struct GenerateImageRequest {
     #[serde(default)]
     pub request_id: Option<String>,
     /// Optional safe-mode override pinned at turn creation. A retry must replay
-    /// the exact request shape June API hashed into its replay-ledger key, so a
+    /// the exact request shape Clovy API hashed into its replay-ledger key, so a
     /// settings change between attempt and retry cannot mint a second charge.
     /// Absent falls back to the live saved setting.
     #[serde(default)]
@@ -806,13 +806,13 @@ pub struct EditImageRequest {
     pub request_id: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Optional edit-model override; absent uses June API's default edit model.
+    /// Optional edit-model override; absent uses Clovy API's default edit model.
     #[serde(default)]
     pub model: Option<String>,
 }
 
-/// Generates an image from a prompt via the June API, defaulting to the saved
-/// image model. Provider keys and the upstream call live in June API; this
+/// Generates an image from a prompt via Clovy API, defaulting to the saved
+/// image model. Provider keys and the upstream call live in Clovy API; this
 /// command only resolves the model and forwards the prompt.
 #[tauri::command]
 pub async fn generate_image(
@@ -835,8 +835,8 @@ pub async fn generate_image(
     crate::clovy_api::generate_image(prompt, model, Some(safe_mode), request_id).await
 }
 
-/// Edits a source image through June API. Provider keys and the upstream call
-/// live in June API; this command only validates and forwards the image bytes.
+/// Edits a source image through Clovy API. Provider keys and the upstream call
+/// live in Clovy API; this command only validates and forwards the image bytes.
 #[tauri::command]
 pub async fn edit_image(
     request: EditImageRequest,
@@ -1439,7 +1439,7 @@ fn sanitize_profile_overrides(
 
 /// Migrates a persisted video model that is no longer curated (for example the
 /// delisted Seedance default older installs saved) to the current default, so an
-/// updated install never carries a stale id that June API rejects as
+/// updated install never carries a stale id that Clovy API rejects as
 /// `model_not_priced`. A recognized selection is kept; empty falls back to the
 /// default like the other model fields.
 fn sanitize_video_model(persisted: String, default: &str) -> String {

@@ -11,15 +11,25 @@ async function read(relativePath) {
 
 describe("Clovy technical identity", () => {
   it("uses Clovy for canonical package, service, and helper names", async () => {
-    const [packageJson, agentPackage, extensionPackage, desktopCargo, apiCargo, apiAppCargo] =
-      await Promise.all([
-        read("package.json").then(JSON.parse),
-        read("agent-runtime/package.json").then(JSON.parse),
-        read("extension/package.json").then(JSON.parse),
-        read("src-tauri/Cargo.toml"),
-        read("clovy-api/Cargo.toml"),
-        read("clovy-api/crates/app/Cargo.toml"),
-      ]);
+    const [
+      packageJson,
+      agentPackage,
+      extensionPackage,
+      desktopCargo,
+      apiCargo,
+      apiAppCargo,
+      legacyCryptoCargo,
+      legacyProtocolCargo,
+    ] = await Promise.all([
+      read("package.json").then(JSON.parse),
+      read("agent-runtime/package.json").then(JSON.parse),
+      read("extension/package.json").then(JSON.parse),
+      read("src-tauri/Cargo.toml"),
+      read("clovy-api/Cargo.toml"),
+      read("clovy-api/crates/app/Cargo.toml"),
+      read("crates/june-companion-crypto/Cargo.toml"),
+      read("crates/june-companion-protocol/Cargo.toml"),
+    ]);
 
     expect(packageJson.name).toBe("clovy");
     expect(agentPackage.name).toBe("@clovy/agent-runtime");
@@ -32,14 +42,23 @@ describe("Clovy technical identity", () => {
     expect(apiCargo).toContain('clovy-api = { path = "crates/api" }');
     expect(apiAppCargo).toMatch(/^name = "clovy-api-server"$/m);
     expect(apiAppCargo).toMatch(/^name = "clovy-api"$/m);
+    expect(legacyCryptoCargo).toContain('name = "june-companion-crypto"');
+    expect(legacyCryptoCargo).toContain(
+      'clovy-companion-crypto = { path = "../clovy-companion-crypto" }',
+    );
+    expect(legacyProtocolCargo).toContain('name = "june-companion-protocol"');
+    expect(legacyProtocolCargo).toContain(
+      'clovy-companion-protocol = { path = "../clovy-companion-protocol" }',
+    );
   });
 
   it("retains installed desktop and updater identities", async () => {
-    const [tauri, macos, windows, desktopCargo] = await Promise.all([
+    const [tauri, macos, windows, desktopCargo, bundleShim] = await Promise.all([
       read("src-tauri/tauri.conf.json").then(JSON.parse),
       read("src-tauri/tauri.macos.conf.json").then(JSON.parse),
       read("src-tauri/tauri.windows.conf.json").then(JSON.parse),
       read("src-tauri/Cargo.toml"),
+      read("scripts/bundle-nm-shim.sh"),
     ]);
 
     expect(tauri.productName).toBe("Clovy");
@@ -50,6 +69,8 @@ describe("Clovy technical identity", () => {
     ]);
     expect(macos.productName).toBe("June");
     expect(macos.bundle.macOS.bundleName).toBe("Clovy");
+    expect(macos.bundle.resources["../.tauri-helper/june-nm-shim"]).toBe("native/bin/june-nm-shim");
+    expect(bundleShim).toContain('legacy_out=".tauri-helper/june-nm-shim"');
     expect(windows.productName).toBe("June");
     expect(desktopCargo).toMatch(/^default-run = "os-june"$/m);
     expect(desktopCargo).toMatch(/^name = "os-june"$/m);
@@ -80,6 +101,30 @@ describe("Clovy technical identity", () => {
       expect(source).toContain("co.opensoftware.clovy.extension");
       expect(source).toContain("co.opensoftware.june.extension");
     }
+  });
+
+  it("keeps runtime, migration, dev-env, and deployment aliases reachable", async () => {
+    const [runtimeProvider, runtimeHost, migration, tauriDev, beforeDev, runApi, production] =
+      await Promise.all([
+        read("agent-runtime/src/rpc-model-provider.ts"),
+        read("src-tauri/src/agent_runtime/host.rs"),
+        read("src-tauri/src/agent_runtime/migration.rs"),
+        read("scripts/tauri-dev.mjs"),
+        read("scripts/tauri-before-dev.mjs"),
+        read("scripts/run-clovy-api.sh"),
+        read("clovy-api/deploy/docker-compose.production.yml"),
+      ]);
+
+    expect(runtimeProvider).toContain('"__clovy_model_chat_completions"');
+    expect(runtimeHost).toContain('"__clovy_model_chat_completions"');
+    expect(runtimeHost).toContain('"__june_model_chat_completions"');
+    expect(migration).toContain('"hermes-to-june-agent-runtime-v2"');
+    expect(tauriDev).toContain("process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT");
+    expect(beforeDev).toContain(
+      'process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT ?? "8080"',
+    );
+    expect(runApi).toContain("${CLOVY_API_PORT:-${JUNE_API_PORT:-8080}}");
+    expect(production).toMatch(/aliases:\s*\n\s*#.*\n\s*- june-api/);
   });
 
   it("preserves released API and C ABI contracts while publishing canonical aliases", async () => {

@@ -52,7 +52,7 @@ screenshots or logs, and clear gaps for anything that was blocked.
 
 Default local data mode should avoid live OS Accounts unless the flow under test
 is specifically account or billing QA. `.env.example` and `clovy-api/.env.example`
-support local development with `OS_JUNE_LOCAL_DEV=1` and `local-dev-token`.
+support local development with `OS_CLOVY_LOCAL_DEV=1` and `local-dev-token`.
 
 Use these entry points:
 

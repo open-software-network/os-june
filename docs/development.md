@@ -13,7 +13,7 @@ the desktop app:
 ```sh
 cp .env.example .env
 cp clovy-api/.env.example clovy-api/.env
-# Edit clovy-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+# Edit clovy-api/.env and set CLOVY__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
@@ -21,7 +21,7 @@ pnpm tauri:dev
 `pnpm tauri:dev` starts Vite and a local Clovy API when their ports are free.
 If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the script
 reuses the existing service. Set `VITE_PORT` or `CLOVY_API_PORT` to choose a
-different port. Set `JUNE_DEV_SKIP_LOCAL_API=1` to skip the local Clovy API
+different port. Set `CLOVY_DEV_SKIP_LOCAL_API=1` to skip the local Clovy API
 entirely and leave the port probe alone; the staging and ephemeral targets
 below already do this.
 
@@ -34,7 +34,7 @@ pnpm tauri:dev --replay-onboarding
 You can also run Clovy API directly:
 
 ```sh
-(cd clovy-api && cargo run -- serve)
+(cd clovy-api && cargo run -p clovy-api-server -- serve)
 ```
 
 Restart `pnpm tauri:dev` after changing the root `.env`. The running Tauri
@@ -49,7 +49,7 @@ API env example binds local mode to `127.0.0.1`; if you bind it to a network
 interface, replace the default local bearer token in both env files first.
 
 Provider keys and the OS Accounts App API key belong only in `clovy-api/.env`,
-never in the root desktop `.env`. Add `JUNE__UPSTREAMS__OPENAI__API_KEY` only
+never in the root desktop `.env`. Add `CLOVY__UPSTREAMS__OPENAI__API_KEY` only
 if you want to use OpenAI transcription models.
 
 ## Local connector OAuth
@@ -77,22 +77,22 @@ make dev-staging
 The target runs `pnpm tauri:dev` with five overrides:
 
 - `CLOVY_API_URL=https://june-api-staging.opensoftware.co`
-- `OS_JUNE_LOCAL_DEV=0`
+- `OS_CLOVY_LOCAL_DEV=0`
 - `OS_ACCOUNTS_URL=https://os-accounts-portal-staging.up.railway.app`
 - `OS_ACCOUNTS_API_URL=https://os-accounts-api-staging.up.railway.app`
-- `JUNE_DEV_SKIP_LOCAL_API=1`
+- `CLOVY_DEV_SKIP_LOCAL_API=1`
 
 Process env beats `.env`, so these win even when `.env` selects local mode.
 The target does not set `OS_ACCOUNTS_CLIENT_ID`: put the staging client id
 (`ocl_...`) in `.env` or export it in the shell, or login fails with
 `os_accounts_unconfigured`. You also need an OS Accounts staging account with
 credits, because staging meters every request. Set
-`OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` in a debug build to avoid a Keychain
+`OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE=1` in a debug build to avoid a Keychain
 prompt on every run.
 
 Auth is a real Login with Open Software against staging OS Accounts. The
 local-dev bearer token does not work: staging Clovy API boots with
-`JUNE__LOCAL_DEV__ENABLED` unset, so it verifies OS Accounts JWTs and charges
+`CLOVY__LOCAL_DEV__ENABLED` unset, so it verifies OS Accounts JWTs and charges
 credits. Staging stays JWT-only on purpose. Every Clovy API image soaks there
 before it is promoted to production, so it has to exercise the same auth and
 metering path production runs.
@@ -134,7 +134,7 @@ itself. `ephemeral-api` leaves the CVM running until `ephemeral-api-down`.
 Prerequisites: Docker running, the `phala` CLI installed and authenticated
 (`phala auth login`), and a `clovy-api/.env` holding the upstream provider
 keys. The script also needs `jq`, `curl`, `openssl`, `perl`, and `uuidgen`. It
-copies `JUNE__UPSTREAMS__VENICE__API_KEY` and `JUNE__UPSTREAMS__OPENAI__API_KEY`
+copies `CLOVY__UPSTREAMS__VENICE__API_KEY` and `CLOVY__UPSTREAMS__OPENAI__API_KEY`
 from `clovy-api/.env` verbatim; a key that is missing there stays missing, and
 Clovy API drops the models whose provider it cannot reach.
 
@@ -161,9 +161,9 @@ up by `ephemeral-api`:
 
 ```sh
 export CLOVY_API_URL="$(jq -r .url .ephemeral-clovy-api.json)"
-export OS_JUNE_LOCAL_DEV=1
-export OS_JUNE_LOCAL_DEV_BEARER_TOKEN="$(jq -r .token .ephemeral-clovy-api.json)"
-export JUNE_DEV_SKIP_LOCAL_API=1
+export OS_CLOVY_LOCAL_DEV=1
+export OS_CLOVY_LOCAL_DEV_BEARER_TOKEN="$(jq -r .token .ephemeral-clovy-api.json)"
+export CLOVY_DEV_SKIP_LOCAL_API=1
 ```
 
 Ephemeral CVMs get no `dstack-ingress` and no custom domain. The dstack

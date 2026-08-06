@@ -306,7 +306,7 @@ defaults + `config.toml` + env, no `std::env::var` calls outside):
 - `[pricing]` — table keyed by `model_id`, each entry `{ unit: "seconds" |
   "tokens", credits_per_unit: u64 }`. Values pass through upstream cost
   without an additional Clovy markup. Loaded from
-  `config.toml` baked into the image; `JUNE__PRICING__…` env overrides
+  `config.toml` baked into the image; `CLOVY__PRICING__…` env overrides
   supported via figment for per-env tweaking.
 
 Clovy (Tauri client):

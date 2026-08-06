@@ -21,6 +21,8 @@ on:
       - "src-tauri/**"
       - "crates/clovy-companion-crypto/**"
       - "crates/clovy-companion-protocol/**"
+      - "crates/june-companion-crypto/**"
+      - "crates/june-companion-protocol/**"
       - "tsconfig.json"
       - "vite.config.ts"
   push:
@@ -42,6 +44,8 @@ on:
       - "src-tauri/**"
       - "crates/clovy-companion-crypto/**"
       - "crates/clovy-companion-protocol/**"
+      - "crates/june-companion-crypto/**"
+      - "crates/june-companion-protocol/**"
       - "tsconfig.json"
       - "vite.config.ts"
 
@@ -152,17 +156,17 @@ jobs:
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/clovy-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/(clovy|june)-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/clovy-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/(clovy|june)-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
             echo "companion=true" >> "$GITHUB_OUTPUT"
           else
             echo "companion=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|crates/clovy-companion-(crypto|protocol)/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|crates/(clovy|june)-companion-(crypto|protocol)/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
@@ -210,7 +214,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: companion-cargo-registry-${{ runner.os }}-${{ hashFiles('crates/clovy-companion-*/Cargo.lock') }}
+          key: companion-cargo-registry-${{ runner.os }}-${{ hashFiles('crates/*-companion-*/Cargo.lock') }}
           restore-keys: |
             companion-cargo-registry-${{ runner.os }}-
 
@@ -220,7 +224,9 @@ jobs:
           path: |
             crates/clovy-companion-crypto/target
             crates/clovy-companion-protocol/target
-          key: companion-cargo-target-${{ runner.os }}-${{ hashFiles('crates/clovy-companion-*/Cargo.lock') }}
+            crates/june-companion-crypto/target
+            crates/june-companion-protocol/target
+          key: companion-cargo-target-${{ runner.os }}-${{ hashFiles('crates/*-companion-*/Cargo.lock') }}
           restore-keys: |
             companion-cargo-target-${{ runner.os }}-
 

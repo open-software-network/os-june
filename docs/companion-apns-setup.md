@@ -4,8 +4,11 @@
    enable Push Notifications and Background Modes remote notifications.
 2. Create an APNs token signing key and keep the `.p8` file server-side only.
 3. Provision development/distribution profiles carrying `aps-environment`.
-4. Set `JUNE__COMPANION__APNS_TEAM_ID`, `APNS_KEY_ID`,
-   `APNS_PRIVATE_KEY_PEM`, `APNS_BUNDLE_ID`, and `APNS_PRODUCTION` on Clovy API.
+4. Set `CLOVY__COMPANION__APNS_TEAM_ID`,
+   `CLOVY__COMPANION__APNS_KEY_ID`,
+   `CLOVY__COMPANION__APNS_PRIVATE_KEY_PEM`,
+   `CLOVY__COMPANION__APNS_BUNDLE_ID`, and
+   `CLOVY__COMPANION__APNS_PRODUCTION` on Clovy API.
 5. Use sandbox APNs for development builds and production APNs for TestFlight
    and App Store builds.
 

@@ -39,7 +39,7 @@ pub struct ImageGenerateRequest {
 }
 
 /// An image edit: the source image as raw base64 plus an instruction.
-/// `model` is optional — omitted requests use June API's default edit model
+/// `model` is optional — omitted requests use Clovy API's default edit model
 /// (the image MCP never names one). `mimeType` describes the source bytes.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

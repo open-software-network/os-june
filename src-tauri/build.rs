@@ -320,17 +320,19 @@ fn ensure_nm_shim_placeholder() {
     else {
         return;
     };
-    let shim = helper_dir.join("clovy-nm-shim");
-    if shim.exists() {
-        return;
-    }
-    if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
-        std::fs::write(
-            &shim,
-            b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
-        )
-    }) {
-        println!("cargo:warning=could not create nm shim placeholder: {error}");
+    for name in ["clovy-nm-shim", "june-nm-shim"] {
+        let shim = helper_dir.join(name);
+        if shim.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
+            std::fs::write(
+                &shim,
+                b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
+            )
+        }) {
+            println!("cargo:warning=could not create {name} placeholder: {error}");
+        }
     }
 }
 

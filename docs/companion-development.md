@@ -6,9 +6,10 @@ Use Rust with `aarch64-apple-ios-sim`, Xcode 26, and XcodeGen 2.45.4 or newer.
 The native app has no Node, Metro, React Native, or CocoaPods dependency.
 Local Clovy API permits the in-memory relay; restart loses links.
 
-The `clovy-companion-app` repository and `JuneCompanion` Xcode project, target,
-and scheme names are retained technical identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+The `clovy-companion-app` repository is canonical. Its existing
+`JuneCompanion` Xcode project, target, and scheme names remain external
+compatibility inputs until that repository completes its own bridge under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 Clovy Companion does not need an OS Accounts OAuth registration. Pairing is
 created by a signed-in Clovy Desktop and authorizes the phone with a revocable

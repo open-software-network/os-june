@@ -41,7 +41,7 @@ const DICTATION_CLEANUP_BASE_TIMEOUT_MS: u64 = 15_000;
 /// conservative floor of ~50 tokens/s for the cleanup model.
 const DICTATION_CLEANUP_TIMEOUT_MS_PER_BYTE: u64 = 5;
 const DICTATION_CLEANUP_MAX_TIMEOUT_MS: u64 = 60_000;
-/// No single cleanup request may wait longer than June API's cleanup billing
+/// No single cleanup request may wait longer than Clovy API's cleanup billing
 /// hold (`cleanup_hold_ttl_seconds`, 30s): a response that arrives after its
 /// hold expired could paste text whose charge no longer settles. The overall
 /// budget above spans multiple sequential chunk requests; this cap bounds
@@ -7293,7 +7293,7 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("no recorded audio")
         || normalized_message.contains("audio file is too short")
         || normalized_message.contains("did not return any transcript")
-        // June API collapses an empty dictation to a BadRequest whose message
+        // Clovy API collapses an empty dictation to a BadRequest whose message
         // is the service reason (e.g. "no_speech", "dictation_text_empty").
         // Treat those as "nothing captured", not a fault.
         || normalized_message.contains("no_speech")

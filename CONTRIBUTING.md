@@ -30,7 +30,7 @@ Follow [docs/development.md](docs/development.md). The short version:
 ```sh
 cp .env.example .env
 cp clovy-api/.env.example clovy-api/.env
-# Edit clovy-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+# Edit clovy-api/.env and set CLOVY__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```

@@ -5,9 +5,10 @@ Clovy ships signed, notarized macOS builds with in-app auto-updates through
 signatures, the DMG, and `latest.json` are published to the public
 `open-software-network/os-june-releases` repo.
 
-The release repository, `June_*` artifact names, and documented `June.app`
-validation paths are retained June-era compatibility identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy_*` names are canonical release artifacts. The existing release
+repository, June-named artifact aliases, and installed `June.app` path remain
+compatibility identities under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ## macOS support
 
@@ -84,7 +85,8 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
 version `X.Y.Z-rc.N` (bundling both agent sidecar architectures), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
-The fixed `June_universal.dmg` asset follows the current RC for the updater, while
+The fixed `Clovy_universal.dmg` asset follows the current RC, while
+`June_universal.dmg` remains an updater compatibility alias and
 an immutable versioned DMG remains available for each Slack announcement. The
 versioned asset is uploaded without replacement before the fixed RC release
 channel aliases; reuse a higher RC number if that append-only upload already
@@ -205,7 +207,7 @@ After the workflow publishes a release, download the DMG from
 
 ```sh
 APP="/Applications/June.app"
-DMG="$HOME/Downloads/June_universal.dmg"
+DMG="$HOME/Downloads/Clovy_universal.dmg"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose "$APP"

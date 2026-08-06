@@ -141,7 +141,8 @@ Always isolate implementation work from the user's active checkout.
   These files are gitignored and exist only in the main checkout. The app, the
   local dev token, and the QA video upload all depend on them. In particular,
   `clovy-api/.env` holds the os-platform API key
-  (`JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` / `OS_PLATFORM_API_KEY`) that the
+  (`CLOVY__ISSUE_REPORTS__OS_PLATFORM_API_KEY`, with the June-era alias, or
+  `OS_PLATFORM_API_KEY`) that the
   video upload step reads, so without this copy `prepare_qa_video.py --upload`
   fails inside the worktree.
 - Use one worktree for simple or medium tasks.
@@ -171,7 +172,7 @@ Run the smallest checks that prove the change, then broaden based on blast radiu
 - **Full gate:** `make verify` — the CI-parity gate (Biome, typecheck, web tests, and fmt/clippy/test for both Rust crates). A green `make verify` should mean green CI; run it before publish for any non-trivial diff.
 - **Frontend-only:** `make check typecheck test-web`, or a single vitest file while iterating.
 - **Tauri Rust:** `make tauri-test` (add `make tauri-lint` if shared behavior changed).
-- **June API:** `make clovy-api-test` — uses the pinned toolchain from the Makefile.
+- **Clovy API:** `make clovy-api-test` — uses the pinned toolchain from the Makefile.
 - **Docs or skill-only:** validate the skill's structure and that it is symlinked per `AGENTS.md`; skip expensive app builds unless touched files require them.
 
 Hosted PR CI intentionally skips slower local-signoff gates. After the final

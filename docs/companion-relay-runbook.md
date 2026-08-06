@@ -2,7 +2,7 @@
 
 ## Required production configuration
 
-Set `JUNE__COMPANION__DATABASE_URL`. Companion endpoints are disabled outside
+Set `CLOVY__COMPANION__DATABASE_URL`. Companion endpoints are disabled outside
 local development if Postgres connect, migration, or snapshot load fails. Run
 the Clovy API migration before traffic and verify active device/link counts load
 without identifiers in logs.

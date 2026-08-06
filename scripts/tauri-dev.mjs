@@ -99,7 +99,7 @@ async function resolveFrontendPort() {
 async function resolveApiPort() {
   return chooseDevPort({
     name: "Clovy API",
-    explicitValue: process.env.CLOVY_API_PORT,
+    explicitValue: process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT,
     base: 8080,
     portIsFree,
   });

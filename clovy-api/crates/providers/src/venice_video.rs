@@ -309,7 +309,7 @@ fn video_too_large() -> DomainError {
 
 /// Builds a privacy-safe diagnostic from a Venice error body for logging.
 ///
-/// June API runs in a TEE and must not write prompt-adjacent content to its
+/// Clovy API runs in a TEE and must not write prompt-adjacent content to its
 /// logs. A video queue request carries `prompt`/`negative_prompt`, and a
 /// rejected response — a content-policy 422 especially — can echo or describe
 /// them, so the raw body is never logged. Instead we parse Venice's error JSON

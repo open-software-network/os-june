@@ -61,7 +61,7 @@ the name used for new source concepts.
 | Clovy API environment | `CLOVY__SECTION__FIELD` | Merge `JUNE__*` first, then let `CLOVY__*` override it |
 | Client version headers | `x-clovy-app-version`, `x-clovy-macos-version` | Clients send both; Clovy API accepts both; released fixtures keep the old headers |
 | OS credential services | `co.opensoftware.clovy.*` | Read either service, then dual-write both so an application rollback retains rotated tokens and device identity |
-| Browser storage | `clovy:*` | Copy on first read and dual-write both keys for rollback |
+| Browser storage | `clovy:*` | Copy on first read, dual-write both keys, and reconcile rollback-side changes from a last-synced marker |
 | Native messaging host | `co.opensoftware.clovy.extension` | Install both host manifests; the extension falls back to the legacy host |
 | OAuth/deep links | `clovy://` | Register and accept `osjune://` until old login clients and callbacks age out |
 | Release artifacts | `Clovy_*`, `Clovy-extension.zip` | Publish June-named aliases while old documentation and automation can still link them |
@@ -75,11 +75,24 @@ the name used for new source concepts.
   data; the next read retries it.
 - **Writes update both identities during the bridge window.** This is
   load-bearing for rotating refresh tokens and connector grants: leaving the
-  old entry untouched would make a rollback read an invalidated token.
+  old entry untouched would make a rollback read an invalidated token. The
+  canonical write is the commit point; a later legacy write can be repaired
+  from it after interruption.
+- **Credential divergence is resolved from a sync marker.** The bridge records
+  a one-way fingerprint of the last value known to be present in both Keychain
+  services. If a rollback build later rotates only the legacy credential, the
+  next Clovy launch recognizes that change, promotes it, and refreshes both
+  entries instead of overwriting it with stale canonical state.
+- **Browser-storage divergence follows the same rule.** A compact fingerprint
+  records the last value observed on both keys. If a rollback build changes or
+  removes only the June-era key, Clovy promotes that newer choice on the next
+  read. If a Clovy write or delete stopped partway through, the same marker
+  repairs the unfinished compatibility side.
 - **Deletes clear both identities.** Signing out or disconnecting must not
   leave a live credential under the alias the current UI no longer displays.
 - **Migrations are repeatable and crash-safe.** A process may stop after either
-  write. The next launch converges both sides without deleting the source.
+  side of a dual-write. The next launch converges both sides without deleting
+  the source.
 - **Wire changes are additive.** New clients send canonical and legacy headers;
   servers accept either. Existing `/v1` fields and error numbers do not change.
 - **Old clients remain first-class during the bridge.** Clovy API, native

@@ -6,10 +6,10 @@ the app executable and installer with Authenticode, signs updater artifacts with
 the Tauri updater key, and attaches Windows assets to the existing
 `open-software-network/os-june-releases` release.
 
-The release repository, `June_*` artifact names, `os-june.exe`, and the
-`$env:LOCALAPPDATA\June` install path are retained June-era compatibility
-identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy_*` names are canonical release artifacts. The existing release
+repository, June-named artifact aliases, `os-june.exe`, and the
+`$env:LOCALAPPDATA\June` install path remain compatibility identities under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ## Windows support
 
@@ -128,12 +128,12 @@ The default evidence directory is
 
 ## Validation
 
-After the workflow publishes assets, download `June_x64-setup.exe` from
+After the workflow publishes assets, download `Clovy_x64-setup.exe` from
 `open-software-network/os-june-releases`, copy it to a clean Windows 11 VM, and
 run:
 
 ```powershell
-$installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"
+$installer = "$env:USERPROFILE\Downloads\Clovy_x64-setup.exe"
 Get-AuthenticodeSignature $installer | Format-List
 Start-Process -FilePath $installer -ArgumentList "/S" -Wait
 Start-Process "$env:LOCALAPPDATA\June\os-june.exe"

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 // OS Accounts returns this when an idempotency key was already settled under
-// another action token. June API is stateless, so a client retry reacquires
+// another action token. Clovy API is stateless, so a client retry reacquires
 // a fresh token for the same logical operation. Treat that as an idempotent
 // replay so an already-charged operation returns its result instead of 502ing.
 const ERR_IDEMPOTENCY_KEY_COLLISION: i64 = 4001;

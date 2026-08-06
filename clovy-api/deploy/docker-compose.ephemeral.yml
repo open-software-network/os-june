@@ -22,6 +22,11 @@ services:
   clovy-api:
     image: ${CLOVY_IMAGE}
     restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          # Retain the June-era service DNS name during the bridge window.
+          - june-api
     # Reachable on the dstack gateway URL. Ephemeral VMs get no dstack-ingress
     # and no custom domain, so the gateway's own HTTPS endpoint for the
     # published port is the sole entry point.

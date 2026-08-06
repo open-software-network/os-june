@@ -183,7 +183,7 @@ config, no breaking `/v1/*` changes — additive only):
 - `crates/services`: `P3aReportService` owns the Clovy-side question catalog
   and validation.
 - `crates/providers`: `OsAccountsP3aSink` forwards to OS Accounts with
-  `JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
+  `CLOVY__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
   Accounts user token. Local dev uses `LogP3aSink`.
 
 ### OS Accounts: storage + dashboards

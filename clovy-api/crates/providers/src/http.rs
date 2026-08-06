@@ -15,7 +15,7 @@ pub fn client_with_timeout(timeout: Duration) -> Client {
 
 /// Dedicated os-platform issue-report client. Uploading a 300 MiB attachment
 /// can legitimately exceed the shared client's 60-second budget, so this
-/// client follows the configured June API request timeout instead.
+/// client follows the configured Clovy API request timeout instead.
 ///
 /// This only extends the per-request timeout and explicitly disables reqwest's
 /// default protocol-NACK retries: os-platform file and Issue creation POSTs are

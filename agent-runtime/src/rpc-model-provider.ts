@@ -6,7 +6,7 @@ import {
 import type { JsonObject, JsonValue } from "./types.js";
 import type { SteeringMessage } from "./types.js";
 
-export const MODEL_CHAT_COMPLETIONS_TOOL = "__june_model_chat_completions";
+export const MODEL_CHAT_COMPLETIONS_TOOL = "__clovy_model_chat_completions";
 const AUTO_MODEL_ID = "open-software/auto";
 const AUTO_MODEL_PREFIX = "__june_auto_generation__:";
 const RESOLVED_AUTO_MODEL_PREFIX = "__june_auto_resolved__:";

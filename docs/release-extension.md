@@ -5,9 +5,10 @@ The RC workflow submits changed extension bytes for Chrome review with deferred
 publication. Stable desktop promotion is blocked until Chrome approves that
 exact package, then publishes it after the desktop release succeeds.
 
-The `Clovy-extension.zip` artifact name and existing store item identity are
-retained June-era compatibility identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy-extension.zip` is the canonical artifact. The release also publishes a
+June-named alias, and the existing store item identity remains unchanged for
+installed-extension continuity under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md).
 

@@ -1,4 +1,4 @@
-//! Clovy API client. The Tauri side calls the backend for metered remote
+//! Clovy API client. The Tauri side calls Clovy API for metered remote
 //! actions. When the user explicitly selects a local model, text generation
 //! uses their own OpenAI-compatible endpoint directly (bring your own
 //! inference; any http/https host, optional bearer api key).
@@ -34,7 +34,7 @@ const DEFAULT_SHARE_BASE_URL: &str = "https://june.link";
 // word loss) and the formal style sometimes skips contraction expansion. No
 // other catalog model beats it: everything smarter benchmarked 2-20x slower.
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
-// Mirrors June API's authoritative 600-second request deadline.
+// Mirrors Clovy API's authoritative 600-second request deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const BROWSER_TRANSPORT_POLICY_TIMEOUT: Duration = Duration::from_secs(10);
 // Adds 300 seconds of client-only grace around that server deadline for a
@@ -45,13 +45,13 @@ const AGENT_DIAGNOSTICS_ATTACHMENT_NAME: &str = "june-agent-diagnostics.txt";
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
 const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
-// Mirrors the public June API validation cap. The agent runtime may request a larger
-// per-call output budget than the backend accepts, which otherwise trips a
+// Mirrors the public Clovy API validation cap. The agent runtime may request a larger
+// per-call output budget than Clovy API accepts, which otherwise trips a
 // validation error that it misclassifies as prompt context overflow.
 const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// Internal agent model id used to carry a per-run Auto preference through
-/// session-scoped `config.set`. June's on-device provider proxy rewrites it
-/// before forwarding, so June API never sees this implementation detail.
+/// session-scoped `config.set`. Clovy's on-device provider adapter rewrites it
+/// before forwarding, so Clovy API never sees this implementation detail.
 const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal model id for the canonical model selected by Auto for the rest of
 /// one agent run. It preserves service-managed inference provenance across
@@ -65,7 +65,7 @@ const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
-// Every June API request carries the real shipped app version so the server
+// Every Clovy API request carries the real shipped app version so the server
 // can segment logs and metrics by client version and, if ever needed, gate
 // releases that predate a wire change. Older stable builds keep calling the
 // production API long after main moves on; this header is how the server
@@ -537,7 +537,7 @@ pub struct BrowserTransportPolicyDto {
 }
 
 /// Fetch the additive Browser use policy endpoint. A 404 is a successful
-/// absence signal from an older June API and therefore maps to the fail-open
+/// absence signal from an older Clovy API and therefore maps to the fail-open
 /// default at the cache owner; transport and malformed-response failures stay
 /// distinct so they cannot overwrite the last known policy.
 pub async fn fetch_browser_transport_policy() -> Result<Option<BrowserTransportPolicyDto>, AppError>
@@ -616,7 +616,7 @@ pub async fn share_delete(share_id: &str) -> Result<(), AppError> {
     delete_expect_success(&format!("/v1/shares/{share_id}")).await
 }
 
-/// One generated image from the June API `/v1/image/generate` endpoint. The
+/// One generated image from the Clovy API `/v1/image/generate` endpoint. The
 /// bytes arrive base64-encoded so the frontend can wrap them in a data URL for
 /// the existing inline image display path.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -731,9 +731,9 @@ enum VideoStatusApiDto {
     },
 }
 
-/// Forwards a prompt to June API image generation with the user's access token.
+/// Forwards a prompt to Clovy API image generation with the user's access token.
 /// `safe_mode` carries the on-device setting (blur adult content); `None` leaves
-/// it unset so June API applies its own default.
+/// it unset so Clovy API applies its own default.
 pub async fn generate_image(
     prompt: String,
     model: String,
@@ -754,8 +754,8 @@ pub async fn generate_image(
     .await
 }
 
-/// Edits an existing image through June API. The edit model is optional; when it
-/// is absent June API uses its default image-edit model, matching the MCP tool.
+/// Edits an existing image through Clovy API. The edit model is optional; when it
+/// is absent Clovy API uses its default image-edit model, matching the MCP tool.
 pub async fn edit_image(
     image: String,
     prompt: String,
@@ -1210,7 +1210,7 @@ fn inject_local_safety_context(object: &mut serde_json::Map<String, serde_json::
     );
 }
 
-/// A buffered June API response forwarded verbatim to the local web MCP.
+/// A buffered Clovy API response forwarded verbatim to the local web MCP.
 pub struct WebProxyResponse {
     pub status: u16,
     pub content_type: String,
@@ -1218,7 +1218,7 @@ pub struct WebProxyResponse {
 }
 
 /// Forwards a web tool request (`/v1/web/search` or `/v1/web/fetch`) to the
-/// June API with the user's access token, returning the raw response so the
+/// Clovy API with the user's access token, returning the raw response so the
 /// caller can pass the `ApiResponse` envelope straight through. The access
 /// token never leaves this process; the MCP only ever talks to the loopback
 /// proxy.
@@ -1246,7 +1246,7 @@ pub async fn forward_web_request(
 }
 
 /// Streams a web-tool request body from the on-device provider proxy into
-/// June API without first materializing the complete JSON document.
+/// Clovy API without first materializing the complete JSON document.
 ///
 /// `access_token()` refreshes stale cached credentials before returning. Like
 /// multipart uploads, this one-shot body cannot be replayed after a server-side
@@ -1285,7 +1285,7 @@ pub async fn forward_streaming_web_request(
 }
 
 /// Forwards an image tool request (`/v1/image/generate` or `/v1/image/edit`) to
-/// the June API with the user's access token, returning the raw response so the
+/// Clovy API with the user's access token, returning the raw response so the
 /// loopback proxy can pass the metered envelope straight through to the local
 /// image MCP. Same token-injection guarantee as the web proxy path: the access
 /// token never leaves this process.
@@ -1296,7 +1296,7 @@ pub async fn forward_image_request(
     forward_web_request(path, body).await
 }
 
-/// Forwards a video tool request to June API with the user's token. Video is
+/// Forwards a video tool request to Clovy API with the user's token. Video is
 /// June-key-only in the first cut, so this path deliberately never forwards a
 /// locally configured Venice inference key.
 pub async fn forward_video_request(
@@ -2514,7 +2514,7 @@ pub async fn submit_issue_report(
     let body = first_response.text().await.map_err(network_error)?;
 
     if issue_report_needs_names_only_retry(status, &body) {
-        // Older June API deployments and a lower production ingress limit can
+        // Older Clovy API deployments and a lower production ingress limit can
         // reject a body containing files. Rebuild the form once without file
         // parts so the issue report is still delivered with attachment names.
         let mut omitted_names = request.attachment_names.clone();
@@ -2553,7 +2553,7 @@ fn issue_report_form(
         .text("description", request.description.trim().to_string())
         .text("appVersion", app_version.to_string())
         .text("platform", std::env::consts::OS)
-        // Keep-alive comments prevent ingress idle timeouts while June API
+        // Keep-alive comments prevent ingress idle timeouts while Clovy API
         // forwards platform-sized files to Open Software.
         .text("stream", "true");
     if let Some(category) = request
@@ -2648,8 +2648,8 @@ struct IssueAttachmentParts {
 ///
 /// Metadata is checked before a file is opened for streaming so an unreadable,
 /// empty, or over-budget file does not block the report or allocate its entire
-/// contents. The cumulative byte budget mirrors June API's single-request
-/// attachment allowance and prevents the desktop from building a form June API
+/// contents. The cumulative byte budget mirrors Clovy API's single-request
+/// attachment allowance and prevents the desktop from building a form Clovy API
 /// must reject. Every skipped file remains represented by its `attachmentName`.
 async fn issue_attachment_parts(paths: &[String]) -> Result<IssueAttachmentParts, AppError> {
     let mut parts = Vec::new();
@@ -2806,7 +2806,7 @@ pub fn verify_url() -> String {
 
 /// Origin that share links point at (`{origin}/s/{share_id}#…`). Production
 /// uses the short branded hostname; local and staging builds stay on their
-/// configured June API origin so they never depend on production.
+/// configured Clovy API origin so they never depend on production.
 pub fn share_base_url() -> String {
     share_base_url_for_api(&clovy_api_url())
 }
@@ -3222,7 +3222,7 @@ where
 
 /// Sends an authenticated DELETE and accepts any success envelope, with or
 /// without a `data` payload. Failure envelopes map through the same error
-/// handling as every other June API call.
+/// handling as every other Clovy API call.
 async fn delete_expect_success(path: &str) -> Result<(), AppError> {
     let response = authed_send(path, false, |client, url, token| {
         client.delete(url).bearer_auth(token)
@@ -3722,7 +3722,7 @@ pub(crate) fn app_version_headers() -> reqwest::header::HeaderMap {
 
 /// For user-configured local/BYO inference endpoints. Same transport
 /// settings as the agent client, but without the June-only version header;
-/// that header is a June API contract, not something to send to whatever
+/// that header is a Clovy API contract, not something to send to whatever
 /// host the user pointed their local model at.
 fn local_http_client() -> &'static reqwest::Client {
     LOCAL_HTTP_CLIENT.get_or_init(|| {
@@ -3737,7 +3737,7 @@ fn local_http_client() -> &'static reqwest::Client {
     })
 }
 
-// June API requires a non-empty `title` on transcribe and generate calls
+// Clovy API requires a non-empty `title` on transcribe and generate calls
 // (server enforces with error_code 2001). Untitled-note recordings are a
 // valid product state — the generation step usually returns a
 // title_suggestion that replaces this placeholder — so we send a generic

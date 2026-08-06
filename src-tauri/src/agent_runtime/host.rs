@@ -624,7 +624,10 @@ async fn handle_runtime_request(
                     AppError::new("agent_connector_response_invalid", error.to_string())
                 });
             }
-            if name == "__clovy_model_chat_completions" {
+            if matches!(
+                name,
+                "__clovy_model_chat_completions" | "__june_model_chat_completions"
+            ) {
                 if !model_scopes.lock().await.contains(&frame.run_id) {
                     return Err(AppError::new(
                         "agent_model_scope_inactive",

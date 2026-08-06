@@ -498,7 +498,7 @@ struct PendingImageCharge {
 /// without weakening the replay guarantee in practice.
 ///
 /// KNOWN BOUNDARY: this ledger is per-process memory, so its retry guarantee
-/// does not survive a June API restart, a replay eviction, or (hypothetically)
+/// does not survive a Clovy API restart, a replay eviction, or (hypothetically)
 /// a multi-instance deployment. A client retrying a dropped response across
 /// one of those events re-runs the provider and settles under a fresh charge
 /// key - a duplicate charge. Exactly-once billing across restarts requires

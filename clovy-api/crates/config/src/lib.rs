@@ -17,7 +17,7 @@ pub const OPENAI_API_KEY_PLACEHOLDER: &str = "sk_REPLACE_ME";
 pub const VENICE_API_KEY_PLACEHOLDER: &str = "VENICE_API_KEY_REPLACE_ME";
 pub const IMAGE_EDIT_SOURCE_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 600;
-/// Matches os-platform's general attachment cap. June API is the authenticated
+/// Matches os-platform's general attachment cap. Clovy API is the authenticated
 /// report boundary, so it must accept the same video size the downstream file
 /// API accepts instead of silently imposing the platform's former 10 MiB cap.
 pub const ISSUE_REPORT_ATTACHMENT_MAX_BYTES: usize = 300 * 1024 * 1024;
@@ -28,7 +28,7 @@ pub const DEFAULT_MAX_ISSUE_REPORT_BYTES: usize = ISSUE_REPORT_ATTACHMENT_MAX_BY
 /// OS Accounts rejects `/authorize` holds outside its deployed cap as
 /// `invalid_ttl` (envelope code 4201). This mirrors `MAX_HOLD_TTL_SECONDS`
 /// in the os-accounts repo (`api/crates/services/src/grants.rs`), which is
-/// being raised to 900 in a coordinated deploy alongside June API. Keep the
+/// being raised to 900 in a coordinated deploy alongside Clovy API. Keep the
 /// two values in lockstep: a value above the deployed os-accounts cap is
 /// rejected at runtime as `invalid_ttl` (4201).
 pub const OS_ACCOUNTS_MAX_HOLD_TTL_SECS: u64 = 900;
@@ -90,7 +90,7 @@ pub const DEFAULT_MAX_AGENT_CHAT_BYTES: usize = 12 * 1024 * 1024;
 /// the shared TEE (JUN-336). Conservative default; tune against real traffic.
 pub const DEFAULT_MAX_AGENT_INFLIGHT_BODY_BYTES: usize = 1024 * 1024 * 1024;
 /// Max concurrent large-body agent requests a single user may have in flight
-/// before June API load-sheds with 503 (JUN-336).
+/// before Clovy API load-sheds with 503 (JUN-336).
 pub const DEFAULT_MAX_AGENT_CONCURRENT_REQUESTS_PER_USER: usize = 8;
 
 // --- Video generation (ADR 0015) ---------------------------------------------
@@ -119,7 +119,7 @@ const VIDEO_CLIENT_POLL_WINDOW_SECS: u64 = 900;
 /// above this is rejected before authorize so a catalog change cannot authorize
 /// an unbounded hold (ADR 0015 Decision 1).
 pub const DEFAULT_VIDEO_MAX_CREDITS_PER_REQUEST: u64 = 20_000;
-/// Maximum raw video body June API will buffer from Venice retrieve.
+/// Maximum raw video body Clovy API will buffer from Venice retrieve.
 pub const DEFAULT_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 // The hold must fit the platform cap; the job must fit inside the hold.
 const _: () = assert!(DEFAULT_VIDEO_HOLD_TTL_SECS <= OS_ACCOUNTS_MAX_HOLD_TTL_SECS);
@@ -166,7 +166,7 @@ pub struct AppConfig {
     /// feature cannot regress deployments that predate it.
     #[serde(default)]
     pub share: ShareConfig,
-    /// June companion relay persistence and optional opaque APNs wake hints.
+    /// Clovy Companion relay persistence and optional opaque APNs wake hints.
     #[serde(default)]
     pub companion: CompanionConfig,
     pub pricing: BTreeMap<String, ModelPriceConfig>,
@@ -214,7 +214,7 @@ pub struct AppConfig {
     /// catalog change from authorizing an unbounded hold.
     #[serde(default = "default_video_max_credits_per_request")]
     pub video_max_credits_per_request: u64,
-    /// Maximum raw `video/mp4` bytes June API will retrieve from Venice before
+    /// Maximum raw `video/mp4` bytes Clovy API will retrieve from Venice before
     /// rejecting the job. Keeps one oversized result from exhausting memory and
     /// is enforced before charge settlement.
     #[serde(default = "default_video_max_response_bytes")]
@@ -254,7 +254,7 @@ impl Debug for AppConfig {
     }
 }
 
-/// Remote operational switches for June's two Browser use transports.
+/// Remote operational switches for Clovy's two Browser use transports.
 /// Both fail open by default so older deployments and fresh configuration
 /// preserve the shipped capability until ops explicitly disables one track.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -308,7 +308,7 @@ const fn default_true() -> bool {
 }
 
 /// Where user-submitted issue reports get forwarded. The destination defaults
-/// to the June bug reports project in os-platform; only the bot API key is
+/// to Clovy's legacy `june` product handle in OS Platform; only the bot API key is
 /// environment specific. Without that key, reports land in structured logs only.
 #[derive(Clone, Deserialize, Serialize)]
 pub struct IssueReportsConfig {
@@ -335,7 +335,7 @@ pub struct IssueReportsConfig {
     /// sidesteps that. Empty omits the field and relies on the defaults.
     #[serde(default = "default_issue_report_reward_asset")]
     pub os_platform_reward_asset: String,
-    /// Optional model id used by June API to diagnose issue reports before
+    /// Optional model id used by Clovy API to diagnose issue reports before
     /// delivery. `None` preserves direct delivery with no upstream model call.
     #[serde(default)]
     pub diagnosis_model: Option<String>,
@@ -546,7 +546,7 @@ pub struct ShareConfig {
     pub viewer_client_id: String,
     /// Restrict this process to the read-only browser viewer surface. This is
     /// used by the isolated june.link CVM so its ingress and certificate
-    /// lifecycle cannot expose or disrupt the primary June API deployment.
+    /// lifecycle cannot expose or disrupt the primary Clovy API deployment.
     #[serde(default)]
     pub viewer_only: bool,
     /// Max accepted ciphertext, in bytes.
@@ -781,8 +781,8 @@ pub struct UpstreamConfig {
     pub api_key: String,
     pub base_url: String,
     /// Base URL for requests authenticated with a user-supplied (BYOK) key.
-    /// `base_url` may point at a June-managed gateway that only accepts
-    /// June's own service key; a user's key must be presented to the provider
+    /// `base_url` may point at Clovy's model routing service, which accepts only
+    /// Clovy's service credential; a user's key must be presented to the provider
     /// that issued it. `None` falls back to the provider's public API URL.
     #[serde(default)]
     pub byok_base_url: Option<String>,
@@ -888,7 +888,7 @@ struct TextModelFallback {
 /// authoritative numbers and extends over this on every boot. Split out of
 /// `AppConfig::default` to keep that constructor under the line limit.
 ///
-/// Usage credit prices pass through upstream cost without a June markup.
+/// Usage credit prices pass through upstream cost without a Clovy markup.
 /// `$1 = 1000 credits`.
 fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     let mut pricing = BTreeMap::new();
@@ -932,7 +932,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
             capabilities: Vec::new(),
         },
     );
-    // Credit prices for June's legacy text-model ids. os-api's live catalog
+    // Credit prices for Clovy's legacy text-model ids. os-api's live catalog
     // uses canonical ids, so those entries extend rather than replace these
     // aliases. Price each alias for the most expensive enabled private route
     // so a Phala fallback cannot cost more than June charges. Keep GLM 5.2 in
@@ -997,7 +997,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     pricing
 }
 
-/// Per-image credit price for the curated Venice image models June offers. Keep
+/// Per-image credit price for the curated Venice image models Clovy offers. Keep
 /// the ids in sync with `IMAGE_MODELS` in the frontend (`src/lib/image-models.ts`)
 /// and `DEFAULT_IMAGE_MODEL` in the Tauri providers module — every id here must
 /// be a current Venice image model (verified against the models list), or
@@ -1070,7 +1070,7 @@ fn default_image_edit_model() -> String {
 /// accepts >=6s and >=1080p, so no global default serves it; per-model
 /// duration/resolution selection (which re-admits it) is a follow-up.
 fn default_video_pricing() -> BTreeMap<String, u32> {
-    // The curated text-to-video allowlist: every id June's picker offers must be
+    // The curated text-to-video allowlist: every id Clovy's picker offers must be
     // here or it is rejected `model_not_priced` at `/video/generate`. Markup is a
     // uniform 2.0x on the live Venice quote (ADR 0015 Decision 1) — the per-clip
     // credit price still comes from the quote, so pricier models cost more

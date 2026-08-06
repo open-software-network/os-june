@@ -1,0 +1,10 @@
+[package]
+name = "june-companion-protocol"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Compatibility forwarding crate for clovy-companion-protocol"
+
+[dependencies]
+clovy-companion-protocol = { path = "../clovy-companion-protocol" }

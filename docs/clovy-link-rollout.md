@@ -8,7 +8,7 @@ dstack-ingress, certificate volume, and viewer-only Clovy API process.
 
 - The primary production compose owns only `june-api.opensoftware.co`.
 - The isolated compose owns only `june.link`.
-- `JUNE__SHARE__VIEWER_ONLY=true` removes share mutation, inference, upload,
+- `CLOVY__SHARE__VIEWER_ONLY=true` removes share mutation, inference, upload,
   and reporting routes from the short-link process.
 - The Clovy API image is smoke-tested in viewer-only mode before deployment.
 - The deployment is update-only: automation refuses to create or select the
@@ -35,8 +35,8 @@ dstack-ingress, certificate volume, and viewer-only Clovy API process.
    - `DSTACK_DOCKER_PASSWORD`
    - `CLOUDFLARE_API_TOKEN` scoped only to the `june.link` zone
    - `CERTBOT_EMAIL`
-   - `JUNE__SHARE__DATABASE_URL`
-   - `JUNE__SHARE__VIEWER_CLIENT_ID`
+   - `CLOVY__SHARE__DATABASE_URL`
+   - `CLOVY__SHARE__VIEWER_CLIENT_ID`
 
 5. Confirm DNS has no registrar parking A record. The isolated ingress will
    publish and the workflow will verify its dstack-managed

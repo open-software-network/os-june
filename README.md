@@ -172,7 +172,7 @@ git clone https://github.com/open-software-network/os-june
 cd os-june
 cp .env.example .env
 cp clovy-api/.env.example clovy-api/.env
-# Edit clovy-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+# Edit clovy-api/.env and set CLOVY__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
@@ -193,9 +193,11 @@ against OS Accounts.
 
 Clovy ships near-daily releases and development happens in the open.
 
-The product is Clovy, but shipped June-era identifiers such as the `os-june`
-repository, bundle and package names, environment variables, and release URLs
-remain stable for compatibility. See [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+Clovy is also the canonical technical name for repository-controlled packages,
+crates, environment variables, workflows, and release artifacts. Released
+June-era inputs and rollback outputs remain compatibility aliases, while the
+installed bundle, executable, updater, and permission identities stay stable.
+See [ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ```sh
 pnpm check         # lint and format (Biome)

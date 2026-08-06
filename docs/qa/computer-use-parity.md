@@ -35,7 +35,7 @@ policy where the PRD requires it.
 | Recover from permission/model changes | The UI polls while setup is incomplete. A real readiness transition reconfigures the agent runtime once; loss of readiness also stops active work. | Native runtime-readiness transition and UI polling behavior. |
 | Recover from driver failure | A failed driver call discards and kills the child. The next eligible request starts a new private child; version/stamp mismatches fail closed. | Native lifecycle code, pin tests, self-test failure modes. |
 | Keep routines out | The app-owned MCP server is never included in routine toolsets or earned-autonomy servers. | Rust config tests and runtime capability tests. |
-| Stop a bad rollout | June API can disable the capability globally or for an exact/prefix June or macOS version. The desktop fails closed on its first unavailable decision and stops active work when readiness is lost. | API decision/unit and HTTP-boundary tests, desktop native gate, rollout UI test. |
+| Stop a bad rollout | Clovy API can disable the capability globally or for an exact/prefix Clovy or macOS version. The desktop fails closed on its first unavailable decision and stops active work when readiness is lost. | API decision/unit and HTTP-boundary tests, desktop native gate, rollout UI test. |
 | Ship only proven builds | Computer use is validated by testing the release candidate in the RC channel before promotion; the signed capture/background-action fixture (`computer-use-release-self-test.sh`) remains available for manual runs. Staging also verifies the signed bundle and contract. | RC-channel validation and desktop release workflows. |
 
 ## Deliberately stricter than the baseline

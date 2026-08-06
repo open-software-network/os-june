@@ -132,7 +132,7 @@ Per-repo config the engineering skills read before acting (see the
   - [Azure Boards](plugins/azure-boards-prd.md) - [implementation plan](plugins/azure-boards-implementation-plan.md)
   - [Canva](plugins/canva-prd.md) - [implementation plan](plugins/canva-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
-- [clovy-api-prd.md](clovy-api-prd.md) — Clovy API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
+- [clovy-api-prd.md](clovy-api-prd.md) — Clovy API: upstream AI calls + OS Accounts authorize/charge (the canonical service spec)
 - [telemetry.md](telemetry.md) — public overview of Clovy telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — Clovy P3A: opt-in, privacy-preserving product telemetry
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for Clovy P3A phases
