@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
 import { isWindowsPlatform } from "../../lib/platform";
+import { SHORTCUT_CAPTURE_ATTRIBUTE } from "../../lib/sidebar-shortcut";
 import { dictationHelperCommand, setDictationShortcut } from "../../lib/tauri";
 import type {
   DictationSettingsDto,
@@ -133,10 +134,15 @@ export function useShortcutCapture({
       persistCaptured(result.shortcut);
     }
     window.addEventListener("keydown", onKey, true);
+    // App-level shortcut handlers (the sidebar toggle) registered their
+    // capture listeners at mount, before this one, so stopPropagation cannot
+    // shield the rebind; the attribute tells them to stand down.
+    document.documentElement.setAttribute(SHORTCUT_CAPTURE_ATTRIBUTE, "");
 
     return () => {
       active = false;
       window.removeEventListener("keydown", onKey, true);
+      document.documentElement.removeAttribute(SHORTCUT_CAPTURE_ATTRIBUTE);
       void unlisten.then((fn) => fn());
     };
   }, [capturing, cancel]);

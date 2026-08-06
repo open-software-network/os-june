@@ -14,6 +14,7 @@ const sbomSource = path.join(rootDir, "src-tauri", "cua-driver-sbom.spdx.json");
 const licenseSource = path.join(rootDir, "src-tauri", "cua-driver-LICENSE.md");
 const iconSource = path.join(rootDir, "src-tauri", "icons", "icon.icns");
 const iconFileName = "June.icns";
+const macosSystemLinker = path.join(rootDir, "scripts", "macos-system-linker.mjs");
 
 const tauriPlatform = process.env.TAURI_ENV_PLATFORM?.trim();
 if (process.platform !== "darwin" || (tauriPlatform && tauriPlatform !== "darwin")) {
@@ -34,10 +35,13 @@ const rustTargets =
   target === "universal-apple-darwin"
     ? ["aarch64-apple-darwin", "x86_64-apple-darwin"]
     : [target].filter(Boolean);
+// With no explicit target, cargo builds for rustc's host triple - which under
+// Rosetta differs from Node's process.arch, so ask rustc rather than Node.
+const hostRustTarget = rustTargets.length > 0 ? undefined : rustcHostTriple();
 const architectures =
   rustTargets.length > 0
     ? rustTargets.map(architectureForTarget)
-    : [process.arch === "x64" ? "x86_64" : "arm64"];
+    : [architectureForTarget(hostRustTarget)];
 const sourceSha256 = helperSourceSha256();
 const helperDir = path.join(rootDir, ".tauri-helper");
 const bundleDir = path.join(helperDir, pin.bundleName);
@@ -68,6 +72,11 @@ const developerDir = existsSync("/Applications/Xcode.app/Contents/Developer")
 const buildTargets = rustTargets.length > 0 ? rustTargets : [undefined];
 const builtExecutables = [];
 for (const rustTarget of buildTargets) {
+  const effectiveRustTarget = rustTarget || hostRustTarget;
+  const cargoLinkerEnvironment = `CARGO_TARGET_${effectiveRustTarget
+    .toUpperCase()
+    .replaceAll("-", "_")}_LINKER`;
+  const systemLinker = process.env[cargoLinkerEnvironment] || process.env.CC || "/usr/bin/clang";
   const cargoArgs = [
     "build",
     "--manifest-path",
@@ -83,6 +92,11 @@ for (const rustTarget of buildTargets) {
     env: {
       ...process.env,
       MACOSX_DEPLOYMENT_TARGET: pin.minimumMacOSVersion,
+      // The pinned platform-macos crate requests libdispatch directly. Xcode
+      // 26 rejects SDK sub-library links and requires System.framework, so
+      // scope that translation to this helper build.
+      JUNE_MACOS_SYSTEM_LINKER: systemLinker,
+      [cargoLinkerEnvironment]: macosSystemLinker,
       ...(developerDir ? { DEVELOPER_DIR: developerDir } : {}),
     },
   });
@@ -274,6 +288,15 @@ function architectureForTarget(rustTarget) {
   if (rustTarget === "aarch64-apple-darwin") return "arm64";
   if (rustTarget === "x86_64-apple-darwin") return "x86_64";
   throw new Error(`Unsupported Computer use helper target: ${rustTarget}`);
+}
+
+function rustcHostTriple() {
+  const result = spawnSync(process.env.RUSTC || "rustc", ["-vV"], { encoding: "utf8" });
+  const host = result.status === 0 ? result.stdout.match(/^host: (\S+)$/m)?.[1] : undefined;
+  if (!host) {
+    throw new Error("Unable to determine the rustc host triple for the Computer use helper build.");
+  }
+  return host;
 }
 
 function tauriTargetTriple() {
