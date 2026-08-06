@@ -59,21 +59,14 @@ pub async fn take(secret_ref: &str) -> Result<Option<String>, AppError> {
     let (service, legacy_service) = services();
     let secret_ref = secret_ref.to_string();
     tokio::task::spawn_blocking(move || {
-        let value = crate::credential_compat::get_password(service, legacy_service, &secret_ref)
-            .map_err(|_| {
+        crate::credential_compat::take_password(service, legacy_service, &secret_ref).map_err(
+            |_| {
                 AppError::new(
                     "agent_secret_read_failed",
                     "Clovy could not read the saved secret.",
                 )
-            })?;
-        crate::credential_compat::delete_password(service, legacy_service, &secret_ref)
-            .map(|()| value)
-            .map_err(|_| {
-                AppError::new(
-                    "agent_secret_delete_failed",
-                    "Clovy could not remove the consumed secret.",
-                )
-            })
+            },
+        )
     })
     .await
     .map_err(|_| {

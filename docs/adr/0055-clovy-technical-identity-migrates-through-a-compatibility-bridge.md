@@ -60,8 +60,8 @@ the name used for new source concepts.
 | Desktop environment | `CLOVY_API_*`, `OS_CLOVY_*`, `CLOVY_AGENT_RUNTIME_*` | Read June-era variables as lower-precedence fallbacks |
 | Clovy API environment | `CLOVY__SECTION__FIELD` | Merge `JUNE__*` first, then let `CLOVY__*` override it |
 | Client version headers | `x-clovy-app-version`, `x-clovy-macos-version` | Clients send both; Clovy API accepts both; released fixtures keep the old headers |
-| OS credential services | `co.opensoftware.clovy.*` | Read either service, then dual-write both so an application rollback retains rotated tokens and device identity |
-| Browser storage | `clovy:*` | Copy on first read, dual-write both keys, and reconcile rollback-side changes from a last-synced marker |
+| OS credential services | `co.opensoftware.clovy.*` | Migrate legacy-only values, then dual-write both so an application rollback retains rotated tokens and device identity |
+| Browser storage | `clovy:*` | Migrate legacy-only values, dual-write both keys, and reconcile rollback-side changes from a last-synced marker |
 | Persona settings | `clovy-persona.json` | Dual-write `june-persona.json` and reconcile either side against a last-synced settings marker |
 | Native messaging host | `co.opensoftware.clovy.extension` | Install both host manifests; the extension falls back to the legacy host |
 | OAuth/deep links | `clovy://` | Register and accept `osjune://` until old login clients and callbacks age out |
@@ -71,12 +71,14 @@ the name used for new source concepts.
 
 ### Idempotent bridge rules
 
-- **Reads use provenance, then preserve the rollback-readable side.** Equal or
-  single-sided values are copied to the missing location. For divergent values,
+- **Reads use provenance, then preserve the rollback-readable side.** A
+  legacy-only value is copied to the canonical location. For divergent values,
   a last-synced marker identifies which side changed. If provenance is unknown,
   the June-era side wins because it is the only side a released rollback build
   can update. A failed copy never hides a readable source; the next read retries
-  it.
+  it. Because every bridge write publishes legacy first, canonical-only
+  credential and browser-storage state means a rollback removed the legacy
+  value; Clovy propagates that deletion instead of recreating it.
 - **Writes update both identities during the bridge window.** This is
   load-bearing for rotating refresh tokens and connector grants: leaving the
   old entry untouched would make a rollback read an invalidated token. The
@@ -102,10 +104,11 @@ the name used for new source concepts.
   scope, including the active data partition.
 - **Deletes clear both identities from the rollback side first.** Signing out
   or disconnecting must not leave a live credential under the alias the current
-  UI no longer displays. Credential deletion commits a tombstone before either
-  Keychain entry is removed, so a failed second delete cannot resurrect the
-  remaining token. A later login with a different fingerprint supersedes the
-  tombstone.
+  UI no longer displays. Credential deletion tombstones every value observed on
+  either side before Keychain cleanup, so a divergent stale value cannot be
+  mistaken for a later login. Only a new value published through the
+  rollback-readable service supersedes a tombstone. Once the tombstone commits,
+  a one-shot secret is delivered even when physical cleanup remains pending.
 - **Persona changes use the same rollback protocol.** The legacy file is
   written first, the canonical file second, and the full last-synced settings
   marker last. Re-upgrade preserves a persona changed during rollback.
@@ -118,9 +121,10 @@ the name used for new source concepts.
   messaging, release hosting, and deployment aliases keep serving released
   versions independently of the desktop rollout cadence.
 - **Deployment supplies both environment namespaces.** Every production,
-  staging, ephemeral, and link-viewer Compose definition injects equivalent
-  `CLOVY__*` and `JUNE__*` values. Promoting an older image with current
-  deployment configuration therefore remains a supported rollback.
+  staging, ephemeral, and link-viewer Compose definition derives equivalent
+  `CLOVY__*` and `JUNE__*` values from one canonical-preferred expression.
+  Promoting an older image with current deployment configuration therefore
+  remains a supported rollback even while both host namespaces are present.
 
 ### Operating-system identities that remain June-era
 

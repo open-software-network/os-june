@@ -1,3 +1,4 @@
+import "./lib/storage-compat-bootstrap";
 import { listen } from "@tauri-apps/api/event";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -44,9 +45,6 @@ import {
 } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import "./styles/agent-hud.css";
-import { installStorageCompatibilityBridge } from "./lib/storage-compat";
-
-installStorageCompatibilityBridge();
 
 const lifecycle = createHudLifecycle();
 

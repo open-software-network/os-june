@@ -9,6 +9,24 @@ async function read(relativePath) {
   return readFile(join(root, relativePath), "utf8");
 }
 
+function expectCanonicalPreferredAliases(compose) {
+  const environment = new Map();
+  for (const line of compose.split("\n")) {
+    const match = line.match(/^\s*- (CLOVY__[^=]+|JUNE__[^=]+)=(.*)$/);
+    if (match) environment.set(match[1], match[2]);
+  }
+
+  for (const [canonical, value] of environment) {
+    if (!canonical.startsWith("CLOVY__")) continue;
+    const legacy = `JUNE__${canonical.slice("CLOVY__".length)}`;
+    if (!environment.has(legacy)) continue;
+    expect(environment.get(legacy)).toBe(value);
+    if (value.startsWith("${")) {
+      expect(value.startsWith(`\${${canonical}:-`)).toBe(true);
+    }
+  }
+}
+
 describe("Clovy technical identity", () => {
   it("uses Clovy for canonical package, service, and helper names", async () => {
     const [
@@ -82,6 +100,9 @@ describe("Clovy technical identity", () => {
       storage,
       storageBootstrap,
       main,
+      hud,
+      agentHud,
+      meetingHud,
       desktopApi,
       backendApi,
       extensionHost,
@@ -91,6 +112,9 @@ describe("Clovy technical identity", () => {
       read("src/lib/storage-compat.ts"),
       read("src/lib/storage-compat-bootstrap.ts"),
       read("src/main.tsx"),
+      read("src/hud.ts"),
+      read("src/agent-hud.ts"),
+      read("src/meeting-hud.ts"),
       read("src-tauri/src/clovy_api.rs"),
       read("clovy-api/crates/api/src/lib.rs"),
       read("src-tauri/src/extension_host.rs"),
@@ -104,7 +128,9 @@ describe("Clovy technical identity", () => {
     expect(storage).toContain('key.startsWith("os-clovy:")');
     expect(storage).toContain('`os-june:${key.slice("os-clovy:".length)}`');
     expect(storageBootstrap).toContain("installStorageCompatibilityBridge();");
-    expect(main.startsWith('import "./lib/storage-compat-bootstrap";')).toBe(true);
+    for (const entrypoint of [main, hud, agentHud, meetingHud]) {
+      expect(entrypoint.startsWith('import "./lib/storage-compat-bootstrap";')).toBe(true);
+    }
     for (const source of [desktopApi, backendApi]) {
       expect(source).toContain("x-clovy-app-version");
       expect(source).toContain("x-june-app-version");
@@ -123,10 +149,12 @@ describe("Clovy technical identity", () => {
       tauriDev,
       beforeDev,
       runApi,
+      ephemeralApi,
       production,
       staging,
       ephemeral,
       linkViewer,
+      linkWorkflow,
     ] = await Promise.all([
       read("agent-runtime/src/rpc-model-provider.ts"),
       read("src-tauri/src/agent_runtime/host.rs"),
@@ -134,10 +162,12 @@ describe("Clovy technical identity", () => {
       read("scripts/tauri-dev.mjs"),
       read("scripts/tauri-before-dev.mjs"),
       read("scripts/run-clovy-api.sh"),
+      read("scripts/ephemeral-clovy-api.sh"),
       read("clovy-api/deploy/docker-compose.production.yml"),
       read("clovy-api/deploy/docker-compose.staging.yml"),
       read("clovy-api/deploy/docker-compose.ephemeral.yml"),
       read("clovy-api/deploy/docker-compose.june-link.yml"),
+      read(".github/workflows/deploy-clovy-link.yml"),
     ]);
 
     expect(runtimeProvider).toContain('"__clovy_model_chat_completions"');
@@ -149,6 +179,10 @@ describe("Clovy technical identity", () => {
       'process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT ?? "8080"',
     );
     expect(runApi).toContain("${CLOVY_API_PORT:-${JUNE_API_PORT:-8080}}");
+    const canonicalEnvRead = ephemeralApi.indexOf('grep -E "^${canonical}=."');
+    const legacyEnvRead = ephemeralApi.indexOf('grep -E "^${legacy}=."');
+    expect(canonicalEnvRead).toBeGreaterThan(-1);
+    expect(legacyEnvRead).toBeGreaterThan(canonicalEnvRead);
     expect(production).toMatch(/aliases:\s*\n\s*#.*\n\s*- june-api/);
 
     for (const compose of [production, staging]) {
@@ -182,6 +216,17 @@ describe("Clovy technical identity", () => {
     ]) {
       expect(linkViewer).toContain(`CLOVY__${key}`);
       expect(linkViewer).toContain(`JUNE__${key}`);
+    }
+    for (const compose of [production, staging, ephemeral, linkViewer]) {
+      expectCanonicalPreferredAliases(compose);
+    }
+    for (const [key, value] of [
+      ["SHARE__VIEWER_ONLY", "true"],
+      ["OS_ACCOUNTS__API_URL", "https://accounts-api.opensoftware.co"],
+      ["OS_ACCOUNTS__ISS", "https://accounts.opensoftware.co"],
+    ]) {
+      expect(linkWorkflow).toContain(`-e CLOVY__${key}=${value}`);
+      expect(linkWorkflow).toContain(`-e JUNE__${key}=${value}`);
     }
   });
 

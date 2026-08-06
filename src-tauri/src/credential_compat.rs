@@ -51,6 +51,14 @@ pub(crate) fn get_password(
     get_password_with(&mut KeyringStore, canonical_service, legacy_service, user)
 }
 
+pub(crate) fn take_password(
+    canonical_service: &str,
+    legacy_service: &str,
+    user: &str,
+) -> Result<Option<String>, keyring::Error> {
+    take_password_with(&mut KeyringStore, canonical_service, legacy_service, user)
+}
+
 pub(crate) fn set_password(
     canonical_service: &str,
     legacy_service: &str,
@@ -80,131 +88,91 @@ fn get_password_with<S: CredentialStore>(
     legacy_service: &str,
     user: &str,
 ) -> Result<Option<String>, S::Error> {
-    let canonical = store.get(canonical_service, user);
-    let legacy = store.get(legacy_service, user);
+    // Absence and an unavailable keychain service have opposite meanings. Read
+    // all three records successfully before repairing anything so a transient
+    // failure can never overwrite a rollback rotation or sign-out.
+    let canonical = store.get(canonical_service, user)?;
+    let legacy = store.get(legacy_service, user)?;
     let marker_service = sync_marker_service(canonical_service);
-    // A marker read failure is different from a missing marker. Continuing
-    // without that distinction could overwrite the side changed by a rollback
-    // build, so leave both credentials untouched and let the caller retry.
     let prior_marker = store.get(&marker_service, user)?;
 
-    if let Some(deleted_fingerprint) = prior_marker
+    if let Some(delete_marker) = prior_marker
         .as_deref()
-        .and_then(|marker| marker.strip_prefix(DELETE_MARKER_PREFIX))
+        .filter(|marker| marker.starts_with(DELETE_MARKER_PREFIX))
     {
-        // Prefer the rollback-readable side when both changed after a pending
-        // delete. Released June builds can only publish to the legacy service.
-        let changed_after_delete = legacy
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .filter(|value| value_fingerprint(value) != deleted_fingerprint)
-            .or_else(|| {
-                canonical
-                    .as_ref()
-                    .ok()
-                    .and_then(Option::as_ref)
-                    .filter(|value| value_fingerprint(value) != deleted_fingerprint)
-            })
-            .cloned();
-        if let Some(value) = changed_after_delete {
-            store.set(legacy_service, user, &value)?;
-            store.set(canonical_service, user, &value)?;
-            record_sync_marker(store, canonical_service, user, &value)?;
-            return Ok(Some(value));
+        // Only the rollback-readable service can prove a login happened after
+        // a committed delete. Canonical-only data may be stale cleanup from a
+        // partial delete and must never resurrect the account.
+        if let Some(legacy_value) = legacy.as_ref() {
+            if !deletion_marker_contains(delete_marker, legacy_value) {
+                repair_pair_and_marker(
+                    store,
+                    canonical_service,
+                    canonical_service,
+                    user,
+                    legacy_value,
+                );
+                return Ok(Some(legacy_value.clone()));
+            }
         }
 
         let canonical_deleted = store.delete(canonical_service, user).is_ok();
         let legacy_deleted = store.delete(legacy_service, user).is_ok();
         if canonical_deleted && legacy_deleted {
-            store.delete(&marker_service, user)?;
+            let _ = store.delete(&marker_service, user);
         }
         return Ok(None);
     }
 
-    match canonical {
-        Ok(Some(canonical_value)) => match legacy {
-            Ok(Some(legacy_value)) if canonical_value != legacy_value => {
-                let canonical_fingerprint = value_fingerprint(&canonical_value);
-                let legacy_fingerprint = value_fingerprint(&legacy_value);
+    match (canonical, legacy) {
+        (Some(canonical_value), Some(legacy_value)) if canonical_value == legacy_value => {
+            let _ = record_sync_marker(store, canonical_service, user, &canonical_value);
+            Ok(Some(canonical_value))
+        }
+        (Some(canonical_value), Some(legacy_value)) => {
+            let canonical_fingerprint = value_fingerprint(&canonical_value);
+            let legacy_fingerprint = value_fingerprint(&legacy_value);
 
-                // A rollback build can rotate only the legacy entry. The
-                // marker records the last value known to be common to both
-                // services, so divergence can be resolved without guessing.
-                let canonical_changed_after_sync = prior_marker.as_deref()
-                    == Some(legacy_fingerprint.as_str())
-                    && prior_marker.as_deref() != Some(canonical_fingerprint.as_str());
-                let (value, repair_service) = if canonical_changed_after_sync {
-                    (canonical_value, legacy_service)
-                } else {
-                    // This covers a known legacy-side change, a missing marker,
-                    // and both sides changing since the marker. The legacy
-                    // value is the only one a released rollback build can see.
-                    (legacy_value, canonical_service)
-                };
-                repair_pair_and_marker(store, canonical_service, repair_service, user, &value)?;
-                Ok(Some(value))
+            // A rollback build can rotate only the legacy entry. The marker
+            // records the last common value; canonical wins only when that
+            // marker proves canonical changed afterward. Unknown divergence
+            // defaults to the rollback-readable side.
+            let canonical_changed_after_sync = prior_marker.as_deref()
+                == Some(legacy_fingerprint.as_str())
+                && prior_marker.as_deref() != Some(canonical_fingerprint.as_str());
+            let (value, repair_service) = if canonical_changed_after_sync {
+                (canonical_value, legacy_service)
+            } else {
+                (legacy_value, canonical_service)
+            };
+            repair_pair_and_marker(store, canonical_service, repair_service, user, &value);
+            Ok(Some(value))
+        }
+        (None, Some(legacy_value)) => {
+            // The released app knows only this service, so preserve it and
+            // make migration copy-on-read and retryable.
+            repair_pair_and_marker(
+                store,
+                canonical_service,
+                canonical_service,
+                user,
+                &legacy_value,
+            );
+            Ok(Some(legacy_value))
+        }
+        (Some(_), None) => {
+            // Clovy writes legacy first. Therefore canonical-only state is not
+            // an interrupted Clovy write; it is a rollback sign-out (including
+            // the case where a prior marker write failed).
+            if store.delete(canonical_service, user).is_ok() {
+                let _ = store.delete(&marker_service, user);
             }
-            Ok(Some(_)) => {
-                record_sync_marker(store, canonical_service, user, &canonical_value)?;
-                Ok(Some(canonical_value))
-            }
-            Ok(None) => {
-                if propagate_synced_deletion(
-                    store,
-                    canonical_service,
-                    canonical_service,
-                    user,
-                    &canonical_value,
-                    prior_marker.as_deref(),
-                )? {
-                    return Ok(None);
-                }
-                repair_pair_and_marker(
-                    store,
-                    canonical_service,
-                    legacy_service,
-                    user,
-                    &canonical_value,
-                )?;
-                Ok(Some(canonical_value))
-            }
-            Err(_) => {
-                // Repair a prior partial write without hiding a readable value
-                // if the compatibility service is temporarily unavailable.
-                repair_pair_and_marker(
-                    store,
-                    canonical_service,
-                    legacy_service,
-                    user,
-                    &canonical_value,
-                )?;
-                Ok(Some(canonical_value))
-            }
-        },
-        canonical_missing_or_error => match legacy {
-            Ok(Some(value)) => {
-                // Copy-on-read is repeatable. Never delete the source: an old
-                // build still needs it after a rollback. Only a rollback can
-                // remove the legacy side without going through this bridge, so
-                // a missing canonical side is never interpreted as sign-out.
-                repair_pair_and_marker(store, canonical_service, canonical_service, user, &value)?;
-                Ok(Some(value))
-            }
-            Ok(None) => match canonical_missing_or_error {
-                Ok(None) => {
-                    let _ = store.delete(&sync_marker_service(canonical_service), user);
-                    Ok(None)
-                }
-                Err(error) => Err(error),
-                Ok(Some(_)) => unreachable!("handled above"),
-            },
-            Err(legacy_error) => match canonical_missing_or_error {
-                Err(canonical_error) => Err(canonical_error),
-                Ok(None) => Err(legacy_error),
-                Ok(Some(_)) => unreachable!("handled above"),
-            },
-        },
+            Ok(None)
+        }
+        (None, None) => {
+            let _ = store.delete(&marker_service, user);
+            Ok(None)
+        }
     }
 }
 
@@ -214,6 +182,36 @@ fn sync_marker_service(canonical_service: &str) -> String {
 
 fn value_fingerprint(value: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+}
+
+fn deletion_marker_contains(marker: &str, value: &str) -> bool {
+    let fingerprint = value_fingerprint(value);
+    marker
+        .strip_prefix(DELETE_MARKER_PREFIX)
+        .is_some_and(|fingerprints| fingerprints.split(',').any(|item| item == fingerprint))
+}
+
+fn deletion_marker(
+    prior_marker: Option<&str>,
+    canonical: Option<&str>,
+    legacy: Option<&str>,
+) -> String {
+    let mut fingerprints = prior_marker
+        .and_then(|marker| marker.strip_prefix(DELETE_MARKER_PREFIX))
+        .into_iter()
+        .flat_map(|items| items.split(','))
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    fingerprints.extend(
+        [canonical, legacy]
+            .into_iter()
+            .flatten()
+            .map(value_fingerprint),
+    );
+    fingerprints.sort_unstable();
+    fingerprints.dedup();
+    format!("{DELETE_MARKER_PREFIX}{}", fingerprints.join(","))
 }
 
 fn record_sync_marker<S: CredentialStore>(
@@ -235,30 +233,12 @@ fn repair_pair_and_marker<S: CredentialStore>(
     repair_service: &str,
     user: &str,
     value: &str,
-) -> Result<(), S::Error> {
-    if store.set(repair_service, user, value).is_err() {
-        // Preserve availability when the value we just read remains usable;
-        // copy-on-read will retry the failed repair later.
-        return Ok(());
+) {
+    if store.set(repair_service, user, value).is_ok() {
+        // A failed marker write leaves an equal pair. Legacy absence remains
+        // authoritative, and the next read retries publication.
+        let _ = record_sync_marker(store, canonical_service, user, value);
     }
-    record_sync_marker(store, canonical_service, user, value)
-}
-
-fn propagate_synced_deletion<S: CredentialStore>(
-    store: &mut S,
-    canonical_service: &str,
-    remaining_service: &str,
-    user: &str,
-    remaining_value: &str,
-    prior_marker: Option<&str>,
-) -> Result<bool, S::Error> {
-    let remaining_fingerprint = value_fingerprint(remaining_value);
-    if prior_marker != Some(remaining_fingerprint.as_str()) {
-        return Ok(false);
-    }
-    store.delete(remaining_service, user)?;
-    store.delete(&sync_marker_service(canonical_service), user)?;
-    Ok(true)
 }
 
 fn set_password_with<S: CredentialStore>(
@@ -268,11 +248,8 @@ fn set_password_with<S: CredentialStore>(
     user: &str,
     value: &str,
 ) -> Result<(), S::Error> {
-    // Converge and mark the current pair before publishing a rotation. The
-    // rollback-readable service is written first: if the process stops before
-    // canonical catches up, a released June build still receives the rotated
-    // credential, while the marker tells Clovy that legacy is the newer side.
-    let _ = get_password_with(store, canonical_service, legacy_service, user)?;
+    // The rollback-readable service is the commit point. If canonical or the
+    // marker fails, the next read promotes the already-published legacy value.
     store.set(legacy_service, user, value)?;
     store.set(canonical_service, user, value)?;
     store.set(
@@ -282,29 +259,64 @@ fn set_password_with<S: CredentialStore>(
     )
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DeleteCommitOutcome<E> {
+    Complete,
+    CleanupPending(E),
+}
+
 fn delete_password_with<S: CredentialStore>(
     store: &mut S,
     canonical_service: &str,
     legacy_service: &str,
     user: &str,
 ) -> Result<(), S::Error> {
-    let prior_value = get_password_with(store, canonical_service, legacy_service, user)?;
-    let deleted_fingerprint = prior_value
-        .as_deref()
-        .map(value_fingerprint)
-        .unwrap_or_default();
+    match delete_password_state_with(store, canonical_service, legacy_service, user)? {
+        DeleteCommitOutcome::Complete => Ok(()),
+        DeleteCommitOutcome::CleanupPending(error) => Err(error),
+    }
+}
+
+fn take_password_with<S: CredentialStore>(
+    store: &mut S,
+    canonical_service: &str,
+    legacy_service: &str,
+    user: &str,
+) -> Result<Option<String>, S::Error> {
+    let value = get_password_with(store, canonical_service, legacy_service, user)?;
+    // Once the tombstone commits, retrying would hide this already-read
+    // one-shot value. Deliver it even if physical keychain cleanup is pending.
+    let _ = delete_password_state_with(store, canonical_service, legacy_service, user)?;
+    Ok(value)
+}
+
+fn delete_password_state_with<S: CredentialStore>(
+    store: &mut S,
+    canonical_service: &str,
+    legacy_service: &str,
+    user: &str,
+) -> Result<DeleteCommitOutcome<S::Error>, S::Error> {
+    // Tombstone every value observed before deletion. A divergent stale side
+    // can then never masquerade as a new login if only part of cleanup works.
+    let canonical = store.get(canonical_service, user)?;
+    let legacy = store.get(legacy_service, user)?;
     let marker_service = sync_marker_service(canonical_service);
-    store.set(
-        &marker_service,
-        user,
-        &format!("{DELETE_MARKER_PREFIX}{deleted_fingerprint}"),
-    )?;
+    let prior_marker = store.get(&marker_service, user)?;
+    let marker = deletion_marker(
+        prior_marker.as_deref(),
+        canonical.as_deref(),
+        legacy.as_deref(),
+    );
+    store.set(&marker_service, user, &marker)?;
 
     let legacy = store.delete(legacy_service, user);
     let canonical = store.delete(canonical_service, user);
     match (legacy, canonical) {
-        (Ok(()), Ok(())) => store.delete(&marker_service, user),
-        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(())) => match store.delete(&marker_service, user) {
+            Ok(()) => Ok(DeleteCommitOutcome::Complete),
+            Err(error) => Ok(DeleteCommitOutcome::CleanupPending(error)),
+        },
+        (Err(error), _) | (Ok(()), Err(error)) => Ok(DeleteCommitOutcome::CleanupPending(error)),
     }
 }
 
@@ -378,21 +390,16 @@ mod tests {
     }
 
     #[test]
-    fn reads_repair_a_partial_dual_write_in_either_direction() {
+    fn reads_promote_legacy_and_treat_canonical_only_as_rollback_sign_out() {
         let mut canonical_only = FakeStore::default();
         canonical_only
             .values
             .insert(("clovy".to_string(), "user".to_string()), "new".to_string());
         assert_eq!(
             get_password_with(&mut canonical_only, "clovy", "legacy", "user").unwrap(),
-            Some("new".to_string())
+            None
         );
-        assert_eq!(
-            canonical_only
-                .values
-                .get(&("legacy".to_string(), "user".to_string())),
-            Some(&"new".to_string())
-        );
+        assert!(canonical_only.values.is_empty());
 
         let mut legacy_only = FakeStore::default();
         legacy_only.values.insert(
@@ -575,6 +582,32 @@ mod tests {
     }
 
     #[test]
+    fn credential_read_failure_never_repairs_the_unreadable_service() {
+        let mut store = FakeStore::default();
+        set_password_with(&mut store, "clovy", "legacy", "user", "synced").unwrap();
+        store.values.insert(
+            ("legacy".to_string(), "user".to_string()),
+            "rollback-rotation".to_string(),
+        );
+        store.failing_reads.insert("legacy".to_string());
+
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user"),
+            Err(FakeError::Unavailable)
+        );
+        assert_eq!(
+            store.values.get(&("clovy".to_string(), "user".to_string())),
+            Some(&"synced".to_string())
+        );
+        assert_eq!(
+            store
+                .values
+                .get(&("legacy".to_string(), "user".to_string())),
+            Some(&"rollback-rotation".to_string())
+        );
+    }
+
+    #[test]
     fn marker_write_failure_is_reported_after_the_pair_is_safe() {
         let mut store = FakeStore::default();
         store.failing_writes.insert("clovy.compat-sync".to_string());
@@ -593,6 +626,16 @@ mod tests {
                 .get(&("legacy".to_string(), "user".to_string())),
             Some(&"new".to_string())
         );
+
+        // Even without the marker, the legacy-first invariant makes a June
+        // rollback sign-out authoritative on the next Clovy launch.
+        store.failing_writes.clear();
+        store.delete("legacy", "user").unwrap();
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            None
+        );
+        assert!(store.values.is_empty());
     }
 
     #[test]
@@ -631,6 +674,63 @@ mod tests {
         assert_eq!(
             delete_password_with(&mut store, "clovy", "legacy", "user"),
             Err(FakeError::Unavailable)
+        );
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            None
+        );
+
+        store.failing_deletes.clear();
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            None
+        );
+        assert!(store.values.is_empty());
+    }
+
+    #[test]
+    fn divergent_values_are_all_tombstoned_before_partial_cleanup() {
+        let mut store = FakeStore::default();
+        set_password_with(&mut store, "clovy", "legacy", "user", "canonical-stale").unwrap();
+        store.values.insert(
+            ("legacy".to_string(), "user".to_string()),
+            "rollback-rotation".to_string(),
+        );
+        store.failing_deletes.insert("clovy".to_string());
+
+        assert_eq!(
+            delete_password_with(&mut store, "clovy", "legacy", "user"),
+            Err(FakeError::Unavailable)
+        );
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            None
+        );
+        assert_eq!(
+            store.values.get(&("clovy".to_string(), "user".to_string())),
+            Some(&"canonical-stale".to_string())
+        );
+        assert!(!store
+            .values
+            .contains_key(&("legacy".to_string(), "user".to_string())));
+
+        store.failing_deletes.clear();
+        assert_eq!(
+            get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            None
+        );
+        assert!(store.values.is_empty());
+    }
+
+    #[test]
+    fn one_shot_take_delivers_after_logical_delete_commits() {
+        let mut store = FakeStore::default();
+        set_password_with(&mut store, "clovy", "legacy", "user", "one-shot").unwrap();
+        store.failing_deletes.insert("clovy".to_string());
+
+        assert_eq!(
+            take_password_with(&mut store, "clovy", "legacy", "user").unwrap(),
+            Some("one-shot".to_string())
         );
         assert_eq!(
             get_password_with(&mut store, "clovy", "legacy", "user").unwrap(),

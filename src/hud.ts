@@ -1,3 +1,4 @@
+import "./lib/storage-compat-bootstrap";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -23,9 +24,6 @@ import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
 import { createHudLifecycle } from "./lib/hud-lifecycle";
 import "./styles/hud.css";
-import { installStorageCompatibilityBridge } from "./lib/storage-compat";
-
-installStorageCompatibilityBridge();
 
 const lifecycle = createHudLifecycle();
 

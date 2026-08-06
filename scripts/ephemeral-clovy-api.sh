@@ -102,7 +102,10 @@ probe_cvm_listed() {
 # instead of silently changing a value only on the CVM.
 copy_compat_env_line() {
   local canonical="$1" legacy="$2" line value
-  line="$(grep -E "^${canonical}=.|^${legacy}=." "$API_ENV_FILE" | tail -n 1 || true)"
+  line="$(grep -E "^${canonical}=." "$API_ENV_FILE" | tail -n 1 || true)"
+  if [[ -z "$line" ]]; then
+    line="$(grep -E "^${legacy}=." "$API_ENV_FILE" | tail -n 1 || true)"
+  fi
   if [[ -z "$line" ]]; then return 0; fi
   case "$line" in
     *\"* | *\'* | *" #"*)
