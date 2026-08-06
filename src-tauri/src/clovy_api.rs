@@ -85,7 +85,7 @@ const IMAGE_REQUEST_MAX_ATTEMPTS: usize = 3;
 const IMAGE_REQUEST_RETRY_DELAY: Duration = Duration::from_millis(250);
 // Keep equal to clovy-config DEFAULT_VIDEO_MAX_RESPONSE_BYTES. The desktop
 // cannot read clovy-config, and the VPS download_url path bypasses Clovy API.
-const JUNE_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
+const CLOVY_VIDEO_MAX_RESPONSE_BYTES: u64 = 100 * 1024 * 1024;
 // Mirrors clovy-api::validation::MAX_ID_CHARS. Internal operation IDs may carry
 // durable span and fingerprint detail that is useful locally but too large for
 // the public noteId field. Hash only at the wire boundary so retry jitter,
@@ -924,7 +924,7 @@ async fn write_video_bytes(app: &AppHandle, bytes: &[u8]) -> Result<(String, u64
 async fn read_video_response_bytes(mut response: reqwest::Response) -> Result<Vec<u8>, AppError> {
     if response
         .content_length()
-        .is_some_and(|len| len > JUNE_VIDEO_MAX_RESPONSE_BYTES)
+        .is_some_and(|len| len > CLOVY_VIDEO_MAX_RESPONSE_BYTES)
     {
         return Err(video_too_large_error());
     }
@@ -942,7 +942,7 @@ async fn read_video_response_bytes(mut response: reqwest::Response) -> Result<Ve
         total = total
             .checked_add(chunk.len() as u64)
             .ok_or_else(video_too_large_error)?;
-        if total > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+        if total > CLOVY_VIDEO_MAX_RESPONSE_BYTES {
             return Err(video_too_large_error());
         }
         bytes.extend_from_slice(&chunk);
@@ -951,7 +951,7 @@ async fn read_video_response_bytes(mut response: reqwest::Response) -> Result<Ve
 }
 
 fn reject_oversized_video_bytes(size_bytes: u64) -> Result<(), AppError> {
-    if size_bytes > JUNE_VIDEO_MAX_RESPONSE_BYTES {
+    if size_bytes > CLOVY_VIDEO_MAX_RESPONSE_BYTES {
         return Err(video_too_large_error());
     }
     Ok(())
@@ -5674,10 +5674,12 @@ data: [DONE]
 /// ```
 ///
 /// Configuration comes from the environment:
-/// - `JUNE_QA_LOCAL_BASE_URL`: OpenAI-compatible base URL
+/// - `CLOVY_QA_LOCAL_BASE_URL`: OpenAI-compatible base URL
 ///   (default `http://127.0.0.1:11434/v1`)
-/// - `JUNE_QA_LOCAL_MODEL`: model id the endpoint serves
+/// - `CLOVY_QA_LOCAL_MODEL`: model id the endpoint serves
 ///   (default `llama3.1:8b`)
+///
+/// June-era names remain lower-precedence compatibility aliases.
 ///
 /// Each test skips (passes with a stderr note) when the endpoint is
 /// unreachable, so an accidental `--include-ignored` run does not fail.
@@ -5701,16 +5703,14 @@ mod live_local_tests {
     const DEFAULT_LIVE_MODEL: &str = "llama3.1:8b";
 
     fn live_base_url() -> String {
-        std::env::var("JUNE_QA_LOCAL_BASE_URL")
-            .ok()
+        crate::env_compat::var("CLOVY_QA_LOCAL_BASE_URL", "JUNE_QA_LOCAL_BASE_URL")
             .map(|value| value.trim().trim_end_matches('/').to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_LIVE_BASE_URL.to_string())
     }
 
     fn live_model() -> String {
-        std::env::var("JUNE_QA_LOCAL_MODEL")
-            .ok()
+        crate::env_compat::var("CLOVY_QA_LOCAL_MODEL", "JUNE_QA_LOCAL_MODEL")
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_LIVE_MODEL.to_string())
@@ -5735,7 +5735,7 @@ mod live_local_tests {
     fn skip_message(base_url: &str) -> String {
         format!(
             "SKIPPED: no OpenAI-compatible server reachable at {base_url}. \
-             Start one (e.g. `ollama serve`) or set JUNE_QA_LOCAL_BASE_URL."
+             Start one (e.g. `ollama serve`) or set CLOVY_QA_LOCAL_BASE_URL."
         )
     }
 

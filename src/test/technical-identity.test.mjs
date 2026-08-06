@@ -76,16 +76,26 @@ describe("Clovy technical identity", () => {
     expect(desktopCargo).toMatch(/^name = "os-june"$/m);
   });
 
-  it("keeps canonical-first bridges for credentials, browser storage, headers, and hosts", async () => {
-    const [credentials, storage, desktopApi, backendApi, extensionHost, extensionProtocol] =
-      await Promise.all([
-        read("src-tauri/src/credential_compat.rs"),
-        read("src/lib/storage-compat.ts"),
-        read("src-tauri/src/clovy_api.rs"),
-        read("clovy-api/crates/api/src/lib.rs"),
-        read("src-tauri/src/extension_host.rs"),
-        read("extension/src/protocol.ts"),
-      ]);
+  it("keeps rollback-safe bridges for credentials, browser storage, headers, and hosts", async () => {
+    const [
+      credentials,
+      storage,
+      storageBootstrap,
+      main,
+      desktopApi,
+      backendApi,
+      extensionHost,
+      extensionProtocol,
+    ] = await Promise.all([
+      read("src-tauri/src/credential_compat.rs"),
+      read("src/lib/storage-compat.ts"),
+      read("src/lib/storage-compat-bootstrap.ts"),
+      read("src/main.tsx"),
+      read("src-tauri/src/clovy_api.rs"),
+      read("clovy-api/crates/api/src/lib.rs"),
+      read("src-tauri/src/extension_host.rs"),
+      read("extension/src/protocol.ts"),
+    ]);
 
     expect(credentials).toContain("canonical_service");
     expect(credentials).toContain("legacy_service");
@@ -93,6 +103,8 @@ describe("Clovy technical identity", () => {
     expect(storage).toContain('`june:${key.slice("clovy:".length)}`');
     expect(storage).toContain('key.startsWith("os-clovy:")');
     expect(storage).toContain('`os-june:${key.slice("os-clovy:".length)}`');
+    expect(storageBootstrap).toContain("installStorageCompatibilityBridge();");
+    expect(main.startsWith('import "./lib/storage-compat-bootstrap";')).toBe(true);
     for (const source of [desktopApi, backendApi]) {
       expect(source).toContain("x-clovy-app-version");
       expect(source).toContain("x-june-app-version");
@@ -104,16 +116,29 @@ describe("Clovy technical identity", () => {
   });
 
   it("keeps runtime, migration, dev-env, and deployment aliases reachable", async () => {
-    const [runtimeProvider, runtimeHost, migration, tauriDev, beforeDev, runApi, production] =
-      await Promise.all([
-        read("agent-runtime/src/rpc-model-provider.ts"),
-        read("src-tauri/src/agent_runtime/host.rs"),
-        read("src-tauri/src/agent_runtime/migration.rs"),
-        read("scripts/tauri-dev.mjs"),
-        read("scripts/tauri-before-dev.mjs"),
-        read("scripts/run-clovy-api.sh"),
-        read("clovy-api/deploy/docker-compose.production.yml"),
-      ]);
+    const [
+      runtimeProvider,
+      runtimeHost,
+      migration,
+      tauriDev,
+      beforeDev,
+      runApi,
+      production,
+      staging,
+      ephemeral,
+      linkViewer,
+    ] = await Promise.all([
+      read("agent-runtime/src/rpc-model-provider.ts"),
+      read("src-tauri/src/agent_runtime/host.rs"),
+      read("src-tauri/src/agent_runtime/migration.rs"),
+      read("scripts/tauri-dev.mjs"),
+      read("scripts/tauri-before-dev.mjs"),
+      read("scripts/run-clovy-api.sh"),
+      read("clovy-api/deploy/docker-compose.production.yml"),
+      read("clovy-api/deploy/docker-compose.staging.yml"),
+      read("clovy-api/deploy/docker-compose.ephemeral.yml"),
+      read("clovy-api/deploy/docker-compose.june-link.yml"),
+    ]);
 
     expect(runtimeProvider).toContain('"__clovy_model_chat_completions"');
     expect(runtimeHost).toContain('"__clovy_model_chat_completions"');
@@ -125,6 +150,39 @@ describe("Clovy technical identity", () => {
     );
     expect(runApi).toContain("${CLOVY_API_PORT:-${JUNE_API_PORT:-8080}}");
     expect(production).toMatch(/aliases:\s*\n\s*#.*\n\s*- june-api/);
+
+    for (const compose of [production, staging]) {
+      for (const key of [
+        "OS_ACCOUNTS__API_URL",
+        "OS_ACCOUNTS__APP_API_KEY",
+        "UPSTREAMS__OPENAI__API_KEY",
+        "UPSTREAMS__VENICE__API_KEY",
+        "SHARE__DATABASE_URL",
+        "SHARE__VIEWER_CLIENT_ID",
+      ]) {
+        expect(compose).toContain(`CLOVY__${key}`);
+        expect(compose).toContain(`JUNE__${key}`);
+      }
+    }
+    for (const key of [
+      "LOCAL_DEV__ENABLED",
+      "LOCAL_DEV__BEARER_TOKEN",
+      "LOCAL_DEV__USER_ID",
+      "UPSTREAMS__OPENAI__API_KEY",
+      "UPSTREAMS__VENICE__API_KEY",
+    ]) {
+      expect(ephemeral).toContain(`CLOVY__${key}`);
+      expect(ephemeral).toContain(`JUNE__${key}`);
+    }
+    for (const key of [
+      "OS_ACCOUNTS__API_URL",
+      "SHARE__VIEWER_ONLY",
+      "SHARE__DATABASE_URL",
+      "SHARE__VIEWER_CLIENT_ID",
+    ]) {
+      expect(linkViewer).toContain(`CLOVY__${key}`);
+      expect(linkViewer).toContain(`JUNE__${key}`);
+    }
   });
 
   it("preserves released API and C ABI contracts while publishing canonical aliases", async () => {

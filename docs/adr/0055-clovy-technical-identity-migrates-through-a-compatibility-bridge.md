@@ -62,6 +62,7 @@ the name used for new source concepts.
 | Client version headers | `x-clovy-app-version`, `x-clovy-macos-version` | Clients send both; Clovy API accepts both; released fixtures keep the old headers |
 | OS credential services | `co.opensoftware.clovy.*` | Read either service, then dual-write both so an application rollback retains rotated tokens and device identity |
 | Browser storage | `clovy:*` | Copy on first read, dual-write both keys, and reconcile rollback-side changes from a last-synced marker |
+| Persona settings | `clovy-persona.json` | Dual-write `june-persona.json` and reconcile either side against a last-synced settings marker |
 | Native messaging host | `co.opensoftware.clovy.extension` | Install both host manifests; the extension falls back to the legacy host |
 | OAuth/deep links | `clovy://` | Register and accept `osjune://` until old login clients and callbacks age out |
 | Release artifacts | `Clovy_*`, `Clovy-extension.zip` | Publish June-named aliases while old documentation and automation can still link them |
@@ -70,26 +71,44 @@ the name used for new source concepts.
 
 ### Idempotent bridge rules
 
-- **Reads prefer Clovy and fall back to June.** A successful legacy read is
-  copied to the canonical location. A failed copy never hides readable legacy
-  data; the next read retries it.
+- **Reads use provenance, then preserve the rollback-readable side.** Equal or
+  single-sided values are copied to the missing location. For divergent values,
+  a last-synced marker identifies which side changed. If provenance is unknown,
+  the June-era side wins because it is the only side a released rollback build
+  can update. A failed copy never hides a readable source; the next read retries
+  it.
 - **Writes update both identities during the bridge window.** This is
   load-bearing for rotating refresh tokens and connector grants: leaving the
   old entry untouched would make a rollback read an invalidated token. The
-  canonical write is the commit point; a later legacy write can be repaired
-  from it after interruption.
+  rollback-readable side is published first; the last-synced marker lets Clovy
+  recognize and promote that staged value after an interruption.
 - **Credential divergence is resolved from a sync marker.** The bridge records
   a one-way fingerprint of the last value known to be present in both Keychain
   services. If a rollback build later rotates only the legacy credential, the
   next Clovy launch recognizes that change, promotes it, and refreshes both
   entries instead of overwriting it with stale canonical state.
+- **Unknown credential provenance is never guessed.** A missing Keychain marker
+  is safe because reconciliation preserves the rollback-readable side. A real
+  marker read error aborts reconciliation without modifying either credential,
+  and a marker write failure is reported only after both readable entries have
+  reached the same value.
 - **Browser-storage divergence follows the same rule.** A compact fingerprint
   records the last value observed on both keys. If a rollback build changes or
   removes only the June-era key, Clovy promotes that newer choice on the next
   read. If a Clovy write or delete stopped partway through, the same marker
   repairs the unfinished compatibility side.
-- **Deletes clear both identities.** Signing out or disconnecting must not
-  leave a live credential under the alias the current UI no longer displays.
+- **Compatibility installs before persisted state is imported.** The browser
+  bridge evaluates before App modules that capture storage values at module
+  scope, including the active data partition.
+- **Deletes clear both identities from the rollback side first.** Signing out
+  or disconnecting must not leave a live credential under the alias the current
+  UI no longer displays. Credential deletion commits a tombstone before either
+  Keychain entry is removed, so a failed second delete cannot resurrect the
+  remaining token. A later login with a different fingerprint supersedes the
+  tombstone.
+- **Persona changes use the same rollback protocol.** The legacy file is
+  written first, the canonical file second, and the full last-synced settings
+  marker last. Re-upgrade preserves a persona changed during rollback.
 - **Migrations are repeatable and crash-safe.** A process may stop after either
   side of a dual-write. The next launch converges both sides without deleting
   the source.
@@ -98,6 +117,10 @@ the name used for new source concepts.
 - **Old clients remain first-class during the bridge.** Clovy API, native
   messaging, release hosting, and deployment aliases keep serving released
   versions independently of the desktop rollout cadence.
+- **Deployment supplies both environment namespaces.** Every production,
+  staging, ephemeral, and link-viewer Compose definition injects equivalent
+  `CLOVY__*` and `JUNE__*` values. Promoting an older image with current
+  deployment configuration therefore remains a supported rollback.
 
 ### Operating-system identities that remain June-era
 

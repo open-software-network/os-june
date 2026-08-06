@@ -587,7 +587,7 @@ describe("OnboardingFlow", () => {
 
     applyOnboardingReplayFlag({
       DEV: false,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
+      VITE_CLOVY_REPLAY_ONBOARDING: "1",
     });
 
     expect(isOnboardingComplete()).toBe(true);
@@ -595,11 +595,19 @@ describe("OnboardingFlow", () => {
 
     applyOnboardingReplayFlag({
       DEV: true,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
+      VITE_CLOVY_REPLAY_ONBOARDING: "1",
     });
 
     expect(isOnboardingComplete()).toBe(false);
     expect(onboardingResumeStep()).toBeNull();
+  });
+
+  it("accepts the June-era onboarding replay variable as a fallback", () => {
+    markOnboardingComplete();
+
+    applyOnboardingReplayFlag({ DEV: true, VITE_JUNE_REPLAY_ONBOARDING: "1" });
+
+    expect(isOnboardingComplete()).toBe(false);
   });
 
   it("requests the mic permission when the mic screen shows", async () => {

@@ -12,6 +12,7 @@ use tauri::AppHandle;
 pub const CLOVY_PERSONA_SCHEMA_VERSION: u8 = 1;
 const CLOVY_PERSONA_FILE: &str = "clovy-persona.json";
 const LEGACY_PERSONA_FILE: &str = "june-persona.json";
+const PERSONA_SYNC_MARKER_FILE: &str = "clovy-persona.compat-sync.json";
 const APP_OWNED_INSTRUCTION_BOUNDARY: &str = r#"# Instruction order and untrusted content
 
 Follow provider safety policy and Clovy's enforced permissions first, then Clovy's app-owned identity, capability, privacy, and action rules, then the user's current request and current project instructions, then personality defaults and inferred preferences.
@@ -160,17 +161,42 @@ fn load_clovy_persona_from_paths(
     canonical: &Path,
     legacy: &Path,
 ) -> Result<ClovyPersonaSettings, AppError> {
-    if let Some(settings) = read_clovy_persona(canonical)? {
-        // Repair a partial dual-write for rollback without failing a readable
-        // current preference when the compatibility write is unavailable.
-        let _ = write_clovy_persona(legacy, &settings);
-        return Ok(settings);
+    let canonical_settings = read_clovy_persona(canonical)?;
+    let legacy_settings = read_clovy_persona(legacy)?;
+    let marker_path = canonical.with_file_name(PERSONA_SYNC_MARKER_FILE);
+    // A corrupt or unreadable marker is not equivalent to no marker. Failing
+    // closed here prevents an ambiguous reconciliation from overwriting a
+    // persona changed while a released June build was running.
+    let prior_settings = read_clovy_persona(&marker_path)?;
+
+    let selected = match (&canonical_settings, &legacy_settings) {
+        (Some(canonical_value), Some(legacy_value)) if canonical_value != legacy_value => {
+            if prior_settings.as_ref() == Some(canonical_value)
+                && prior_settings.as_ref() != Some(legacy_value)
+            {
+                legacy_value.clone()
+            } else if prior_settings.as_ref() == Some(legacy_value)
+                && prior_settings.as_ref() != Some(canonical_value)
+            {
+                canonical_value.clone()
+            } else {
+                // With no conclusive marker, keep the rollback-readable side.
+                // It is the only file a released June build can update.
+                legacy_value.clone()
+            }
+        }
+        (Some(settings), _) | (_, Some(settings)) => settings.clone(),
+        (None, None) => return Ok(ClovyPersonaSettings::default()),
+    };
+
+    let legacy_current = legacy_settings.as_ref() == Some(&selected);
+    let canonical_current = canonical_settings.as_ref() == Some(&selected);
+    let legacy_ready = legacy_current || write_clovy_persona(legacy, &selected).is_ok();
+    let canonical_ready = canonical_current || write_clovy_persona(canonical, &selected).is_ok();
+    if legacy_ready && canonical_ready {
+        write_clovy_persona(&marker_path, &selected)?;
     }
-    if let Some(settings) = read_clovy_persona(legacy)? {
-        let _ = write_clovy_persona(canonical, &settings);
-        return Ok(settings);
-    }
-    Ok(ClovyPersonaSettings::default())
+    Ok(selected)
 }
 
 pub fn load_clovy_persona(app: &AppHandle) -> Result<ClovyPersonaSettings, AppError> {
@@ -224,6 +250,19 @@ fn write_clovy_persona(path: &Path, settings: &ClovyPersonaSettings) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn write_clovy_persona_pair(
+    canonical: &Path,
+    legacy: &Path,
+    settings: &ClovyPersonaSettings,
+) -> Result<(), AppError> {
+    write_clovy_persona(legacy, settings)?;
+    write_clovy_persona(canonical, settings)?;
+    write_clovy_persona(
+        &canonical.with_file_name(PERSONA_SYNC_MARKER_FILE),
+        settings,
+    )
 }
 
 fn trait_instruction(value: u8, low: &str, middle: &str, high: &str) -> String {
@@ -311,10 +350,9 @@ pub fn set_clovy_persona(
 ) -> Result<ClovyPersonaSettings, AppError> {
     let settings = ClovyPersonaSettings::from(request);
     let (canonical, legacy) = persona_paths(&app)?;
-    // Legacy first means a process stop between writes is still readable by
-    // both Clovy (fallback) and a rollback build.
-    write_clovy_persona(&legacy, &settings)?;
-    write_clovy_persona(&canonical, &settings)?;
+    // Legacy first keeps an interrupted change readable after rollback. The
+    // final marker lets Clovy distinguish that staged value from stale state.
+    write_clovy_persona_pair(&canonical, &legacy, &settings)?;
     Ok(settings)
 }
 
@@ -390,6 +428,79 @@ mod tests {
         assert_eq!(
             read_clovy_persona(&canonical).expect("canonical read"),
             Some(settings)
+        );
+    }
+
+    #[test]
+    fn rollback_persona_changes_are_promoted_on_reupgrade() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let initial = ClovyPersonaSettings::default();
+        write_clovy_persona_pair(&canonical, &legacy, &initial).expect("initial dual write");
+
+        let rollback_update = play_persona();
+        write_clovy_persona(&legacy, &rollback_update).expect("rollback write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            rollback_update
+        );
+        assert_eq!(
+            read_clovy_persona(&canonical).expect("canonical read"),
+            Some(rollback_update)
+        );
+    }
+
+    #[test]
+    fn canonical_persona_change_wins_when_the_marker_proves_legacy_is_stale() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let initial = ClovyPersonaSettings::default();
+        write_clovy_persona_pair(&canonical, &legacy, &initial).expect("initial dual write");
+
+        let canonical_update = play_persona();
+        write_clovy_persona(&canonical, &canonical_update).expect("canonical write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            canonical_update
+        );
+        assert_eq!(
+            read_clovy_persona(&legacy).expect("legacy read"),
+            Some(canonical_update)
+        );
+    }
+
+    #[test]
+    fn invalid_sync_marker_never_overwrites_divergent_personas() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let canonical_settings = ClovyPersonaSettings::default();
+        let legacy_settings = play_persona();
+        write_clovy_persona(&canonical, &canonical_settings).expect("canonical write");
+        write_clovy_persona(&legacy, &legacy_settings).expect("legacy write");
+        fs::write(
+            canonical.with_file_name(PERSONA_SYNC_MARKER_FILE),
+            b"not valid json",
+        )
+        .expect("invalid marker write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy)
+                .expect_err("invalid marker must block reconciliation")
+                .code,
+            "clovy_persona_invalid"
+        );
+        assert_eq!(
+            read_clovy_persona(&canonical).expect("canonical read"),
+            Some(canonical_settings)
+        );
+        assert_eq!(
+            read_clovy_persona(&legacy).expect("legacy read"),
+            Some(legacy_settings)
         );
     }
 

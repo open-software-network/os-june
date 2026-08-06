@@ -2700,11 +2700,13 @@ fn is_retryable_transcription_error(error: &AppError) -> bool {
     code == "clovy_api_response_invalid"
         || code == "june_api_response_invalid"
         || code == "empty_response"
-        || (code == "june_request_failed"
-            && (message == "authorization_denied"
-                || message == "timeout"
-                || message.contains("connection")
-                || message.contains("error sending request")))
+        || (matches!(
+            code.as_str(),
+            "clovy_request_failed" | "june_request_failed"
+        ) && (message == "authorization_denied"
+            || message == "timeout"
+            || message.contains("connection")
+            || message.contains("error sending request")))
 }
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
@@ -5381,6 +5383,7 @@ mod tests {
                 "clovy_api_response_invalid",
                 "The processing service returned an invalid response.",
             ),
+            AppError::new("clovy_request_failed", "authorization_denied"),
             AppError::new("june_request_failed", "authorization_denied"),
         ];
 

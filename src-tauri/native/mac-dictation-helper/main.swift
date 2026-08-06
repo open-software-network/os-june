@@ -185,7 +185,8 @@ final class ParentProcessMonitor {
 
     private let ownerPID: pid_t = {
         guard
-            let raw = ProcessInfo.processInfo.environment["JUNE_OWNER_PID"],
+            let raw = ProcessInfo.processInfo.environment["CLOVY_OWNER_PID"]
+                ?? ProcessInfo.processInfo.environment["JUNE_OWNER_PID"],
             let parsed = Int32(raw),
             parsed > 1
         else {
@@ -1627,7 +1628,8 @@ final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBuffer
 }
 
 func autoDetectRawMeteringEnabled() -> Bool {
-    guard let rawValue = ProcessInfo.processInfo.environment["OS_JUNE_DICTATION_RAW_METER"] else {
+    guard let rawValue = ProcessInfo.processInfo.environment["OS_CLOVY_DICTATION_RAW_METER"]
+        ?? ProcessInfo.processInfo.environment["OS_JUNE_DICTATION_RAW_METER"] else {
         return true
     }
     switch rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {

@@ -173,7 +173,7 @@ const child = spawn(tauri.command, [...tauri.args, "dev", ...tauriArgs], {
         }),
     ...(developerDir ? { DEVELOPER_DIR: developerDir } : {}),
     OS_CLOVY_DEV_APP_NAME: devAppIdentity.productName,
-    ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
+    ...(replayOnboarding ? { VITE_CLOVY_REPLAY_ONBOARDING: "1" } : {}),
   },
   shell: false,
   stdio: "inherit",

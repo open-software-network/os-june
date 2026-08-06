@@ -995,7 +995,7 @@ function RoutineErrorBanner({
   );
 }
 
-const DEJUNE_MODE_OPTIONS = [
+const ROUTINE_EXECUTION_MODE_OPTIONS = [
   {
     unrestricted: false,
     icon: <IconShieldCheck size={16} aria-hidden />,
@@ -1118,7 +1118,7 @@ function DescribeBar({
             aria-label="What can this routine change?"
           >
             <p className="agent-sandbox-menu-title">What can this routine change?</p>
-            {DEJUNE_MODE_OPTIONS.map((option) => (
+            {ROUTINE_EXECUTION_MODE_OPTIONS.map((option) => (
               <button
                 key={option.title}
                 type="button"

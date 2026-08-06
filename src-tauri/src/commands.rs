@@ -356,7 +356,10 @@ async fn delete_remote_share_or_accept_missing(share_id: &str) -> Result<(), App
 }
 
 fn is_share_not_found(error: &AppError) -> bool {
-    error.code == "june_request_failed" && error.message == "share_not_found"
+    matches!(
+        error.code.as_str(),
+        "clovy_request_failed" | "june_request_failed"
+    ) && error.message == "share_not_found"
 }
 
 async fn delete_profile_records_with_share_revoker<F, Fut>(
@@ -3383,6 +3386,10 @@ mod tests {
 
     #[test]
     fn recognizes_only_the_ambiguous_share_not_found_error() {
+        assert!(is_share_not_found(&AppError::new(
+            "clovy_request_failed",
+            "share_not_found"
+        )));
         assert!(is_share_not_found(&AppError::new(
             "june_request_failed",
             "share_not_found"

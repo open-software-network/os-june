@@ -40,9 +40,14 @@ services:
     # ref injects nothing. Both leave the app seeing the config as missing.
     # Docs: https://docs.phala.com/phala-cloud/phala-cloud-user-guides/create-cvm/set-secure-environment-variables
     environment:
-      - RUST_LOG=clovy_api=info,clovy_services=info,clovy_providers=info,tower_http=info
+      - RUST_LOG=clovy_api=info,clovy_services=info,clovy_providers=info,june_api=info,june_services=info,june_providers=info,tower_http=info
       - CLOVY__LOCAL_DEV__ENABLED=${CLOVY__LOCAL_DEV__ENABLED:-${JUNE__LOCAL_DEV__ENABLED}}
+      - JUNE__LOCAL_DEV__ENABLED=${JUNE__LOCAL_DEV__ENABLED:-${CLOVY__LOCAL_DEV__ENABLED}}
       - CLOVY__LOCAL_DEV__BEARER_TOKEN=${CLOVY__LOCAL_DEV__BEARER_TOKEN:-${JUNE__LOCAL_DEV__BEARER_TOKEN}}
+      - JUNE__LOCAL_DEV__BEARER_TOKEN=${JUNE__LOCAL_DEV__BEARER_TOKEN:-${CLOVY__LOCAL_DEV__BEARER_TOKEN}}
       - CLOVY__LOCAL_DEV__USER_ID=${CLOVY__LOCAL_DEV__USER_ID:-${JUNE__LOCAL_DEV__USER_ID}}
+      - JUNE__LOCAL_DEV__USER_ID=${JUNE__LOCAL_DEV__USER_ID:-${CLOVY__LOCAL_DEV__USER_ID}}
       - CLOVY__UPSTREAMS__VENICE__API_KEY=${CLOVY__UPSTREAMS__VENICE__API_KEY:-${JUNE__UPSTREAMS__VENICE__API_KEY}}
+      - JUNE__UPSTREAMS__VENICE__API_KEY=${JUNE__UPSTREAMS__VENICE__API_KEY:-${CLOVY__UPSTREAMS__VENICE__API_KEY}}
       - CLOVY__UPSTREAMS__OPENAI__API_KEY=${CLOVY__UPSTREAMS__OPENAI__API_KEY:-${JUNE__UPSTREAMS__OPENAI__API_KEY}}
+      - JUNE__UPSTREAMS__OPENAI__API_KEY=${JUNE__UPSTREAMS__OPENAI__API_KEY:-${CLOVY__UPSTREAMS__OPENAI__API_KEY}}

@@ -14,9 +14,9 @@ const AREA_KEY = "clovy.onboarding.area";
 const MOOD_KEY = "clovy.onboarding.mood";
 const USE_CASES_KEY = "clovy.onboarding.useCases";
 const CUSTOM_USE_CASE_KEY = "clovy.onboarding.customUseCase";
-const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
+const ONBOARDING_BROADCAST_CHANNEL = "clovy.onboarding";
 
-export const ONBOARDING_COMPLETED_EVENT = "june:onboarding-completed";
+export const ONBOARDING_COMPLETED_EVENT = "clovy:onboarding-completed";
 export const ONBOARDING_USE_CASES = [
   "work",
   "personal",
@@ -96,6 +96,7 @@ export function closestOnboardingMood(personality: OnboardingPersonality): Onboa
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
+  readonly VITE_CLOVY_REPLAY_ONBOARDING?: string;
   readonly VITE_JUNE_REPLAY_ONBOARDING?: string;
 };
 
@@ -106,7 +107,10 @@ export function applyOnboardingReplayFlag(env: OnboardingReplayEnv = import.meta
 }
 
 export function shouldReplayOnboarding(env: OnboardingReplayEnv = import.meta.env) {
-  return env.DEV === true && env.VITE_JUNE_REPLAY_ONBOARDING === "1";
+  return (
+    env.DEV === true &&
+    (env.VITE_CLOVY_REPLAY_ONBOARDING ?? env.VITE_JUNE_REPLAY_ONBOARDING) === "1"
+  );
 }
 
 export function isOnboardingComplete(): boolean {

@@ -1166,6 +1166,7 @@ async fn bounded_command_output(
 fn should_scrub_driver_env(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("CUA_DRIVER_RS_")
+        || name.starts_with("CLOVY_CUA_DRIVER")
         || name.starts_with("JUNE_CUA_DRIVER")
         || name == "CLOVY_COMPUTER_USE_BACKEND"
         || name == "CLOVY_COMPUTER_USE_HELPER_CAPABILITY"
@@ -5743,6 +5744,8 @@ mod tests {
             "CUA_DRIVER_RS_MCP_NO_RELAUNCH",
             "CUA_DRIVER_RS_PERMISSIONS_GATE",
             "CUA_DRIVER_RS_FUTURE_ESCAPE",
+            "CLOVY_CUA_DRIVER_CMD",
+            "CLOVY_CUA_DRIVER_VERSION",
             "JUNE_CUA_DRIVER_CMD",
             "JUNE_CUA_DRIVER_VERSION",
             "CLOVY_COMPUTER_USE_BACKEND",

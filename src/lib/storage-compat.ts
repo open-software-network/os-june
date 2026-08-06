@@ -33,11 +33,11 @@ export function writeCompatibleStorageValue(
   legacyKey: string,
   value: string,
 ): void {
-  // Canonical is the commit point because reads prefer it. If the legacy
-  // write fails or the process stops between calls, the next read repairs
-  // the rollback key from the committed canonical value.
-  write(canonicalKey, value);
+  // Publish the rollback-readable key first. If the process stops before the
+  // canonical write, the last-synced marker identifies legacy as the newer
+  // side and Clovy promotes it on the next read.
   write(legacyKey, value);
+  write(canonicalKey, value);
   write(syncMarkerKey(canonicalKey), valueFingerprint(value));
 }
 
@@ -75,17 +75,20 @@ export function installStorageCompatibilityBridge(): void {
     try {
       priorFingerprint = Reflect.apply(getItem, this, [markerKey]) as string | null;
     } catch {
-      // The canonical value remains authoritative when marker storage is
-      // unavailable. A later read can retry reconciliation.
+      // Treat an unreadable marker like an unknown marker. Divergence below
+      // then prefers the rollback-readable side instead of risking data loss.
     }
 
     if (canonical !== null && legacy !== null) {
       const canonicalFingerprint = valueFingerprint(canonical);
       const legacyFingerprint = valueFingerprint(legacy);
-      const legacyChangedAfterSync =
-        priorFingerprint === canonicalFingerprint && priorFingerprint !== legacyFingerprint;
-      const value = legacyChangedAfterSync ? legacy : canonical;
-      const repairKey = legacyChangedAfterSync ? key : legacyKey;
+      const canonicalChangedAfterSync =
+        priorFingerprint === legacyFingerprint && priorFingerprint !== canonicalFingerprint;
+      // A marker that proves canonical changed is the only reason to prefer
+      // it. Missing, unreadable, or doubly stale markers resolve to legacy,
+      // which is the side a released rollback build can update.
+      const value = canonicalChangedAfterSync ? canonical : legacy;
+      const repairKey = canonicalChangedAfterSync ? legacyKey : key;
       try {
         Reflect.apply(setItem, this, [repairKey, value]);
         Reflect.apply(setItem, this, [markerKey, valueFingerprint(value)]);
@@ -95,30 +98,28 @@ export function installStorageCompatibilityBridge(): void {
       return value;
     }
 
-    const existing = canonical ?? legacy;
-    if (existing !== null) {
-      // Once both keys have been observed in sync, one disappearing means a
-      // rollback or partially completed Clovy delete removed it. Propagate
-      // that deletion instead of resurrecting the remaining stale value.
-      if (priorFingerprint === valueFingerprint(existing)) {
-        try {
-          Reflect.apply(removeItem, this, [key]);
-          Reflect.apply(removeItem, this, [legacyKey]);
-          Reflect.apply(removeItem, this, [markerKey]);
-          return null;
-        } catch {
-          return existing;
-        }
-      }
-
-      const repairKey = canonical === null ? key : legacyKey;
+    if (legacy !== null) {
+      // A missing canonical side cannot have been caused by a released June
+      // build. Preserve the rollback-readable value and repair Clovy's alias.
       try {
-        Reflect.apply(setItem, this, [repairKey, existing]);
-        Reflect.apply(setItem, this, [markerKey, valueFingerprint(existing)]);
+        Reflect.apply(setItem, this, [key, legacy]);
+        Reflect.apply(setItem, this, [markerKey, valueFingerprint(legacy)]);
       } catch {
         // Copy-on-read is retried on the next access.
       }
-      return existing;
+      return legacy;
+    }
+
+    if (canonical !== null) {
+      // Only the rollback side can disappear independently. Treat its absence
+      // as authoritative deletion once a bridge-era canonical value exists.
+      try {
+        Reflect.apply(removeItem, this, [key]);
+        Reflect.apply(removeItem, this, [markerKey]);
+        return null;
+      } catch {
+        return canonical;
+      }
     }
 
     try {
@@ -151,19 +152,21 @@ export function installStorageCompatibilityBridge(): void {
       return;
     }
 
-    let canonicalError: unknown;
     let legacyError: unknown;
+    let canonicalError: unknown;
     let markerError: unknown;
     const markerKey = syncMarkerKey(key);
-    try {
-      Reflect.apply(removeItem, this, [key]);
-    } catch (error) {
-      canonicalError = error;
-    }
     try {
       Reflect.apply(removeItem, this, [legacyKey]);
     } catch (error) {
       legacyError = error;
+    }
+    if (!legacyError) {
+      try {
+        Reflect.apply(removeItem, this, [key]);
+      } catch (error) {
+        canonicalError = error;
+      }
     }
     if (!canonicalError && !legacyError) {
       try {
@@ -172,8 +175,8 @@ export function installStorageCompatibilityBridge(): void {
         markerError = error;
       }
     }
-    if (canonicalError) throw canonicalError;
     if (legacyError) throw legacyError;
+    if (canonicalError) throw canonicalError;
     if (markerError) throw markerError;
   };
 

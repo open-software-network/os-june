@@ -689,6 +689,7 @@ function driverEnvironment() {
   for (const name of Object.keys(env)) {
     if (
       name.startsWith("CUA_DRIVER_RS_") ||
+      name.startsWith("CLOVY_CUA_DRIVER") ||
       name.startsWith("JUNE_CUA_DRIVER") ||
       name === "CLOVY_COMPUTER_USE_BACKEND" ||
       ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].includes(

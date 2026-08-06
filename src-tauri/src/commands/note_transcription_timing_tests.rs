@@ -21,9 +21,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-const TIMING_TEST_CHILD_ENV: &str = "JUNE_NOTE_TRANSCRIPTION_TIMING_TEST_CHILD";
+const TIMING_TEST_CHILD_ENV: &str = "CLOVY_NOTE_TRANSCRIPTION_TIMING_TEST_CHILD";
 const TIMING_TEST_NAME: &str = "commands::note_transcription_timing_tests::done_origin_checkpoints_are_monotonic_and_single_shot";
-const TIMING_TEST_COMPLETED_SENTINEL: &str = "JUNE_NOTE_TRANSCRIPTION_TIMING_TEST_COMPLETED";
+const TIMING_TEST_COMPLETED_SENTINEL: &str = "CLOVY_NOTE_TRANSCRIPTION_TIMING_TEST_COMPLETED";
 
 fn assert_timing_test_child_succeeded(success: bool, stdout: &[u8], stderr: &[u8]) {
     let stdout = String::from_utf8_lossy(stdout);
@@ -256,8 +256,8 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
             ])
             .env(TIMING_TEST_CHILD_ENV, "1")
             .env("CLOVY_API_URL", format!("http://{address}"))
-            .env("OS_JUNE_LOCAL_DEV", "1")
-            .env("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "timing-test-token")
+            .env("OS_CLOVY_LOCAL_DEV", "1")
+            .env("OS_CLOVY_LOCAL_DEV_BEARER_TOKEN", "timing-test-token")
             .output()
             .expect("run isolated timing test child")
     })

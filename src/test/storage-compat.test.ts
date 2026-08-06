@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyStorageKey, writeCompatibleStorageValue } from "../lib/storage-compat";
 
 describe("Clovy browser-storage compatibility bridge", () => {
@@ -36,6 +36,28 @@ describe("Clovy browser-storage compatibility bridge", () => {
     expect(window.localStorage.getItem("june:theme")).toBe("light");
   });
 
+  it("keeps the rollback value when both sides diverge after an interrupted write", () => {
+    window.localStorage.setItem("clovy:theme", "dark");
+
+    // Clovy published to the rollback-readable side, then stopped before the
+    // canonical write. A rollback build subsequently changed that side again.
+    window.localStorage.setItem("june:theme", "staged-by-clovy");
+    window.localStorage.setItem("june:theme", "changed-during-rollback");
+
+    expect(window.localStorage.getItem("clovy:theme")).toBe("changed-during-rollback");
+    expect(window.localStorage.getItem("june:theme")).toBe("changed-during-rollback");
+  });
+
+  it("loads a June-era active partition before module-level state is captured", async () => {
+    window.localStorage.setItem("june:active-agent-profile", "work");
+    vi.resetModules();
+
+    const partition = await import("../lib/data-partition");
+
+    expect(partition.getCurrentDataPartitionName()).toBe("work");
+    expect(window.localStorage.getItem("clovy:active-agent-profile")).toBe("work");
+  });
+
   it("keeps a preference deletion made by a rollback build", () => {
     window.localStorage.setItem("clovy:theme", "dark");
 
@@ -58,30 +80,30 @@ describe("Clovy browser-storage compatibility bridge", () => {
     expect(window.localStorage.length).toBe(1);
   });
 
-  it("commits canonical storage before the rollback alias", () => {
+  it("publishes rollback storage before canonical storage", () => {
     const writes: string[] = [];
     const write = (key: string) => {
       writes.push(key);
-      if (key === "june:theme") throw new Error("legacy unavailable");
+      if (key === "clovy:theme") throw new Error("canonical unavailable");
     };
 
     expect(() => writeCompatibleStorageValue(write, "clovy:theme", "june:theme", "dark")).toThrow(
-      "legacy unavailable",
+      "canonical unavailable",
     );
-    expect(writes).toEqual(["clovy:theme", "june:theme"]);
+    expect(writes).toEqual(["june:theme", "clovy:theme"]);
 
     writes.length = 0;
     expect(() =>
       writeCompatibleStorageValue(
         (key) => {
           writes.push(key);
-          throw new Error("canonical unavailable");
+          throw new Error("legacy unavailable");
         },
         "clovy:theme",
         "june:theme",
         "light",
       ),
-    ).toThrow("canonical unavailable");
-    expect(writes).toEqual(["clovy:theme"]);
+    ).toThrow("legacy unavailable");
+    expect(writes).toEqual(["june:theme"]);
   });
 });

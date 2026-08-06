@@ -746,12 +746,12 @@ async fn benchmark_post_finalization_note_transcription_latency() {
     // so these process-global values cannot race unrelated tests.
     let previous = [
         "CLOVY_API_URL",
-        "OS_JUNE_LOCAL_DEV",
-        "OS_JUNE_LOCAL_DEV_BEARER_TOKEN",
+        "OS_CLOVY_LOCAL_DEV",
+        "OS_CLOVY_LOCAL_DEV_BEARER_TOKEN",
     ]
     .map(|name| (name, std::env::var_os(name)));
-    std::env::set_var("OS_JUNE_LOCAL_DEV", "1");
-    std::env::set_var("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "benchmark-token");
+    std::env::set_var("OS_CLOVY_LOCAL_DEV", "1");
+    std::env::set_var("OS_CLOVY_LOCAL_DEV_BEARER_TOKEN", "benchmark-token");
 
     for (case, case_fixtures) in fixtures {
         let mut measured = Vec::new();
