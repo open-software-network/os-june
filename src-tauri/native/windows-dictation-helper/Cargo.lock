@@ -374,7 +374,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "june-windows-dictation-helper"
+name = "clovy-windows-dictation-helper"
 version = "0.1.0"
 dependencies = [
  "anyhow",

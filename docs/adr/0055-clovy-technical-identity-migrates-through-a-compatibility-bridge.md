@@ -55,6 +55,7 @@ the name used for new source concepts.
 | Agent harness package and executable | `@clovy/agent-runtime`, `clovy-agent-runtime` | Build environment accepts `JUNE_AGENT_RUNTIME_*`; released runtimes still terminate with their owning app |
 | Browser extension package | `clovy-extension` | Store item and extension ID stay the same |
 | Desktop Rust package and library | `clovy`, `clovy_lib` | Main executable remains `os-june` for updater and installed-path continuity |
+| Windows dictation helper source package | `clovy-windows-dictation-helper` | Bundled executable remains `june-dictation-helper` for installed-path and rollback continuity |
 | Clovy API source, crates, and binary | `clovy-api/`, `clovy-*`, `clovy-api` | Deployment accepts `june-api` image/service aliases until every environment moves |
 | Companion crates and C ABI | `clovy-companion-*`, `clovy_crypto_*` | Legacy crate consumers and `june_crypto_*` symbols remain forwarding aliases during the bridge |
 | Desktop environment | `CLOVY_API_*`, `OS_CLOVY_*`, `CLOVY_AGENT_RUNTIME_*` | Read June-era variables as lower-precedence fallbacks |

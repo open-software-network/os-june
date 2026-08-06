@@ -34,6 +34,7 @@ describe("Clovy technical identity", () => {
       agentPackage,
       extensionPackage,
       desktopCargo,
+      windowsHelperCargo,
       apiCargo,
       apiAppCargo,
       legacyCryptoCargo,
@@ -43,6 +44,7 @@ describe("Clovy technical identity", () => {
       read("agent-runtime/package.json").then(JSON.parse),
       read("extension/package.json").then(JSON.parse),
       read("src-tauri/Cargo.toml"),
+      read("src-tauri/native/windows-dictation-helper/Cargo.toml"),
       read("clovy-api/Cargo.toml"),
       read("clovy-api/crates/app/Cargo.toml"),
       read("crates/june-companion-crypto/Cargo.toml"),
@@ -56,6 +58,8 @@ describe("Clovy technical identity", () => {
     expect(desktopCargo).toMatch(/^name = "clovy"$/m);
     expect(desktopCargo).toMatch(/^name = "clovy_lib"$/m);
     expect(desktopCargo).toMatch(/^name = "clovy-nm-shim"$/m);
+    expect(windowsHelperCargo).toMatch(/^name = "clovy-windows-dictation-helper"$/m);
+    expect(windowsHelperCargo).toMatch(/^name = "june-dictation-helper"$/m);
     expect(apiCargo).toContain('members = ["crates/*"]');
     expect(apiCargo).toContain('clovy-api = { path = "crates/api" }');
     expect(apiAppCargo).toMatch(/^name = "clovy-api-server"$/m);
