@@ -33,6 +33,10 @@ jobs:
     env:
       FROM_TAG: ${{ inputs.from-tag }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
       - name: Validate source tag
         id: validate
         run: |
@@ -88,6 +92,15 @@ jobs:
             echo "::error::Could not resolve the source commit for $source. Use an image built by this repository, or pass a SHA tag directly."
             exit 1
           fi
+          # Canonicalize even a short fallback tag to one exact repository
+          # commit. The public post-deploy receipt must never compare prefixes.
+          reported_rev="$rev"
+          if ! resolved_rev=$(git rev-parse "${reported_rev}^{commit}" 2>/dev/null) \
+            || [[ ! "$resolved_rev" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Image $source reports source revision '${reported_rev}', which does not resolve to one full repository commit."
+            exit 1
+          fi
+          rev="$resolved_rev"
 
           {
             echo "digest=${digest}"
@@ -193,32 +206,51 @@ jobs:
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
 
       # Staging exercises the same ingress stack before promote, but production
-      # must still pass its own public endpoint check before accepting the
-      # promote: a broken production ingress boot would otherwise surface via
-      # the 30-minute watchdog. Runs before the retag/record steps so a
-      # failure fails the promotion and leaves :production on the last-good
-      # digest. Deeper checks (e.g. body-size probes after an ingress change)
-      # are run manually against the public endpoint.
+      # must still prove both availability and the build-stamped source commit
+      # before accepting the promote. A 200 from the old container is not
+      # evidence that the new source reached production. This does not replace
+      # the separate tag-to-digest and attestation checks documented in
+      # reproducible-builds.md. Runs before the retag/record steps so a failure
+      # leaves :production and the immutable deploy record on the last-good
+      # digest.
       - name: Verify public endpoint after deploy
         if: steps.phala.outputs.deployed == 'true'
         run: |
           set -euo pipefail
           base="https://june-api.opensoftware.co"
+          expected_sha="${{ needs.verify.outputs.source-sha }}"
           # The CVM restarts its containers on update; give the ingress up to
-          # 10 minutes to come back before judging the deploy.
+          # 10 minutes to come back with the promoted identity before judging
+          # the deploy. The old container may stay healthy during the rollout.
           code=""
+          identity_verified=false
+          verify_body=""
+          observed_sha=""
           for _ in $(seq 1 60); do
             # `|| true`, not `|| echo`: curl prints its own %{http_code} (000)
             # on transport failure, so a fallback echo would corrupt the value.
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$base/healthz" || true)
-            [[ "$code" == "200" ]] && break
+            if [[ "$code" == "200" ]]; then
+              verify_body=$(curl -fsS --max-time 10 "$base/verify" || true)
+              observed_sha=$(printf '%s' "$verify_body" \
+                | sed -nE 's#.*href="[^"]*/commit/([0-9a-f]{40})".*#\1#p' \
+                | head -n 1)
+              if [[ "$observed_sha" == "$expected_sha" ]]; then
+                identity_verified=true
+                break
+              fi
+            fi
             sleep 10
           done
           if [[ "$code" != "200" ]]; then
             echo "::error::$base/healthz did not return 200 within 10 minutes of the promote (last: $code)."
             exit 1
           fi
-          echo "healthz OK"
+          if [[ "$identity_verified" != "true" ]]; then
+            echo "::error::$base/verify did not report promoted source commit ${expected_sha} within 10 minutes (observed: ${observed_sha:-unknown})."
+            exit 1
+          fi
+          echo "healthz and build-stamped source commit OK (${expected_sha})"
 
       - name: Retag digest as :production
         if: steps.phala.outputs.deployed == 'true'
