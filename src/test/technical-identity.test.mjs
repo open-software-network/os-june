@@ -161,6 +161,7 @@ describe("Clovy technical identity", () => {
       dictation,
       computerUse,
       computerUseDriver,
+      computerUseCursor,
       computerUseSelfTest,
       systemWindows,
       managedBrowser,
@@ -173,6 +174,7 @@ describe("Clovy technical identity", () => {
       read("src-tauri/src/dictation.rs"),
       read("src-tauri/src/computer_use.rs"),
       read("src-tauri/src/computer_use_driver.rs"),
+      read("src-tauri/src/computer_use_cursor.rs"),
       read("scripts/computer-use-self-test.mjs"),
       read("src-tauri/src/audio/system_windows.rs"),
       read("src-tauri/src/browser/managed.rs"),
@@ -206,6 +208,10 @@ describe("Clovy technical identity", () => {
     );
     expect(computerUseDriver).toContain("clovy-helper-child-reaper");
     expect(computerUseDriver).not.toContain("june-helper-child-reaper");
+    for (const source of [computerUseDriver, computerUseCursor]) {
+      expect(source).toContain('"clovy/pointer"');
+      expect(source).not.toContain('"june/pointer"');
+    }
     expect(systemWindows).toContain("clovy-windows-system-audio");
     expect(systemWindows).not.toContain("june-windows-system-audio");
     for (const suffix of ["Epoch", "Observer", "State"]) {
@@ -313,6 +319,14 @@ describe("Clovy technical identity", () => {
     bridge.removeToken();
     expect(storage.values.has("clovy_share_token")).toBe(false);
     expect(storage.values.has("june_share_token")).toBe(false);
+
+    const canonicalOnlyStorage = memorySessionStorage({
+      clovy_share_token: "deleted-by-rollback",
+    });
+    const canonicalOnlyBridge = shareSessionBridge(source, canonicalOnlyStorage);
+    expect(canonicalOnlyBridge.loadToken()).toBe("");
+    expect(canonicalOnlyStorage.values.has("clovy_share_token")).toBe(false);
+    expect(canonicalOnlyStorage.values.has("june_share_token")).toBe(false);
   });
 
   it("keeps runtime, migration, dev-env, and deployment aliases reachable", async () => {

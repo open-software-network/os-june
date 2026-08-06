@@ -115,15 +115,16 @@
   }
 
   function loadToken() {
-    // The legacy side wins when provenance is unknown because a rolled-back
-    // viewer can refresh only that copy. Mirror the selected value so the two
-    // identities converge again on the next Clovy page load.
-    var token =
-      sessionStorage.getItem(LEGACY_TOKEN_KEY) ||
-      sessionStorage.getItem(TOKEN_KEY) ||
-      "";
-    if (token) saveToken(token);
-    return token;
+    // The rollback-readable side is authoritative when provenance is unknown.
+    // Canonical-only means a rolled-back viewer removed the legacy token after
+    // authorization failed, so propagate that deletion instead of reviving it.
+    var legacyToken = sessionStorage.getItem(LEGACY_TOKEN_KEY) || "";
+    if (!legacyToken) {
+      removeToken();
+      return "";
+    }
+    saveToken(legacyToken);
+    return legacyToken;
   }
 
   function removeToken() {

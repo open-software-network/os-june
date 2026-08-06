@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
-pub(crate) const DRIVER_POINTER_NOTIFICATION_METHOD: &str = "june/pointer";
+pub(crate) const DRIVER_POINTER_NOTIFICATION_METHOD: &str = "clovy/pointer";
 
 const CURSOR_WIDTH: f64 = 20.0;
 const CURSOR_HEIGHT: f64 = 24.0;
