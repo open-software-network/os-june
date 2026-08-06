@@ -137,7 +137,7 @@ fn prepare_computer_use_driver() {
     let stamp = app_dir
         .join("Contents")
         .join("Resources")
-        .join("june-cua-driver-pin.json");
+        .join("clovy-cua-driver-pin.json");
     println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
     println!("cargo:rerun-if-changed={}", executable.display());
     println!("cargo:rerun-if-changed={}", stamp.display());
@@ -232,7 +232,7 @@ fn verify_computer_use_driver_source(
     let expected_source_hash = format!("{:x}", source_hash.finalize());
     assert_eq!(
         stamp
-            .pointer("/juneBuild/sourceSha256")
+            .pointer("/clovyBuild/sourceSha256")
             .and_then(serde_json::Value::as_str),
         Some(expected_source_hash.as_str()),
         "computer use helper stamp does not match Clovy's helper source"
@@ -689,7 +689,7 @@ fn build_dictation_helper() {
         .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("june-dictation-helper");
     let icon_source = manifest_dir.join("icons").join("icon.icns");
-    let icon_destination = resources_dir.join("June.icns");
+    let icon_destination = resources_dir.join("Clovy.icns");
 
     let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
@@ -732,7 +732,7 @@ fn build_dictation_helper() {
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.june.dictation-helper</string>
   <key>CFBundleIconFile</key>
-  <string>June.icns</string>
+  <string>Clovy.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

@@ -130,7 +130,7 @@ impl ImageGenerator for VeniceImageGenerator {
         let url = format!("{base_url}/image/generate");
         // Bounded retry on transient failures (connection reset, 429, 5xx),
         // same as the chat and augment paths. The service settles at most one
-        // June charge after this call returns; a retry can cost at most one
+        // Clovy charge after this call returns; a retry can cost at most one
         // extra upstream generation if a completed response was lost. The
         // whole loop runs under one end-to-end deadline: per-attempt HTTP
         // timeouts alone would let retries spend attempts x budget, breaking

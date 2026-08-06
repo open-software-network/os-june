@@ -255,7 +255,7 @@ export type TranscriptDto = {
 export const LIVE_TRANSCRIPT_EVENT = "live-transcript-event";
 export const RECORDING_TELEMETRY_EVENT = "recording-telemetry";
 export const NOTE_PROCESSING_PROGRESS_EVENT = "note-processing-progress";
-export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "june://note-calendar-context-updated";
+export const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT = "clovy://note-calendar-context-updated";
 
 export type LiveTranscriptEventDto = {
   noteId: string;
@@ -988,7 +988,7 @@ export async function sendAppNotification(input: {
 }
 
 /**
- * Tells the backend the webview can receive "june:agent:open" events and
+ * Tells the backend the webview can receive "clovy:agent:open" events and
  * returns the stored session id of a notification clicked before that (the
  * click launched the app), so bootstrap can navigate straight to it.
  */
@@ -1138,7 +1138,7 @@ export async function patchNote(noteId: string, patch: NoteEditablePatch) {
   });
 }
 
-export const NOTE_SAVE_FLUSH_REQUESTED_EVENT = "june://flush-pending-note-saves";
+export const NOTE_SAVE_FLUSH_REQUESTED_EVENT = "clovy://flush-pending-note-saves";
 
 export async function completeNoteSaveFlush(requestId: string) {
   return invoke<boolean>("complete_note_save_flush", { request: { requestId } });
@@ -1654,7 +1654,7 @@ export type ExtensionPairingStatus = {
 };
 
 /** Emitted by the extension host whenever pairing state changes. */
-export const EXTENSION_PAIRING_CHANGED_EVENT = "june://extension-pairing-changed";
+export const EXTENSION_PAIRING_CHANGED_EVENT = "clovy://extension-pairing-changed";
 
 export async function extensionPairingStatus() {
   return invoke<ExtensionPairingStatus>("extension_pairing_status");
@@ -1871,9 +1871,9 @@ export type PendingComputerUseApprovalDto = {
 /** Tauri event: the connected-accounts list changed (connect, disconnect, or
  * a reconnect_required transition). Payload carries no account data; listeners
  * re-fetch via connectorsList(). */
-export const CONNECTORS_CHANGED_EVENT = "june://connectors-changed";
+export const CONNECTORS_CHANGED_EVENT = "clovy://connectors-changed";
 
-/** Payload emitted by `june://connectors-github-device-code` while a GitHub
+/** Payload emitted by `clovy://connectors-github-device-code` while a GitHub
  * device-flow connect is in progress. May be emitted more than once (a
  * restarted poll re-emits the latest code). The backend opens the
  * verification page itself; the UI still shows the code as a fallback. */
@@ -1885,19 +1885,19 @@ export type GitHubDeviceCodePayload = {
 
 /** Tauri event: a GitHub device-authorization code is ready to display.
  * Emitted while `connectors_connect` is pending for provider "github". */
-export const GITHUB_DEVICE_CODE_EVENT = "june://connectors-github-device-code";
+export const GITHUB_DEVICE_CODE_EVENT = "clovy://connectors-github-device-code";
 
 /** Tauri event: the pending connector-approval set changed.
  * Payload: `{ pendingCount: number }`. */
-export const CONNECTOR_APPROVALS_CHANGED_EVENT = "june://connector-approvals-changed";
+export const CONNECTOR_APPROVALS_CHANGED_EVENT = "clovy://connector-approvals-changed";
 
 /** Tauri event: the app-owned Computer use approval queue changed.
  * Payload: `{ pendingCount: number }`. */
-export const COMPUTER_USE_APPROVALS_CHANGED_EVENT = "june://computer-use-approvals-changed";
+export const COMPUTER_USE_APPROVALS_CHANGED_EVENT = "clovy://computer-use-approvals-changed";
 
 /** Browser-local signal used to keep the Plugins and Settings fronts in sync
  * after either one changes the single native grant. */
-export const COMPUTER_USE_STATUS_CHANGED_EVENT = "june:computer-use-status-changed";
+export const COMPUTER_USE_STATUS_CHANGED_EVENT = "clovy:computer-use-status-changed";
 
 export async function connectorsList() {
   return invoke<ConnectorAccount[]>("connectors_list");

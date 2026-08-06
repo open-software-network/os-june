@@ -619,9 +619,13 @@ describe("Clovy Home", () => {
   it("injects Home context without exposing it in the transcript or previews", () => {
     const runtimePrompt = withClovyHomeContext("Help me plan tomorrow");
 
-    expect(runtimePrompt).toContain("[June home context]");
+    expect(runtimePrompt).toContain("[Clovy home context]");
     expect(stripClovyHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
     expect(stripClovyHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
+    const legacyPrompt = runtimePrompt
+      .replace("[Clovy home context]", "[June home context]")
+      .replace("[/Clovy home context]", "[/June home context]");
+    expect(stripClovyHomeContext(legacyPrompt)).toBe("Help me plan tomorrow");
     expect(stripClovyHomeContextFromPreview("[June home context]\nThis is Ju")).toBe(
       "Home message",
     );

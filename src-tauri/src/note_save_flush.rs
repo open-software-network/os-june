@@ -6,7 +6,7 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-pub(crate) const NOTE_SAVE_FLUSH_REQUESTED_EVENT: &str = "june://flush-pending-note-saves";
+pub(crate) const NOTE_SAVE_FLUSH_REQUESTED_EVENT: &str = "clovy://flush-pending-note-saves";
 pub(crate) const NOTE_SAVE_FLUSH_TIMEOUT_MS: u64 = 10_000;
 const NOTE_SAVE_FLUSH_TIMEOUT: Duration = Duration::from_millis(NOTE_SAVE_FLUSH_TIMEOUT_MS);
 

@@ -28,7 +28,7 @@ export type HomeTaskHandoff = ClovyHomeTaskRequest & {
   attachments?: string[];
 };
 
-export const HOME_DEMO_SEEDED_EVENT = "june:agent:home-demo-seeded";
+export const HOME_DEMO_SEEDED_EVENT = "clovy:agent:home-demo-seeded";
 const HOME_DEMO_BACKUP_STORAGE_KEY = "clovy:home:demo-backup:v3";
 const LEGACY_HOME_DEMO_BACKUP_STORAGE_KEY = "clovy.home.demoBackup.v3";
 

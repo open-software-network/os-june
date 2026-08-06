@@ -52,12 +52,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
-const CHECK_FOR_UPDATES_EVENT: &str = "june://check-for-updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "clovy://check-for-updates";
 const CLOSE_TAB_MENU_ID: &str = "close_tab";
-const CLOSE_TAB_EVENT: &str = "june://close-tab";
+const CLOSE_TAB_EVENT: &str = "clovy://close-tab";
 const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
-const OPEN_SETTINGS_EVENT: &str = "june://open-settings";
+const OPEN_SETTINGS_EVENT: &str = "clovy://open-settings";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,8 +1,8 @@
 //! Authenticated, narrow Computer use helper.
 //!
 //! This binary links the pinned upstream macOS implementation, but it does
-//! not expose upstream's CLI or complete MCP registry. June starts it over a
-//! private local socket and authenticates both June's peer process and a fresh
+//! not expose upstream's CLI or complete MCP registry. Clovy starts it over a
+//! private local socket and authenticates both Clovy's peer process and a fresh
 //! in-memory capability. LaunchServices owns the helper process so macOS TCC
 //! grants belong to this bundle, while direct launches still provide no
 //! desktop-control surface.
@@ -476,7 +476,7 @@ fn packaged_process_signature_matches(audit_token: &[u8], helper_app: &std::path
     else {
         return false;
     };
-    let Some(requirement) = june_process_requirement(&helper.team_identifier) else {
+    let Some(requirement) = clovy_process_requirement(&helper.team_identifier) else {
         return false;
     };
     let audit_token = CFData::from_buffer(audit_token);
@@ -534,7 +534,7 @@ fn signature_details(
 }
 
 #[cfg(target_os = "macos")]
-fn june_process_requirement(team_identifier: &str) -> Option<SecRequirement> {
+fn clovy_process_requirement(team_identifier: &str) -> Option<SecRequirement> {
     if team_identifier.is_empty()
         || team_identifier.len() > 64
         || !team_identifier
@@ -1192,9 +1192,9 @@ mod tests {
 
     #[test]
     fn live_process_requirement_rejects_untrusted_team_syntax() {
-        assert!(june_process_requirement("ABCDE12345").is_some());
-        assert!(june_process_requirement("").is_none());
-        assert!(june_process_requirement("ABCDE12345\" or true").is_none());
+        assert!(clovy_process_requirement("ABCDE12345").is_some());
+        assert!(clovy_process_requirement("").is_none());
+        assert!(clovy_process_requirement("ABCDE12345\" or true").is_none());
     }
 
     #[test]

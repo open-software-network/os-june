@@ -123,3 +123,10 @@ Reports no longer run a client-side model turn at all.
   removable.
 - Report payloads stay within the server's 20-attachment budget. The dialog
   accepts up to 19 user-selected files while generated diagnostics are selected.
+
+## Addendum: 2026-08-06
+
+Under ADR-0055, newly generated diagnostics use the canonical
+`clovy-agent-diagnostics.txt` attachment name. The June-named attachment above
+describes the historical implementation and is not a persisted or accepted API
+identifier.

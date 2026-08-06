@@ -160,7 +160,7 @@ export function ClovyPersonalitySettingsSection() {
                   <input
                     className="visually-hidden"
                     type="radio"
-                    name="june-personality"
+                    name="clovy-personality"
                     value={optionMood}
                     checked={selected}
                     onChange={() => updateMood(optionMood)}

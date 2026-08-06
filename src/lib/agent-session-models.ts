@@ -7,7 +7,7 @@
  */
 
 const STORAGE_KEY = "clovy.agent.sessionModels";
-export const AGENT_SESSION_MODEL_CHANGED_EVENT = "june:agent:session-model-changed";
+export const AGENT_SESSION_MODEL_CHANGED_EVENT = "clovy:agent:session-model-changed";
 
 export type AgentSessionModelChangedDetail = {
   sessionId: string;

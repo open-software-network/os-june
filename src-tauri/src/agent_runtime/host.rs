@@ -22,7 +22,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-pub const AGENT_RUNTIME_EVENT: &str = "june://agent-runtime-event";
+pub const AGENT_RUNTIME_EVENT: &str = "clovy://agent-runtime-event";
 const RUNTIME_CONTROL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const HISTORY_COMPACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 type PendingRequests = Arc<Mutex<HashMap<String, oneshot::Sender<Result<Value, AppError>>>>>;
@@ -585,7 +585,7 @@ async fn handle_runtime_request(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            if name == "__june_notion_action_preflight" {
+            if name == "__clovy_notion_action_preflight" {
                 let runtime_name = arguments
                     .get("toolName")
                     .and_then(Value::as_str)

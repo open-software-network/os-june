@@ -156,7 +156,7 @@ fn stream_generate(state: ApiState, params: NoteGenerateParams) -> Response {
     // queue cannot grow meaningfully.
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
     // Full-route backstop only. `generate()` spans authorize + upstream +
-    // charge settlement; a tighter bound would cancel `charge` after June
+    // charge settlement; a tighter bound would cancel `charge` after Clovy
     // already paid the upstream. The hold-TTL guarantee comes from the layers
     // below: the upstream leg is cut at the metered-inference client timeout
     // (route minus the authorize + settlement budgets), which leaves the
@@ -395,7 +395,7 @@ pub(crate) fn resolve_priced_text_model(
     )
 }
 
-/// Auto is a June-managed route. Strip BYOK from an explicit Auto selection,
+/// Auto is a Clovy-managed route. Strip BYOK from an explicit Auto selection,
 /// and reject every other non-Venice resolution instead of forwarding the key
 /// across a provider boundary. Callers may preserve a legacy ASR fallback only
 /// when it resolves to another Venice model.
@@ -454,7 +454,7 @@ fn resolve_priced_text_model_kind(
     }
 }
 
-/// Preserve dictation for clients with a retired ASR selection. Prefer June's
+/// Preserve dictation for clients with a retired ASR selection. Prefer Clovy's
 /// default private transcription model, then any currently priced ASR model.
 /// A text-model selection remains a hard type error.
 pub(crate) fn resolve_priced_asr_model(
@@ -668,7 +668,7 @@ mod tests {
 
         let credentials =
             credentials_for_resolved_model(credentials, AUTO_TEXT_MODEL, AUTO_TEXT_MODEL, false)
-                .expect("explicit Auto remains a June-managed request");
+                .expect("explicit Auto remains a Clovy-managed request");
 
         assert!(!credentials.has_venice_api_key());
     }
@@ -681,7 +681,7 @@ mod tests {
 
         let credentials =
             credentials_for_resolved_model(credentials, AUTO_TEXT_MODEL, DEFAULT_TEXT_MODEL, true)
-                .expect("explicit Auto remains June-managed after a local fallback");
+                .expect("explicit Auto remains Clovy-managed after a local fallback");
 
         assert!(!credentials.has_venice_api_key());
     }

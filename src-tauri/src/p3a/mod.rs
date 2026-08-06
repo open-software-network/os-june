@@ -1,7 +1,7 @@
 pub mod questions;
 
 use crate::{
-    clovy_api::{submit_p3a_report, P3aReportRequest as JuneP3aReportRequest},
+    clovy_api::{submit_p3a_report, P3aReportRequest},
     db::repositories::{P3aPendingReport, Repositories},
     domain::types::AppError,
     p3a::questions::{Question, ALL_QUESTIONS},
@@ -491,7 +491,7 @@ where
 }
 
 async fn submit_event_report(app: &AppHandle, report: PendingEventReport) -> SubmitOutcome {
-    let request = JuneP3aReportRequest {
+    let request = P3aReportRequest {
         schema: P3A_SCHEMA_VERSION,
         question_id: report.question.id().to_string(),
         epoch: report.epoch,

@@ -6,12 +6,12 @@ services:
     image: dstacktee/dstack-ingress:20251013@sha256:fee7a6075a271adb5a5ff72ff3ff49bcb9e22d5f4c9fa68fa683cfb3932f911c
     restart: unless-stopped
     depends_on:
-      - june-link-viewer
+      - clovy-link-viewer
     ports:
       - "443:443"
     environment:
       - DOMAIN=june.link
-      - TARGET_ENDPOINT=http://june-link-viewer:8080
+      - TARGET_ENDPOINT=http://clovy-link-viewer:8080
       - GATEWAY_DOMAIN=_.${DSTACK_GATEWAY_DOMAIN}
       - SET_CAA=true
       # Viewer responses are small; this protects the isolated origin from
@@ -23,9 +23,14 @@ services:
       - /var/run/dstack.sock:/var/run/dstack.sock
       - cert-data:/etc/letsencrypt
 
-  june-link-viewer:
+  clovy-link-viewer:
     image: ${CLOVY_IMAGE}
     restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          # Keep an in-flight June-era ingress able to resolve the replacement.
+          - june-link-viewer
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
     environment:

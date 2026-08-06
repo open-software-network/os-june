@@ -1,4 +1,4 @@
-//! Blind, bounded relay and desktop-approved pairing for the June companion.
+//! Blind, bounded relay and desktop-approved pairing for the Clovy companion.
 //!
 //! The relay parses routing metadata, never the encrypted companion frame. It
 //! retains no offline control message: if the Mac is disconnected, delivery

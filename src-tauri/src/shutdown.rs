@@ -164,7 +164,7 @@ pub(crate) fn handle_exit_requested(
     }
 
     // Tauri ignores this for its built-in restart code, but ordinary exit must
-    // remain alive while the coordinator owns teardown. June's updater avoids
+    // remain alive while the coordinator owns teardown. Clovy's updater avoids
     // the restart exception by latching Restart directly through its command.
     api.prevent_exit();
     if code == Some(tauri::RESTART_EXIT_CODE) && coordinator.is_idle() {

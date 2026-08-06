@@ -753,7 +753,7 @@ async fn dispatch_request(
             };
             if app
                 .emit(
-                    "june://companion-request",
+                    "clovy://companion-request",
                     FrontendRequest {
                         operation_id,
                         intent,

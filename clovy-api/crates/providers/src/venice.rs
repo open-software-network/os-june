@@ -25,8 +25,8 @@ const OS_PRIVACY_LEVEL_HEADER: &str = "X-OS-Privacy-Level";
 const OS_ENDPOINT_HEADER: &str = "X-OS-Endpoint";
 
 /// Where BYOK requests go when the config names no `byok_base_url`. The
-/// configured `base_url` may point at a June-managed gateway that only
-/// accepts June's service key; a user's own Venice key is only valid against
+/// configured `base_url` may point at a Clovy-managed gateway that only
+/// accepts Clovy's service key; a user's own Venice key is only valid against
 /// Venice itself, so BYOK traffic must target Venice's public API directly.
 const VENICE_PUBLIC_BASE_URL: &str = "https://api.venice.ai/api/v1";
 
@@ -43,7 +43,7 @@ pub(crate) fn byok_base_url(config: &UpstreamConfig) -> String {
 
 /// Picks the upstream base for one request: BYOK requests carry the user's
 /// key and must go direct to Venice; everything else uses the configured
-/// (June-managed, metered) upstream. Must stay aligned with
+/// (Clovy-managed, metered) upstream. Must stay aligned with
 /// [`venice_api_key`], which selects the bearer on the same condition.
 pub(crate) fn request_base_url<'a>(
     base_url: &'a str,
@@ -867,7 +867,7 @@ struct StreamPump<'a> {
     url: String,
     model: String,
     /// Whether the upstream must be drained to its usage frame after the
-    /// client is gone. True for metered streams (June settles a charge from
+    /// client is gone. True for metered streams (Clovy settles a charge from
     /// that frame). False for BYOK: there is no charge to protect, and
     /// draining would keep spending the user's own upstream account on a
     /// response nobody reads — dropping the connection stops generation.
@@ -2027,8 +2027,8 @@ mod tests {
 
     #[tokio::test]
     async fn byok_transcription_routes_direct_to_byok_base_url() {
-        // Regression: the configured base_url may be a June-managed gateway
-        // that rejects any bearer other than June's service key. A request
+        // Regression: the configured base_url may be a Clovy-managed gateway
+        // that rejects any bearer other than Clovy's service key. A request
         // carrying a user's own Venice key must go to the BYOK base instead.
         let byok_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -2535,7 +2535,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_chat_stream_unmetered_aborts_instead_of_draining_after_disconnect() {
-        // BYOK: no June charge to protect, so a client disconnect must drop
+        // BYOK: no Clovy charge to protect, so a client disconnect must drop
         // the upstream connection instead of draining it on the user's own
         // upstream account. The closed() watch notices the drop immediately;
         // the second stub chunk arrives far later.

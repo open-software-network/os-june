@@ -27,7 +27,7 @@ import {
   rememberNoteChatSession,
 } from "./noteChatSessions";
 
-const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+const AGENT_RUNTIME_EVENT = "clovy://agent-runtime-event";
 const DEFAULT_MODEL = "auto";
 
 export type NoteChatAttachment = {

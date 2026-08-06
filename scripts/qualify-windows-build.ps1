@@ -43,7 +43,7 @@ $mutexBytes = [System.Text.Encoding]::UTF8.GetBytes($mutexPath)
 $mutexHasher = [System.Security.Cryptography.SHA256]::Create()
 try { $mutexHash = [Convert]::ToHexString($mutexHasher.ComputeHash($mutexBytes)) }
 finally { $mutexHasher.Dispose() }
-$buildMutex = [System.Threading.Mutex]::new($false, "Local\JuneWindowsBuild-$mutexHash")
+$buildMutex = [System.Threading.Mutex]::new($false, "Local\ClovyWindowsBuild-$mutexHash")
 $hasBuildMutex = $false
 
 function Find-Application([string]$Name, [string[]]$Candidates) {
@@ -97,16 +97,16 @@ $result = [ordered]@{
   firstInBuilderVerifier = $false
   firstExplicitVerifier = $false
   firstPathRestored = $false
-  firstJuneEnvironmentRestored = $false
+  firstClovyEnvironmentRestored = $false
   firstArtifact = $null
   secondBuild = $false
   secondInBuilderVerifier = $false
   secondExplicitVerifier = $false
   secondPathRestored = $false
-  secondJuneEnvironmentRestored = $false
+  secondClovyEnvironmentRestored = $false
   secondArtifact = $null
   finalPathRestored = $false
-  finalJuneEnvironmentRestored = $false
+  finalClovyEnvironmentRestored = $false
   finalCertificateEnvironmentRestored = $false
   finalContentClean = $false
   finalStatusClean = $false
@@ -287,11 +287,11 @@ try {
   $result.firstBuild = $true
   $result.firstInBuilderVerifier = $true
   $result.firstPathRestored = $env:PATH -ceq $originalPath
-  $result.firstJuneEnvironmentRestored =
+  $result.firstClovyEnvironmentRestored =
     $env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
     $env:CLOVY_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
   if (-not $result.firstPathRestored) { throw "First builder did not restore PATH exactly." }
-  if (-not $result.firstJuneEnvironmentRestored) { throw "First builder did not restore June environment exactly." }
+  if (-not $result.firstClovyEnvironmentRestored) { throw "First builder did not restore Clovy environment exactly." }
 
   $firstInstaller = Get-OneStagedInstaller
   $result.firstArtifact = Get-ArtifactInfo $firstInstaller
@@ -306,11 +306,11 @@ try {
   $result.secondBuild = $true
   $result.secondInBuilderVerifier = $true
   $result.secondPathRestored = $env:PATH -ceq $originalPath
-  $result.secondJuneEnvironmentRestored =
+  $result.secondClovyEnvironmentRestored =
     $env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
     $env:CLOVY_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
   if (-not $result.secondPathRestored) { throw "Second builder did not restore PATH exactly." }
-  if (-not $result.secondJuneEnvironmentRestored) { throw "Second builder did not restore June environment exactly." }
+  if (-not $result.secondClovyEnvironmentRestored) { throw "Second builder did not restore Clovy environment exactly." }
 
   $secondInstaller = Get-OneStagedInstaller
   $result.secondArtifact = Get-ArtifactInfo $secondInstaller
@@ -328,7 +328,7 @@ finally {
   try {
     Restore-Environment
     $result.finalPathRestored = $env:PATH -ceq $originalPath
-    $result.finalJuneEnvironmentRestored =
+    $result.finalClovyEnvironmentRestored =
       ((Test-Path Env:CLOVY_AGENT_RUNTIME_PREBUILT) -eq $hadPrebuilt) -and
       ((-not $hadPrebuilt) -or ($env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq $originalPrebuilt)) -and
       ((Test-Path Env:CLOVY_AGENT_RUNTIME_TARGET) -eq $hadTarget) -and
@@ -362,8 +362,8 @@ finally {
       $result.firstBuild -and $result.firstInBuilderVerifier -and $result.firstExplicitVerifier -and
       $result.secondBuild -and $result.secondInBuilderVerifier -and $result.secondExplicitVerifier -and
       $result.firstPathRestored -and $result.secondPathRestored -and $result.finalPathRestored -and
-      $result.firstJuneEnvironmentRestored -and $result.secondJuneEnvironmentRestored -and
-      $result.finalJuneEnvironmentRestored -and $result.finalCertificateEnvironmentRestored -and
+      $result.firstClovyEnvironmentRestored -and $result.secondClovyEnvironmentRestored -and
+      $result.finalClovyEnvironmentRestored -and $result.finalCertificateEnvironmentRestored -and
       $result.finalContentClean
     $result.status = if ($allPassed) { "PASS" } else { "FAIL" }
 
@@ -378,9 +378,9 @@ finally {
 - Exact SHA: $($result.exactSha)
 - First build/in-builder verifier/explicit verifier: $($result.firstBuild) / $($result.firstInBuilderVerifier) / $($result.firstExplicitVerifier)
 - Second build/in-builder verifier/explicit verifier: $($result.secondBuild) / $($result.secondInBuilderVerifier) / $($result.secondExplicitVerifier)
-- First PATH/JUNE restoration: $($result.firstPathRestored) / $($result.firstJuneEnvironmentRestored)
-- Second PATH/JUNE restoration: $($result.secondPathRestored) / $($result.secondJuneEnvironmentRestored)
-- Final PATH/JUNE/certificate restoration: $($result.finalPathRestored) / $($result.finalJuneEnvironmentRestored) / $($result.finalCertificateEnvironmentRestored)
+- First PATH/Clovy restoration: $($result.firstPathRestored) / $($result.firstClovyEnvironmentRestored)
+- Second PATH/Clovy restoration: $($result.secondPathRestored) / $($result.secondClovyEnvironmentRestored)
+- Final PATH/Clovy/certificate restoration: $($result.finalPathRestored) / $($result.finalClovyEnvironmentRestored) / $($result.finalCertificateEnvironmentRestored)
 - Final content clean: $($result.finalContentClean)
 - Final porcelain status clean: $($result.finalStatusClean)
 - First artifact: $firstJson

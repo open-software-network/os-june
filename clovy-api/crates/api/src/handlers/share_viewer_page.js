@@ -78,20 +78,20 @@
 
   // ── Session state (per-tab; nothing persists past the tab) ───────────────
   function saveState(state) {
-    sessionStorage.setItem("june_share_state", JSON.stringify(state));
+    sessionStorage.setItem("clovy_share_state", JSON.stringify(state));
   }
   function loadState() {
     try {
-      return JSON.parse(sessionStorage.getItem("june_share_state") || "null");
+      return JSON.parse(sessionStorage.getItem("clovy_share_state") || "null");
     } catch (error) {
       return null;
     }
   }
   function saveToken(token) {
-    sessionStorage.setItem("june_share_token", token);
+    sessionStorage.setItem("clovy_share_token", token);
   }
   function loadToken() {
-    return sessionStorage.getItem("june_share_token") || "";
+    return sessionStorage.getItem("clovy_share_token") || "";
   }
 
   // ── PKCE sign-in ──────────────────────────────────────────────────────────
@@ -362,7 +362,7 @@
       headers: { authorization: "Bearer " + token },
     });
     if (response.status === 401) {
-      sessionStorage.removeItem("june_share_token");
+      sessionStorage.removeItem("clovy_share_token");
       await beginSignIn("/s/" + shareId, fragment);
       return;
     }

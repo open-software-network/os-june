@@ -251,7 +251,7 @@ pub async fn install_update(
     #[cfg(windows)]
     {
         // `Update::install` exits the process and its before-exit callback
-        // cannot cancel that action. Download first, then finish June's
+        // cannot cancel that action. Download first, then finish Clovy's
         // fallible cleanup while an error can still keep the renderer alive.
         let bytes = update
             .download(
@@ -297,12 +297,12 @@ pub async fn install_update(
     Ok(())
 }
 
-/// Relaunches June after an in-app update has been staged through the same
+/// Relaunches Clovy after an in-app update has been staged through the same
 /// idempotent shutdown coordinator used by ordinary app quit.
 ///
 /// The plugin `relaunch()` (and `AppHandle::restart()` on the main thread)
 /// restarts without a guaranteed pass through the `RunEvent::Exit` cleanup that
-/// reaps June's children. On an update the `.app` bundle is swapped, so a
+/// reaps Clovy's children. On an update the `.app` bundle is swapped, so a
 /// skipped teardown orphans the dictation helper — which keeps the global
 /// CGEventTap and its stdio — and the relaunched instance then cannot bring up a
 /// clean helper, so every helper-reported permission (dictation mic and

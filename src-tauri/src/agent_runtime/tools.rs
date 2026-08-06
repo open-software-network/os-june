@@ -1589,7 +1589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn june_search_is_scoped_to_the_active_profile() {
+    async fn clovy_search_is_scoped_to_the_active_profile() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

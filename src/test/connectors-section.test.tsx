@@ -51,7 +51,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   extensionPairingStatus: mocks.extensionPairingStatus,
   registerBrowserExtensionHost: mocks.registerBrowserExtensionHost,
   browserTransportPolicy: mocks.browserTransportPolicy,
-  EXTENSION_PAIRING_CHANGED_EVENT: "june://extension-pairing-changed",
+  EXTENSION_PAIRING_CHANGED_EVENT: "clovy://extension-pairing-changed",
   connectorsLinearTeams: mocks.connectorsLinearTeams,
   connectorsSetSelectedTeams: mocks.connectorsSetSelectedTeams,
   obsidianStatus: mocks.obsidianStatus,
@@ -556,7 +556,7 @@ describe("ConnectorsSection", () => {
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByText(/read mail, manage calendar/i)).toBeInTheDocument();
     // Subscribed to the connectors-changed Tauri event to stay fresh.
-    expect(mocks.listen).toHaveBeenCalledWith("june://connectors-changed", expect.any(Function));
+    expect(mocks.listen).toHaveBeenCalledWith("clovy://connectors-changed", expect.any(Function));
   });
 
   it("keeps local mode to one account: a connected provider offers no second connect", async () => {
@@ -978,7 +978,7 @@ describe("ConnectorsSection — GitHub", () => {
 
     // Fire the device-code event from the backend.
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "RECON-5678",
           verificationUri: "https://github.com/login/device",
@@ -1092,7 +1092,7 @@ describe("ConnectorsSection — GitHub", () => {
 
     // Fire the device-code event from the backend.
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "ABCD-1234",
           verificationUri: "https://github.com/login/device",
@@ -1121,7 +1121,7 @@ describe("ConnectorsSection — GitHub", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "FIRST-111",
           verificationUri: "https://github.com/login/device",
@@ -1132,7 +1132,7 @@ describe("ConnectorsSection — GitHub", () => {
     expect(await screen.findByText("FIRST-111")).toBeInTheDocument();
 
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "SECOND-222",
           verificationUri: "https://github.com/login/device",
@@ -1160,7 +1160,7 @@ describe("ConnectorsSection — GitHub", () => {
 
     // Fire device code so the panel shows up.
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "ABCD-9999",
           verificationUri: "https://github.com/login/device",
@@ -1196,7 +1196,7 @@ describe("ConnectorsSection — GitHub", () => {
     await userEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "EXPIRING-1",
           verificationUri: "https://github.com/login/device",
@@ -1227,7 +1227,7 @@ describe("ConnectorsSection — GitHub", () => {
 
     // Fire a device-code event — must be silently ignored for Google.
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "SHOULD-NOT-SHOW",
           verificationUri: "https://github.com/login/device",
@@ -1256,7 +1256,7 @@ describe("ConnectorsSection — GitHub", () => {
     const dialog = await screen.findByRole("dialog", { name: "Connect Linear workspace" });
 
     act(() => {
-      eventHandlers.get("june://connectors-github-device-code")?.({
+      eventHandlers.get("clovy://connectors-github-device-code")?.({
         payload: {
           userCode: "SHOULD-NOT-SHOW",
           verificationUri: "https://github.com/login/device",

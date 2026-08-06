@@ -168,7 +168,7 @@ export CLOVY_AGENT_RUNTIME_NODE_ARM64="$node_download_dir/node-v${node_version}-
 export CLOVY_AGENT_RUNTIME_NODE_X64="$node_download_dir/node-v${node_version}-darwin-x64/bin/node"
 pnpm agent-runtime:build
 node scripts/build-agent-runtime.mjs
-runtime_smoke_dir="$TEMP_DIR/June agent runtime smoke"
+runtime_smoke_dir="$TEMP_DIR/Clovy agent runtime smoke"
 mkdir -p "$runtime_smoke_dir"
 cp .tauri-agent-runtime/clovy-agent-runtime "$runtime_smoke_dir/clovy-agent-runtime"
 node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/clovy-agent-runtime" --smoke-arch arm64
@@ -248,7 +248,7 @@ if find "$app/Contents/Resources" \( -iname '*hermes*' -o -iname 'python.exe' -o
   echo "The signed app still contains a Hermes or Python payload." >&2
   exit 1
 fi
-packaged_runtime_smoke_dir="$TEMP_DIR/June packaged runtime smoke"
+packaged_runtime_smoke_dir="$TEMP_DIR/Clovy packaged runtime smoke"
 mkdir -p "$packaged_runtime_smoke_dir"
 cp "$runtime" "$packaged_runtime_smoke_dir/clovy-agent-runtime"
 node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/clovy-agent-runtime" --smoke-arch arm64

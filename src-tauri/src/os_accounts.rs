@@ -30,12 +30,12 @@ use tokio::{
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
-// Scopes June needs. profile:read/profile:write for /me and the User's avatar
+// Scopes Clovy needs. profile:read/profile:write for /me and the User's avatar
 // seed, billing:read for /billing/balance, billing:write for subscription
 // checkout, and credits:spend so Clovy API can authorize-and-charge against the
 // user's credits for note transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read profile:write billing:read billing:write credits:spend";
-// June's OS Accounts token store. Keep this app-scoped so June does not
+// Clovy's OS Accounts token store. Keep this app-scoped so Clovy does not
 // touch credentials written by other Open Software apps on startup.
 const KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy.accounts";
 const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy-dev.accounts";
@@ -920,7 +920,7 @@ fn upgrade_session_request(plan: &str) -> serde_json::Value {
     serde_json::json!({ "plan": plan })
 }
 
-/// Omitting `plan` keeps the accounts-API default (Pro), so June stays
+/// Omitting `plan` keeps the accounts-API default (Pro), so Clovy stays
 /// compatible with deployments that predate plan tiers.
 fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
     let plan = plan.map(str::trim).filter(|plan| !plan.is_empty());
@@ -973,7 +973,7 @@ fn change_plan_request(plan: &str) -> serde_json::Value {
     serde_json::json!({ "plan": plan })
 }
 
-/// Trim a plan slug, treating a blank string as "no plan" so June never sends an
+/// Trim a plan slug, treating a blank string as "no plan" so Clovy never sends an
 /// empty slug the accounts API would reject with `unknown_plan`.
 fn normalized_plan(plan: &str) -> Option<&str> {
     let plan = plan.trim();
@@ -1416,7 +1416,7 @@ fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
 }
 
 /// Whether a failed refresh is worth retrying. The OS Accounts contract is that
-/// application-level refresh-token rejections always reach June as a well-formed
+/// application-level refresh-token rejections always reach Clovy as a well-formed
 /// JSON envelope (`success: false`). Server/infra wobble (5xx) and rate limiting
 /// (429) are always transient; every other status is definitive only when that
 /// envelope parsed. A bare 4xx from an edge, WAF, or platform outage is not proof

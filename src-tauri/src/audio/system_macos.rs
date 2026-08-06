@@ -464,7 +464,7 @@ fn send_signal(pid: u32, signal: &str) {
 
 fn terminate_existing_helpers() {
     // Also match the pre-rename helper so a recorder left over from an older
-    // "June" build still gets cleaned up.
+    // legacy June build still gets cleaned up.
     let helper_names = [
         "june-system-audio-recorder",
         "os-june-system-audio-recorder",

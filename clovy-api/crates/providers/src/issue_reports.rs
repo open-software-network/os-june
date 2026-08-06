@@ -1367,13 +1367,13 @@ mod os_platform_tests {
     }
 
     #[test]
-    fn os_platform_sink_uses_default_june_bug_reports_destination_with_api_key() {
+    fn os_platform_sink_uses_default_clovy_bug_reports_destination_with_api_key() {
         let config = IssueReportsConfig {
             os_platform_api_key: "osk_test".to_string(),
             ..Default::default()
         };
         let sink = OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config)
-            .expect("default June issue report destination plus API key is configured");
+            .expect("default Clovy issue report destination plus API key is configured");
 
         assert_eq!(sink.api_url, "https://app.opensoftware.co/api");
         assert_eq!(sink.org, "june");

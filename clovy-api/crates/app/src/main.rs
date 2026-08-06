@@ -255,7 +255,7 @@ fn spawn_model_catalog_refresh(
 }
 
 /// The routed catalog currently reports the cheapest eligible endpoint, while
-/// June settles by requested model ID. Floor routed text models at the most
+/// Clovy settles by requested model ID. Floor routed text models at the most
 /// expensive endpoint eligible for `preferred` so a Phala fallback cannot be
 /// sold below cost. Remove this once settlement is authenticated per route.
 fn apply_private_route_price_floors(pricing: &mut BTreeMap<String, ModelPriceConfig>) {

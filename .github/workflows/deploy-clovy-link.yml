@@ -149,7 +149,7 @@ jobs:
         uses: ./.github/actions/phala-deploy
         with:
           cvm-name: ${{ env.CVM_NAME }}
-          compose-file: clovy-api/deploy/docker-compose.june-link.yml
+          compose-file: clovy-api/deploy/docker-compose.clovy-link.yml
           image-ref: ${{ env.IMAGE }}:${{ steps.image.outputs.sha-short }}
           api-key: ${{ secrets.PHALA_CLOUD_API_KEY }}
           require-existing: "true"

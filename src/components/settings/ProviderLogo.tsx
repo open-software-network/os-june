@@ -21,7 +21,7 @@ type ProviderLogoProps = {
 export function ProviderLogo({ provider, id, name = "", size = 18 }: ProviderLogoProps) {
   const kind = classifyProvider(provider, id, name);
   switch (kind) {
-    case "june":
+    case "clovy":
       return (
         <ClovyMark
           width={Math.round(size * 0.78)}
@@ -66,7 +66,7 @@ export function ProviderLogo({ provider, id, name = "", size = 18 }: ProviderLog
 export { IconAnthropic };
 
 type ProviderKind =
-  | "june"
+  | "clovy"
   | "openai"
   | "anthropic"
   | "google"
@@ -85,7 +85,7 @@ type ProviderKind =
 function classifyProvider(provider: string, id: string, name: string): ProviderKind {
   // Auto is a Clovy-managed route even when its catalog record inherits a
   // provider value from the currently available routing backends.
-  if (id.toLowerCase() === "open-software/auto") return "june";
+  if (id.toLowerCase() === "open-software/auto") return "clovy";
 
   // Model family takes precedence over hosting platform (e.g. Venice-hosted
   // GPT-4o still reads as OpenAI). Hosting providers (venice, fal) only win

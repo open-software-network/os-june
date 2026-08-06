@@ -194,7 +194,7 @@ fn stream_submit(
     request_context: IssueReportRequestContext,
 ) -> Response {
     // The background task intentionally survives a client disconnect so a
-    // report already accepted by June can finish delivery. The shared permit
+    // report already accepted by Clovy can finish delivery. The shared permit
     // remains owned by this task as well as the response-body wrapper, keeping
     // the next platform-sized request out until both lifetimes are over.
     let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();

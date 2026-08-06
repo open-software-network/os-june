@@ -314,8 +314,8 @@ mod tests {
     #[tokio::test]
     async fn byok_search_routes_direct_to_byok_base_url() {
         // A request carrying a user's own Venice key must go to the BYOK base;
-        // the configured base_url may be a June-managed gateway that rejects
-        // any bearer other than June's service key.
+        // the configured base_url may be a Clovy-managed gateway that rejects
+        // any bearer other than Clovy's service key.
         let byok_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/augment/search"))

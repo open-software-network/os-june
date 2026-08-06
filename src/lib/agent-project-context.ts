@@ -30,8 +30,14 @@ export function selectSessionProjectContext<T extends { id: string }>(
     : undefined;
 }
 
-const CONTEXT_OPEN_MARKER = "[June project context]";
-const CONTEXT_CLOSE_MARKER = "[/June project context]";
+const CONTEXT_OPEN_MARKER = "[Clovy project context]";
+const CONTEXT_CLOSE_MARKER = "[/Clovy project context]";
+const LEGACY_CONTEXT_OPEN_MARKER = "[June project context]";
+const LEGACY_CONTEXT_CLOSE_MARKER = "[/June project context]";
+const CONTEXT_MARKER_PAIRS = [
+  [CONTEXT_OPEN_MARKER, CONTEXT_CLOSE_MARKER],
+  [LEGACY_CONTEXT_OPEN_MARKER, LEGACY_CONTEXT_CLOSE_MARKER],
+] as const;
 
 /** Recorded after a session is compacted while filed in a project. It never
  * equals a real project signature (those are JSON arrays), so a still-filed
@@ -51,7 +57,9 @@ function sanitizeContextPayload(value: string): string {
     .split("\n")
     .filter((line) => {
       const trimmed = line.trim();
-      return trimmed !== CONTEXT_OPEN_MARKER && trimmed !== CONTEXT_CLOSE_MARKER;
+      return !CONTEXT_MARKER_PAIRS.some(
+        ([openMarker, closeMarker]) => trimmed === openMarker || trimmed === closeMarker,
+      );
     })
     .join("\n");
 }
@@ -230,7 +238,7 @@ export class ProjectContextSignatureStore {
 // visible. A hand-typed byte-exact well-formed block is hidden from display;
 // the model saw it either way.
 const GENERATED_CONTEXT_BLOCK =
-  /^\[June project context\]\nproject_id: [^\n]*\nproject: [^\n]*\ninstructions:\n[\s\S]*?\n\[\/June project context\]\n\n/;
+  /^\[(Clovy|June) project context\]\nproject_id: [^\n]*\nproject: [^\n]*\ninstructions:\n[\s\S]*?\n\[\/\1 project context\]\n\n/;
 
 export function stripProjectContext(prompt: string): string {
   const match = GENERATED_CONTEXT_BLOCK.exec(prompt);
@@ -244,8 +252,11 @@ export function stripProjectContext(prompt: string): string {
  * when the block is truncated (no close marker), nothing of the user's own
  * text is present, so blank the preview rather than expose instructions. */
 export function stripProjectContextFromPreview(preview: string | undefined): string | undefined {
-  if (!preview || !preview.startsWith(CONTEXT_OPEN_MARKER)) return preview;
-  const closeIndex = preview.indexOf(CONTEXT_CLOSE_MARKER);
+  if (!preview) return preview;
+  const markers = CONTEXT_MARKER_PAIRS.find(([openMarker]) => preview.startsWith(openMarker));
+  if (!markers) return preview;
+  const closeMarker = markers[1];
+  const closeIndex = preview.indexOf(closeMarker);
   if (closeIndex < 0) return undefined;
-  return preview.slice(closeIndex + CONTEXT_CLOSE_MARKER.length).trim() || undefined;
+  return preview.slice(closeIndex + closeMarker.length).trim() || undefined;
 }

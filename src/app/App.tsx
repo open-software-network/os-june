@@ -1108,7 +1108,7 @@ export function App() {
       | { note: { noteId: string } };
     let aborted = false;
     let unlisten: (() => void) | undefined;
-    void listen<CompanionFocusTarget>("june://companion-focus", (event) => {
+    void listen<CompanionFocusTarget>("clovy://companion-focus", (event) => {
       const target = event.payload;
       if (target === "settings") {
         openSettings();
@@ -1408,7 +1408,7 @@ export function App() {
       }
     }
 
-    void listen<CompanionFrontendRequest>("june://companion-request", ({ payload }) => {
+    void listen<CompanionFrontendRequest>("clovy://companion-request", ({ payload }) => {
       void handleCompanionRequest(payload);
     }).then((cleanup) => {
       if (aborted) cleanup();

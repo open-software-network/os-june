@@ -186,7 +186,7 @@ function agentNotificationGroup(
   detail: { sessionId?: string; title?: string },
   kind: AgentAttentionKind,
 ) {
-  if (detail.sessionId) return `june-agent-${detail.sessionId}`;
+  if (detail.sessionId) return `clovy-agent-${detail.sessionId}`;
   const fallback = detail.title || "session";
-  return `june-agent-${kind ?? "status"}-${fallback.slice(0, 64)}`;
+  return `clovy-agent-${kind ?? "status"}-${fallback.slice(0, 64)}`;
 }

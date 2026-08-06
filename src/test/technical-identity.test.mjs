@@ -98,6 +98,32 @@ describe("Clovy technical identity", () => {
     expect(desktopCargo).toMatch(/^name = "os-june"$/m);
   });
 
+  it("uses Clovy for generated build metadata and local build coordination", async () => {
+    const [prepareDriver, selfTest, desktopBuild, windowsBuild, windowsQualification, sbom] =
+      await Promise.all([
+        read("scripts/prepare-cua-driver.mjs"),
+        read("scripts/computer-use-self-test.mjs"),
+        read("src-tauri/build.rs"),
+        read("scripts/build-windows.ps1"),
+        read("scripts/qualify-windows-build.ps1"),
+        read("src-tauri/cua-driver-sbom.spdx.json").then(JSON.parse),
+      ]);
+
+    for (const source of [prepareDriver, selfTest, desktopBuild]) {
+      expect(source).toContain("clovy-cua-driver-pin.json");
+      expect(source).not.toContain("june-cua-driver-pin.json");
+    }
+    for (const source of [prepareDriver, selfTest]) {
+      expect(source).toContain("clovy-cua-driver.spdx.json");
+      expect(source).toContain("clovyBuild");
+      expect(source).not.toContain("juneBuild");
+    }
+    expect(windowsBuild).toContain("ClovyWindowsBuild");
+    expect(windowsQualification).toContain("ClovyWindowsBuild");
+    expect(windowsQualification).toContain("firstClovyEnvironmentRestored");
+    expect(sbom.name).toBe("clovy-cua-driver-0.5.0");
+  });
+
   it("keeps rollback-safe bridges for credentials, browser storage, headers, and hosts", async () => {
     const [
       credentials,
@@ -170,7 +196,7 @@ describe("Clovy technical identity", () => {
       read("clovy-api/deploy/docker-compose.production.yml"),
       read("clovy-api/deploy/docker-compose.staging.yml"),
       read("clovy-api/deploy/docker-compose.ephemeral.yml"),
-      read("clovy-api/deploy/docker-compose.june-link.yml"),
+      read("clovy-api/deploy/docker-compose.clovy-link.yml"),
       read(".github/workflows/deploy-clovy-link.yml"),
     ]);
 
@@ -221,6 +247,8 @@ describe("Clovy technical identity", () => {
       expect(linkViewer).toContain(`CLOVY__${key}`);
       expect(linkViewer).toContain(`JUNE__${key}`);
     }
+    expect(linkViewer).toMatch(/^\s{2}clovy-link-viewer:$/m);
+    expect(linkViewer).toContain("- june-link-viewer");
     for (const compose of [production, staging, ephemeral, linkViewer]) {
       expectCanonicalPreferredAliases(compose);
     }

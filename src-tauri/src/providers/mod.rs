@@ -85,13 +85,13 @@ pub struct ProviderModelSettings {
     #[serde(default)]
     pub local_generation: LocalGenerationSettings,
     /// When true, Venice `safe_mode` blurs adult content on generated/edited
-    /// images. June defaults it ON; the user opts out via Settings or the
+    /// images. Clovy defaults it ON; the user opts out via Settings or the
     /// generation-time consent dialog. Defaulted so settings files predating
     /// this field still deserialize to the current default.
     #[serde(default = "default_image_safe_mode")]
     pub image_safe_mode: bool,
     /// When true, the user chose "don't ask again" on the safe-mode consent
-    /// dialog: June stops offering to turn safe mode off before
+    /// dialog: Clovy stops offering to turn safe mode off before
     /// potentially-explicit generations. Reset to false whenever safe mode is
     /// explicitly re-enabled, so re-opting into safety re-arms the prompt.
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct ProviderModelSettings {
     /// carry an incidental `false` the user never picked.
     #[serde(default)]
     pub image_safe_mode_set_by_user: bool,
-    /// When true (the default), June streams a live transcript preview while
+    /// When true (the default), Clovy streams a live transcript preview while
     /// recording. On builds that carry this setting the preview is billed as
     /// extra usage (ADR-0002 addendum, JUN-375); turning it off stops the
     /// preview lanes entirely, so nothing is sent or billed.
@@ -371,7 +371,7 @@ pub fn generation_model() -> String {
 
 /// The saved service-managed generation model, independent of an explicitly
 /// enabled local provider. Unattended Routines use this accessor so they stay
-/// on June's metered remote route.
+/// on Clovy's metered remote route.
 pub fn remote_generation_model() -> String {
     current_settings().remote_generation_model
 }
@@ -403,7 +403,7 @@ pub fn venice_api_key() -> Option<String> {
 }
 
 /// Whether Venice safe mode is on for image generation/editing. The default is
-/// `true`, so June asks Venice to blur adult content unless the user opts out
+/// `true`, so Clovy asks Venice to blur adult content unless the user opts out
 /// via Settings or the generation-time consent dialog.
 pub fn image_safe_mode() -> bool {
     current_settings().image_safe_mode

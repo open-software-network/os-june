@@ -81,7 +81,7 @@ fn to_dto(id: &str, model: &ModelPriceConfig) -> ModelDto {
 
 fn price_description(model: &ModelPriceConfig) -> String {
     // `pricing` may contain raw upstream metadata. The user-facing description
-    // must come from June's configured credit price.
+    // must come from Clovy's configured credit price.
     match model.unit {
         clovy_config::PriceUnit::Seconds => format!(
             "{} per second audio",
@@ -124,7 +124,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
-    fn price_description_uses_june_credit_price_over_provider_display() {
+    fn price_description_uses_clovy_credit_price_over_provider_display() {
         let model = ModelPriceConfig {
             unit: PriceUnit::Seconds,
             // gpt-4o-mini-transcribe's packaged price; also pins the display

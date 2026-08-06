@@ -535,7 +535,7 @@ pub async fn import_claude_projects(
         .await?)
 }
 
-/// The active June profile used by every profile-scoped Rust read.
+/// The current Clovy data partition used by every partition-scoped Rust read.
 #[tauri::command]
 pub fn sticky_active_profile(app: AppHandle) -> String {
     active_profile(&app)
@@ -1130,6 +1130,8 @@ pub fn clovy_open_external_url(url: String) -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(url.trim())
 }
 
+/// Compatibility IPC aliases for frontend bundles from before the technical
+/// identity migration.
 #[tauri::command]
 pub fn june_open_verify_page() -> Result<(), AppError> {
     clovy_open_verify_page()

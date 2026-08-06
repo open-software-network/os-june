@@ -4,12 +4,18 @@ export const CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY = "clovy:home:task-handoffs:v1
 export const CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY = "clovy:home:direct-turns:v1";
 export const LEGACY_CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY = "clovy.home.taskHandoffs.v1";
 export const LEGACY_CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY = "clovy.home.directTurns.v1";
-export const CLOVY_HOME_THREAD_CHANGED_EVENT = "june:agent:home-thread-changed";
+export const CLOVY_HOME_THREAD_CHANGED_EVENT = "clovy:agent:home-thread-changed";
 
 const homeThreadRetargets = new Map<string, string | null>();
 
-export const CLOVY_HOME_CONTEXT_OPEN = "[June home context]";
-export const CLOVY_HOME_CONTEXT_CLOSE = "[/June home context]";
+export const CLOVY_HOME_CONTEXT_OPEN = "[Clovy home context]";
+export const CLOVY_HOME_CONTEXT_CLOSE = "[/Clovy home context]";
+const LEGACY_CLOVY_HOME_CONTEXT_OPEN = "[June home context]";
+const LEGACY_CLOVY_HOME_CONTEXT_CLOSE = "[/June home context]";
+const CLOVY_HOME_CONTEXT_MARKERS = [
+  [CLOVY_HOME_CONTEXT_OPEN, CLOVY_HOME_CONTEXT_CLOSE],
+  [LEGACY_CLOVY_HOME_CONTEXT_OPEN, LEGACY_CLOVY_HOME_CONTEXT_CLOSE],
+] as const;
 
 export type ClovyHomeTaskRequest = {
   title: string;
@@ -506,10 +512,12 @@ export function withClovyHomeCurrentResearch(
 
 export function stripClovyHomeContext(prompt: string): string {
   const trimmed = prompt.trimStart();
-  if (!trimmed.startsWith(CLOVY_HOME_CONTEXT_OPEN)) return prompt;
-  const closeIndex = trimmed.indexOf(CLOVY_HOME_CONTEXT_CLOSE);
+  const markers = CLOVY_HOME_CONTEXT_MARKERS.find(([openMarker]) => trimmed.startsWith(openMarker));
+  if (!markers) return prompt;
+  const closeMarker = markers[1];
+  const closeIndex = trimmed.indexOf(closeMarker);
   if (closeIndex < 0) return prompt;
-  return trimmed.slice(closeIndex + CLOVY_HOME_CONTEXT_CLOSE.length).trimStart();
+  return trimmed.slice(closeIndex + closeMarker.length).trimStart();
 }
 
 export function stripClovyHomeContextFromPreview(preview: string | undefined): string | undefined {
@@ -518,7 +526,11 @@ export function stripClovyHomeContextFromPreview(preview: string | undefined): s
   if (stripped !== preview) return stripped;
   // A retired runtime may have truncated the preview before the closing marker. Never expose
   // a partial hidden block in lists while the full message remains intact.
-  if (preview.trimStart().startsWith(CLOVY_HOME_CONTEXT_OPEN)) return "Home message";
+  if (
+    CLOVY_HOME_CONTEXT_MARKERS.some(([openMarker]) => preview.trimStart().startsWith(openMarker))
+  ) {
+    return "Home message";
+  }
   return preview;
 }
 

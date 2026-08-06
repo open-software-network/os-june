@@ -1,6 +1,6 @@
 import { companionCancelFrontendRequest, type CompanionFrontendRequest } from "./tauri";
 
-export const COMPANION_FRONTEND_QUEUE_EVENT = "june:companion-frontend-queue";
+export const COMPANION_FRONTEND_QUEUE_EVENT = "clovy:companion-frontend-queue";
 
 const queuedRequests = new Map<string, CompanionFrontendRequest>();
 let consumerCount = 0;

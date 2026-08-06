@@ -36,12 +36,12 @@ describe("agent project context", () => {
 
     expect(prepared.injected).toBe(true);
     expect(prepared.text).toBe(
-      "[June project context]\n" +
+      "[Clovy project context]\n" +
         "project_id: project-1\n" +
         "project: Launch\n" +
         "instructions:\n" +
         "Prefer concise updates.\n" +
-        "[/June project context]\n\n" +
+        "[/Clovy project context]\n\n" +
         "What changed?",
     );
   });
@@ -114,8 +114,9 @@ describe("agent project context", () => {
 
     expect(hostile.injected).toBe(true);
     // Exactly one open and one close marker survive — the generated envelope.
-    expect(hostile.text.split("[June project context]").length).toBe(2);
-    expect(hostile.text.split("[/June project context]").length).toBe(2);
+    expect(hostile.text.split("[Clovy project context]").length).toBe(2);
+    expect(hostile.text.split("[/Clovy project context]").length).toBe(2);
+    expect(hostile.text).not.toContain("[June project context]");
     expect(stripProjectContext(hostile.text)).toBe("Prompt");
   });
 
@@ -124,16 +125,21 @@ describe("agent project context", () => {
     expect(stripProjectContext(injected.text)).toBe("Ask");
 
     // A user message that merely starts with the marker stays visible.
-    const userTyped = "[June project context]\nnot a real block";
+    const userTyped = "[Clovy project context]\nnot a real block";
     expect(stripProjectContext(userTyped)).toBe(userTyped);
 
     // Missing the blank-line separator after the close marker = not the
     // generated shape.
     const truncated = injected.text.replace(
-      "[/June project context]\n\n",
-      "[/June project context]\n",
+      "[/Clovy project context]\n\n",
+      "[/Clovy project context]\n",
     );
     expect(stripProjectContext(truncated)).toBe(truncated);
+
+    const legacyInjected = injected.text
+      .replace("[Clovy project context]", "[June project context]")
+      .replace("[/Clovy project context]", "[/June project context]");
+    expect(stripProjectContext(legacyInjected)).toBe("Ask");
   });
 
   it("announces leaving a project exactly once, then reinjects on re-filing", () => {
@@ -209,6 +215,13 @@ describe("agent project context", () => {
 
     // Full block present: the user's own text survives.
     expect(stripProjectContextFromPreview(injected.text)).toBe("Plan the launch");
+    expect(
+      stripProjectContextFromPreview(
+        injected.text
+          .replace("[Clovy project context]", "[June project context]")
+          .replace("[/Clovy project context]", "[/June project context]"),
+      ),
+    ).toBe("Plan the launch");
 
     // Preview truncated mid-block: nothing of the user's text is present, so
     // the preview blanks instead of leaking instructions.

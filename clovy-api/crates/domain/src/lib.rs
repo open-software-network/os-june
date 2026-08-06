@@ -326,7 +326,7 @@ pub struct GeneratedImage {
 /// What a text-to-video generation needs: a prompt, the model, Venice's
 /// duration/resolution/aspect-ratio/audio knobs, and an optional negative
 /// prompt. Deliberately carries no user id or caller key, so the provider sees
-/// only the inference inputs and June's configured upstream key. Video is an
+/// only the inference inputs and Clovy's configured upstream key. Video is an
 /// async job: this queues the job and returns a Venice queue handle, not the
 /// bytes.
 #[derive(Clone, Debug)]
@@ -363,8 +363,8 @@ pub struct VideoAnimationRequest {
 }
 
 /// The free Venice price oracle input: everything that shapes a video quote.
-/// Carries no prompt and no credentials — the quote is June's own pricing
-/// basis, always run against June's configured Venice key.
+/// Carries no prompt and no credentials — the quote is Clovy's own pricing
+/// basis, always run against Clovy's configured Venice key.
 #[derive(Clone, Debug)]
 pub struct VideoQuoteRequest {
     pub model: ModelId,
@@ -374,7 +374,7 @@ pub struct VideoQuoteRequest {
     pub audio: Option<bool>,
 }
 
-/// A queued Venice video job: June's handle onto the async lifecycle. The
+/// A queued Venice video job: Clovy's handle onto the async lifecycle. The
 /// `download_url` is present only for VPS-backed models (a 24h pre-signed mp4
 /// URL); otherwise the bytes come from `retrieve`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -611,7 +611,7 @@ pub trait ImageEditor: Send + Sync {
 }
 
 /// Venice's asynchronous, dynamically priced video API. Quoting is free and is
-/// June's price oracle; queueing starts an async job; retrieving polls it. The
+/// Clovy's price oracle; queueing starts an async job; retrieving polls it. The
 /// provider does inference/transport only — billing (quote -> credits ->
 /// authorize -> charge-once) lives in `VideoService`.
 #[async_trait]
@@ -846,7 +846,7 @@ pub trait ViewerIdentity: Send + Sync {
     async fn verified_emails(&self, access_token: &str) -> Result<Vec<String>, DomainError>;
 }
 
-// ── June companion relay trust metadata ──────────────────────────────────
+// ── Clovy companion relay trust metadata ──────────────────────────────────
 // The relay persists only identities and explicit device links. Encrypted
 // frames are never stored, and plaintext companion content cannot cross this
 // interface.

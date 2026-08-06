@@ -482,7 +482,7 @@ impl Controller {
                     let _ = window.unminimize();
                     let _ = window.set_focus();
                 }
-                app.emit("june://companion-focus", &target)
+                app.emit("clovy://companion-focus", &target)
                     .map_err(|error| {
                         AppError::new(
                             "companion_focus_failed",

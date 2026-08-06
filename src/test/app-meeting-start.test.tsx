@@ -160,7 +160,7 @@ vi.mock("../lib/tauri", () => ({
   updateNote: mocks.updateNote,
   patchNote: mocks.patchNote,
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
-  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "clovy://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   companionListAgentMedia: vi.fn(async () => []),
   companionReadAgentMediaChunk: vi.fn(),

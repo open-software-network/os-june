@@ -16,7 +16,7 @@ export type ModelPrivacyFlags = {
   uncensored: boolean;
 };
 
-export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT = "june:provider-model-settings-changed";
+export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT = "clovy:provider-model-settings-changed";
 
 export type ProviderModelSettingsChangedDetail = {
   mode: ProviderModelMode;

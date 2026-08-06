@@ -106,7 +106,7 @@ impl VideoProvider for VeniceVideoProvider {
             aspect_ratio: request.aspect_ratio.as_deref(),
             audio: request.audio,
         };
-        // The quote is June's own pricing basis, so it always runs against the
+        // The quote is Clovy's own pricing basis, so it always runs against the
         // configured Venice key (no user credentials).
         let send = self
             .http
@@ -202,7 +202,7 @@ impl VideoProvider for VeniceVideoProvider {
     async fn retrieve(&self, model: &str, queue_id: &str) -> Result<VideoRetrieved, DomainError> {
         let url = format!("{}/video/retrieve", self.base_url);
         let body = VeniceVideoRetrieveBody { model, queue_id };
-        // Retrieve runs against the configured Venice key: June queued the job.
+        // Retrieve runs against the configured Venice key: Clovy queued the job.
         let send = self
             .http
             .post(&url)
@@ -409,7 +409,7 @@ fn retrieved_from_json(
 /// translates. Policy/consent/region/too-large are deterministic 4xx surfaced
 /// as reasoned `InvalidInput`; a 503 (at-capacity) is retryable and surfaced as
 /// `MeteringProvider` (the only variant whose API mapping is a retryable 503 -
-/// June has no dedicated upstream-capacity status).
+/// Clovy has no dedicated upstream-capacity status).
 fn venice_video_error(status: StatusCode, rejected_reason: &str) -> DomainError {
     match status {
         StatusCode::BAD_REQUEST => DomainError::InvalidInput {

@@ -20,7 +20,7 @@ const CHARGE_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 // The image hold TTL reserves `IMAGE_SETTLEMENT_TIMEOUT_MARGIN_SECS` for the
 // charge path after generation. If the worst-case charge budget (every retry
 // spending the full HTTP timeout plus backoff) outgrew that margin, a
-// max-length generation would settle against an expired hold: June pays the
+// max-length generation would settle against an expired hold: Clovy pays the
 // upstream and the user sees `metering_provider_failed`.
 const _: () = assert!(
     (CHARGE_RETRY_ATTEMPTS as u64) * crate::http::DEFAULT_TIMEOUT_SECS

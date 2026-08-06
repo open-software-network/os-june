@@ -55,7 +55,7 @@ Run the manual `deploy-clovy-link` workflow with:
 The workflow refuses to continue when the separate CVM is absent, DNS is not
 delegated or registrar parking remains, the candidate image does not enforce
 viewer-only routing, or the primary API is unhealthy. It deploys only
-`clovy-api/deploy/docker-compose.june-link.yml`; it does not retag the production
+`clovy-api/deploy/docker-compose.clovy-link.yml`; it does not retag the production
 image and does not change the primary CVM.
 
 ## Functional gate before client cutover

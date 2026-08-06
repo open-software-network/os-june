@@ -1083,12 +1083,12 @@ describe("RoutinesView detail", () => {
     expect(screen.getByText("Last run failed.")).toBeInTheDocument();
     await waitFor(() =>
       expect(eventMocks.listen).toHaveBeenCalledWith(
-        "june://agent-runtime-event",
+        "clovy://agent-runtime-event",
         expect.any(Function),
       ),
     );
     const runtimeListener = eventMocks.listen.mock.calls.find(
-      ([eventName]) => eventName === "june://agent-runtime-event",
+      ([eventName]) => eventName === "clovy://agent-runtime-event",
     )?.[1] as ((event: { payload: { method: string } }) => void) | undefined;
     expect(runtimeListener).toBeDefined();
 

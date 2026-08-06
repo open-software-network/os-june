@@ -72,7 +72,7 @@ const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
 ];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 /// Sound Analysis reports a confidence for its trained `speech` class. When
-/// both this score and the helper's independent peak/RMS meter stay low, June
+/// both this score and the helper's independent peak/RMS meter stay low, Clovy
 /// withholds automatic paste but keeps the transcript recoverable. This is not
 /// a destructive silence test: quiet speech can also fall below both cutoffs.
 const DICTATION_SPEECH_CONFIDENCE_THRESHOLD: f32 = 0.4;
@@ -424,7 +424,7 @@ pub struct HotkeyStatus {
 
 /// Position the HUD remembers between dictation sessions in the same process.
 /// Intentionally process-scoped, not disk-persisted: every fresh launch of
-/// June should put the pill back at top-center, but within a single run
+/// Clovy should put the pill back at top-center, but within a single run
 /// the user's drag-to-corner choice should stick.
 pub struct HudPosition {
     inner: Mutex<Option<(i32, i32)>>,
@@ -4313,7 +4313,7 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
 
 /// Whether a macOS `ps` state represents a process that can still own runtime
 /// resources. `E` (exiting) and `Z` (zombie) entries may remain in the process
-/// table and pass `kill -0`, but cannot own June's global event tap.
+/// table and pass `kill -0`, but cannot own Clovy's global event tap.
 #[cfg(target_os = "macos")]
 fn process_state_is_terminal(state: &str) -> bool {
     state.trim().chars().any(|flag| matches!(flag, 'E' | 'Z'))
@@ -7363,7 +7363,7 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
     // Restore the in-memory drag position if it's still on-screen. This
     // doesn't persist across app restarts — that's deliberate; quitting
-    // June resets the HUD to top-center so it can't end up lost on a
+    // Clovy resets the HUD to top-center so it can't end up lost on a
     // monitor that's no longer connected.
     if let Some(state) = app.try_state::<HudPosition>() {
         let saved = state.inner.lock().ok().and_then(|guard| *guard);
@@ -7702,7 +7702,7 @@ fn hide_dictation_tooltip(app: &AppHandle) {
 /// `NSWindowStyleMaskNonactivatingPanel` style bit, so clicking the drag
 /// handle or stop button doesn't steal focus from whichever app the user is
 /// dictating into. Without this, every interaction with the HUD activates
-/// June and yanks the text cursor out of the user's document.
+/// Clovy and yanks the text cursor out of the user's document.
 #[cfg(target_os = "macos")]
 fn make_hud_nonactivating(hud: &WebviewWindow) {
     use objc2::msg_send;
@@ -7953,7 +7953,7 @@ mod tests {
             OwnerLiveness::Alive
         );
         // Same pid, DIFFERENT start time -> the pid was recycled (e.g. a new
-        // June with a sequentially-reused pid); the original owner is dead, so
+        // Clovy with a sequentially-reused pid); the original owner is dead, so
         // its record is NOT treated as the new instance's own. This is the
         // JUN-338 reopening the round-3 review caught.
         assert_eq!(
@@ -8227,7 +8227,7 @@ mod tests {
     fn indicator_clears_on_every_way_a_take_can_end() {
         // Must match DICTATION_FINISHED_EVENTS in src/lib/dictation-events.ts.
         // Success, discard, and each failure/terminal path all clear the menu
-        // bar — a stuck indicator claims June is listening when it is not.
+        // bar — a stuck indicator claims Clovy is listening when it is not.
         for event in [
             "recording_discarded",
             "final_transcript",

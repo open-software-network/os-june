@@ -29,7 +29,7 @@ export const FONT_SCALE_PRESETS: {
 ];
 
 const STORAGE_KEY = "os-clovy:font-scale";
-export const FONT_SCALE_CHANGED_EVENT = "june://font-scale-change";
+export const FONT_SCALE_CHANGED_EVENT = "clovy://font-scale-change";
 export const DEFAULT_FONT_SCALE: FontScaleId = "default";
 let sessionFontScale: FontScaleId = DEFAULT_FONT_SCALE;
 let storageWriteFailed = false;

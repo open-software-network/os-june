@@ -245,7 +245,7 @@ describe("agent HUD", () => {
     await flushPromises();
     mocks.invoke.mockClear();
 
-    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    const openMenuFromNative = mocks.listeners.get("clovy:agent-hud:context-menu");
     openMenuFromNative?.({ payload: undefined });
     await flushPromises();
 
@@ -272,7 +272,7 @@ describe("agent HUD", () => {
     await flushPromises();
     mocks.invoke.mockClear();
 
-    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    const openMenuFromNative = mocks.listeners.get("clovy:agent-hud:context-menu");
     openMenuFromNative?.({ payload: undefined });
     await flushPromises();
 
@@ -700,7 +700,7 @@ describe("agent HUD", () => {
 
     // The native panel swallows the right-/ctrl-click and emits this event;
     // the webview never sees a contextmenu event in the real app.
-    const openMenuFromNative = mocks.listeners.get("june:agent-hud:context-menu");
+    const openMenuFromNative = mocks.listeners.get("clovy:agent-hud:context-menu");
     expect(openMenuFromNative).toBeDefined();
     openMenuFromNative?.({ payload: undefined });
     await flushPromises();
@@ -1142,12 +1142,12 @@ describe("agent HUD", () => {
     ).toHaveLength(1);
 
     vi.useFakeTimers();
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: true });
     await vi.advanceTimersByTimeAsync(300);
     await flushPromises();
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
 
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: false });
     await flushPromises();
     resolveHide?.();
     await flushPromises();
@@ -1178,7 +1178,7 @@ describe("agent HUD", () => {
     await flushPromises();
     expect(resolveLayout).toBeDefined();
 
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: true });
     await flushPromises();
     resolveLayout?.();
     await flushPromises();
@@ -1204,7 +1204,7 @@ describe("agent HUD", () => {
       title: "Summarize this",
       summary: "Working",
     });
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: true });
     await flushPromises();
 
     resolveInitialFocus?.(false);
@@ -1230,7 +1230,7 @@ describe("agent HUD", () => {
       title: "Summarize this",
       summary: "Working",
     });
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: false });
     await flushPromises();
 
     resolveInitialFocus?.(true);
@@ -1243,7 +1243,7 @@ describe("agent HUD", () => {
     let completeFocusRegistration: (() => void) | undefined;
     let mainFocused = false;
     mocks.listen.mockImplementation((event: string, listener: TauriListener) => {
-      if (event === "june:agent-hud:main-focus") {
+      if (event === "clovy:agent-hud:main-focus") {
         return new Promise((resolve) => {
           completeFocusRegistration = () => {
             mocks.listeners.set(event, listener);
@@ -1278,7 +1278,7 @@ describe("agent HUD", () => {
   it("stays down while the Clovy main window is focused", async () => {
     await loadAgentHud();
 
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: true });
     emitStatus({
       status: "running",
       title: "Summarize this",
@@ -1289,7 +1289,7 @@ describe("agent HUD", () => {
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).not.toHaveBeenCalledWith("agent_hud_show");
 
-    mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: false });
+    mocks.listeners.get("clovy:agent-hud:main-focus")?.({ payload: false });
     await flushPromises();
 
     expect(hudElement().dataset.visible).toBe("true");

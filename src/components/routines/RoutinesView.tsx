@@ -66,7 +66,7 @@ const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: RoutineRunSession[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
 // Must match the native event name in src-tauri/src/agent_runtime/host.rs.
-const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+const AGENT_RUNTIME_EVENT = "clovy://agent-runtime-event";
 
 /**
  * Advances the earned-autonomy counter by reporting each finished run to the

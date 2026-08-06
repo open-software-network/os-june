@@ -18,7 +18,7 @@ $mutexBytes = [System.Text.Encoding]::UTF8.GetBytes($mutexPath)
 $mutexHasher = [System.Security.Cryptography.SHA256]::Create()
 try { $mutexHash = [Convert]::ToHexString($mutexHasher.ComputeHash($mutexBytes)) }
 finally { $mutexHasher.Dispose() }
-$buildMutex = [System.Threading.Mutex]::new($false, "Local\JuneWindowsBuild-$mutexHash")
+$buildMutex = [System.Threading.Mutex]::new($false, "Local\ClovyWindowsBuild-$mutexHash")
 $hasBuildMutex = $false
 
 function Require-Command([string]$Name) {

@@ -356,6 +356,8 @@ pub fn set_clovy_persona(
     Ok(settings)
 }
 
+/// Compatibility IPC aliases for frontend bundles from before the technical
+/// identity migration.
 #[tauri::command]
 pub fn june_persona(app: AppHandle) -> Result<ClovyPersonaSettings, AppError> {
     clovy_persona(app)

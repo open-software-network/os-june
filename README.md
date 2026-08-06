@@ -36,7 +36,7 @@
   <a href="https://x.com/OpenSoftwareCo">X</a>
 </p>
 
-![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/june-demo.gif)
+![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/clovy-demo.gif)
 
 
 ## Why Clovy
@@ -78,13 +78,13 @@ verifiable.
 <table>
   <tr>
     <td width="33%">
-      <img src=".github/assets/june-meeting-notes.jpg" alt="A meeting note in Clovy with a live transcription preview while recording">
+      <img src=".github/assets/clovy-meeting-notes.jpg" alt="A meeting note in Clovy with a live transcription preview while recording">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-agent-analysis.jpg" alt="A Clovy agent session in private mode, reporting its analysis of a spreadsheet">
+      <img src=".github/assets/clovy-agent-analysis.jpg" alt="A Clovy agent session in private mode, reporting its analysis of a spreadsheet">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-model-picker.jpg" alt="The Clovy model picker, with each model labeled with pricing, context window, and its privacy tier">
+      <img src=".github/assets/clovy-model-picker.jpg" alt="The Clovy model picker, with each model labeled with pricing, context window, and its privacy tier">
     </td>
   </tr>
   <tr>

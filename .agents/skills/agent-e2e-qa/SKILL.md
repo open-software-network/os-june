@@ -16,7 +16,7 @@ description: >-
 # Agent E2E QA
 
 Use this skill to run the kind of QA a human would do with the product open:
-start June, click through the affected workflow, observe the result, and leave
+start Clovy, click through the affected workflow, observe the result, and leave
 evidence. This is an agent-assisted verification layer, not a substitute for
 deterministic unit, Rust, or CI tests.
 
@@ -33,8 +33,8 @@ Pick the narrowest surface that proves the behavior.
 - **Background browser video**: Use the bundled Playwright helper for
   web-reachable agent flows when the user is actively using the desktop or does
   not need to watch the run. This avoids foreground macOS screen capture. It may
-  shim the Tauri shell while routing prompts through a real isolated Hermes
-  dashboard.
+  shim the Tauri shell while routing prompts through the isolated legacy
+  Hermes QA dashboard.
 - **Native Tauri app**: Use `pnpm tauri:dev` and Computer Use for WKWebView,
   native windows, tray/menu behavior, macOS permissions, dictation hotkeys,
   microphone/system audio, update prompts, and any flow that depends on Rust
@@ -95,8 +95,8 @@ captured.
   .agents/skills/agent-e2e-qa/scripts/run_background_agent_prompt.mjs \
     --prompt "hi"
   ```
-  The helper starts an isolated tokenized Hermes dashboard using the local
-  Hermes config, opens the Vite app in headless Chrome, records Playwright video
+  The helper starts an isolated tokenized legacy Hermes QA dashboard using its
+  local config, opens the Vite app in headless Chrome, records Playwright video
   under `.tmp/qa-recordings/`, shims only the Tauri shell calls needed by the web
   surface, and waits for a visible assistant completion. Playwright comes
   from the repository's pinned `playwright` dev dependency; if it is

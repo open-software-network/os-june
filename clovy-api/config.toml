@@ -36,8 +36,9 @@ image_repo = "ghcr.io/open-software-network/clovy-api"
 trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 
 [issue_reports]
-# User-submitted issue reports are filed as os-platform Issues in the June
-# project. The only per-environment value is the bot user's fellow API key
+# User-submitted issue reports are filed as os-platform Issues for Clovy under
+# the retained `june` project handle. The only per-environment value is the bot
+# user's fellow API key
 # (osk_...), set via CLOVY__ISSUE_REPORTS__OS_PLATFORM_API_KEY. Without it,
 # reports are accepted but land in structured logs only.
 os_platform_api_url = "https://app.opensoftware.co/api"

@@ -195,7 +195,7 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
 
-pub const PAIRING_CHANGED_EVENT: &str = "june://extension-pairing-changed";
+pub const PAIRING_CHANGED_EVENT: &str = "clovy://extension-pairing-changed";
 
 // --- framing ---------------------------------------------------------------
 

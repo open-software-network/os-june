@@ -167,7 +167,7 @@ describe("agent notifications", () => {
     expect(tauriMocks.sendAppNotification).toHaveBeenCalledWith({
       title: "Clovy is ready",
       body: "Make a PDF",
-      group: "june-agent-session-3",
+      group: "clovy-agent-session-3",
       sessionId: "session-3",
     });
     expect(tauriMocks.sendAppNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
@@ -232,7 +232,7 @@ describe("agent notifications", () => {
     expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
       title: "Clovy is ready",
       body: "Make a PDF",
-      group: "june-agent-session-fallback",
+      group: "clovy-agent-session-fallback",
     });
     expect(notificationMocks.sendNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
   });

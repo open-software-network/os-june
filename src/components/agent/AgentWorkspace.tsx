@@ -197,7 +197,7 @@ export {
   type AgentSessionsChangedDetail,
 } from "./agent-workspace-config";
 
-export const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+export const AGENT_RUNTIME_EVENT = "clovy://agent-runtime-event";
 const DEFAULT_MODEL = AUTO_MODEL_ID;
 const AGENT_SUGGESTED_MODEL_IDS = [AUTO_MODEL_ID] as const;
 const AGENT_AUTO_MODEL: VeniceModelDto = {

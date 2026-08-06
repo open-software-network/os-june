@@ -2797,7 +2797,7 @@ export function AppSettings({
 
                 {import.meta.env.DEV ? (
                   // Dev builds only: same helper the devtools console exposes
-                  // as june.replayOnboarding() — clears completion and
+                  // as clovy.replayOnboarding() — clears completion and
                   // reloads into the wizard.
                   <div className="settings-row">
                     <div className="settings-row-info">

@@ -27,7 +27,7 @@ import urllib.request
 
 EXCLUDE_FILE = "scripts/cargo-release-age-exclude.txt"
 CRATES_IO_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-USER_AGENT = "os-june-release-age-check (https://github.com/open-software-network/os-june)"
+USER_AGENT = "clovy-release-age-check (https://github.com/open-software-network/os-june)"
 API = "https://crates.io/api/v1/crates/{name}/versions"
 
 
@@ -58,10 +58,11 @@ def base_lock(base, path):
 
 
 def discover_lockfiles(base):
-    """Every Cargo.lock tracked now or at the base ref.
+    """Every Cargo.lock tracked now or at the base ref, paired across renames.
 
     Discovered dynamically so a new Rust tree cannot slip past a hardcoded
-    list, and unioned with the base so a deleted lockfile still fails closed.
+    list. True deletions remain in the result and fail closed, while a detected
+    rename compares the current lockfile with its previous path at the base.
     """
     current = subprocess.run(
         ["git", "ls-files", "*Cargo.lock"], capture_output=True, text=True
@@ -71,13 +72,34 @@ def discover_lockfiles(base):
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    lockfiles = sorted(
-        {p for p in current if p}
-        | {p for p in at_base if p.endswith("Cargo.lock")}
-    )
+    current = {path for path in current if path}
+    at_base = {path for path in at_base if path.endswith("Cargo.lock")}
+    changes = subprocess.run(
+        ["git", "diff", "--name-status", "--find-renames", base, "--"],
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    renamed_to_base = {}
+    for change in changes:
+        fields = change.split("\t")
+        if (
+            len(fields) == 3
+            and fields[0].startswith("R")
+            and fields[1].endswith("Cargo.lock")
+            and fields[2].endswith("Cargo.lock")
+        ):
+            renamed_to_base[fields[2]] = fields[1]
+
+    renamed_sources = set(renamed_to_base.values())
+    lockfiles = {(path, renamed_to_base.get(path, path)) for path in current}
+    lockfiles |= {
+        (path, path)
+        for path in at_base
+        if path not in current and path not in renamed_sources
+    }
     if not lockfiles:
         raise RuntimeError("no Cargo.lock files found in the repo or at base")
-    return lockfiles
+    return sorted(lockfiles)
 
 
 def discover_manifests():
@@ -177,7 +199,7 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc)
     cutoff = datetime.timedelta(days=args.min_age_days)
     new_packages = set()
-    for path in lockfiles:
+    for path, base_path in lockfiles:
         try:
             current = parse_lock(open(path).read())
         except FileNotFoundError:
@@ -185,7 +207,7 @@ def main():
             # fresh crates that never saw this check.
             print(f"error: {path} missing", file=sys.stderr)
             return 1
-        new_packages |= current - parse_lock(base_lock(args.base, path))
+        new_packages |= current - parse_lock(base_lock(args.base, base_path))
 
     violations = []
     checked = 0

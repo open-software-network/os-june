@@ -4,10 +4,10 @@
 //! `mac-notification-sys`) installs its own throwaway delegate on the shared
 //! `NSUserNotificationCenter` on every send and never reports clicks, so a
 //! notification could only ever reopen the app generally (JUN-327). On macOS
-//! this module owns the posting path instead: June installs one permanent
+//! this module owns the posting path instead: Clovy installs one permanent
 //! center delegate, posts agent/recording notifications itself with the
 //! session id in `userInfo`, and on click focuses the main window and routes
-//! the session id to the webview via the existing `june:agent:open` event.
+//! the session id to the webview via the existing `clovy:agent:open` event.
 //!
 //! Clicks can arrive before the webview has listeners (app launched by the
 //! click), so activation goes through a ready/pending handshake: the frontend
@@ -24,7 +24,7 @@ use tauri::{AppHandle, Manager};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 #[cfg(target_os = "macos")]
-const AGENT_OPEN_EVENT: &str = "june:agent:open";
+const AGENT_OPEN_EVENT: &str = "clovy:agent:open";
 
 // The center delegate is a static C callback with no captured state, so
 // activations reach the app through this handle (same pattern as the agent
@@ -94,7 +94,7 @@ pub fn setup(app: &tauri::App) {
     macos::install_center_delegate();
 }
 
-/// Marks the webview ready for `june:agent:open` events and returns the
+/// Marks the webview ready for `clovy:agent:open` events and returns the
 /// session id of a notification clicked before that (app launched by the
 /// click), so the frontend can navigate to it on bootstrap.
 #[tauri::command]
@@ -180,7 +180,7 @@ mod macos {
     use objc2_foundation::NSString;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// `userInfo` key carrying the agent session on June's own notifications.
+    /// `userInfo` key carrying the agent session on Clovy's own notifications.
     const SESSION_ID_KEY: &str = "juneAgentSessionId";
 
     /// Set once the permanent delegate is installed; the native posting path
@@ -217,7 +217,7 @@ mod macos {
         }
     }
 
-    /// Installs June's permanent notification-center delegate. Called once at
+    /// Installs Clovy's permanent notification-center delegate. Called once at
     /// setup, before any notification can be posted or clicked.
     pub(super) fn install_center_delegate() {
         unsafe {
@@ -286,7 +286,7 @@ mod macos {
         true
     }
 
-    /// Reads June's session id out of a clicked notification's `userInfo`.
+    /// Reads Clovy's session id out of a clicked notification's `userInfo`.
     unsafe fn notification_session_id(notification: *mut AnyObject) -> Option<String> {
         if notification.is_null() {
             return None;
@@ -301,7 +301,7 @@ mod macos {
             if value.is_null() {
                 return None;
             }
-            // June only ever stores an NSString under this key; a foreign
+            // Clovy only ever stores an NSString under this key; a foreign
             // object that does not respond to UTF8String is ignored.
             let responds: Bool = msg_send![value, respondsToSelector: sel!(UTF8String)];
             if !responds.as_bool() {
@@ -325,7 +325,7 @@ mod macos {
         _center: *mut AnyObject,
         _notification: *mut AnyObject,
     ) -> Bool {
-        // Present even while June is frontmost, matching the previous
+        // Present even while Clovy is frontmost, matching the previous
         // plugin-backed behavior (its delegate also always presented).
         Bool::YES
     }
@@ -341,11 +341,11 @@ mod macos {
     }
 
     fn delegate_class() -> Option<&'static AnyClass> {
-        if let Some(class) = AnyClass::get(c"JuneNotificationCenterDelegate") {
+        if let Some(class) = AnyClass::get(c"ClovyNotificationCenterDelegate") {
             return Some(class);
         }
         let superclass = AnyClass::get(c"NSObject")?;
-        let mut builder = ClassBuilder::new(c"JuneNotificationCenterDelegate", superclass)?;
+        let mut builder = ClassBuilder::new(c"ClovyNotificationCenterDelegate", superclass)?;
         unsafe {
             builder.add_method(
                 sel!(userNotificationCenter:shouldPresentNotification:),
@@ -432,12 +432,12 @@ mod tests {
             "title": "Clovy finished",
             "body": "Make a PDF",
             "sound": "Ping",
-            "group": "june-agent-session-4",
+            "group": "clovy-agent-session-4",
             "sessionId": "session-4"
         }))
         .expect("request should deserialize");
         assert_eq!(request.session_id.as_deref(), Some("session-4"));
         assert_eq!(request.sound.as_deref(), Some("Ping"));
-        assert_eq!(request.group.as_deref(), Some("june-agent-session-4"));
+        assert_eq!(request.group.as_deref(), Some("clovy-agent-session-4"));
     }
 }

@@ -2364,7 +2364,7 @@ fn message_with_attachment_context(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "[June attachment manifest v1]\nThe following files are available locally. Use Clovy's file tools to inspect them when needed:\n{manifest}\n\n{message}"
+        "[Clovy attachment manifest v1]\nThe following files are available locally. Use Clovy's file tools to inspect them when needed:\n{manifest}\n\n{message}"
     )
 }
 
@@ -2877,7 +2877,7 @@ mod tests {
             "# Brief"
         );
         let input = message_with_attachment_context("Summarize this.", &attachments);
-        assert!(input.starts_with("[June attachment manifest v1]"));
+        assert!(input.starts_with("[Clovy attachment manifest v1]"));
         assert!(input.contains("launch-brief.custom"));
         assert!(input.contains(&attachments[0].path));
         assert!(input.ends_with("Summarize this."));

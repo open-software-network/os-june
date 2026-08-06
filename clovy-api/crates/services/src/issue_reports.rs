@@ -37,7 +37,7 @@ pub struct IssueReportService {
     diagnosis_model: Option<ModelId>,
     diagnosis_timeout: Duration,
     diagnosis_hourly_cap: u64,
-    // The diagnosis call is June-funded and unmetered, so this window is the
+    // The diagnosis call is Clovy-funded and unmetered, so this window is the
     // only per-user bound on upstream spend. In-memory is deliberate: a
     // process restart forgiving the window is fine, an exceeded cap only
     // skips the diagnosis — delivery is never limited.
@@ -180,7 +180,7 @@ fn issue_report_diagnosis_body(report: &IssueReport) -> serde_json::Value {
     serde_json::json!({
         "stream": false,
         "temperature": 0.2,
-        // The call is unmetered (June's own expense), so the output cap is the
+        // The call is unmetered (Clovy's own expense), so the output cap is the
         // only per-report cost bound besides the timeout.
         "max_tokens": 1024,
         "messages": [

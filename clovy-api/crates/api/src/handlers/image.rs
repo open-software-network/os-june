@@ -81,7 +81,7 @@ impl From<GeneratedImage> for ImageGenerateResponse {
 
 /// Generates an image from a text prompt via Venice. Without a user Venice key,
 /// the service holds a wallet estimate, generates, then charges the model's
-/// flat per-image price (see `ImageService`). A user Venice key skips June
+/// flat per-image price (see `ImageService`). A user Venice key skips Clovy
 /// credit metering. An unpriced model is rejected `model_not_priced`; an
 /// out-of-credits user without BYOK gets 402 before Venice is called.
 pub(crate) async fn generate(
@@ -127,7 +127,7 @@ pub(crate) async fn generate(
 
 /// Edits an existing image via Venice. Metered like generation: the
 /// service holds an estimate, edits, then charges the edit model's flat price
-/// (a separate catalog). A user Venice key skips June credit metering. An
+/// (a separate catalog). A user Venice key skips Clovy credit metering. An
 /// unpriced model is rejected `model_not_priced`; an out-of-credits user
 /// without BYOK gets 402 before Venice is called.
 pub(crate) async fn edit(

@@ -1,7 +1,7 @@
 //! Floating meeting-recording HUD.
 //!
 //! A small always-on-top pill — sibling to the dictation HUD — that surfaces a
-//! "still recording" signal (June mark + live waveform) whenever the main
+//! "still recording" signal (Clovy mark + live waveform) whenever the main
 //! window is closed or minimized mid-recording. It's a presence indicator, not
 //! a control surface: clicking it reopens the app on the meeting being recorded
 //! (see [`meeting_hud_reopen`]); all recording controls stay in-app.
@@ -206,7 +206,7 @@ fn is_live(state: RecordingState) -> bool {
 
 /// The HUD should take over when the main window is no longer a visible
 /// recording surface: it has been hidden (close button -> hide), minimized, or
-/// June is no longer the active app because another app took focus.
+/// Clovy is no longer the active app because another app took focus.
 fn main_window_dismissed(app: &AppHandle) -> bool {
     let Some(main) = app.get_webview_window("main") else {
         return false;
@@ -351,7 +351,7 @@ fn supervise(app: &AppHandle, tracker: &mut ZoneTracker) -> Duration {
         .lock()
         .map(|guard| *guard)
         .unwrap_or(false);
-    // The end card follows the pill's visibility rule: only while June is not
+    // The end card follows the pill's visibility rule: only while Clovy is not
     // active. When the main window is frontmost the record dock's inline
     // notice owns the countdown; the floating card would be a duplicate.
     let should_show = main_window_dismissed(app);
@@ -585,7 +585,7 @@ fn position_window(app: &AppHandle, hud: &WebviewWindow) {
 }
 
 /// Top-center of the work area, notification-style — the card only appears
-/// while June is inactive, so it should land like a transient alert. Centered,
+/// while Clovy is inactive, so it should land like a transient alert. Centered,
 /// not top-right: the agent HUD's default anchor is the top-right corner
 /// (agent_hud.rs), and the card must never cover a running session HUD.
 fn position_end_prompt(hud: &WebviewWindow) {
@@ -827,7 +827,7 @@ unsafe fn rotate_content(hud: &WebviewWindow, vertical: bool, animate: bool) {
     )];
 
     // CA's +z spins counterclockwise (y-up), so -90° swings the pill's left
-    // end (the June mark) to the top, matching the old CSS rotate(90deg).
+    // end (the Clovy mark) to the top, matching the old CSS rotate(90deg).
     let angle = if vertical {
         -std::f64::consts::FRAC_PI_2
     } else {

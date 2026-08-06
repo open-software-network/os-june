@@ -1,5 +1,5 @@
 export const AGENT_HUD_ENABLED_KEY = "clovy:agent-hud:enabled";
-export const AGENT_HUD_VISIBILITY_CHANGED_EVENT = "june:agent-hud:visibility-changed";
+export const AGENT_HUD_VISIBILITY_CHANGED_EVENT = "clovy:agent-hud:visibility-changed";
 
 /* The HUD replaced the desktop mascot; honor the preference users set
  * under the old key so disabling the pet keeps the Agent HUD hidden. */

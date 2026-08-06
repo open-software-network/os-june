@@ -137,8 +137,8 @@ vi.mock("../lib/tauri", () => ({
   LIVE_TRANSCRIPT_EVENT: "live-transcript-event",
   RECORDING_TELEMETRY_EVENT: "recording-telemetry",
   NOTE_PROCESSING_PROGRESS_EVENT: "note-processing-progress",
-  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "june://note-calendar-context-updated",
-  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
+  NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: "clovy://note-calendar-context-updated",
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "clovy://flush-pending-note-saves",
   bootstrapApp: mocks.bootstrapApp,
   createNote: mocks.createNote,
   createFolder: mocks.createFolder,
@@ -511,11 +511,11 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
     expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
     await waitFor(() =>
-      expect(mocks.listeners.has("june://note-calendar-context-updated")).toBe(true),
+      expect(mocks.listeners.has("clovy://note-calendar-context-updated")).toBe(true),
     );
 
     await act(async () => {
-      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+      await mocks.listeners.get("clovy://note-calendar-context-updated")?.({
         payload: {
           ...first,
           title: "Product review",
@@ -545,7 +545,7 @@ describe("notes recording reliability", () => {
 
     await userEvent.type(title, " unsaved");
     await act(async () => {
-      await mocks.listeners.get("june://flush-pending-note-saves")?.({
+      await mocks.listeners.get("clovy://flush-pending-note-saves")?.({
         payload: { requestId: "flush-1" },
       });
     });
@@ -567,7 +567,7 @@ describe("notes recording reliability", () => {
 
     await userEvent.type(title, " unsaved");
     await act(async () => {
-      await mocks.listeners.get("june://flush-pending-note-saves")?.({
+      await mocks.listeners.get("clovy://flush-pending-note-saves")?.({
         payload: { requestId: "flush-failed" },
       });
     });
@@ -580,11 +580,11 @@ describe("notes recording reliability", () => {
     render(<App />);
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await waitFor(() =>
-      expect(mocks.listeners.has("june://note-calendar-context-updated")).toBe(true),
+      expect(mocks.listeners.has("clovy://note-calendar-context-updated")).toBe(true),
     );
 
     await act(async () => {
-      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+      await mocks.listeners.get("clovy://note-calendar-context-updated")?.({
         payload: {
           ...first,
           title: "Stale calendar note",
@@ -643,7 +643,7 @@ describe("notes recording reliability", () => {
     expect(screen.queryByText("First note")).toBeNull();
 
     await act(async () => {
-      await mocks.listeners.get("june://note-calendar-context-updated")?.({
+      await mocks.listeners.get("clovy://note-calendar-context-updated")?.({
         payload: {
           ...first,
           title: "Old data partition calendar note",

@@ -36,7 +36,7 @@ export async function notifyRecordingStillMeetingPrompt(sessionId: string) {
     await deliver({
       title: "Still in a meeting?",
       body: `Clovy will pause the recording in ${RESPONSE_SECONDS} seconds if you do not answer.`,
-      group: `june-recording-${sessionId}`,
+      group: `clovy-recording-${sessionId}`,
     });
     return true;
   } catch {
@@ -50,7 +50,7 @@ export async function notifyRecordingAutoPaused(sessionId: string) {
     await deliver({
       title: "Clovy paused recording",
       body: "No meeting audio was detected. Open Clovy to resume or finish.",
-      group: `june-recording-${sessionId}`,
+      group: `clovy-recording-${sessionId}`,
     });
     return true;
   } catch {

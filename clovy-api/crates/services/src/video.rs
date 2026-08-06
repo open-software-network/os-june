@@ -7,7 +7,7 @@
 //!    (`credits = ceil(quote_usd * markup_millis)`), rejecting a quote above the
 //!    config ceiling as `price_overflow`.
 //! 2. **Async billing.** `generate`/`animate` authorize a hold, quote, queue the
-//!    Venice job, and return a June `JobId`. The client polls `status`, which
+//!    Venice job, and return a Clovy `JobId`. The client polls `status`, which
 //!    forwards a Venice retrieve; the charge settles once on the completing poll
 //!    inside a spawned, cancellation-safe task.
 //! 3. **Handles, not bytes.** The registry stores the Venice queue handle plus
@@ -49,7 +49,7 @@ use uuid::Uuid;
 const VIDEO_PROVIDER_NAME: &str = "venice";
 const VIDEO_DEFAULT_MIME: &str = "video/mp4";
 
-/// June's own opaque handle onto a Venice video job. A uuidv7, never Venice's
+/// Clovy's own opaque handle onto a Venice video job. A uuidv7, never Venice's
 /// raw `queue_id`.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct JobId(pub String);
@@ -229,7 +229,7 @@ impl VideoService {
 
     /// The paid work behind a create: quote -> ceiling -> authorize -> mint the
     /// settlement key -> queue. On a queue failure the hold is released (no
-    /// charge). Video is always June-metered for this first cut.
+    /// charge). Video is always Clovy-metered for this first cut.
     async fn run_create(&self, inputs: &CreateJobInputs) -> Result<VideoJob, ServiceError> {
         let estimate = self.quote_to_credits(inputs).await?;
         let authorization = authorize_or_deny(AuthorizeParams {
@@ -274,7 +274,7 @@ impl VideoService {
         ))
     }
 
-    /// Quote via Venice (June's configured key), convert to credits, and enforce
+    /// Quote via Venice (Clovy's configured key), convert to credits, and enforce
     /// the per-request ceiling — all BEFORE authorize, so a catalog change cannot
     /// authorize an unbounded hold.
     async fn quote_to_credits(&self, inputs: &CreateJobInputs) -> Result<Credits, ServiceError> {
@@ -781,7 +781,7 @@ pub enum VideoStatusOutput {
 //
 // KNOWN BOUNDARY (ADR 0015 Decision 3): this registry is per-process memory. A
 // Clovy API restart mid-job orphans the Venice job (the poll loop dies, the hold
-// expires, the user is not charged, and Venice may still bill June). Accepted
+// expires, the user is not charged, and Venice may still bill Clovy). Accepted
 // for the first cut and tied to durable-request-state follow-up #613. The fix is
 // NOT to derive the settlement key from the client request id (that reopens the
 // round-3 replay-funded-free-work hole) — it is durable job state.

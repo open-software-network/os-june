@@ -41,7 +41,7 @@ const BROWSER_TRANSPORT_POLICY_TIMEOUT: Duration = Duration::from_secs(10);
 // large request-body transfer and the terminal SSE event. This is not a
 // second server budget.
 const ISSUE_REPORT_MULTIPART_TIMEOUT: Duration = Duration::from_secs(900);
-const AGENT_DIAGNOSTICS_ATTACHMENT_NAME: &str = "june-agent-diagnostics.txt";
+const AGENT_DIAGNOSTICS_ATTACHMENT_NAME: &str = "clovy-agent-diagnostics.txt";
 const AGENT_HTTP_TIMEOUT: Duration = Duration::from_secs(600);
 const AGENT_PROXY_MAX_MESSAGES: usize = 64;
 const AGENT_PROXY_MAX_INSTRUCTION_MESSAGES: usize = 4;
@@ -1297,7 +1297,7 @@ pub async fn forward_image_request(
 }
 
 /// Forwards a video tool request to Clovy API with the user's token. Video is
-/// June-key-only in the first cut, so this path deliberately never forwards a
+/// service-key-only in the first cut, so this path deliberately never forwards a
 /// locally configured Venice inference key.
 pub async fn forward_video_request(
     path: &str,
@@ -1438,7 +1438,7 @@ pub(crate) fn is_agent_auto_model(model: &str) -> bool {
 }
 
 /// Resolve provider provenance before normalization removes internal tags.
-/// New June sessions are always tagged. The raw-id comparison remains only
+/// New Clovy sessions are always tagged. The raw-id comparison remains only
 /// for sessions created by older app versions, where provenance was not
 /// persisted and a configured local match is the safest compatibility choice.
 fn agent_generation_route(
@@ -3721,7 +3721,7 @@ pub(crate) fn app_version_headers() -> reqwest::header::HeaderMap {
 }
 
 /// For user-configured local/BYO inference endpoints. Same transport
-/// settings as the agent client, but without the June-only version header;
+/// settings as the agent client, but without the legacy-only version header;
 /// that header is a Clovy API contract, not something to send to whatever
 /// host the user pointed their local model at.
 fn local_http_client() -> &'static reqwest::Client {
@@ -5551,7 +5551,7 @@ data: [DONE]
         file.set_len(len).expect("size sparse file");
     }
 
-    // JUN-238: a video larger than June's former 10 MiB limit must remain an
+    // JUN-238: a video larger than the former 10 MiB limit must remain an
     // issue-report attachment part without reading the whole file into memory.
     #[tokio::test]
     async fn issue_attachment_parts_streams_video_above_legacy_limit() {

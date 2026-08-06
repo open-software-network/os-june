@@ -21,7 +21,7 @@ const EVENT_WINDOW_HOURS: i64 = 6;
 const EVENT_GRACE_MINUTES: i64 = 10;
 const MAX_EVENT_PAGES: usize = 10;
 
-pub const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: &str = "june://note-calendar-context-updated";
+pub const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: &str = "clovy://note-calendar-context-updated";
 
 #[derive(Debug)]
 struct Candidate {

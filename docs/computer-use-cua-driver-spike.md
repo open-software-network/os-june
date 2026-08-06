@@ -1,8 +1,11 @@
 # Computer use cua-driver sandbox spike (JUN-288)
 
-> **Historical — findings predate the runtime migration.** This spike was
+> **Historical — findings predate the runtime and product-name migrations.**
+> Unqualified "June" references below preserve the terminology used when the
+> evidence was collected; June-named bundle paths remain compatibility
+> identities under ADR-0055. This spike was
 > written against the embedded Hermes runtime architecture, which has been
-> replaced by the June-owned OpenAI Agents runtime
+> replaced by the Clovy-owned OpenAI Agents runtime
 > ([ADR-0038](adr/0038-june-owned-openai-agents-runtime.md)). The Seatbelt
 > findings and spawn-topology recommendation may still inform computer use,
 > but the broker/runtime integration points described below no longer exist

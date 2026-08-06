@@ -54,7 +54,7 @@ pub const DEFAULT_IMAGE_CLIENT_TIMEOUT_SECS: u64 = DEFAULT_REQUEST_TIMEOUT_SECS
 // slower delivers undiagnosed rather than holding the dialog hostage.
 pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_TIMEOUT_SECS: u64 = 10;
 /// Nobody files more than a handful of legitimate reports an hour; the cap
-/// only bounds June-funded diagnosis calls, never report delivery.
+/// only bounds Clovy-funded diagnosis calls, never report delivery.
 pub const DEFAULT_ISSUE_REPORT_DIAGNOSIS_MAX_PER_USER_PER_HOUR: u64 = 6;
 /// The hold is minted after authorize returns and must cover generation
 /// plus settlement: 390 + 150 = 540, inside the platform cap. Anchoring on the
@@ -342,7 +342,7 @@ pub struct IssueReportsConfig {
     /// Wall-clock budget for the internal diagnosis call.
     #[serde(default = "default_issue_report_diagnosis_timeout_secs")]
     pub diagnosis_timeout_secs: u64,
-    /// Per-user hourly cap on June-funded diagnosis calls. The cap only skips
+    /// Per-user hourly cap on Clovy-funded diagnosis calls. The cap only skips
     /// the diagnosis; report delivery itself is never limited.
     #[serde(default = "default_issue_report_diagnosis_max_per_user_per_hour")]
     pub diagnosis_max_per_user_per_hour: u64,
@@ -935,7 +935,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
     // Credit prices for Clovy's legacy text-model ids. os-api's live catalog
     // uses canonical ids, so those entries extend rather than replace these
     // aliases. Price each alias for the most expensive enabled private route
-    // so a Phala fallback cannot cost more than June charges. Keep GLM 5.2 in
+    // so a Phala fallback cannot cost more than Clovy charges. Keep GLM 5.2 in
     // sync with DEFAULT_GENERATION_MODEL in the Tauri providers module.
     for model in [
         TextModelFallback {
@@ -1003,7 +1003,7 @@ fn default_pricing() -> BTreeMap<String, ModelPriceConfig> {
 /// be a current Venice image model (verified against the models list), or
 /// generation fails `image_generation_rejected`. Values are the Venice per-image
 /// cost with a ~2x margin (mirroring the flat web-tool pricing). Models that
-/// price by resolution use their default 1K tier because June does not expose a
+/// price by resolution use their default 1K tier because Clovy does not expose a
 /// higher-resolution image request control yet. `$1 = 1000 credits`.
 fn default_image_pricing() -> BTreeMap<String, u64> {
     BTreeMap::from([

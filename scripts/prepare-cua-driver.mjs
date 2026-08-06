@@ -13,7 +13,7 @@ const pin = JSON.parse(readFileSync(pinPath, "utf8"));
 const sbomSource = path.join(rootDir, "src-tauri", "cua-driver-sbom.spdx.json");
 const licenseSource = path.join(rootDir, "src-tauri", "cua-driver-LICENSE.md");
 const iconSource = path.join(rootDir, "src-tauri", "icons", "icon.icns");
-const iconFileName = "June.icns";
+const iconFileName = "Clovy.icns";
 
 const tauriPlatform = process.env.TAURI_ENV_PLATFORM?.trim();
 if (process.platform !== "darwin" || (tauriPlatform && tauriPlatform !== "darwin")) {
@@ -45,7 +45,7 @@ const contentsDir = path.join(bundleDir, "Contents");
 const executableDir = path.join(contentsDir, "MacOS");
 const resourcesDir = path.join(contentsDir, "Resources");
 const executable = path.join(executableDir, pin.executable);
-const stampPath = path.join(resourcesDir, "june-cua-driver-pin.json");
+const stampPath = path.join(resourcesDir, "clovy-cua-driver-pin.json");
 const iconDestination = path.join(resourcesDir, iconFileName);
 
 if (preparedBundleMatches()) {
@@ -138,13 +138,13 @@ writeFileSync(
     {
       ...pin,
       bundleIdentifier,
-      juneBuild: { profile, architectures: [...architectures].sort(), sourceSha256 },
+      clovyBuild: { profile, architectures: [...architectures].sort(), sourceSha256 },
     },
     null,
     2,
   )}\n`,
 );
-cpSync(sbomSource, path.join(resourcesDir, "june-cua-driver.spdx.json"));
+cpSync(sbomSource, path.join(resourcesDir, "clovy-cua-driver.spdx.json"));
 cpSync(licenseSource, path.join(resourcesDir, "cua-driver-LICENSE.md"));
 cpSync(iconSource, iconDestination);
 run("/usr/bin/codesign", [
@@ -231,8 +231,8 @@ function preparedBundleMatches() {
     stamp.version === pin.version &&
     stamp.sourceCommit === pin.sourceCommit &&
     stamp.bundleIdentifier === bundleIdentifier &&
-    stamp.juneBuild?.profile === profile &&
-    stamp.juneBuild?.sourceSha256 === sourceSha256 &&
+    stamp.clovyBuild?.profile === profile &&
+    stamp.clovyBuild?.sourceSha256 === sourceSha256 &&
     architectures.every((architecture) => actualArchitectures.has(architecture)) &&
     version.version === pin.version &&
     version.commit === pin.sourceCommit &&

@@ -345,7 +345,7 @@ export function setAgentRiskAcknowledged(acknowledged: boolean) {
 /**
  * Testing helper: forget that onboarding completed (optionally pinning the
  * step to land on, e.g. "permissions") and reload into the wizard. Exposed on the
- * devtools console as `june.replayOnboarding()` by main.tsx.
+ * devtools console as `clovy.replayOnboarding()` by main.tsx.
  */
 export function replayOnboarding(stepId?: string) {
   try {
