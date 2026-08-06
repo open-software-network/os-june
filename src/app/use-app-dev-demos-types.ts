@@ -4,7 +4,7 @@ import type { LiveTranscriptEventDto } from "../lib/tauri";
 import type { RecordingStatusDto } from "../lib/tauri";
 import type { UpdateInstallProgress } from "./update-decision";
 import type { NotesAction } from "./state/app-state";
-import type { JuneUpdate } from "../lib/updater";
+import type { ClovyUpdate } from "../lib/updater";
 import type { UpdatePromptPayload } from "./update-decision";
 import type * as React from "react";
 
@@ -20,7 +20,7 @@ export type UseAppDevDemosDependencies = {
   setPreparingUpdate: React.Dispatch<React.SetStateAction<boolean>>;
   setRecordingNote: (noteId: string | undefined) => void;
   setRelaunchingUpdate: React.Dispatch<React.SetStateAction<boolean>>;
-  setReadyUpdate: React.Dispatch<React.SetStateAction<UpdatePromptPayload<JuneUpdate> | null>>;
+  setReadyUpdate: React.Dispatch<React.SetStateAction<UpdatePromptPayload<ClovyUpdate> | null>>;
   setUpdateProgress: React.Dispatch<React.SetStateAction<UpdateInstallProgress | null>>;
   setUpdateStatus: (status: string | null, failed?: boolean) => void;
 };

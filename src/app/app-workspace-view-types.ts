@@ -14,7 +14,7 @@ import type {
 } from "../lib/tauri";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
-import type { JuneUpdate } from "../lib/updater";
+import type { ClovyUpdate } from "../lib/updater";
 import type { UpdateCheckMode, UpdatePromptPayload } from "./update-decision";
 import type { NotesAction, NotesState } from "./state/app-state";
 import type * as React from "react";
@@ -115,13 +115,13 @@ export type RenderAppWorkspaceDependencies = {
   openTab: (nav: TabNav) => void;
   originAllNotes: boolean;
   originFolder: FolderDto | undefined;
-  readyUpdate: UpdatePromptPayload<JuneUpdate> | null;
+  readyUpdate: UpdatePromptPayload<ClovyUpdate> | null;
   recordNoticesConsentPinned: boolean;
   recordingNoteId: string | undefined;
   refreshAccount: () => Promise<AccountStatus | undefined>;
   refreshFundingAccount: () => Promise<AccountStatus | undefined>;
   rememberHomeSession: (sessionId: string) => void;
-  runUpdateCheck: (mode: UpdateCheckMode, check?: () => Promise<JuneUpdate | null>) => void;
+  runUpdateCheck: (mode: UpdateCheckMode, check?: () => Promise<ClovyUpdate | null>) => void;
   selectedNote: NoteDto | undefined;
   selectedNoteId: string | undefined;
   selectedNoteLiveTranscript: LiveTranscriptEventDto[];

@@ -3,10 +3,10 @@ import {
   INITIAL_UPDATE_STATUS_DISPLAY,
   UP_TO_DATE_STATUS,
   UPDATE_CHECK_INTERVAL_MS,
-  checkForJuneUpdate,
-  installJuneUpdate,
-  prepareJuneUpdate,
-  startPeriodicJuneUpdateChecks,
+  checkForClovyUpdate,
+  installClovyUpdate,
+  prepareClovyUpdate,
+  startPeriodicClovyUpdateChecks,
   updateCheckShowsStatus,
   updateStatusDisplayReducer,
   type UpdaterUpdate,
@@ -62,11 +62,11 @@ function update(body?: string): UpdaterUpdate {
   };
 }
 
-describe("checkForJuneUpdate", () => {
+describe("checkForClovyUpdate", () => {
   it("prompts with version and release notes when an update is available", async () => {
     const prompt = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => update(" Fixes transcription. "),
         prompt,
@@ -88,7 +88,7 @@ describe("checkForJuneUpdate", () => {
     const prompt = vi.fn();
     const reportNoUpdate = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => null,
         prompt,
@@ -106,7 +106,7 @@ describe("checkForJuneUpdate", () => {
     const prompt = vi.fn();
     const reportNoUpdate = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => null,
         prompt,
@@ -123,7 +123,7 @@ describe("checkForJuneUpdate", () => {
   it("reports no update for a manual check", async () => {
     const reportNoUpdate = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => null,
         prompt: vi.fn(),
@@ -140,7 +140,7 @@ describe("checkForJuneUpdate", () => {
     const prompt = vi.fn();
     const reportFailure = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => {
           throw new Error("signature mismatch");
@@ -159,7 +159,7 @@ describe("checkForJuneUpdate", () => {
   it("uses neutral detail for an unstructured failure", async () => {
     const reportFailure = vi.fn();
 
-    await checkForJuneUpdate(
+    await checkForClovyUpdate(
       {
         check: async () => {
           throw {};
@@ -175,13 +175,13 @@ describe("checkForJuneUpdate", () => {
   });
 });
 
-describe("startPeriodicJuneUpdateChecks", () => {
+describe("startPeriodicClovyUpdateChecks", () => {
   it("runs periodic checks until stopped", () => {
     vi.useFakeTimers();
     const runUpdateCheck = vi.fn();
 
     try {
-      const stop = startPeriodicJuneUpdateChecks(runUpdateCheck);
+      const stop = startPeriodicClovyUpdateChecks(runUpdateCheck);
 
       vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS - 1);
       expect(runUpdateCheck).not.toHaveBeenCalled();
@@ -199,13 +199,13 @@ describe("startPeriodicJuneUpdateChecks", () => {
   });
 });
 
-describe("installJuneUpdate", () => {
+describe("installClovyUpdate", () => {
   it("reports download progress, installs, and relaunches", async () => {
     const candidate = update("notes");
     const relaunch = vi.fn(async () => undefined);
     const reportProgress = vi.fn();
 
-    await installJuneUpdate({
+    await installClovyUpdate({
       update: candidate,
       relaunch,
       reportProgress,
@@ -227,13 +227,13 @@ describe("installJuneUpdate", () => {
   });
 });
 
-describe("prepareJuneUpdate", () => {
+describe("prepareClovyUpdate", () => {
   it("reports download progress and marks the update ready without relaunching", async () => {
     const candidate = update(" Ready after relaunch. ");
     const reportProgress = vi.fn();
     const reportReady = vi.fn();
 
-    await prepareJuneUpdate({
+    await prepareClovyUpdate({
       update: candidate,
       reportProgress,
       reportReady,
@@ -261,7 +261,7 @@ describe("prepareJuneUpdate", () => {
   it("uses neutral detail for an unstructured install failure", async () => {
     const reportFailure = vi.fn();
 
-    await prepareJuneUpdate({
+    await prepareClovyUpdate({
       update: {
         ...update(),
         downloadAndInstall: async () => {

@@ -29,7 +29,7 @@ describe("modelSpecEntries", () => {
     expect(entries).toEqual([]);
   });
 
-  it("shows June's billed credit price, never the raw upstream pricing", () => {
+  it("shows Clovy's billed credit price, never the raw upstream pricing", () => {
     // Raw upstream pricing ($2/$6) is present but must be ignored: the backend
     // keeps `pricing` as reference metadata and bills from the credit price
     // (with margin), which here formats to $30 / $60.

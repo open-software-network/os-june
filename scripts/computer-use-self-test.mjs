@@ -62,7 +62,7 @@ async function main() {
       if (permissionPrompt) {
         await driver.close();
         driver = await startHost(permissionPrompt);
-        console.error(`Requested ${permissionPrompt} for June Computer Use Driver.`);
+        console.error(`Requested ${permissionPrompt} for Clovy Computer Use Driver.`);
       }
     }
     const toolsResult = await driver.request("tools/list", {});
@@ -79,7 +79,7 @@ async function main() {
       await runLiveSelfTest(driver, false);
     }
     console.error(
-      `Computer use ${options.live ? "live " : ""}self-test passed for June's helper built from cua-driver ${pin.version} (${pin.sourceCommit}).`,
+      `Computer use ${options.live ? "live " : ""}self-test passed for Clovy's helper built from cua-driver ${pin.version} (${pin.sourceCommit}).`,
     );
   } finally {
     await driver?.close();
@@ -160,9 +160,9 @@ function validateBundle() {
   const plist = path.join(bundleDir, "Contents", "Info.plist");
   for (const [key, expected] of [
     ["CFBundleIdentifier", expectedBundleIdentifier],
-    ["CFBundleDisplayName", "June Computer Use Driver"],
+    ["CFBundleDisplayName", "Clovy Computer Use Driver"],
     ["CFBundleIconFile", "June.icns"],
-    ["CFBundleName", "June Computer Use Driver"],
+    ["CFBundleName", "Clovy Computer Use Driver"],
     ["LSMinimumSystemVersion", pin.minimumMacOSVersion],
   ]) {
     const actual = run("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist]).stdout.trim();
@@ -176,7 +176,7 @@ function validateBundle() {
       readFileSync(path.join(rootDir, "src-tauri", "icons", "icon.icns")),
     ) !== 0
   ) {
-    throw new Error("Computer use helper icon does not match June's app icon.");
+    throw new Error("Computer use helper icon does not match Clovy's app icon.");
   }
   const screenReason = run("/usr/bin/plutil", [
     "-extract",
@@ -186,8 +186,8 @@ function validateBundle() {
     "-",
     plist,
   ]).stdout.trim();
-  if (!screenReason.startsWith("June captures only the app windows")) {
-    throw new Error("Computer use helper is missing June's Screen Recording usage description.");
+  if (!screenReason.startsWith("Clovy captures only the app windows")) {
+    throw new Error("Computer use helper is missing Clovy's Screen Recording usage description.");
   }
 
   if (
@@ -195,7 +195,7 @@ function validateBundle() {
     stamp.sourceCommit !== pin.sourceCommit ||
     stamp.juneBuild?.sourceSha256 !== helperSourceSha256()
   ) {
-    throw new Error("Computer use helper stamp does not match June's pinned source build.");
+    throw new Error("Computer use helper stamp does not match Clovy's pinned source build.");
   }
   if (options.requireDeveloperId && stamp.juneBuild?.profile !== "release") {
     throw new Error("A signed Computer use release must contain a release-profile helper.");
@@ -256,7 +256,7 @@ function validateDirectLaunchRefusal() {
     },
   });
   const output = `${direct.stdout || ""}\n${direct.stderr || ""}`;
-  if (direct.status === 0 || !output.includes("must be launched directly by June")) {
+  if (direct.status === 0 || !output.includes("must be launched directly by Clovy")) {
     throw new Error("Bundled Computer use helper accepted a direct MCP launch.");
   }
 }
@@ -272,7 +272,7 @@ function resolveSelfTestHost() {
   const host = path.join(rootDir, "src-tauri", "target", profile, "os-june");
   if (!existsSync(host)) {
     throw new Error(
-      `Computer use self-test host is missing: ${host}. Build June first or pass --host.`,
+      `Computer use self-test host is missing: ${host}. Build Clovy first or pass --host.`,
     );
   }
   return host;
@@ -283,7 +283,7 @@ async function startMcp(command, args = [], env = driverEnvironment()) {
   const initialized = await client.request("initialize", {
     protocolVersion: contract.protocolVersion,
     capabilities: {},
-    clientInfo: { name: "June Computer use self-test", version: "1" },
+    clientInfo: { name: "Clovy Computer use self-test", version: "1" },
   });
   if (!initialized?.serverInfo?.name) {
     await client.close();
@@ -338,7 +338,7 @@ async function runLiveSelfTest(client, promptPermissions) {
     permissions.screen_recording_capturable !== true
   ) {
     throw new Error(
-      "Live Computer use self-test needs Accessibility and a live Screen Recording grant for the signed June Computer Use Driver helper.",
+      "Live Computer use self-test needs Accessibility and a live Screen Recording grant for the signed Clovy Computer Use Driver helper.",
     );
   }
 
@@ -402,7 +402,7 @@ async function runLiveSelfTest(client, promptPermissions) {
       );
     }
     const windowsBefore = await waitForWindows(client, [targetPid, observerPid]);
-    const target = findFixtureWindow(windowsBefore, targetPid, "June Computer Use Target");
+    const target = findFixtureWindow(windowsBefore, targetPid, "Clovy Computer Use Target");
     if (!target) {
       throw new Error(
         `Computer use fixture target window did not appear. Process windows: ${windowDiagnostic(windowsBefore, targetPid)}`,
@@ -483,8 +483,8 @@ async function runLiveSelfTest(client, promptPermissions) {
     }
     const windowsAfter = await waitForWindows(client, [targetPid, observerPid]);
     for (const [pid, title] of [
-      [targetPid, "June Computer Use Target"],
-      [observerPid, "June Computer Use Observer"],
+      [targetPid, "Clovy Computer Use Target"],
+      [observerPid, "Clovy Computer Use Observer"],
     ]) {
       const prior = findFixtureWindow(windowsBefore, pid, title);
       const current = findFixtureWindow(windowsAfter, pid, title);
@@ -541,7 +541,7 @@ function buildFixture(tempDir) {
 }
 
 function makeFixtureApp(tempDir, fixtureExecutable, role) {
-  const displayName = role === "observer" ? "June CU Observer" : "June CU Target";
+  const displayName = role === "observer" ? "Clovy CU Observer" : "Clovy CU Target";
   const app = path.join(tempDir, `${displayName}.app`);
   const macos = path.join(app, "Contents", "MacOS");
   mkdirSync(macos, { recursive: true });

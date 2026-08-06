@@ -8,7 +8,7 @@
 
 ## Thesis
 
-Azure Boards gives June a project-execution path for Microsoft-centered
+Azure Boards gives Clovy a project-execution path for Microsoft-centered
 engineering organizations. It should prepare from selected work items and
 iterations, then create reviewed work items or comments from meeting outcomes.
 
@@ -26,7 +26,7 @@ the task.
 ## Product promise
 
 Connect through Microsoft Entra ID, choose Azure DevOps organizations and
-projects, and let June read or propose changes only within those boundaries.
+projects, and let Clovy read or propose changes only within those boundaries.
 
 ## V1 experience
 
@@ -45,7 +45,7 @@ projects, and let June read or propose changes only within those boundaries.
   organization, and a project allowlist.
 - Work item, query, board, area, and iteration reads.
 - Approved work item create, comment, and selected-field update.
-- Local polling while June is awake.
+- Local polling while Clovy is awake.
 
 ### Later
 

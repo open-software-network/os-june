@@ -1,12 +1,12 @@
 # Home assistant experiment
 
-Home is June's persistent, relationship-level conversation. It is distinct
+Home is Clovy's persistent, relationship-level conversation. It is distinct
 from a focused **agent session**: Home holds the ongoing personal-assistant
 thread, while agent sessions hold concrete work that can be opened, monitored,
 and continued independently.
 
 This document owns the experimental Home routing contract. The experiment is
-intentionally local and reversible, so it does not introduce a new June API
+intentionally local and reversible, so it does not introduce a new Clovy API
 contract or an ADR.
 
 ## Product contract
@@ -18,7 +18,7 @@ contract or an ADR.
   onto this route.
 - Home never appears as a duplicate item in the Sessions list.
 - Home navigation is currently enabled on macOS. Its backing session and task
-  handoffs use the same June-owned runtime and persistence as focused sessions.
+  handoffs use the same Clovy-owned runtime and persistence as focused sessions.
 - A concrete task may become a focused agent session without navigating away
   from Home. The focused session uses the normal new-session model, reasoning,
   and Runtime mode defaults, starts in the background, and appears in the
@@ -28,8 +28,8 @@ contract or an ADR.
 - Home keeps lightweight suggestion nudges above the composer. They prefill the
   empty conversation, follow the local time of day, and never run work without
   the user's Send.
-- Sending locally echoes the user's bubble and June's typing bubble before the
-  runtime finishes resuming or creating the persisted Home session. June API
+- Sending locally echoes the user's bubble and Clovy's typing bubble before the
+  runtime finishes resuming or creating the persisted Home session. Clovy API
   response deltas then stream over a Tauri channel into the normal smoothed
   markdown renderer.
 
@@ -65,7 +65,7 @@ project boundary.
 
 Turns with attachments, slash commands, or other agent-only features become a
 focused session immediately. The Home client records the visible user turn and
-structured handoff card, then starts the focused work through the June-owned
+structured handoff card, then starts the focused work through the Clovy-owned
 runtime with the original attachments. It does not run a second hidden agent
 turn inside Home. Ordinary text-only conversation continues to use the
 lightweight path, while concrete work returned by that path uses the same
@@ -102,7 +102,7 @@ characters and 12,000 characters of older excerpts.
 This separation makes Home feel like one continual thread without pretending a
 model has an infinite context window. The recent-message window and older
 excerpts provide conversational continuity; the partition-scoped memory snapshot
-above remains the durable place for preferences the user explicitly asks June
+above remains the durable place for preferences the user explicitly asks Clovy
 to remember.
 
 If a fast-path call fails before a reply is committed, the original text is
@@ -123,10 +123,10 @@ contract.
 
 | Tool | Input | Result | Meaning |
 | --- | --- | --- | --- |
-| `start_task` | `title` (string), `prompt` (string), optional `summary` (string) | The normalized task request | Ask the June desktop client to create and start a focused agent session. |
+| `start_task` | `title` (string), `prompt` (string), optional `summary` (string) | The normalized task request | Ask the Clovy desktop client to create and start a focused agent session. |
 
 `start_task` is a signal, not a session store. The lightweight Home response
-returns the validated request. The Home client creates a June-owned focused
+returns the validated request. The Home client creates a Clovy-owned focused
 session, starts its first agent run, and records the returned session id on the
 inline handoff card.
 
@@ -135,7 +135,7 @@ or while the compact Home system prompt is active, only for requests that
 benefit from focused work or background execution, and at most once per
 distinct task. Conversation, quick answers, and clarifying questions stay in
 Home. An explicit request to remember or update a lasting preference is handed
-to a focused session so it can use June's on-device memory tools; the
+to a focused session so it can use Clovy's on-device memory tools; the
 lightweight path can use the resulting global memory on later requests, but
 must not promise recall until the focused session has actually saved it.
 

@@ -52,7 +52,7 @@ export function releaseNoteTitleForCommit(commit) {
 }
 
 export function formatChangelog({ version, previousVersion, commits }) {
-  const lines = [`## June v${version}`, ""];
+  const lines = [`## Clovy v${version}`, ""];
   if (previousVersion) {
     lines.push(`Changes since v${previousVersion}.`, "");
   } else {

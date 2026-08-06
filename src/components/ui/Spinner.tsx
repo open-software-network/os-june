@@ -1,13 +1,13 @@
 import { DotSpinner } from "../DotSpinner";
-import type { JuneSpinnerSize } from "../../lib/june-spinner-grid";
+import type { SpinnerSize } from "../../lib/spinner-grid";
 
-// The app-wide loading indicator: the dot spinner that draws June's mark (see
+// The app-wide loading indicator: a neutral dot spinner (see
 // DotSpinner). This wrapper owns the accessibility contract — the glyph itself
 // is decorative. "sm" (3×3) is the compact default, "md" is a slightly larger
 // 3×3 option, and "lg" is the 5×5 board for standalone loading moments.
 type SpinnerProps = {
   className?: string;
-  size?: JuneSpinnerSize;
+  size?: SpinnerSize;
   "aria-hidden"?: boolean;
   "aria-label"?: string;
 };

@@ -8,7 +8,7 @@
 
 ## Thesis
 
-Notion is the strongest knowledge-base complement to June's private note graph.
+Notion is the strongest knowledge-base complement to Clovy's private note graph.
 The plugin should bridge ephemeral meeting context and durable team knowledge:
 prepare from selected pages and databases, then publish a reviewed decision
 record, project update, or action list back to the right location.
@@ -26,8 +26,8 @@ traceability. Broad workspace indexing solves search by increasing data copies.
 
 ## Product promise
 
-Choose the Notion pages June may use. Prepare and publish from those bounded
-sources while local June notes remain private unless the user explicitly sends
+Choose the Notion pages Clovy may use. Prepare and publish from those bounded
+sources while local Clovy notes remain private unless the user explicitly sends
 content to Notion.
 
 ## V1 experience
@@ -35,7 +35,7 @@ content to Notion.
 - Discover Notion from Plugins, then connect through the Connectors account
   surface and use Notion's page picker to select accessible roots.
 - Search selected pages/data sources and read a page on demand.
-- Link a June note to a Notion page without copying the entire note.
+- Link a Clovy note to a Notion page without copying the entire note.
 - Draft a decision record, project update, or action database entry from a
   meeting.
 - Preview the destination, parent, properties, and content before creation or
@@ -60,7 +60,7 @@ content to Notion.
 ## Non-goals
 
 - Replacing Notion search or editing UI.
-- Mirroring an entire workspace into June or OpenSoftware.
+- Mirroring an entire workspace into Clovy or OpenSoftware.
 - Accessing pages outside the Notion authorization/page picker.
 - Autonomous publishing at launch.
 - Treating every database schema as a generic spreadsheet.

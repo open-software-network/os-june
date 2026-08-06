@@ -25,7 +25,7 @@ type ModelPickerEntry = {
   costQuality?: number;
 };
 
-function withJuneModelName(model: VeniceModelDto): VeniceModelDto {
+function withClovyModelName(model: VeniceModelDto): VeniceModelDto {
   return model.id === AUTO_MODEL_ID && model.name !== "Auto" ? { ...model, name: "Auto" } : model;
 }
 
@@ -214,7 +214,11 @@ export function ModelPickerDialog({
               data-selected={selected}
               onClick={() => onSelect(model.id, presetCostQuality)}
             >
-              <span className="model-picker-logo" aria-hidden>
+              <span
+                className="model-picker-logo"
+                data-brand={model.id === AUTO_MODEL_ID ? "clovy" : undefined}
+                aria-hidden
+              >
                 <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
               </span>
               <span className="model-picker-name" title={model.description}>
@@ -249,7 +253,7 @@ export function ModelPickerDialog({
 }
 
 export function selectedModel(options: VeniceModelDto[], value: string) {
-  return withJuneModelName(
+  return withClovyModelName(
     options.find((model) => model.id === value) ?? {
       provider: "",
       id: value,
@@ -287,7 +291,7 @@ export function modelSpecEntries(model: VeniceModelDto): { label: string; value:
   if (model.id === "open-software/auto") return [];
 
   const entries: { label: string; value: string }[] = [];
-  // Use June's billed credit price (with margin) for the input/output split.
+  // Use Clovy's billed credit price (with margin) for the input/output split.
   // The raw `pricing.*.usd` on the DTO is upstream provider metadata the backend
   // keeps for reference only — the user-facing price must come from the credit
   // price (see june-api handlers/models.rs), so it is never shown as the price
@@ -324,12 +328,12 @@ export function modelSpecEntries(model: VeniceModelDto): { label: string; value:
 
 export function modelOptions(models: VeniceModelDto[], selectedModel: string) {
   const modelId = selectedModel.trim();
-  const namedModels = models.map(withJuneModelName);
+  const namedModels = models.map(withClovyModelName);
   if (!modelId || namedModels.some((model) => model.id === modelId)) {
     return namedModels;
   }
   return [
-    withJuneModelName({
+    withClovyModelName({
       provider: "",
       id: modelId,
       name: modelId,

@@ -984,7 +984,7 @@ impl AgentRepository {
     /// reconciled by the scheduler's lease-aware recovery path.
     pub async fn reconcile_non_routine_runs_after_restart(&self) -> Result<u64, sqlx::Error> {
         let timestamp = now();
-        let message = "June restarted before this run completed.";
+        let message = "Clovy restarted before this run completed.";
         let mut transaction = self.pool.begin().await?;
         let result = query(
             "UPDATE agent_runs

@@ -197,7 +197,7 @@ export async function routineCreationPrompt(
   options?: { unrestricted?: boolean },
 ) {
   return [
-    "Create a new June routine for me.",
+    "Create a new Clovy routine for me.",
     `Here is what it should do: ${description.trim()}`,
     options?.unrestricted
       ? "I chose unrestricted mode for this routine."

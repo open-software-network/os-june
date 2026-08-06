@@ -54,7 +54,7 @@ import {
   downloadAgentArtifact,
   dictationHelperCommand,
   juneHomeChat,
-  type JuneHomeChatResponse,
+  type ClovyHomeChatResponse,
   listVeniceModels,
   providerModelSettings,
   setCostQuality as setProviderCostQuality,
@@ -135,7 +135,7 @@ import { AUTO_MODEL_ID, modelOptions, selectedModel } from "../settings/ModelPic
 import { ModelPickerPopover, type ModelPickerFlyout } from "../settings/ModelPickerPopover";
 import { Dialog } from "../ui/Dialog";
 import { Spinner } from "../ui/Spinner";
-import { JuneBloom } from "../brand/JuneBloom";
+import { ClovyAlive } from "../brand/ClovyAlive";
 import { ShareDialog } from "../share/ShareDialog";
 import { ReportDialog } from "./ReportDialog";
 import type { ReportCategory } from "./composer/reportCategory";
@@ -148,19 +148,19 @@ import {
 } from "./session-persistence";
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import {
-  forgetJuneHomeStoredSessionId,
+  forgetClovyHomeStoredSessionId,
   juneHomeDailyCheckIn,
   juneHomeDayKey,
   juneHomeDayLabel,
   juneHomeGreetingParts,
   juneHomeNudgePrompts,
   JUNE_HOME_THREAD_CHANGED_EVENT,
-  resolveJuneHomeThreadSessionId,
-  stripJuneHomeContextFromPreview,
-  withJuneHomeCurrentResearch,
-  withJuneHomeLatestTaskIntent,
-  type JuneHomeConversationContext,
-  type JuneHomeTaskRequest,
+  resolveClovyHomeThreadSessionId,
+  stripClovyHomeContextFromPreview,
+  withClovyHomeCurrentResearch,
+  withClovyHomeLatestTaskIntent,
+  type ClovyHomeConversationContext,
+  type ClovyHomeTaskRequest,
 } from "../../lib/june-home";
 import type { AgentChatTurn } from "../../lib/agent-chat-runtime";
 import {
@@ -308,7 +308,7 @@ function artifactView(artifact: AgentArtifactDto): AgentArtifact {
   return {
     name: artifact.name,
     path: artifact.path,
-    rootLabel: "June workspace",
+    rootLabel: "Clovy workspace",
     size: artifact.sizeBytes,
   };
 }
@@ -763,7 +763,7 @@ export function AgentWorkspace({
       .then((next) => {
         const selected = selectedIdRef.current;
         if (!homeMode || !selected || next.some((session) => session.id === selected)) return;
-        forgetJuneHomeStoredSessionId(getCurrentDataPartitionName(), selected);
+        forgetClovyHomeStoredSessionId(getCurrentDataPartitionName(), selected);
         selectedIdRef.current = undefined;
         setSelectedId(undefined);
         setNewSessionMode(true);
@@ -1549,15 +1549,15 @@ export function AgentWorkspace({
   }
 
   async function startHomeTask(
-    request: JuneHomeTaskRequest,
+    request: ClovyHomeTaskRequest,
     toolCallId: string,
-    conversation: JuneHomeConversationContext,
+    conversation: ClovyHomeConversationContext,
     homeStoredSessionId: string,
     profile: string,
     taskAttachments: string[] = [],
     sourceUserTurnId?: string,
   ) {
-    const activeHomeSessionId = resolveJuneHomeThreadSessionId(homeStoredSessionId);
+    const activeHomeSessionId = resolveClovyHomeThreadSessionId(homeStoredSessionId);
     if (!activeHomeSessionId) return;
     if (handledHomeTaskToolCallsRef.current.has(toolCallId)) return;
     const handoffId = `home-task-${toolCallId}`;
@@ -1609,7 +1609,7 @@ export function AgentWorkspace({
         safetyMode: "sandboxed",
         profile: activeHomeSessionId === homeStoredSessionId ? profile : "default",
       });
-      const activeAfterCreation = resolveJuneHomeThreadSessionId(homeStoredSessionId);
+      const activeAfterCreation = resolveClovyHomeThreadSessionId(homeStoredSessionId);
       if (!activeAfterCreation) {
         await agentRuntimeBindings.deleteSession(focusedSession.id);
         return;
@@ -1621,7 +1621,7 @@ export function AgentWorkspace({
         .filter((skill) => skill.enabled)
         .map((skill) => skill.id);
       const runtimePrompt = request.requiresCurrentResearch
-        ? withJuneHomeCurrentResearch(request.prompt, conversation)
+        ? withClovyHomeCurrentResearch(request.prompt, conversation)
         : request.prompt;
       await agentRuntimeBindings.startRun({
         sessionId: focusedSession.id,
@@ -1735,7 +1735,7 @@ export function AgentWorkspace({
         return;
       }
 
-      // Attachments and commands need the full June tool/runtime context. Home
+      // Attachments and commands need the full Clovy tool/runtime context. Home
       // hands them to a focused session deterministically instead of running a
       // second hidden agent turn and hoping it emits a legacy bridge tool.
       if (messageAttachments.length > 0 || message.startsWith("/")) {
@@ -1792,7 +1792,7 @@ export function AgentWorkspace({
             parts: [{ type: "text", text: streamedContent, status: "running" }],
           });
         };
-        let response: JuneHomeChatResponse;
+        let response: ClovyHomeChatResponse;
         try {
           response =
             (await homeDemoReply(profile, onDelta)) ??
@@ -1815,7 +1815,7 @@ export function AgentWorkspace({
             ? undefined
             : {
                 ...response.task,
-                prompt: withJuneHomeLatestTaskIntent(response.task.prompt, message),
+                prompt: withClovyHomeLatestTaskIntent(response.task.prompt, message),
               };
         const toolCallId = responseTask ? `direct:${suffix}` : undefined;
         const assistantTurn: AgentChatTurn =
@@ -2114,7 +2114,7 @@ export function AgentWorkspace({
                   part.type === "text"
                     ? {
                         ...part,
-                        text: stripJuneHomeContextFromPreview(part.text) ?? part.text,
+                        text: stripClovyHomeContextFromPreview(part.text) ?? part.text,
                       }
                     : part,
                 ),
@@ -2404,7 +2404,12 @@ export function AgentWorkspace({
                     ) : null}
                     <div className="agent-home-greeting">
                       <span className="agent-home-greeting-mark" aria-hidden>
-                        <JuneBloom size={30} animated />
+                        <ClovyAlive
+                          className="clovy-home-mark"
+                          palette="appearance"
+                          width={30}
+                          height={31}
+                        />
                       </span>
                       <h2>{homeGreeting.salutation}</h2>
                       <p>{homeGreeting.question}</p>
@@ -2793,7 +2798,7 @@ export function AgentWorkspace({
           if (!compacting) setCompactOpen(false);
         }}
         title="Compact context?"
-        description="June will replace older conversation turns with one visible summary and keep recent turns unchanged."
+        description="Clovy will replace older conversation turns with one visible summary and keep recent turns unchanged."
         footer={
           <>
             <button
@@ -3035,7 +3040,7 @@ function AgentComposer({
         ) : null}
         <ComposerEditor
           ref={editorRef}
-          placeholder={hero ? "Ask June anything, run / commands" : "Send a message"}
+          placeholder={hero ? "Ask Clovy anything, run / commands" : "Send a message"}
           onChange={(text) => {
             publishedDraftRef.current = text;
             setDraft(text);
@@ -3068,7 +3073,7 @@ function AgentComposer({
               data-unrestricted={safetyMode === "unrestricted" ? "true" : undefined}
               aria-haspopup="menu"
               aria-expanded={safetyOpen}
-              title="Change what June can touch"
+              title="Change what Clovy can touch"
               onClick={() => setSafetyOpen((open) => !open)}
             >
               {safetyMode === "sandboxed" ? (
@@ -3127,7 +3132,7 @@ function AgentComposer({
                 <button
                   type="button"
                   className="agent-composer-stop"
-                  aria-label="Stop June"
+                  aria-label="Stop Clovy"
                   disabled={stopping}
                   onClick={() => void onStop()}
                 >
@@ -3138,7 +3143,7 @@ function AgentComposer({
               <button
                 type="button"
                 className="agent-composer-stop"
-                aria-label="Stop June"
+                aria-label="Stop Clovy"
                 disabled={stopping}
                 onClick={() => void onStop()}
               >
@@ -3200,7 +3205,7 @@ function AgentComposer({
           role="menu"
           aria-label="Safety mode"
         >
-          <p className="agent-sandbox-menu-title">Choose what June can touch</p>
+          <p className="agent-sandbox-menu-title">Choose what Clovy can touch</p>
           {SANDBOX_OPTIONS.map((option) => {
             const value: AgentSafetyMode = option.unrestricted ? "unrestricted" : "sandboxed";
             return (
@@ -3274,7 +3279,7 @@ function AgentComposer({
         open={confirmUnrestricted}
         onClose={() => setConfirmUnrestricted(false)}
         title="Turn on unrestricted?"
-        description="June will be able to change any file your account can, not just its own workspace. This comes with risks like data loss if something goes wrong."
+        description="Clovy will be able to change any file your account can, not just its own workspace. This comes with risks like data loss if something goes wrong."
         footer={
           <>
             <button

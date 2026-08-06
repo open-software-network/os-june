@@ -26,9 +26,9 @@ import { Dialog } from "../ui/Dialog";
 import { Select } from "../ui/Select";
 import { Switch } from "../ui/Switch";
 import { SettingsPageHeader } from "./AppSettings";
-import { JunePersonalitySettingsSection } from "./JunePersonalitySettingsSection";
+import { ClovyPersonalitySettingsSection } from "./ClovyPersonalitySettingsSection";
 
-/** Settings owned by June's local agent harness. Messaging compatibility,
+/** Settings owned by Clovy's local agent harness. Messaging compatibility,
  * raw runtime diagnostics, and the legacy filesystem browser are
  * intentionally absent. */
 export function AgentSettingsSection({
@@ -126,9 +126,9 @@ export function AgentSettingsSection({
         <SettingsPageHeader
           id="agent-heading"
           title="Agent"
-          blurb="Configure June's personality and local agent experience."
+          blurb="Configure Clovy's personality and local agent experience."
         />
-        <JunePersonalitySettingsSection />
+        <ClovyPersonalitySettingsSection />
       </section>
 
       <section className="settings-group" aria-labelledby="agent-experience-heading">
@@ -136,7 +136,7 @@ export function AgentSettingsSection({
           Experience
         </h2>
         <p className="settings-group-description">
-          Control how June keeps you informed while she works.
+          Control how Clovy keeps you informed while she works.
         </p>
         <div className="settings-card">
           <div className="settings-rows">
@@ -206,7 +206,7 @@ export function AgentSettingsSection({
           Skills
         </h2>
         <p className="settings-group-description">
-          Choose which skills June can load during a session.
+          Choose which skills Clovy can load during a session.
         </p>
         <div className="settings-card">
           <div className="settings-rows">
@@ -248,7 +248,7 @@ export function AgentSettingsSection({
         open={Boolean(editingSkill)}
         onClose={() => setEditingSkill(undefined)}
         title={editingSkill ? `Edit ${editingSkill.name}` : "Edit skill"}
-        description="Update the managed instructions June loads for this skill."
+        description="Update the managed instructions Clovy loads for this skill."
         footer={
           <>
             <button

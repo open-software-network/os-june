@@ -9,7 +9,7 @@
 
 ## Thesis
 
-Google Workspace should be June's default work graph. The existing Gmail and
+Google Workspace should be Clovy's default work graph. The existing Gmail and
 Calendar connector proves the private architecture. The plugin should now turn
 that connection into a complete meeting loop: prepare from mail, calendar,
 files, and prior notes; capture the conversation; then draft the follow-up,
@@ -17,7 +17,7 @@ update the source document, and schedule the next step.
 
 This is the highest-priority plugin because it combines broad adoption, daily
 frequency, meeting adjacency, and an already-shipped foundation. It is also the
-clearest demonstration of June's positioning: the account grant stays on the
+clearest demonstration of Clovy's positioning: the account grant stays on the
 Mac and provider calls originate on-device.
 
 ## Customer and problem
@@ -27,11 +27,11 @@ Meet. Context is scattered across threads, invitations, documents, and meeting
 artifacts. Before a meeting they reconstruct history manually. Afterward they
 copy action items into replies, documents, and events. Existing assistants can
 index this corpus in the cloud, but that is unacceptable for the confidential
-prosumer June is built for.
+prosumer Clovy is built for.
 
 ## Product promise
 
-Connect Google once, choose the parts June may use, and move from meeting
+Connect Google once, choose the parts Clovy may use, and move from meeting
 context to completed follow-through without giving OpenSoftware a credential
 that can read the account.
 
@@ -41,11 +41,11 @@ that can read the account.
    connected, plus optional Drive and Meet capabilities.
 2. Each capability explains its requested access before the system browser
    opens Google's consent flow.
-3. June can prepare a briefing from relevant threads, attendees, calendar
+3. Clovy can prepare a briefing from relevant threads, attendees, calendar
    context, Drive files, prior notes, and available Meet transcripts.
-4. During or after the meeting, June can cite source items and create a local
+4. During or after the meeting, Clovy can cite source items and create a local
    note with stable provider references.
-5. June can draft a reply, create or update an event, and create a new Docs or
+5. Clovy can draft a reply, create or update an event, and create a new Docs or
    Sheets artifact. Every outward action follows the routine's trust mode.
 6. The user can disconnect one Google account and verify that every Google
    capability is off.
@@ -73,10 +73,10 @@ that can read the account.
 ## Non-goals
 
 - Mirroring the user's Google corpus into OpenSoftware infrastructure.
-- Replacing Google editors with June-native collaboration.
+- Replacing Google editors with Clovy-native collaboration.
 - Domain-wide delegation or an administrator grant in v1.
 - Silently broadening the scopes of already-connected accounts.
-- Treating Google sign-in as June identity; OS Accounts remains June identity.
+- Treating Google sign-in as Clovy identity; OS Accounts remains Clovy identity.
 
 ## Packaging
 
@@ -96,7 +96,7 @@ inside it.
 
 The shipped Google path implements the local-mode design proposed in ADR-0016.
 Refresh tokens live in the Keychain. Google API calls go from the device to
-Google through the Rust provider proxy. June API is not in the connector data
+Google through the Rust provider proxy. Clovy API is not in the connector data
 path. Model inference remains a separate path and the consent copy says so.
 
 Provider content is untrusted. Full email bodies and file contents are fetched
@@ -107,7 +107,7 @@ earned autonomy are enforced in Rust.
 
 Local Google capabilities are available on Hobby. Event-triggered and
 multi-step routines are Pro. Existing agent usage meters model calls; Google
-API calls do not create a new June credit action.
+API calls do not create a new Clovy credit action.
 
 ## Success measures
 

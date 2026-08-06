@@ -1,12 +1,12 @@
 name: Bug report
-description: Something in June is broken or behaving unexpectedly
+description: Something in Clovy is broken or behaving unexpectedly
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
         Thanks for taking the time to report this. You can also report bugs
-        from inside June (it attaches diagnostics automatically), but a GitHub
+        from inside Clovy (it attaches diagnostics automatically), but a GitHub
         issue is great for anything you want tracked in the open.
 
         For security vulnerabilities, please do not open a public issue.
@@ -47,7 +47,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: June version and channel
+      label: Clovy version and channel
       description: Shown in Settings. Include stable or rc.
       placeholder: v0.0.26, stable
     validations:

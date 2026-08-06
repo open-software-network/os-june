@@ -1,0 +1,44 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#10271D"/>
+      <stop offset="1" stop-color="#020B08"/>
+    </linearGradient>
+    <radialGradient id="clovyFill" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(72 34) rotate(45) scale(245 220)">
+      <stop stop-color="#F0FF92"/>
+      <stop offset="0.26" stop-color="#E2FF6D"/>
+      <stop offset="0.58" stop-color="#D7FF54"/>
+      <stop offset="1" stop-color="#B0FA65"/>
+    </radialGradient>
+    <linearGradient id="clovyStroke" x1="512" y1="184" x2="512" y2="832" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F6FFC4" stop-opacity="0.62"/>
+      <stop offset="1" stop-color="#54D55F" stop-opacity="0.58"/>
+    </linearGradient>
+    <filter id="bodyShadow" x="60" y="80" width="904" height="904" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="20"/>
+      <feGaussianBlur stdDeviation="20"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="dropShadow" result="shape"/>
+    </filter>
+    <filter id="clovyShadow" x="-20%" y="-20%" width="140%" height="150%" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="12"/>
+      <feGaussianBlur stdDeviation="16"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0156863 0 0 0 0 0.0745098 0 0 0 0 0.0470588 0 0 0 0.34 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="dropShadow" result="shape"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#bodyShadow)">
+    <path d="M512,100 C357.85,100 280.78,100 224.27,121.49 C175.81,139.85 139.85,175.81 121.49,224.27 C100,280.78 100,357.85 100,512 C100,666.15 100,743.22 121.49,799.73 C139.85,848.19 175.81,884.15 224.27,902.51 C280.78,924 357.85,924 512,924 C666.15,924 743.22,924 799.73,902.51 C848.19,884.15 884.15,848.19 902.51,799.73 C924,743.22 924,666.15 924,512 C924,357.85 924,280.78 902.51,224.27 C884.15,175.81 848.19,139.85 799.73,121.49 C743.22,100 666.15,100 512,100 Z" fill="url(#bgGrad)"/>
+  </g>
+
+  <g filter="url(#clovyShadow)" transform="translate(216.5 221) scale(2.3)">
+    <path fill-rule="evenodd" clip-rule="evenodd" d="M99.8104 0.0262613C138.071 -1.09911 151.338 34.147 150.906 66.788C167.086 45.9839 192.628 28.1589 220.16 38.9501C241.444 47.2931 249.633 72.6964 240.35 92.9462C233.01 108.96 220.258 118.226 204.12 124.622C227.262 127.441 256.1 138.358 256.872 166.01C257.135 174.337 253.911 182.401 247.976 188.255C239.398 196.79 229.401 198.063 218.1 198.198C218.809 203.806 219.436 208.075 218.173 213.732C216.633 220.792 212.285 226.916 206.129 230.7C199.246 234.9 190.188 235.879 182.506 233.804C160.618 227.878 149.874 210.258 139.249 192.639C141.827 211.271 139.744 230.327 130.786 247.389C124.994 257.838 113.127 266.907 102.004 262.545C99.7278 261.652 98.0027 260.037 97.3554 257.294C95.4185 249.082 101.913 246.2 106.112 241.234C118.643 226.414 122.536 210.503 122.279 193.751C117.643 206.759 112.835 215.471 101.8 227.467C78.3712 252.945 34.7107 245.56 34.2548 206.465C34.1017 193.319 42.7063 179.94 52.4725 170.682C30.5596 169.39 9.31687 162.366 1.8827 139.435C-1.39788 128.962 -0.361542 117.612 4.75966 107.904C9.57541 98.6542 17.9531 91.7675 27.9599 88.8339C45.4751 83.5195 62.0831 89.9152 77.4052 98.0311C58.417 71.6194 44.7798 31.7735 77.2987 7.72646C83.6764 3.01084 91.9867 0.92448 99.8104 0.0262613ZM107.627 109C100.101 109 93.9999 119.074 93.9999 131.5C93.9999 137.007 95.1986 142.053 97.1884 145.964C98.1705 147.893 100.792 147.568 102.395 146.113C103.87 144.775 105.621 144 107.5 144C109.446 144 111.256 144.832 112.763 146.259C114.334 147.747 116.946 148.106 117.948 146.188C120.008 142.247 121.254 137.114 121.254 131.5C121.254 119.074 115.153 109 107.627 109ZM147.627 109C140.101 109 134 119.074 134 131.5C134 137.007 135.199 142.053 137.188 145.964C138.17 147.893 140.792 147.568 142.395 146.113C143.87 144.775 145.621 144 147.5 144C149.446 144 151.256 144.832 152.763 146.259C154.334 147.747 156.946 148.106 157.948 146.188C160.008 142.247 161.254 137.114 161.254 131.5C161.254 119.074 155.153 109 147.627 109Z" fill="url(#clovyFill)" stroke="url(#clovyStroke)" stroke-width="1.2"/>
+  </g>
+</svg>

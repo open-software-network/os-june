@@ -3911,7 +3911,7 @@ fn note_generation_failure_for_user(mut error: AppError) -> AppError {
         "Your recording was transcribed, but note generation is busy right now. Your transcript is saved."
             .to_string()
     } else {
-        "Your recording was transcribed, but June couldn't generate the note. Your transcript is saved."
+        "Your recording was transcribed, but Clovy couldn't generate the note. Your transcript is saved."
             .to_string()
     };
     error
@@ -5609,7 +5609,7 @@ mod tests {
         ));
         assert_eq!(
             failure.message,
-            "Your recording was transcribed, but June couldn't generate the note. Your transcript is saved."
+            "Your recording was transcribed, but Clovy couldn't generate the note. Your transcript is saved."
         );
 
         let balance_failure = note_generation_failure_for_user(AppError::new(

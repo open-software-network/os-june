@@ -28,7 +28,7 @@ pub async fn put(secret_ref: &str, value: String) -> Result<(), AppError> {
             .map_err(|_| {
                 AppError::new(
                     "agent_secret_store_failed",
-                    "June could not save the secret securely.",
+                    "Clovy could not save the secret securely.",
                 )
             });
         value.zeroize();
@@ -38,7 +38,7 @@ pub async fn put(secret_ref: &str, value: String) -> Result<(), AppError> {
     .map_err(|_| {
         AppError::new(
             "agent_secret_store_failed",
-            "June could not save the secret securely.",
+            "Clovy could not save the secret securely.",
         )
     })?
 }
@@ -60,7 +60,7 @@ pub async fn take(secret_ref: &str) -> Result<Option<String>, AppError> {
         let entry = keyring::Entry::new(&service, &secret_ref).map_err(|_| {
             AppError::new(
                 "agent_secret_read_failed",
-                "June could not read the saved secret.",
+                "Clovy could not read the saved secret.",
             )
         })?;
         let value = match entry.get_password() {
@@ -69,7 +69,7 @@ pub async fn take(secret_ref: &str) -> Result<Option<String>, AppError> {
             Err(_) => {
                 return Err(AppError::new(
                     "agent_secret_read_failed",
-                    "June could not read the saved secret.",
+                    "Clovy could not read the saved secret.",
                 ))
             }
         };
@@ -77,7 +77,7 @@ pub async fn take(secret_ref: &str) -> Result<Option<String>, AppError> {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(value),
             Err(_) => Err(AppError::new(
                 "agent_secret_delete_failed",
-                "June could not remove the consumed secret.",
+                "Clovy could not remove the consumed secret.",
             )),
         }
     })
@@ -85,7 +85,7 @@ pub async fn take(secret_ref: &str) -> Result<Option<String>, AppError> {
     .map_err(|_| {
         AppError::new(
             "agent_secret_read_failed",
-            "June could not read the saved secret.",
+            "Clovy could not read the saved secret.",
         )
     })?
 }
@@ -103,14 +103,14 @@ pub async fn delete(secret_ref: &str) -> Result<(), AppError> {
         let entry = keyring::Entry::new(&service, &secret_ref).map_err(|_| {
             AppError::new(
                 "agent_secret_delete_failed",
-                "June could not remove the saved secret.",
+                "Clovy could not remove the saved secret.",
             )
         })?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(AppError::new(
                 "agent_secret_delete_failed",
-                "June could not remove the saved secret.",
+                "Clovy could not remove the saved secret.",
             )),
         }
     })
@@ -118,7 +118,7 @@ pub async fn delete(secret_ref: &str) -> Result<(), AppError> {
     .map_err(|_| {
         AppError::new(
             "agent_secret_delete_failed",
-            "June could not remove the saved secret.",
+            "Clovy could not remove the saved secret.",
         )
     })?
 }

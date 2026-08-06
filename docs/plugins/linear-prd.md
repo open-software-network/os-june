@@ -9,7 +9,7 @@
 ## Thesis
 
 Linear is the cleanest bridge from meeting decisions to product execution.
-June should prepare reviews from projects and issues, then draft the concrete
+Clovy should prepare reviews from projects and issues, then draft the concrete
 issues, updates, and comments a team needs after the meeting.
 
 It ranks below GitHub because the audience is narrower and much of the value
@@ -24,7 +24,7 @@ delivery state in Linear. Status reporting becomes repeated synthesis.
 
 ## Product promise
 
-Connect a Linear workspace and let June use Linear's official hosted MCP tools
+Connect a Linear workspace and let Clovy use Linear's official hosted MCP tools
 to turn meeting outcomes into reviewed work. The workspace and exact proposed
 change remain visible before an approval-required tool runs.
 
@@ -37,7 +37,7 @@ change remain visible before an approval-required tool runs.
   `destructiveHint` is false or absent.
 - Require approval for write, destructive, ambiguous, malformed, or missing
   `readOnlyHint` annotations.
-- Link June notes to Linear objects and refresh status on demand.
+- Link Clovy notes to Linear objects and refresh status on demand.
 
 ## Scope
 
@@ -45,9 +45,9 @@ change remain visible before an approval-required tool runs.
 
 - Expose every valid tool published by Linear's official hosted MCP server.
 - Keep OAuth connect, refresh-token rotation, reconnect, revoke, and disconnect
-  in June.
+  in Clovy.
 - Keep MCP transport, credential isolation, timeouts, output bounds, and
-  approval enforcement in June.
+  approval enforcement in Clovy.
 - Planning brief, standup, issue drafting, and weekly project-status skills.
 
 ### Later
@@ -100,7 +100,7 @@ cross-plugin GitHub/Slack workflows are Pro.
 
 ## Decision requested
 
-Approve workspace-wide hosted MCP access with June-owned connection lifecycle
+Approve workspace-wide hosted MCP access with Clovy-owned connection lifecycle
 and conservative approval policy; pair the product launch with GitHub
 composition but do not block either plugin on the other.
 

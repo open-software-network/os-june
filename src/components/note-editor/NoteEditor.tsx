@@ -44,7 +44,7 @@ import {
 } from "../../lib/live-transcript-preview";
 import { useFollowLatestScroll } from "../../lib/use-follow-latest-scroll";
 import {
-  isInvalidJuneResponseMessage,
+  isInvalidClovyResponseMessage,
   NoteFailureBanner,
   userFacingFailureMessage,
 } from "./NoteFailureBanner";
@@ -1399,7 +1399,7 @@ function TranscriptTurn({
 }
 
 function sourceTurnFailureMessage(message?: string) {
-  if (message && isInvalidJuneResponseMessage(message)) {
+  if (message && isInvalidClovyResponseMessage(message)) {
     return "Audio for this part could not be transcribed.";
   }
   return userFacingFailureMessage(message) ?? "";

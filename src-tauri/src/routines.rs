@@ -1,7 +1,7 @@
-//! June-owned Routine persistence and dispatch.
+//! Clovy-owned Routine persistence and dispatch.
 //!
 //! A Routine is a durable schedule and policy. A `routine_runs` row is first
-//! claimed transactionally, then linked to the June-owned agent session/run
+//! claimed transactionally, then linked to the Clovy-owned agent session/run
 //! created for that execution. The claim is the single-active-run boundary: a
 //! second scheduler tick, a manual trigger, or a restarted app cannot start a
 //! duplicate while the original claim is live.
@@ -32,7 +32,7 @@ const ROUTINE_SELECT_BY_ID_SQL: &str = "SELECT id, legacy_job_id, name, prompt, 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRoutineDto {
-    /// Stable June routine id. Legacy imports may deliberately preserve the
+    /// Stable Clovy routine id. Legacy imports may deliberately preserve the
     /// retired Hermes job id here, while also storing it in `legacy_job_id`.
     pub id: String,
     pub legacy_job_id: Option<String>,
@@ -176,9 +176,9 @@ fn resolve_routine_model(stored_model: &str, selected_model: &str) -> String {
         || stored_model == crate::providers::AUTO_GENERATION_MODEL
     {
         // A Routine's stored Auto value resolves against the saved remote
-        // selection so unattended work stays on June's metered model route.
+        // selection so unattended work stays on Clovy's metered model route.
         // `open-software/auto` is itself supported; the proxy adds its
-        // cost-quality preference before calling June API.
+        // cost-quality preference before calling the model API.
         let selected_model = selected_model.trim();
         if selected_model.is_empty() || selected_model == "auto" {
             crate::providers::AUTO_GENERATION_MODEL.to_string()
@@ -618,9 +618,9 @@ pub async fn reconcile_after_restart(pool: &SqlitePool) -> Result<(), AppError> 
     // pending approval or clarification remains resumable after relaunch.
     // Ordinary running work cannot survive the process boundary and is
     // interrupted, which releases its claim through `reconcile`.
-    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status IN ('queued', 'running'))")
+    query("UPDATE agent_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'Clovy restarted before this routine completed.'), updated_at = ? WHERE id IN (SELECT agent_run_id FROM routine_runs WHERE agent_run_id IS NOT NULL AND status IN ('queued', 'running'))")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;
-    query("UPDATE routine_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'June restarted before this routine completed.'), updated_at = ? WHERE status IN ('queued', 'running')")
+    query("UPDATE routine_runs SET status = 'interrupted', completed_at = COALESCE(completed_at, ?), error_code = COALESCE(error_code, 'routine_runtime_restarted'), error_message = COALESCE(error_message, 'Clovy restarted before this routine completed.'), updated_at = ? WHERE status IN ('queued', 'running')")
         .bind(&timestamp).bind(&timestamp).execute(pool).await.map_err(app_error)?;
     reconcile(pool).await
 }
@@ -702,7 +702,7 @@ pub(crate) async fn project_agent_run_terminal(
     Ok(())
 }
 
-/// Start the single local scheduler for June-owned routines. Claims are stored
+/// Start the single local scheduler for Clovy-owned routines. Claims are stored
 /// before dispatch, so overlapping ticks, manual runs, and connector wakes all
 /// share the same single-flight boundary.
 pub fn start_scheduler(app: &AppHandle) {
@@ -1164,7 +1164,7 @@ struct UnattendedRunRequest<'a> {
     enabled_toolsets: &'a [String],
 }
 
-const UNATTENDED_RUN_INSTRUCTIONS: &str = "You are June executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.";
+const UNATTENDED_RUN_INSTRUCTIONS: &str = "You are Clovy executing an unattended routine. Complete the requested work without asking questions. Never claim a tool succeeded unless its result confirms success. If a tool needs approval, pause and wait for the user instead of choosing for them.";
 
 async fn unattended_run_params(
     app: &AppHandle,
@@ -1211,7 +1211,7 @@ async fn unattended_run_params(
     let instructions =
         crate::agent_runtime::persona::instructions_for_app(app, UNATTENDED_RUN_INSTRUCTIONS);
     Ok(
-        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": instructions, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled June skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
+        json!({ "model": request.model, "reasoningEffort": "medium", "instructions": instructions, "workspace": request.workspace, "safetyMode": request.safety_mode.as_db(), "input": request.prompt, "history": [], "tools": tools, "skills": skills.iter().map(|name| json!({ "name": name, "description": "Enabled Clovy skill", "source": "managed" })).collect::<Vec<_>>(), "contextWindow": 128000, "maxOutputTokens": 8192 }),
     )
 }
 
@@ -1373,7 +1373,7 @@ fn enabled_toolsets_from_metadata(metadata: &Value, legacy_catalog: bool) -> Vec
             .filter_map(Value::as_str)
             .map(str::to_owned)
             .collect(),
-        // Only rows durably marked as pre-catalog retain the historical June
+        // Only rows durably marked as pre-catalog retain the historical Clovy
         // context, web, and read-only workspace contract. New routines persist
         // an explicit empty catalog until the user selects tools.
         _ if legacy_catalog => ["context_engine", "session_search", "web", "file"]
@@ -1514,19 +1514,19 @@ pub async fn routine_mcp_server_allowed_for_session(
 
 fn base_unattended_tools() -> Value {
     json!([
-        { "name": "search_june", "description": "Search June notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
+        { "name": "search_june", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_search", "description": "Search the public web.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_fetch", "description": "Fetch a public web page.", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false } },
         { "name": "list_files", "description": "List files in the routine workspace.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": [], "additionalProperties": false } },
         { "name": "read_file", "description": "Read a UTF-8 text file in the routine workspace.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } },
         { "name": "preview_file", "description": "Read file metadata and a bounded text preview.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } },
         { "name": "search_files", "description": "Search text files in the routine workspace.", "parameters": { "type": "object", "properties": { "query": { "type": "string" }, "path": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
-        { "name": "list_skills", "description": "List enabled June skills for this routine.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
-        { "name": "load_skill", "description": "Load instructions for one enabled June skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
+        { "name": "list_skills", "description": "List enabled Clovy skills for this routine.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "load_skill", "description": "Load instructions for one enabled Clovy skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
     ])
 }
 
-/// Supports the legacy routine schedule forms June surfaced: one-shot RFC3339,
+/// Supports the legacy routine schedule forms Clovy surfaced: one-shot RFC3339,
 /// `every 30m|2h|1d`, macros, and standard five-field cron. Cron fields are
 /// evaluated in the routine's IANA timezone, including daylight-saving
 /// transitions, while persisted instants remain UTC.

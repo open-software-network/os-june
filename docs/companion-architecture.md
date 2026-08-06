@@ -1,6 +1,6 @@
-# June Companion architecture
+# Clovy Companion architecture
 
-June Companion is a native SwiftUI iOS/iPadOS application in
+Clovy Companion is a native SwiftUI iOS/iPadOS application in
 `native-ios/` in the `june-companion-app` repo
 (github.com/open-software-network/june-companion-app). XcodeGen creates the
 checked-in Xcode project there.
@@ -12,10 +12,10 @@ It is not a Tauri target and contains no WebView.
 SwiftUI typed screens and app model
   -> Swift companion services and shared Rust Noise state machine
   -> outbound TLS WebSocket
-  -> blind June API companion relay
+  -> blind Clovy API companion relay
   -> outbound TLS WebSocket
   -> typed Rust desktop companion controller
-  -> June repositories, recording commands, and agent control plane
+  -> Clovy repositories, recording commands, and agent control plane
 ```
 
 TLS protects each hop. Noise frames protect application data from the relay.
@@ -40,7 +40,7 @@ account session.
 Rust owns the shared Noise state machine, the versioned protocol, the closed
 desktop allowlist, note compare-and-swap, durable linked-device metadata, and
 the blind relay. The companion generates its device credential and sends only
-the hash of its encoded authorization value during pairing. June API stores
+the hash of its encoded authorization value during pairing. Clovy API stores
 that hash; it hashes the same UTF-8 value when verifying a `Device`
 authorization header and never stores the credential or pairing secret. The
 signed-in Desktop creates each pending pairing under its current OS Accounts
@@ -60,12 +60,12 @@ consumer is advertised only after its Tauri listener is installed. The shell
 also serves the curated model catalog and stages validated per-session model
 changes through the same store used by the desktop picker. Agent workspaces
 and note chat observe that store, while a run snapshots its model at the
-existing run boundary. The companion therefore reuses June's normal session,
+existing run boundary. The companion therefore reuses Clovy's normal session,
 model, and transcript behavior rather than creating a second agent control
 path.
 
 Generated image and video results reuse the same `agent_artifacts` rows and
-workspace files that June Desktop renders. History and status carry bounded
+workspace files that Clovy Desktop renders. History and status carry bounded
 metadata references only. The phone pulls the canonical full artifact through
 typed, data-partition-scoped `mediaFetch` chunks and verifies SHA-256 before
 rendering or saving it. No alternate generation, export, or thumbnail store is
@@ -73,10 +73,10 @@ part of the desktop companion controller.
 
 ## Authority and availability
 
-The Mac is authoritative. The phone cannot run June's local agent harness,
+The Mac is authoritative. The phone cannot run Clovy's local agent harness,
 start a recording, read arbitrary filesystem contents, or use provider keys. A
 linked device can list bounded metadata only inside roots the signed-in Mac user
-explicitly grants, and a selected file reaches June only through the normal
+explicitly grants, and a selected file reaches Clovy only through the normal
 agent attachment path. The companion cannot download Mac file contents. It can
 select only Auto or a model in the bounded recommended set currently available
 from the desktop's live catalog. A model change made during a run is staged for
@@ -115,9 +115,9 @@ Repository web CSS token and central-icon rules cannot apply literally to
 SwiftUI. Mobile follows the same sentence case, two-weight, semantic-color,
 and accessibility intent using the Open Software native design system. It uses
 SF Symbols and platform controls rather than importing web icon packages.
-The June shell and token implementation follow the native patterns in
+The Clovy shell and token implementation follow the native patterns in
 `open-software-network/os-chat` at commit
 `0f1cb72ac74030080cdfb426a953626e0f0a247b`: a composer-first canvas, leading
 history drawer, quiet semantic surfaces, native sheets, and system light/dark
-behavior. June adapts those patterns to its linked-desktop trust boundary and
+behavior. Clovy adapts those patterns to its linked-desktop trust boundary and
 does not copy Chat product features or account SDK dependencies.

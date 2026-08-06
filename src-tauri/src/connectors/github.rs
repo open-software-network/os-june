@@ -11,7 +11,7 @@
 //! enabled, the exchange returns an `expires_in` and a `refresh_token` that
 //! rotates on every refresh. When the app has that setting disabled, GitHub
 //! returns a non-expiring token with no `expires_in` and no `refresh_token`;
-//! June stores it with a far-future expiry so the freshness gate never triggers
+//! Clovy stores it with a far-future expiry so the freshness gate never triggers
 //! an unnecessary refresh.
 //!
 //! Refresh requires the client secret. A deployment that ships only the client
@@ -1282,7 +1282,7 @@ struct ContentsWire {
 /// Read one file from a GitHub repository, decoding base64 content. Refuses
 /// non-file types (directories, symlinks, submodules) with a clean error.
 /// GitHub returns `encoding: "none"` (with empty `content`) for files between
-/// 1 MB and 100 MB; those return an error naming the file's size and June's
+/// 1 MB and 100 MB; those return an error naming the file's size and Clovy's
 /// read cap (200 KB) rather than fabricating an empty file.
 /// Caps decoded base64 content at `READ_FILE_MAX_BYTES` bytes.
 pub async fn read_file(
@@ -1324,15 +1324,15 @@ pub async fn read_file(
     // GitHub returns `encoding: "none"` (with empty `content`) for files
     // between 1 MB and 100 MB. Treating that as a successful empty file would
     // silently fabricate content. Return a clear error naming the file's
-    // actual size and June's read cap so the agent can advise the user.
+    // actual size and Clovy's read cap so the agent can advise the user.
     if wire.encoding != "base64" {
         let size_kb = wire.size / 1024;
         return Err(GithubApiError::Api {
             status: 422,
             message: format!(
-                "File '{}' is {size_kb} KB, which exceeds June's {cap_kb} KB read cap \
+                "File '{}' is {size_kb} KB, which exceeds Clovy's {cap_kb} KB read cap \
                  (GitHub returns non-base64 encoding for files over 1 MB). \
-                 June can read files up to {cap_kb} KB.",
+                 Clovy can read files up to {cap_kb} KB.",
                 path,
                 size_kb = size_kb,
                 cap_kb = READ_FILE_MAX_BYTES / 1024,
@@ -1932,9 +1932,9 @@ mod tests {
         if wire.encoding != "base64" {
             let size_kb = wire.size / 1024;
             return Err(format!(
-                "File '{}' is {size_kb} KB, which exceeds June's {cap_kb} KB read cap \
+                "File '{}' is {size_kb} KB, which exceeds Clovy's {cap_kb} KB read cap \
                  (GitHub returns non-base64 encoding for files over 1 MB). \
-                 June can read files up to {cap_kb} KB.",
+                 Clovy can read files up to {cap_kb} KB.",
                 path,
                 size_kb = size_kb,
                 cap_kb = READ_FILE_MAX_BYTES / 1024,
@@ -1959,7 +1959,7 @@ mod tests {
         );
         assert!(
             msg.contains(&format!("{expected_cap_kb} KB")),
-            "error should mention June's {expected_cap_kb} KB cap; got: {msg}"
+            "error should mention Clovy's {expected_cap_kb} KB cap; got: {msg}"
         );
         assert!(
             msg.contains("big.bin"),

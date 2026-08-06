@@ -375,7 +375,7 @@ impl HelperApp {
                 let (code, message) = if self.pending_composer_ack.is_some() {
                     (
                         "composer_delivery_busy",
-                        "June is finishing the previous dictation. Try again.",
+                        "Clovy is finishing the previous dictation. Try again.",
                     )
                 } else {
                     (
@@ -567,7 +567,7 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     composer_error_event(
                         "composer_request_unavailable",
-                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                        "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it.",
                         &request_id,
                     ),
                     take_id.as_deref(),
@@ -576,7 +576,7 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     error_event(
                         "paste_target_unavailable",
-                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                        "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it.",
                     ),
                     take_id.as_deref(),
                 ));
@@ -631,7 +631,7 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     composer_error_event(
                         "paste_target_unavailable",
-                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                        "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it.",
                         &request.id,
                     ),
                     take_id.as_deref(),
@@ -662,7 +662,7 @@ impl HelperApp {
             self.writer.emit(with_take_id(
                 error_event(
                     "paste_target_unavailable",
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it.",
                 ),
                 take_id.as_deref(),
             ));
@@ -678,7 +678,7 @@ impl HelperApp {
                 error_event(
                     code,
                     format!(
-                        "June copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
+                        "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it. ({error})"
                     ),
                 ),
                 take_id.as_deref(),
@@ -713,7 +713,7 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     error_event(
                         code,
-                        format!("June copied the dictation to the clipboard. {guidance} ({error})"),
+                        format!("Clovy copied the dictation to the clipboard. {guidance} ({error})"),
                     ),
                     take_id.as_deref(),
                 ));
@@ -772,7 +772,7 @@ impl HelperApp {
             self.writer.emit(with_take_id(
                 composer_error_event(
                     "composer_delivery_failed",
-                    "June copied the dictation to the clipboard. Press Ctrl+V to paste it.",
+                    "Clovy copied the dictation to the clipboard. Press Ctrl+V to paste it.",
                     &pending.id,
                 ),
                 pending.take_id.as_deref(),
@@ -887,7 +887,7 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     composer_error_event(
                         "composer_delivery_timeout",
-                        "June could not confirm the dictation was inserted. The text is on the clipboard if you need to paste it manually.",
+                        "Clovy could not confirm the dictation was inserted. The text is on the clipboard if you need to paste it manually.",
                         &pending.id,
                     ),
                     pending.take_id.as_deref(),

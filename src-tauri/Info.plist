@@ -2,11 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDisplayName</key>
+  <string>Clovy</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>June records microphone audio locally so it can transcribe and generate your notes.</string>
+  <string>Clovy records microphone audio locally so it can transcribe and generate your notes.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>June records system audio locally when you choose microphone plus system audio for a note.</string>
+  <string>Clovy records system audio locally when you choose microphone plus system audio for a note.</string>
   <key>NSScreenCaptureUsageDescription</key>
-  <string>June captures only the app windows you ask it to operate so June can understand and complete your task.</string>
+  <string>Clovy captures only the app windows you ask it to operate so Clovy can understand and complete your task.</string>
 </dict>
 </plist>

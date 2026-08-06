@@ -47,7 +47,7 @@ export function RoutineModePicker({
       />
       <p className="routines-mode-hint">
         {unrestricted
-          ? "When it fires, June can run commands and change any file your account can."
+          ? "When it fires, Clovy can run commands and change any file your account can."
           : "The routine can read the web, use memory, and message you. It cannot run commands or change your files."}
       </p>
     </>

@@ -94,7 +94,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       resolve({
         ok: false,
         errorCode: "app_not_ready",
-        errorMessage: "June is not ready to start or stop recording yet.",
+        errorMessage: "Clovy is not ready to start or stop recording yet.",
       });
       return;
     }

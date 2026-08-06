@@ -273,7 +273,7 @@ export function ComposerModelPopover({
   searchRef: RefObject<HTMLInputElement>;
   /** With a Venice API key saved and Auto as the active selection, the
    * popover leads with the billing note from the settings picker: Auto is a
-   * June-managed route, so it meters June credits and never uses the key.
+   * Clovy-managed route, so it meters Clovy credits and never uses the key.
    * This popover has no Auto section, so the note is the only billing signal
    * on this surface (JUN-329). */
   veniceApiKeyConfigured?: boolean;
@@ -457,7 +457,7 @@ export function ComposerModelPopover({
 
   const suggested = suggestedModelsForMode("generation", options);
   const query = search.trim().toLowerCase();
-  // June's agent needs tool calls, so models without tool support can never
+  // Clovy's agent needs tool calls, so models without tool support can never
   // be picked — leave them out of the quick-switch list entirely instead of
   // showing dead rows. (Settings still lists them, greyed, for context.)
   const selectable = options.filter((option) => !option.provider || modelSupportsTools(option));
@@ -569,7 +569,7 @@ export function ComposerModelPopover({
       <p className="agent-composer-model-title">Suggested</p>
       {veniceApiKeyConfigured && model.id === AUTO_MODEL_ID ? (
         <p className="agent-composer-model-auto-note">
-          Auto is billed to June credits and does not use your Venice API key.
+          Auto is billed to Clovy credits and does not use your Venice API key.
         </p>
       ) : null}
       <div className="agent-composer-model-menu" role="listbox" aria-label="Suggested text models">
@@ -847,7 +847,7 @@ export function ComposerModelPopover({
   );
 }
 
-// Footnote under the hero composer. June's agent runs on the user's Mac, but
+// Footnote under the hero composer. Clovy's agent runs on the user's Mac, but
 // model calls go out to the provider, so the privacy claim has to match the
 // active model: encrypted into the enclave (E2EE), private (zero retention),
 // or anonymized (identity stripped, prompts may be retained). Name the model
@@ -856,16 +856,16 @@ export function heroPrivacyFootnote(
   model: VeniceModelDto | undefined,
   badge: ModelPrivacyBadge | undefined,
 ): string {
-  if (!model) return "June runs locally.";
+  if (!model) return "Clovy runs locally.";
   switch (badge?.mode) {
     case "e2ee":
-      return `June runs locally. Calls to ${model.name} are end-to-end encrypted.`;
+      return `Clovy runs locally. Calls to ${model.name} are end-to-end encrypted.`;
     case "private":
-      return `June runs locally. Calls to ${model.name} are private.`;
+      return `Clovy runs locally. Calls to ${model.name} are private.`;
     case "anonymous":
-      return `June runs locally. Calls to ${model.name} are anonymized.`;
+      return `Clovy runs locally. Calls to ${model.name} are anonymized.`;
     default:
-      return `June runs locally. You're running ${model.name}.`;
+      return `Clovy runs locally. You're running ${model.name}.`;
   }
 }
 
@@ -934,7 +934,7 @@ export function PrivacyModeBadge({ badge }: { badge?: ModelPrivacyBadge }) {
 // honest unit to label.
 export function UnrestrictedBadge() {
   const description =
-    "This session runs without the file sandbox: June can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
+    "This session runs without the file sandbox: Clovy can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
   return (
     <HoverTip
       tip={description}

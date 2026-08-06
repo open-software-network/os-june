@@ -23,7 +23,7 @@ const TURN_PRE_ROLL_MS: i64 = 150;
 const SILENCE_RMS_FLOOR: f32 = 0.012;
 /// A single loud callback, click, or device-start transient is not speech. A
 /// source must sustain signal across this many consecutive RMS windows before
-/// June sends it to a transcription provider. This remains short enough for a
+/// Clovy sends it to a transcription provider. This remains short enough for a
 /// brief reply such as "yes" while rejecting the startup spike seen in broken
 /// CoreAudio tap captures.
 const MIN_TRANSCRIBABLE_ACTIVITY_MS: i64 = 180;

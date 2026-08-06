@@ -155,9 +155,8 @@ export function Buttons() {
       <div className="sg-card" style={{ marginTop: "var(--sp-8)" }}>
         <div className="sg-eyebrow">BrandPrimaryButton</div>
         <p className="sg-note" style={{ marginTop: 0 }}>
-          Reserved for onboarding hero moments (the animated border-beam continue button). It is not
-          a general primary button; not rendered here on purpose so it doesn't read as a reusable
-          default. Source: `src/components/ui/BrandPrimaryButton.tsx`.
+          Onboarding's full-width wrapper around the canonical solid primary treatment. It changes
+          layout and scale, not color language. Source: `src/components/ui/BrandPrimaryButton.tsx`.
         </p>
       </div>
     </div>

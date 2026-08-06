@@ -127,9 +127,9 @@ async fn main() {
         [mode] if mode == "mcp" && parent_is_june() => serve_stdio().await,
         [mode] if mode == "mcp-daemon" => serve_daemon().await,
         [mode] if mode == "mcp" => Err(anyhow::anyhow!(
-            "the helper must be launched directly by June"
+            "the helper must be launched directly by Clovy"
         )),
-        _ => Err(anyhow::anyhow!("This helper is private to June.")),
+        _ => Err(anyhow::anyhow!("This helper is private to Clovy.")),
     };
     if let Err(error) = result {
         eprintln!("Computer use helper stopped: {error}");
@@ -153,9 +153,9 @@ async fn serve_daemon() -> anyhow::Result<()> {
     isolate_process_group()?;
     let socket_path = std::env::var("JUNE_COMPUTER_USE_SOCKET")
         .map(PathBuf::from)
-        .map_err(|_| anyhow::anyhow!("the private June socket is missing"))?;
+        .map_err(|_| anyhow::anyhow!("the private Clovy socket is missing"))?;
     if !socket_path.is_absolute() {
-        anyhow::bail!("the private June socket must be absolute");
+        anyhow::bail!("the private Clovy socket must be absolute");
     }
     let listener = UnixListener::bind(&socket_path)?;
     #[cfg(unix)]
@@ -166,14 +166,14 @@ async fn serve_daemon() -> anyhow::Result<()> {
     request_startup_permission();
     let (stream, _) = tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
         .await
-        .map_err(|_| anyhow::anyhow!("June did not connect to the private helper"))??;
+        .map_err(|_| anyhow::anyhow!("Clovy did not connect to the private helper"))??;
     let peer_pid = stream
         .peer_cred()?
         .pid()
-        .ok_or_else(|| anyhow::anyhow!("the private June peer has no process identity"))?;
+        .ok_or_else(|| anyhow::anyhow!("the private Clovy peer has no process identity"))?;
     let peer_audit_token = socket_peer_audit_token(&stream)?;
     if !process_is_june(peer_pid, Some(&peer_audit_token)) {
-        anyhow::bail!("the private helper accepts only June");
+        anyhow::bail!("the private helper accepts only Clovy");
     }
     let (reader, writer) = stream.into_split();
     let result = serve(reader, writer).await;
@@ -220,7 +220,7 @@ fn permission_result() -> Value {
             "accessibility": accessibility,
             "screen_recording": screen_recording,
             // Accessibility belongs to this nested helper. macOS attributes
-            // Screen Recording to the signed outer June app that launched it,
+            // Screen Recording to the signed outer Clovy app that launched it,
             // and reports that responsible-app grant through this process.
             // Avoid upstream's blocking live probe here; actual captures remain
             // the authoritative runtime check.
@@ -278,31 +278,31 @@ where
                     authenticated = true;
                     let mut result = initialize_result();
                     result["serverInfo"] = json!({
-                        "name": "June Computer Use Driver",
+                        "name": "Clovy Computer Use Driver",
                         "version": UPSTREAM_VERSION,
                     });
                     result["instructions"] = Value::String(
-                        "Private June helper. Desktop actions require June's Rust policy broker."
+                        "Private Clovy helper. Desktop actions require Clovy's Rust policy broker."
                             .to_string(),
                     );
                     Response::ok(id, result)
                 } else {
-                    let response = Response::error(id, -32001, "June capability required.");
+                    let response = Response::error(id, -32001, "Clovy capability required.");
                     write_response(&mut stdout, response).await?;
                     break;
                 }
             }
-            _ if !authenticated => Response::error(id, -32001, "June capability required."),
+            _ if !authenticated => Response::error(id, -32001, "Clovy capability required."),
             "tools/list" => Response::ok(id, allowed_tool_list(&registry, &allowed)),
             "tools/call" => match request.tool_call() {
                 Err(error) => Response::error(id, -32602, format!("Invalid params: {error}")),
                 Ok(call) if !allowed.contains(call.name.as_str()) => {
-                    Response::error(id, -32601, "That driver tool is not available to June.")
+                    Response::error(id, -32601, "That driver tool is not available to Clovy.")
                 }
                 Ok(call) if !arguments_are_narrow(&call.name, &call.args) => Response::error(
                     id,
                     -32602,
-                    "The driver request contains fields outside June's contract.",
+                    "The driver request contains fields outside Clovy's contract.",
                 ),
                 Ok(call) if call.name == "check_permissions" => {
                     Response::ok(id, permission_result())
@@ -359,7 +359,7 @@ fn process_is_june(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
         return false;
     };
 
-    // Packaged build: the helper is nested under the signed outer June.app.
+    // Packaged build: the helper is nested under the signed outer app.
     // Require its direct parent to be that exact outer bundle executable.
     let app_ancestors: Vec<PathBuf> = helper_path
         .ancestors()
@@ -379,7 +379,7 @@ fn process_is_june(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
     }
 
     // Development builds are not nested yet. Accept only the Cargo binary or
-    // the byte-identical `June` launcher materialized by the Tauri dev runner,
+    // the byte-identical product-named launcher materialized by the Tauri dev runner,
     // both inside this checkout's Cargo target tree.
     cfg!(debug_assertions)
         && development_process_path_is_june(
@@ -423,7 +423,7 @@ fn development_process_path_is_june(
 
 #[cfg(target_os = "macos")]
 fn development_launcher_name_is_allowed(name: &std::ffi::OsStr) -> bool {
-    if name == "June" {
+    if name == "Clovy" || name == "June" {
         return true;
     }
     let Some(name) = name.to_str() else {
@@ -438,7 +438,7 @@ fn development_launcher_name_is_allowed(name: &std::ffi::OsStr) -> bool {
     let Some(issue_number) = issue.strip_prefix("JUN-") else {
         return false;
     };
-    product == "June"
+    matches!(product, "Clovy" | "June")
         && !issue_number.is_empty()
         && issue_number.bytes().all(|byte| byte.is_ascii_digit())
         && matches!(harness, "Codex" | "Claude")
@@ -464,7 +464,7 @@ fn socket_peer_audit_token(stream: &UnixStream) -> io::Result<[u8; 32]> {
     if usize::try_from(token_len).ok() != Some(token.len()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the private June peer returned an invalid audit token",
+            "the private Clovy peer returned an invalid audit token",
         ));
     }
     Ok(token)
@@ -745,7 +745,7 @@ fn launch_app_tool_definition() -> Value {
 fn join_current_stage_tool_definition() -> Value {
     json!({
         "name": "join_current_stage",
-        "description": "Raise one authorized app window inside June's current Stage Manager group without following it to another Space.",
+        "description": "Raise one authorized app window inside Clovy's current Stage Manager group without following it to another Space.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1144,6 +1144,12 @@ mod tests {
         ));
 
         assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "Clovy"
+        )));
+        assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
+            "Clovy JUN-278 Codex"
+        )));
+        assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
             "June"
         )));
         assert!(development_launcher_name_is_allowed(std::ffi::OsStr::new(
@@ -1216,12 +1222,12 @@ mod tests {
         std::fs::create_dir_all(&profile).expect("debug profile");
         let cargo_binary = profile.join("os-june");
         std::fs::write(&cargo_binary, b"june development binary").expect("cargo binary");
-        let launcher = profile.join("June JUN-278 Codex");
+        let launcher = profile.join("Clovy JUN-278 Codex");
         std::fs::hard_link(&cargo_binary, &launcher).expect("Tauri launcher");
 
         assert!(development_process_path_is_june(&launcher, &target));
 
-        let copied_lookalike = profile.join("June JUN-279 Codex");
+        let copied_lookalike = profile.join("Clovy JUN-279 Codex");
         std::fs::copy(&cargo_binary, &copied_lookalike).expect("copied lookalike");
         assert!(!development_process_path_is_june(
             &copied_lookalike,

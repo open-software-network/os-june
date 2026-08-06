@@ -19,25 +19,27 @@ describe("playRecordingSound", () => {
       play: ReturnType<typeof vi.fn>;
       volume: number;
     }> = [];
-    const audio = vi.fn().mockImplementation(() => ({
-      cloneNode: vi.fn(() => {
-        const playbackAudio = {
-          addEventListener: vi.fn(),
-          currentTime: 1,
-          pause: vi.fn(() => {
-            playbackAudio.paused = true;
-          }),
-          paused: false,
-          play,
-          volume: 1,
-        };
-        playbackElements.push(playbackAudio);
-        return playbackAudio;
-      }),
-      load,
-      preload: "",
-      volume: 1,
-    }));
+    const audio = vi.fn(function AudioMock() {
+      return {
+        cloneNode: vi.fn(() => {
+          const playbackAudio = {
+            addEventListener: vi.fn(),
+            currentTime: 1,
+            pause: vi.fn(() => {
+              playbackAudio.paused = true;
+            }),
+            paused: false,
+            play,
+            volume: 1,
+          };
+          playbackElements.push(playbackAudio);
+          return playbackAudio;
+        }),
+        load,
+        preload: "",
+        volume: 1,
+      };
+    });
 
     globalThis.Audio = audio as unknown as typeof Audio;
 

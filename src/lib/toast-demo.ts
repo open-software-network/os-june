@@ -62,7 +62,7 @@ function fireVariant(variant: Exclude<ToastDemoVariant, "all" | "clear">): void 
       return;
     }
     case "action":
-      toast("June found a newer note for this meeting.", {
+      toast("Clovy found a newer note for this meeting.", {
         action: {
           label: "Open note",
           onClick: () => toast.success("Opened the newer note."),

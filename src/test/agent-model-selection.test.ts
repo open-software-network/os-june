@@ -7,7 +7,7 @@ import {
 } from "../lib/agent-model-selection";
 
 describe("agent Auto model selections", () => {
-  it("encodes the Auto preference for the June API run boundary", () => {
+  it("encodes the Auto preference for the Clovy API run boundary", () => {
     expect(agentRunModelId(AUTO_MODEL_ID, 20)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}20`);
     expect(agentRunModelId(AUTO_MODEL_ID, 50)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}50`);
     expect(agentRunModelId(AUTO_MODEL_ID, 100)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}100`);

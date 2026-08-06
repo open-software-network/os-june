@@ -13,8 +13,8 @@ remain the connection foundation.
 
 ## Decision
 
-June will connect a Linear account and expose the complete tool inventory from
-Linear's official hosted MCP server. June will not maintain a separate
+Clovy will connect a Linear account and expose the complete tool inventory from
+Linear's official hosted MCP server. Clovy will not maintain a separate
 Linear-specific agent tool contract or selected-team grant.
 
 - The fixed provider endpoint is `https://mcp.linear.app/mcp`.
@@ -24,17 +24,17 @@ Linear-specific agent tool contract or selected-team grant.
 - The existing Linear OAuth access token is sent to the hosted MCP as a bearer
   token. Linear documents this as a supported alternative to a second
   interactive MCP OAuth flow.
-- Every valid tool returned by `tools/list` is exposed to the June agent under
+- Every valid tool returned by `tools/list` is exposed to the Clovy agent under
   the `mcp_linear_<tool>` namespace.
 - Tools that are explicitly safe read-only operations may run directly.
   Mutating, destructive, missing-annotation, and ambiguous tools require the
-  existing June approval interruption before invocation.
-- June owns account connect, token refresh and custody, disconnect, MCP
+  existing Clovy approval interruption before invocation.
+- Clovy owns account connect, token refresh and custody, disconnect, MCP
   transport safety, and generic approval policy. Linear owns the tool names,
   schemas, descriptions, and provider behavior.
 
 This design deliberately accepts that Linear can add, remove, or change its
-MCP tools independently of a June release.
+MCP tools independently of a Clovy release.
 
 Official provider references:
 
@@ -50,7 +50,7 @@ removed with the Hermes runtime, but the frontend caller remained. A
 disconnect can therefore commit successfully and then display
 `Command connectors_apply_runtime not found`.
 
-The June-owned runtime now derives tool availability from current local state.
+The Clovy-owned runtime now derives tool availability from current local state.
 Linear connect, reconnect, and disconnect must not restart or apply a separate
 runtime configuration.
 
@@ -68,7 +68,7 @@ action. No team count, team editor, or "finish setup" state is shown.
 
 The next agent run discovers the hosted MCP inventory and makes all valid
 Linear tools available. New tools published by Linear become available after
-the next successful discovery without a June release.
+the next successful discovery without a Clovy release.
 
 ### Approval
 
@@ -80,7 +80,7 @@ The runtime applies a generic MCP safety rule:
 3. An absent or false `readOnlyHint`, or malformed, contradictory, or unknown
    annotations, require approval. An absent `destructiveHint` does not override
    an explicit `readOnlyHint: true`.
-4. June may apply generic mutation-name safeguards as an additional
+4. Clovy may apply generic mutation-name safeguards as an additional
    fail-closed check, but it must not maintain a Linear tool allowlist.
 
 The approval shows the provider, remote tool name, and bounded arguments before
@@ -99,7 +99,7 @@ Settings
   -> managed Linear MCP adapter
   -> https://mcp.linear.app/mcp
   -> dynamic MCP tool descriptors
-  -> June agent runtime and generic approval policy
+  -> Clovy agent runtime and generic approval policy
 ```
 
 ### Connection authority
@@ -193,7 +193,7 @@ The MCP session is in memory only.
 - Disconnect retires the MCP session before deleting local credentials.
 - App restart performs a fresh MCP initialization and discovery.
 - A dropped or invalid provider session may be reinitialized for a later
-  request, but June never automatically replays an already-dispatched tool
+  request, but Clovy never automatically replays an already-dispatched tool
   call.
 
 No lifecycle path calls `connectors_apply_runtime` or starts another app or
@@ -230,12 +230,12 @@ Team selection is removed as a product and authorization boundary:
   temporarily unused. Removing their schema and stored rows is a separate
   cleanup after the hosted MCP release is stable.
 
-UI copy must state that the connected Linear workspace is available to June.
+UI copy must state that the connected Linear workspace is available to Clovy.
 It must not promise selected-team isolation.
 
 ## Native Linear tool retirement
 
-The hosted MCP inventory replaces the current June-authored Linear agent
+The hosted MCP inventory replaces the current Clovy-authored Linear agent
 tools.
 
 - Remove Linear eligibility from native connector descriptors.
@@ -315,7 +315,7 @@ error bodies.
 ### 1. Record the architecture
 
 - Add ADR-0050 describing Linear as a managed external MCP source behind the
-  June host runtime.
+  Clovy host runtime.
 - State that this is a targeted exception to ADR-0039's current native Linear
   transport while preserving host-owned credentials and approvals.
 - Update `docs/index.md`, the Linear PRD privacy language, and the stale
@@ -449,12 +449,12 @@ Node 26 frontend tests use
 
 ## Deployment and rollout
 
-This is a desktop-only change and requires no June API deployment.
+This is a desktop-only change and requires no Clovy API deployment.
 
 Rollout should begin with the development app, then an internal build. The
 release check must confirm:
 
-- the official endpoint accepts June's existing OAuth bearer token;
+- the official endpoint accepts Clovy's existing OAuth bearer token;
 - `tools/list` returns usable annotations for the approval policy;
 - at least one read tool succeeds across the workspace;
 - an approved write has a clearly visible Linear result; and
@@ -467,11 +467,11 @@ Do not silently retain both credential systems.
 ## Out of scope
 
 - Changes to Google, GitHub, or Notion.
-- A June-maintained Linear tool allowlist.
+- A Clovy-maintained Linear tool allowlist.
 - Selected-team enforcement.
 - Linear webhooks, polling routines, or away-mode relay.
 - Provider-side administration or permission management.
-- June API changes.
+- Clovy API changes.
 - Starting another development app process.
 - Any operation against the installed production app.
 

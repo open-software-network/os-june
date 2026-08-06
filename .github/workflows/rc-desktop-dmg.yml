@@ -516,13 +516,13 @@ jobs:
           if gh release view rc --repo open-software-network/os-june-releases >/dev/null 2>&1; then
             gh release edit rc \
               --repo open-software-network/os-june-releases \
-              --title "June v$VERSION (rc)" \
+              --title "Clovy v$VERSION (rc)" \
               --prerelease \
               --notes-file "$notes_file"
           else
             gh release create rc \
               --repo open-software-network/os-june-releases \
-              --title "June v$VERSION (rc)" \
+              --title "Clovy v$VERSION (rc)" \
               --prerelease \
               --notes-file "$notes_file" \
               --target main
@@ -570,13 +570,13 @@ jobs:
           const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
 
           const payload = {
-            text: `June v${version} release candidate is ready for testing`,
+            text: `Clovy v${version} release candidate is ready for testing`,
             blocks: [
               {
                 type: "section",
                 text: {
                   type: "mrkdwn",
-                  text: `:test_tube: *June v${version} release candidate is ready for testing*`,
+                  text: `:test_tube: *Clovy v${version} release candidate is ready for testing*`,
                 },
               },
               {

@@ -1,4 +1,4 @@
-# June Companion revocation
+# Clovy Companion revocation
 
 Desktop revocation first persists the relay revocation, deletes all links for
 that device, closes its active relay socket, then marks the local desktop
@@ -32,14 +32,14 @@ revoked device cannot reconnect, route/receive frames, or register a push token.
 Relinking creates fresh device identity state through a new desktop-approved QR
 pairing.
 
-Desktop OS Accounts sign-out is the account boundary: June first stops the
+Desktop OS Accounts sign-out is the account boundary: Clovy first stops the
 relay transport and waits for the active account-operation barrier, including
 pairing creation and approval. Pairing insertion is synchronized with the
 logout boundary so an in-flight relay response cannot recreate QR state after
 the map is cleared. Frontend execution remains in the barrier even if its relay
 waiter is cancelled, so emitted or queued companion work must finish before the
 account changes. A queue timeout releases only a request that no consumer took;
-claimed work must complete. June then marks that account's local rows revoked
+claimed work must complete. Clovy then marks that account's local rows revoked
 and removes its Keychain identity without requiring a token refresh or network
 access. It then
 best-effort revokes every locally known companion plus the account-scoped

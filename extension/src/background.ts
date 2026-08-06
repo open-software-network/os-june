@@ -1,4 +1,4 @@
-// MV3 background service worker: owns the native messaging port to the June
+// MV3 background service worker: owns the native messaging port to the Clovy
 // shim and the pairing state. An active native messaging port keeps the
 // worker alive; when Chrome still suspends it (nothing connected), the next
 // startup/install event reconnects.
@@ -46,7 +46,7 @@ function connect() {
   try {
     port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
   } catch {
-    // No host manifest registered yet (June has not set up the extension).
+    // No host manifest registered yet (Clovy has not set up the extension).
     port = null;
     state = { status: "unreachable" };
     void updateBadge();
@@ -105,7 +105,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "shareTab") {
     const tabId = message.tabId;
     if (state.status !== "paired") {
-      sendResponse({ success: false, message: "Connect the June app before sharing a tab." });
+      sendResponse({ success: false, message: "Connect the Clovy app before sharing a tab." });
       return;
     }
     try {

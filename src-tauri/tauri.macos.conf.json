@@ -1,4 +1,5 @@
 {
+  "productName": "June",
   "build": {
     "runner": "../scripts/cargo-os-june-runner.sh",
     "beforeBundleCommand": "bash scripts/bundle-nm-shim.sh"
@@ -16,7 +17,7 @@
       "resources/agent-skills": "native/agent-skills"
     },
     "macOS": {
-      "bundleName": "June",
+      "bundleName": "Clovy",
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],

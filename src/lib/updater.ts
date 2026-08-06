@@ -26,7 +26,7 @@ type UpdateMeta = {
  * shaped to satisfy update-decision.ts's `UpdaterUpdate` so the surrounding
  * prompt/throttle/relaunch flow is unchanged.
  */
-export type JuneUpdate = {
+export type ClovyUpdate = {
   version: string;
   body?: string;
   downloadAndInstall: (onEvent?: (event: DownloadEvent) => void) => Promise<void>;
@@ -40,7 +40,7 @@ export function setReleaseChannel(channel: ReleaseChannel): Promise<void> {
   return invoke("set_release_channel", { channel });
 }
 
-async function fetchJuneUpdate(reconcile: boolean): Promise<JuneUpdate | null> {
+async function fetchClovyUpdate(reconcile: boolean): Promise<ClovyUpdate | null> {
   const meta = await invoke<UpdateMeta | null>("fetch_update", { reconcile });
   if (!meta) return null;
   return {
@@ -56,8 +56,8 @@ async function fetchJuneUpdate(reconcile: boolean): Promise<JuneUpdate | null> {
  * and the check can never disagree with the saved setting. `reconcile` is false:
  * every routine check (launch/periodic/manual) is forward-only.
  */
-export function checkJuneUpdate(): Promise<JuneUpdate | null> {
-  return fetchJuneUpdate(false);
+export function checkClovyUpdate(): Promise<ClovyUpdate | null> {
+  return fetchClovyUpdate(false);
 }
 
 /**
@@ -67,8 +67,8 @@ export function checkJuneUpdate(): Promise<JuneUpdate | null> {
  * instead of stranding you on the rc build (Q4-Q6). Only meaningful on the stable
  * channel; Rust ignores it on rc so rc iteration ordering is never disturbed.
  */
-export function reconcileToStable(): Promise<JuneUpdate | null> {
-  return fetchJuneUpdate(true);
+export function reconcileToStable(): Promise<ClovyUpdate | null> {
+  return fetchClovyUpdate(true);
 }
 
 function installStagedUpdate(onEvent?: (event: DownloadEvent) => void): Promise<void> {
@@ -78,13 +78,13 @@ function installStagedUpdate(onEvent?: (event: DownloadEvent) => void): Promise<
 }
 
 /**
- * Relaunches June to finish a staged update. Routes through the Rust
- * `relaunch_for_update` command instead of the plugin `relaunch()` so June's
+ * Relaunches Clovy to finish a staged update. Routes through the Rust
+ * `relaunch_for_update` command instead of the plugin `relaunch()` so Clovy's
  * child processes (the dictation helper and agent harness) are torn down
  * before the process restarts. A bare relaunch can skip that teardown and orphan
  * the helper, which then blocks the new instance from reading permissions
  * (JUN-338).
  */
-export function relaunchJune() {
+export function relaunchClovy() {
   return invoke("relaunch_for_update");
 }

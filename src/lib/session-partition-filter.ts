@@ -19,7 +19,7 @@ function normalizedDataPartitionName(partition: string | undefined): string {
 }
 
 /** A session with no mapping row belongs to `default` (pre-partition data and
- * sessions created outside June's create path. See ADR 0031). */
+ * sessions created outside Clovy's create path. See ADR 0031). */
 export function sessionMatchesDataPartition(
   session: AgentSessionDto,
   partitions: SessionPartitionMap,

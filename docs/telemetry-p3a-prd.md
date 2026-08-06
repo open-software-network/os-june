@@ -1,21 +1,21 @@
-# June P3A — opt-in, privacy-preserving product telemetry
+# Clovy P3A — opt-in, privacy-preserving product telemetry
 
 > Read [`/CONTEXT.md`](../CONTEXT.md) first for the glossary. Terms in **bold**
-> below (June, June API, OS Accounts, dictation, note transcription, note
+> below (Clovy, Clovy API, OS Accounts, dictation, note transcription, note
 > generation, agent session) are defined there.
 >
 > This PRD adapts the practices behind Brave's
 > [P3A (Privacy-Preserving Product Analytics)](https://support.brave.app/hc/en-us/articles/9140465918093-What-is-P3A-in-Brave)
-> to June, with one deliberate departure: **P3A in June is opt-in**
+> to Clovy, with one deliberate departure: **P3A in Clovy is opt-in**
 > (Brave ships it on by default with an opt-out).
 >
 > Companion doc: [`telemetry-p3a-implementation-plan.md`](./telemetry-p3a-implementation-plan.md).
 
 ## Problem Statement
 
-June's core promise is privacy: recordings, transcripts, notes, and agent
-sessions live on-device, and inference runs through a TEE-attested **June
-API**. That promise is why users choose June — and it is also why we are
+Clovy's core promise is privacy: recordings, transcripts, notes, and agent
+sessions live on-device, and inference runs through a TEE-attested **Clovy
+API**. That promise is why users choose Clovy — and it is also why we are
 flying blind as a product team:
 
 - We do not know which features are used at all. Is dictation a daily driver
@@ -40,7 +40,7 @@ through this channel.
 
 ## Solution
 
-Build **June P3A**: an opt-in, question-based telemetry system modeled on
+Build **Clovy P3A**: an opt-in, question-based telemetry system modeled on
 Brave's P3A.
 
 1. **Questions, not arbitrary event streams.** The product team defines a
@@ -54,7 +54,7 @@ Brave's P3A.
    field, so user content *cannot* be encoded even by a bug.
 3. **Anonymous by construction.** Reports carry no user ID, device ID, or
    install ID. The desktop request may use the existing OS Accounts user
-   token to reach June API, but that token is not part of the report schema,
+   token to reach Clovy API, but that token is not part of the report schema,
    is not forwarded to OS Accounts telemetry storage, and is not stored as
    telemetry data. The ingestion server aggregates into counters and
    discards the raw report.
@@ -66,12 +66,12 @@ Brave's P3A.
    and wire schema are published in this repo
    ([`telemetry-questions.md`](./telemetry-questions.md), created with the
    feature) and enforced by CI: a question that isn't documented does not
-   compile. Ingestion runs inside the same attested TEE as June API, so the
+   compile. Ingestion runs inside the same attested TEE as Clovy API, so the
    "aggregate and discard" behavior is part of the verifiable build.
 
 ### What is never collected — the hard line
 
-Under no circumstances, in any version of this system, will June P3A carry:
+Under no circumstances, in any version of this system, will Clovy P3A carry:
 
 - Prompt text, model responses, chat messages, or agent conversation
   content — in any form, including hashes, embeddings, or excerpts.
@@ -79,7 +79,7 @@ Under no circumstances, in any version of this system, will June P3A carry:
 - File names, file paths, URLs visited or fetched, or search queries.
 - User ID, email, OS Accounts identifiers, device ID, install ID, or any
   durable identifier in the telemetry report or aggregate storage. No
-  cookies. User auth is used only transiently at the June API boundary and
+  cookies. User auth is used only transiently at the Clovy API boundary and
   is stripped before forwarding to OS Accounts telemetry storage.
 - Free-form strings of any kind. The schema is enums and small integers.
 - Fine-grained timestamps. Reports are grouped by reporting week.
@@ -102,17 +102,17 @@ to weaken it requires a new PRD, not a code review.
 
 ### End user — consent
 
-1. As a **first-time June user**, I want onboarding to ask me plainly
+1. As a **first-time Clovy user**, I want onboarding to ask me plainly
    whether to share anonymous usage statistics, defaulting to off, so that
    nothing is sent unless I chose it.
-2. As a **June user**, I want a Settings toggle that shows what is shared
+2. As a **Clovy user**, I want a Settings toggle that shows what is shared
    with a link to the public telemetry policy and question list, so that
    consent is inspectable and revocable at any time.
 3. As a **privacy-conscious user**, I want turning the toggle off to take
    effect immediately and delete anything queued locally, so that "off"
    means off.
 4. As a **skeptical user**, I want to read the complete list of questions
-   and buckets in the public repo, and verify via the June API attestation
+   and buckets in the public repo, and verify via the Clovy API attestation
    flow that the ingestion server runs the published code, so that I don't
    have to take Open Software's word for it.
 
@@ -146,7 +146,7 @@ platform (`macos` / `windows` / `linux`) and app version series (e.g.
 
 | ID | Question | Buckets | Decision it informs |
 |---|---|---|---|
-| `general.active-days` | Days June was opened this week | 0 / 1 / 2-3 / 4-5 / 6-7 | Engagement baseline for all other ratios |
+| `general.active-days` | Days Clovy was opened this week | 0 / 1 / 2-3 / 4-5 / 6-7 | Engagement baseline for all other ratios |
 | `notes.meetings-recorded` | Meeting recording completed | event | Investment in meetings pipeline |
 | `notes.audio-source` | Most-used audio source this week | none / mic only / mic + system | System-audio maintenance cost (Swift helpers) |
 | `dictation.sessions` | Dictation session completed | event | Dictation as flagship vs. niche |

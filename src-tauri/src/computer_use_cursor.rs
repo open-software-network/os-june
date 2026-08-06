@@ -1,4 +1,4 @@
-//! Click-through visual cursor for June's virtual Computer use position.
+//! Click-through visual cursor for Clovy's virtual Computer use position.
 //!
 //! The signed helper continues to own Accessibility and input delivery. It
 //! reports pointer positions in the latest window screenshot's pixel space;

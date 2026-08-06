@@ -491,7 +491,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
   ) : selectedNote ? (
     <div className="note-shell">
       {/* Every note gets the toolbar so its content starts at a
-                        consistent height (aligning with the Ask June panel) and
+                        consistent height (aligning with the Ask Clovy panel) and
                         the note actions live in one predictable spot. The left
                         shows breadcrumb nav when there's a parent, else a quiet
                         "Notes" root. */}

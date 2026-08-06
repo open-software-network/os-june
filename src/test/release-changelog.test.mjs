@@ -114,7 +114,7 @@ describe("formatChangelog", () => {
       }),
     ).toBe(
       [
-        "## June v0.0.23",
+        "## Clovy v0.0.23",
         "",
         "Changes since v0.0.22.",
         "",

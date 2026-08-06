@@ -1,7 +1,7 @@
 /**
  * The report investigation prompts. When a composer message carries a category
  * tag (bug / feedback / feature), the user's text is wrapped in an instruction
- * preamble for June, and the wrapped whole becomes the session's first user
+ * preamble for Clovy, and the wrapped whole becomes the session's first user
  * message — the runtime needs it verbatim. The transcript, on the other hand,
  * must show only what the user actually typed: the preamble is plumbing, not
  * conversation (see `displayedUserMessageText`).
@@ -14,7 +14,7 @@ const USER_REPORT_END = "---END USER REPORT---";
 
 const PREAMBLES: Record<ReportCategory, string[]> = {
   bug: [
-    "The user is filing a bug report about the June desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report draft before it is sent to the June development team, so write it for them.",
+    "The user is filing a bug report about the Clovy desktop app. This conversation is part of the in-app reporting flow: your reply will be attached to the report draft before it is sent to the Clovy development team, so write it for them.",
     "",
     "Do not try to fix the issue or walk the user through troubleshooting. Instead:",
     "1. Read the report below and inspect any attached files or screenshots closely. Describe exactly what they show, including any visible error text.",
@@ -22,10 +22,10 @@ const PREAMBLES: Record<ReportCategory, string[]> = {
     "3. Start with a numbered section titled exactly `Issue 1: <short title>`, where `<short title>` is a concise sentence-case summary of the problem (a few words, no trailing punctuation) the team can use as the tracker title. If the report contains multiple distinct bugs, requests, or product questions, add `Issue 2: <short title>` and so on.",
     "4. Note anything else the team should look at.",
     "",
-    "Keep it concise and factual. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
+    "Keep it concise and factual. Close by thanking the user and letting them know they can add more context before sending it to the Clovy team.",
   ],
   feedback: [
-    "The user is sharing feedback about the June desktop app. This conversation is part of the in-app feedback flow: your reply will be attached to the feedback draft before it is sent to the June development team, so write it for them.",
+    "The user is sharing feedback about the Clovy desktop app. This conversation is part of the in-app feedback flow: your reply will be attached to the feedback draft before it is sent to the Clovy development team, so write it for them.",
     "",
     "Do not treat this as a task to act on. Instead:",
     "1. Read the feedback below and inspect any attached files or screenshots closely. Describe what they show.",
@@ -33,10 +33,10 @@ const PREAMBLES: Record<ReportCategory, string[]> = {
     "3. Start with a numbered section titled exactly `Issue 1: <short title>`, where `<short title>` is a concise sentence-case summary of the feedback (a few words, no trailing punctuation) the team can use as the tracker title. If the feedback contains multiple distinct bugs, requests, or product questions, add `Issue 2: <short title>` and so on.",
     "4. Note anything else the team should weigh.",
     "",
-    "Keep it concise and warm. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
+    "Keep it concise and warm. Close by thanking the user and letting them know they can add more context before sending it to the Clovy team.",
   ],
   feature: [
-    "The user is requesting a feature for the June desktop app. This conversation is part of the in-app request flow: your reply will be attached to the request draft before it is sent to the June development team, so write it for them.",
+    "The user is requesting a feature for the Clovy desktop app. This conversation is part of the in-app request flow: your reply will be attached to the request draft before it is sent to the Clovy development team, so write it for them.",
     "",
     "Do not try to build or prototype the feature. Instead:",
     "1. Read the request below and inspect any attached files or screenshots closely. Describe what they show.",
@@ -44,11 +44,11 @@ const PREAMBLES: Record<ReportCategory, string[]> = {
     "3. Start with a numbered section titled exactly `Issue 1: <short title>`, where `<short title>` is a concise sentence-case summary of the request (a few words, no trailing punctuation) the team can use as the tracker title. If the request contains multiple distinct bugs, requests, or product questions, add `Issue 2: <short title>` and so on.",
     "4. Note anything else the team should consider.",
     "",
-    "Keep it concise and constructive. Close by thanking the user and letting them know they can add more context before sending it to the June team.",
+    "Keep it concise and constructive. Close by thanking the user and letting them know they can add more context before sending it to the Clovy team.",
   ],
 };
 
-/** Frames the user's report for June based on its category: investigate and
+/** Frames the user's report for Clovy based on its category: investigate and
  * write something for the team rather than treating it as a normal request. */
 export function categoryPrompt(category: ReportCategory, report: string) {
   return [...PREAMBLES[category], "", USER_REPORT_START, report, USER_REPORT_END].join("\n");

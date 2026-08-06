@@ -109,7 +109,7 @@ describe("MemorySettingsSection", () => {
     expect(screen.getByText("Alpha")).toBeInTheDocument();
     expect(screen.queryByText("General")).toBeNull();
     expect(screen.getByText("Added by you")).toBeInTheDocument();
-    expect(screen.getAllByText("Added by June")).toHaveLength(2);
+    expect(screen.getAllByText("Added by Clovy")).toHaveLength(2);
   });
 
   it("filters the list by search query", async () => {
@@ -213,11 +213,11 @@ describe("MemorySettingsSection", () => {
     expect(screen.getAllByRole("button", { name: "Edit memory" })[0]).toBeDisabled();
     expect(
       screen.getByText(
-        "Memory is off. Saved memories remain visible, but June cannot add or update them.",
+        "Memory is off. Saved memories remain visible, but Clovy cannot add or update them.",
       ),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("switch", { name: "Let June remember things" }));
+    await user.click(screen.getByRole("switch", { name: "Let Clovy remember things" }));
     expect(mocks.setMemoryEnabled).toHaveBeenCalledWith(true);
     await waitFor(() => expect(screen.getByRole("button", { name: "Add memory" })).toBeEnabled());
   });
@@ -230,12 +230,12 @@ describe("MemorySettingsSection", () => {
     const user = userEvent.setup();
     render(<MemorySettingsSection folders={folders} />);
 
-    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    const toggle = await screen.findByRole("switch", { name: "Let Clovy remember things" });
     expect(toggle).toBeChecked();
     await user.click(toggle);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.",
+      "Your memory setting was saved, but Clovy could not finish applying it. Quit and reopen Clovy before starting another agent run.",
     );
     expect(screen.queryByText("Runtime enforcement failed")).toBeNull();
     await waitFor(() => expect(toggle).not.toBeChecked());
@@ -251,12 +251,12 @@ describe("MemorySettingsSection", () => {
     const user = userEvent.setup();
     render(<MemorySettingsSection folders={folders} />);
 
-    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    const toggle = await screen.findByRole("switch", { name: "Let Clovy remember things" });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.",
+      "Your memory setting was saved, but Clovy could not finish applying it. Quit and reopen Clovy before starting another agent run.",
     );
     expect(screen.queryByText("Runtime restart failed")).toBeNull();
     await waitFor(() => expect(toggle).toBeChecked());
@@ -275,7 +275,7 @@ describe("MemorySettingsSection", () => {
     const user = userEvent.setup();
     render(<MemorySettingsSection folders={folders} />);
 
-    const toggle = await screen.findByRole("switch", { name: "Let June remember things" });
+    const toggle = await screen.findByRole("switch", { name: "Let Clovy remember things" });
     await user.click(toggle);
     expect(toggle).toBeDisabled();
 

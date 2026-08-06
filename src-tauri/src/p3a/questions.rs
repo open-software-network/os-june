@@ -35,7 +35,7 @@ pub const ALL_QUESTIONS: &[QuestionDef] = &[
     QuestionDef {
         question: Question::GeneralActiveDays,
         id: "general.active-days",
-        prompt: "Days June was opened this week",
+        prompt: "Days Clovy was opened this week",
         buckets: &["0", "1", "2-3", "4-5", "6-7"],
         decision: "Engagement baseline for all other ratios",
     },

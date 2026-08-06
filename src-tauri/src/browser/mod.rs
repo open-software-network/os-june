@@ -1,4 +1,4 @@
-//! June-managed browser engine for unattended routines.
+//! Clovy-managed browser engine for unattended routines.
 //!
 //! The canonical transport seam lives in `browser_broker`; this module owns
 //! only the managed engine and its public-web-only connection policy.

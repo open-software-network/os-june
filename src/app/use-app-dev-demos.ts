@@ -214,9 +214,9 @@ export function useAppDevDemos(dependencies: UseAppDevDemosDependencies) {
     if (!import.meta.env.DEV) return;
     let cancelled = false;
     let dispose: (() => void) | undefined;
-    void import("../lib/june-sounds-demo").then(({ registerJuneSoundsDemo }) => {
+    void import("../lib/june-sounds-demo").then(({ registerClovySoundsDemo }) => {
       if (cancelled) return;
-      ({ dispose } = registerJuneSoundsDemo());
+      ({ dispose } = registerClovySoundsDemo());
     });
     return () => {
       cancelled = true;

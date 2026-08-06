@@ -12,18 +12,18 @@ import type {
   StartAgentRunRequest,
 } from "./agent-runtime-contract";
 import { parseDictationHelperEvent } from "./dictation-events";
-import { juneHomeProfileRemovalPlan, reconcileJuneHomeProfileRemoval } from "./june-home";
+import { juneHomeProfileRemovalPlan, reconcileClovyHomeProfileRemoval } from "./june-home";
 
 // Re-exported so modules that build their own command calls route through the
 // same `invoke` as the rest of the app's bindings.
 export { invoke };
 
-export type JuneHomeChatMessage = {
+export type ClovyHomeChatMessage = {
   role: "user" | "assistant";
   content: string;
 };
 
-export type JuneHomeChatResponse = {
+export type ClovyHomeChatResponse = {
   content?: string;
   task?: {
     title: string;
@@ -33,7 +33,7 @@ export type JuneHomeChatResponse = {
   };
 };
 
-export type JuneHomeChatOptions = {
+export type ClovyHomeChatOptions = {
   /** Data partition captured at the send boundary for memory isolation. */
   profile?: string;
   /** Bounded excerpts from older turns outside the verbatim recent window. */
@@ -42,11 +42,11 @@ export type JuneHomeChatOptions = {
   onDelta?: (content: string) => void;
 };
 
-export type JunePersonaArea = "work" | "personal" | "thinking" | "play";
+export type ClovyPersonaArea = "work" | "personal" | "thinking" | "play";
 
-export type JunePersonaSettings = {
+export type ClovyPersonaSettings = {
   schemaVersion: number;
-  area: JunePersonaArea;
+  area: ClovyPersonaArea;
   voice: number;
   detail: number;
   initiative: number;
@@ -54,24 +54,24 @@ export type JunePersonaSettings = {
 };
 
 export async function junePersona() {
-  return invoke<JunePersonaSettings>("june_persona");
+  return invoke<ClovyPersonaSettings>("june_persona");
 }
 
-export async function setJunePersona(request: Omit<JunePersonaSettings, "schemaVersion">) {
-  return invoke<JunePersonaSettings>("set_june_persona", { request });
+export async function setClovyPersona(request: Omit<ClovyPersonaSettings, "schemaVersion">) {
+  return invoke<ClovyPersonaSettings>("set_june_persona", { request });
 }
 
 /** Lightweight private conversation path for Home. Concrete work is returned
- * as a structured handoff and continues in a normal June agent session. */
+ * as a structured handoff and continues in a normal Clovy agent session. */
 export async function juneHomeChat(
-  messages: JuneHomeChatMessage[],
-  options: JuneHomeChatOptions = {},
+  messages: ClovyHomeChatMessage[],
+  options: ClovyHomeChatOptions = {},
 ) {
   const onEvent = new Channel<{ event: "delta"; data: { content: string } }>();
   onEvent.onmessage = (event) => {
     if (event.event === "delta") options.onDelta?.(event.data.content);
   };
-  return invoke<JuneHomeChatResponse>("june_home_chat", {
+  return invoke<ClovyHomeChatResponse>("june_home_chat", {
     request: {
       profile: options.profile,
       ...(options.historyContext ? { historyContext: options.historyContext } : {}),
@@ -81,7 +81,7 @@ export async function juneHomeChat(
   });
 }
 
-/** June-owned agent runtime command surface. Keep command spelling here so UI
+/** Clovy-owned agent runtime command surface. Keep command spelling here so UI
  * code never depends on native transport details. */
 export const agentRuntimeBindings: AgentRuntimeBindings = {
   listSessions: () => invoke<AgentSessionDto[]>("list_agent_sessions"),
@@ -202,7 +202,7 @@ export type CompletedSessionDto = {
   completedAt: string;
 };
 
-/** Which June profile an agent session was created under. */
+/** Which Clovy profile an agent session was created under. */
 export type SessionProfileDto = {
   sessionId: string;
   profile: string;
@@ -689,7 +689,7 @@ export type AgentSkillDocument = {
   relativePath: string;
   content: string;
   /** True for skills loaded from an external dir (e.g. ~/.agents/skills).
-   *  June can read but not write them, so the editor is read-only. */
+   *  Clovy can read but not write them, so the editor is read-only. */
   readOnly?: boolean;
 };
 
@@ -780,7 +780,7 @@ export async function juneOpenVerifyPage() {
   return invoke<void>("june_open_verify_page");
 }
 
-/** Opens the June community in the default browser. Routed through Rust for
+/** Opens the Clovy community in the default browser. Routed through Rust for
  * the same target="_blank" reliability reason as the verify page. */
 export async function juneOpenCommunityPage() {
   return invoke<void>("june_open_community_page");
@@ -859,12 +859,12 @@ export async function profileDataSummary(profile: string) {
 export async function moveProfileDataToDefault(profile: string) {
   const { redundantSessionId } = juneHomeProfileRemovalPlan(profile, "move");
   await invoke<void>("move_profile_data_to_default", { profile, redundantSessionId });
-  reconcileJuneHomeProfileRemoval(profile, "move");
+  reconcileClovyHomeProfileRemoval(profile, "move");
 }
 
 export async function deleteProfileData(profile: string) {
   await invoke<void>("delete_profile_data", { profile });
-  reconcileJuneHomeProfileRemoval(profile, "delete");
+  reconcileClovyHomeProfileRemoval(profile, "delete");
 }
 
 export async function removeSessionFromFolder(sessionId: string, folderId: string) {
@@ -1045,11 +1045,11 @@ export async function acknowledgeMeetingEndFinishRequest(requestId: string) {
 export type SubmitIssueReportRequest = {
   /** Which kind of report this is: "bug" | "feedback" | "feature". Drives the
    * team's triage. Direct dialog reports run no model turn, so there is
-   * nothing to charge; June API creates the team-facing diagnosis. */
+   * nothing to charge; Clovy API creates the team-facing diagnosis. */
   category?: string;
   /** The user's report as they typed it, before the investigation wrapper. */
   description: string;
-  /** June's diagnostic assessment from the report session, when available. */
+  /** Clovy's diagnostic assessment from the report session, when available. */
   agentDiagnosis?: string;
   attachmentNames: string[];
   /** Original local paths from the report picker or workspace paths created
@@ -1489,7 +1489,7 @@ export async function imagePromptMayBeExplicit(prompt: string): Promise<boolean>
   return response.mayBeExplicit;
 }
 
-// Generates an image from a prompt via the June API. `model` is optional; the
+// Generates an image from a prompt via the Clovy API. `model` is optional; the
 // backend falls back to the saved default image model when it is omitted.
 // `safeMode` pins the safe-mode value a retry must replay; omitted uses the
 // live saved setting.
@@ -1666,7 +1666,7 @@ export type RegisterBrowserExtensionHostResult = {
 };
 
 /** Writes native messaging host manifests for the supported Chromium-family
- * browsers, pinning the June extension id to the bundled shim. */
+ * browsers, pinning the Clovy extension id to the bundled shim. */
 export async function registerBrowserExtensionHost() {
   return invoke<RegisterBrowserExtensionHostResult>("register_browser_extension_host");
 }
@@ -1743,7 +1743,7 @@ export type ConnectorPolicyCatalog = {
   earnedAutonomyMinApprovalRuns: number;
 };
 
-/** One Linear team: the granularity June's Linear read/write access is
+/** One Linear team: the granularity Clovy's Linear read/write access is
  * scoped to. Returned both by the live team list and on the account once
  * selected. */
 export type LinearTeam = {
@@ -1771,7 +1771,7 @@ export type ConnectorAccount = {
   /** Linear workspace URL key (the org's linear.app subdomain segment);
    * null for Google rows. */
   workspaceUrlKey: string | null;
-  /** Linear teams June may read/write on this workspace. Empty for Google
+  /** Linear teams Clovy may read/write on this workspace. Empty for Google
    * rows, and for a fresh Linear connect before the user finishes team
    * selection. */
   selectedTeams: LinearTeam[];
@@ -1977,7 +1977,7 @@ export async function notionConnectorListTools() {
   return invoke<NotionToolInventory>("notion_connector_list_tools");
 }
 
-/** Removes a connected account locally. With `revoke`, June also asks the
+/** Removes a connected account locally. With `revoke`, Clovy also asks the
  * provider to revoke its grant and reports whether that was confirmed. */
 export type ConnectorDisconnectResult = {
   providerRevocationConfirmed: boolean | null;
@@ -2006,7 +2006,7 @@ export async function connectorsLinearTeams(input: { accountId: string }) {
   });
 }
 
-/** Persists which Linear teams June may read/write on this workspace.
+/** Persists which Linear teams Clovy may read/write on this workspace.
  * Returns the updated account with `selectedTeams` set. The Rust side
  * rejects an empty team list, so a workspace mid-setup stays in the
  * "unfinished" state rather than recording zero teams on purpose. */
@@ -2321,7 +2321,7 @@ export async function getShareBaseUrl() {
 }
 
 // ---------------------------------------------------------------------------
-// June companion (typed frontend completion boundary)
+// Clovy companion (typed frontend completion boundary)
 // ---------------------------------------------------------------------------
 
 export type CompanionCapability =

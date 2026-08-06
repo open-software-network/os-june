@@ -221,7 +221,7 @@ cmd_up() {
 
   cat <<EOF
 
-Ephemeral June API is up.
+Ephemeral Clovy API is up.
   CVM:   $name
   URL:   $url
   Image: $image (ttl.sh tag expires in 4h; a restart after that cannot re-pull)
@@ -296,7 +296,7 @@ cmd_down() {
     esac
   fi
   rm -f "$STATE_FILE"
-  echo "Ephemeral June API torn down."
+  echo "Ephemeral Clovy API torn down."
 }
 
 cmd_dev() {

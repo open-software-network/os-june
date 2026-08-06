@@ -798,7 +798,7 @@ pub async fn set_memory_enabled(
     let settings = MemorySettingsDto { enabled };
     let path = memory_settings_path(&app)?;
     persist_memory_settings(&path, &settings)?;
-    // The persisted file is authoritative for June's own memory write gate.
+    // The persisted file is authoritative for Clovy's own memory write gate.
     Ok(load_memory_settings(&path))
 }
 
@@ -999,7 +999,7 @@ async fn issue_report_agent_diagnostics(
         64,
     );
     Ok(Some(format!(
-        "June agent runtime diagnostics\n\nStored session ID: {stored_session_id}\nAgent run ID: {agent_run_id}\nError code: {error_code}\nCompleted at: {completed_at}\n"
+        "Clovy agent runtime diagnostics\n\nStored session ID: {stored_session_id}\nAgent run ID: {agent_run_id}\nError code: {error_code}\nCompleted at: {completed_at}\n"
     )))
 }
 
@@ -1100,7 +1100,7 @@ pub fn june_open_verify_page() -> Result<(), AppError> {
 
 const JUNE_COMMUNITY_URL: &str = "https://t.me/osjune";
 
-/// Opens the June Telegram community in the default browser.
+/// Opens the Clovy Telegram community in the default browser.
 #[tauri::command]
 pub fn june_open_community_page() -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(JUNE_COMMUNITY_URL)

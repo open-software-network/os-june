@@ -24,7 +24,7 @@ const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
 const LEGACY_GATEWAY_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LEGACY_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const LEGACY_ROUTINE_REVIEW_ERROR: &str =
-    "Legacy script or autonomous execution settings were preserved but require review before June can run them.";
+    "Legacy script or autonomous execution settings were preserved but require review before Clovy can run them.";
 
 #[derive(Debug, Clone)]
 pub struct LegacyImportOptions {
@@ -37,7 +37,7 @@ pub struct LegacyImportOptions {
 pub enum LegacyImportError {
     #[error("legacy state database could not be read: {0}")]
     Source(#[source] sqlx::Error),
-    #[error("June agent database migration failed: {0}")]
+    #[error("Clovy agent database migration failed: {0}")]
     Destination(#[source] sqlx::Error),
     #[error("legacy state metadata could not be read: {0}")]
     Metadata(#[source] std::io::Error),
@@ -53,7 +53,7 @@ enum LegacyImportCommitError {
     SecureStorage,
 }
 
-/// Stops only gateway processes that are recorded inside June's retired Hermes
+/// Stops only gateway processes that are recorded inside Clovy's retired Hermes
 /// home and whose live command line still identifies the Hermes gateway. Stale
 /// state files and unrelated Hermes installations are ignored.
 pub async fn stop_legacy_hermes_runtime(hermes_home: &Path, user_home: Option<&Path>) {
@@ -146,7 +146,7 @@ async fn live_gateway_matches(_pid: u32) -> bool {
 #[cfg(target_os = "macos")]
 async fn stop_legacy_gateway_process(pid: u32) {
     let pid = pid as libc::pid_t;
-    // SAFETY: the live command line and June-owned state file were validated
+    // SAFETY: the live command line and Clovy-owned state file were validated
     // immediately above. Signals target that exact positive pid only.
     let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
     let exited = tokio::time::timeout(LEGACY_GATEWAY_STOP_TIMEOUT, async {
@@ -362,7 +362,7 @@ async fn insert_legacy_routine(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    // Scripts were historically executed without the agent loop. June's
+    // Scripts were historically executed without the agent loop. Clovy's
     // unattended Routine harness deliberately has no shell tool or approval
     // UI, so scheduling one would silently run only its prompt. Preserve the
     // inline source in SQLite but fail closed until a user explicitly reviews
@@ -387,7 +387,7 @@ async fn insert_legacy_routine(
             }
             Err(error) => {
                 errors.push(format!(
-                    "routine {id} script could not be copied into June storage: {error}"
+                    "routine {id} script could not be copied into Clovy storage: {error}"
                 ));
                 None
             }
@@ -447,7 +447,7 @@ async fn insert_legacy_routine(
         "importedFrom": "legacy_hermes",
         "enabledToolsets": toolsets,
         "legacyScriptPresent": legacy_script.is_some(),
-        // The original inline program is copied into June's SQLite row inside
+        // The original inline program is copied into Clovy's SQLite row inside
         // the same transaction as the Routine. Nothing needs to read the
         // retired home after import to display or recover it.
         "legacyScript": legacy_script,
@@ -584,7 +584,7 @@ async fn copy_legacy_routine_script(
     }))
 }
 
-/// Imports the retired runtime's database without mutating it. All June
+/// Imports the retired runtime's database without mutating it. All Clovy
 /// conversation writes and the success manifest commit atomically. A failed
 /// import rolls those writes back and records a separate failed manifest for
 /// diagnostics; the source database and its WAL files are never changed.
@@ -593,7 +593,7 @@ pub async fn import_legacy_agent_state(
     options: &LegacyImportOptions,
 ) -> Result<AgentMigrationManifestDto, LegacyImportError> {
     let source_path = options.hermes_state_db.as_path();
-    // A completed import is a hard cutover boundary. Check June's own
+    // A completed import is a hard cutover boundary. Check Clovy's own
     // database before touching any path under the retired home, so future app
     // launches neither inspect nor depend on the old runtime data.
     if let Some(existing) = completed_manifest(destination).await? {
@@ -945,7 +945,7 @@ pub async fn import_legacy_agent_state(
     })
 }
 
-/// Whether the one-time legacy import has committed in June's database. This
+/// Whether the one-time legacy import has committed in Clovy's database. This
 /// check intentionally touches no legacy path, allowing app startup to avoid
 /// even inspecting the retired home after the cutover succeeds.
 pub async fn legacy_import_completed(destination: &SqlitePool) -> Result<bool, LegacyImportError> {

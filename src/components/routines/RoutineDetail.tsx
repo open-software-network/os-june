@@ -92,7 +92,7 @@ type RoutineDetailProps = {
 };
 
 /** One routine, fully editable in place: schedule, instructions, access and
- * name save through June's routine commands, while activity (toggle, run now,
+ * name save through Clovy's routine commands, while activity (toggle, run now,
  * run history) acts immediately. Mount with `key={routine.job_id}` — the
  * draft fields initialize from the routine once and reconcile through the
  * dirty comparison after saves refresh the prop. */
@@ -470,7 +470,7 @@ export function RoutineDetail({
               await pauseRoutine(routine.job_id);
             } catch (restoreError) {
               toast.error(
-                `June could not restore the previous inactive state: ${messageFromError(restoreError)}`,
+                `Clovy could not restore the previous inactive state: ${messageFromError(restoreError)}`,
               );
             }
             throw deleteError;
@@ -603,7 +603,7 @@ export function RoutineDetail({
           ) : null}
           {routineUnrestricted(routine) ? (
             <HoverTip
-              tip="This routine runs with full access: when it fires, June can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
+              tip="This routine runs with full access: when it fires, Clovy can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
               className="routine-meta-pill routine-meta-pill-warm"
               tabIndex={0}
             >

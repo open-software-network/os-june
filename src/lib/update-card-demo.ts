@@ -6,7 +6,7 @@
 //   window.__updateCard("relaunching")    the mid-relaunch "Relaunching..." state
 //   window.__updateCard("failed")         the destructive "Update failed" status
 //   window.__updateCard("checking")       status card, busy "Checking for updates..."
-//   window.__updateCard("uptodate")       status card, "June is up to date." (auto-hides)
+//   window.__updateCard("uptodate")       status card, "Clovy is up to date." (auto-hides)
 //   window.__updateCard("downloading")    status card, busy + ticking progress bar
 //   window.__updateCard("checkfailed")    status card, destructive failed check
 //   window.__updateCard("clear")          dismiss the card
@@ -23,7 +23,7 @@ import {
   type UpdateInstallProgress,
   type UpdatePromptPayload,
 } from "../app/update-decision";
-import type { JuneUpdate } from "./updater";
+import type { ClovyUpdate } from "./updater";
 
 export type UpdateCardDemoApi = {
   /** Remove the window hook. */
@@ -48,7 +48,7 @@ const HELP = [
   '  __updateCard("relaunching")    the "Relaunching..." in-flight state',
   '  __updateCard("failed")         the destructive failed-update status',
   '  __updateCard("checking")       status card, busy "Checking for updates..."',
-  '  __updateCard("uptodate")       status card, "June is up to date." (auto-hides after a few seconds)',
+  '  __updateCard("uptodate")       status card, "Clovy is up to date." (auto-hides after a few seconds)',
   '  __updateCard("downloading")    status card, busy + ticking progress bar',
   '  __updateCard("checkfailed")    status card, destructive failed check',
   '  __updateCard("clear")          dismiss the card',
@@ -64,7 +64,7 @@ export function registerUpdateCardDemo({
   setChecking,
   setProgress,
 }: {
-  setReadyUpdate: (payload: UpdatePromptPayload<JuneUpdate> | null) => void;
+  setReadyUpdate: (payload: UpdatePromptPayload<ClovyUpdate> | null) => void;
   setStatus: (status: string | null, failed?: boolean) => void;
   setRelaunching: (value: boolean) => void;
   setPreparing: (value: boolean) => void;
@@ -73,8 +73,8 @@ export function registerUpdateCardDemo({
 }): UpdateCardDemoApi {
   // The card only reads payload.version; a bare stub stands in for the real
   // tauri Update instance so the demo needs no live updater handle.
-  function makePayload(version: string): UpdatePromptPayload<JuneUpdate> {
-    return { update: {} as JuneUpdate, version };
+  function makePayload(version: string): UpdatePromptPayload<ClovyUpdate> {
+    return { update: {} as ClovyUpdate, version };
   }
 
   let downloadTimer: number | undefined;

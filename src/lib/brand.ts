@@ -1,14 +1,16 @@
 // Brand accent preference. The whole UI derives from the --brand token
 // (src/styles/tokens.css) via var(--brand) and color-mix, so overriding that
 // one custom property at runtime recolors buttons, washes, hovers, and the
-// recorder accent in one shot. Five curated "dusty" presets, each pre-checked
-// for white-text contrast (>= 4.5:1) so the send glyph stays legible on every
-// one. The brand identity is the clay terracotta — the logo mark and the app
-// icon are clay — so it's the default; rose is just another preset now. The
-// native dock icon swaps to the selected accent in Tauri builds.
+// recorder accent in one shot. Five curated presets ship; sage is Clovy's
+// default supporting accent, with a brighter leaf value for small controls and
+// a low-chroma wash for large surfaces. The native dock icon swaps to the
+// selected accent in Tauri builds. Sage keeps the canonical lime Clovy; the
+// other presets tint the character itself as well as its dark icon tile.
 //
 // Each preset also carries a `wash`: the accent with its oklch chroma capped at
-// 0.07 (same lightness/hue). Surfaces tint from the wash, not the accent, so a
+// 0.07 (same lightness/hue). The bundled app icon uses the bright lime-green
+// Clovy mark; Appearance-selected dock icons follow the rule above.
+// Surfaces tint from the wash, not the accent, so a
 // high-chroma pick (clay) doesn't over-cream the greys while a low-chroma pick
 // (rose) stays close to its accent. applyBrandVar sets both --brand and
 // --brand-wash.
@@ -17,7 +19,6 @@
 // in index.html, which sets --brand and --brand-wash before the bundle runs to
 // avoid a flash.
 
-import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -29,15 +30,15 @@ export const BRAND_PRESETS: {
   value: string;
   wash: string;
 }[] = [
+  { id: "sage", label: "Sage", value: "#3f812f", wash: "#5a7c56" },
   { id: "clay", label: "Clay", value: "#b5551f", wash: "#976851" },
   { id: "rose", label: "Rose", value: "#a5655c", wash: "#9e6961" },
-  { id: "sage", label: "Sage", value: "#527f4d", wash: "#5a7c56" },
   { id: "ocean", label: "Ocean", value: "#3d7b9a", wash: "#467a95" },
   { id: "plum", label: "Plum", value: "#965d84", wash: "#8f6380" },
 ];
 
 const STORAGE_KEY = "os-june:brand";
-export const DEFAULT_BRAND: BrandId = "clay";
+export const DEFAULT_BRAND: BrandId = "sage";
 
 // Stored ids that have since been renamed or dropped. "blue" became "ocean"
 // (same swatch slot); "amber" was removed and maps to "clay" so anyone who
@@ -48,7 +49,11 @@ const LEGACY_BRAND_IDS: Record<string, BrandId> = { blue: "ocean", amber: "clay"
 
 function presetFor(id: string | null) {
   const canonical = (id && LEGACY_BRAND_IDS[id]) ?? id;
-  return BRAND_PRESETS.find((preset) => preset.id === canonical) ?? BRAND_PRESETS[0];
+  return (
+    BRAND_PRESETS.find((preset) => preset.id === canonical) ??
+    BRAND_PRESETS.find((preset) => preset.id === DEFAULT_BRAND) ??
+    BRAND_PRESETS[0]
+  );
 }
 
 export function getStoredBrand(): BrandId {
@@ -61,12 +66,6 @@ export function getStoredBrand(): BrandId {
 }
 
 const ACCENT_EVENT = "june://accent";
-// Same-window signal for JS consumers that can't read the CSS `--brand` var —
-// notably the WebGL glass mark, which needs the concrete brand id to pick its
-// palette and live-update (with its own color fade) when the accent changes.
-// `applyBrandVar` only mutates an inline style, so there's no attribute mutation
-// to observe; this CustomEvent is the runtime change signal.
-const BRAND_CHANGE_EVENT = "june://brand-change";
 const BRAND_TRANSITION_MS = 220;
 const BRAND_TRANSITION_BUFFER_MS = 80;
 let brandTransitionTimer: number | undefined;
@@ -105,11 +104,6 @@ export function setStoredBrand(id: BrandId) {
     // Apply still works for this session.
   }
   applyBrand(id, { animate: true });
-  // Notify same-window subscribers (the glass mark) in this tick; localStorage
-  // is already written above, so getStoredBrand() reads the new value.
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent(BRAND_CHANGE_EVENT, { detail: id }));
-  }
   // Tell the separate HUD webviews (agent/meeting/recording) to recolor too.
   if (inTauri()) {
     window.setTimeout(() => {
@@ -126,9 +120,10 @@ export function setStoredBrand(id: BrandId) {
 export function applyBrandVar(id: BrandId, options: { animate?: boolean } = {}) {
   const apply = () => {
     const preset = presetFor(id);
-    const root = document.documentElement.style;
-    root.setProperty("--brand", preset.value);
-    root.setProperty("--brand-wash", preset.wash);
+    const root = document.documentElement;
+    root.dataset.brand = preset.id;
+    root.style.setProperty("--brand", preset.value);
+    root.style.setProperty("--brand-wash", preset.wash);
   };
   if (options.animate) {
     applyWithTransition(apply);
@@ -166,27 +161,4 @@ export function subscribeBrand(): Promise<UnlistenFn> {
   return import("@tauri-apps/api/event").then(({ listen }) =>
     listen<BrandId>(ACCENT_EVENT, (event) => applyBrandVar(event.payload, { animate: true })),
   );
-}
-
-// ---- React binding -------------------------------------------------------
-
-function subscribeBrandChange(onChange: () => void) {
-  // Another tab/window changing the stored accent fires `storage`; re-read then.
-  // Scope to our key (or a full clear, key === null) so unrelated localStorage
-  // writes don't trigger a needless brand re-read.
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY || e.key === null) onChange();
-  };
-  window.addEventListener(BRAND_CHANGE_EVENT, onChange);
-  window.addEventListener("storage", onStorage);
-  return () => {
-    window.removeEventListener(BRAND_CHANGE_EVENT, onChange);
-    window.removeEventListener("storage", onStorage);
-  };
-}
-
-/** The live selected brand id. Re-reads on setStoredBrand (same window) and on a
- *  cross-window storage change; safe to call during SSR-less client renders. */
-export function useBrandId(): BrandId {
-  return useSyncExternalStore(subscribeBrandChange, getStoredBrand, () => DEFAULT_BRAND);
 }

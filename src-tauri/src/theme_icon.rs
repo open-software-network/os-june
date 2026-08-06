@@ -12,9 +12,10 @@ fn icon_bytes(brand: &str) -> &'static [u8] {
         // "blue" was renamed to "ocean"; keep it as a legacy alias.
         "ocean" | "blue" => include_bytes!("../icons/themed/icon-ocean.png"),
         "plum" => include_bytes!("../icons/themed/icon-plum.png"),
-        // Clay is the default. "amber" was dropped and folded into clay, so it
-        // (and anything unrecognized) falls back to the clay icon.
-        _ => include_bytes!("../icons/themed/icon-clay.png"),
+        // Sage is Clovy's default. Unknown values fall back to its icon; the
+        // legacy "amber" id still resolves to clay explicitly.
+        "clay" | "amber" => include_bytes!("../icons/themed/icon-clay.png"),
+        _ => include_bytes!("../icons/themed/icon-sage.png"),
     }
 }
 

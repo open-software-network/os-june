@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  buildJuneHomeConversationContext,
-  forgetJuneHomeStoredSessionId,
-  isJuneHomeStartTaskTool,
+  buildClovyHomeConversationContext,
+  forgetClovyHomeStoredSessionId,
+  isClovyHomeStartTaskTool,
   juneHomeDailyCheckIn,
   juneHomeDayKey,
   juneHomeDayLabel,
@@ -10,14 +10,14 @@ import {
   juneHomeNudgePrompts,
   juneHomeProfileRemovalPlan,
   juneHomeTaskRequestFromPayload,
-  readJuneHomeStoredSessionId,
-  reconcileJuneHomeProfileRemoval,
-  stripJuneHomeContext,
-  stripJuneHomeContextFromPreview,
-  withJuneHomeCurrentResearch,
-  withJuneHomeContext,
-  withJuneHomeLatestTaskIntent,
-  writeJuneHomeStoredSessionId,
+  readClovyHomeStoredSessionId,
+  reconcileClovyHomeProfileRemoval,
+  stripClovyHomeContext,
+  stripClovyHomeContextFromPreview,
+  withClovyHomeCurrentResearch,
+  withClovyHomeContext,
+  withClovyHomeLatestTaskIntent,
+  writeClovyHomeStoredSessionId,
 } from "../lib/june-home";
 import {
   clearHomeTaskHandoffActive,
@@ -36,25 +36,25 @@ import {
 } from "../components/agent/home-thread";
 import type { AgentChatTurn } from "../lib/agent-chat-runtime";
 
-describe("June Home", () => {
+describe("Clovy Home", () => {
   beforeEach(() => window.localStorage.clear());
 
   it("stores one Home session per profile", () => {
-    writeJuneHomeStoredSessionId("default", "session-default");
-    writeJuneHomeStoredSessionId("work", "session-work");
+    writeClovyHomeStoredSessionId("default", "session-default");
+    writeClovyHomeStoredSessionId("work", "session-work");
 
-    expect(readJuneHomeStoredSessionId("default")).toBe("session-default");
-    expect(readJuneHomeStoredSessionId("work")).toBe("session-work");
+    expect(readClovyHomeStoredSessionId("default")).toBe("session-default");
+    expect(readClovyHomeStoredSessionId("work")).toBe("session-work");
 
-    forgetJuneHomeStoredSessionId("work", "another-session");
-    expect(readJuneHomeStoredSessionId("work")).toBe("session-work");
-    forgetJuneHomeStoredSessionId("work", "session-work");
-    expect(readJuneHomeStoredSessionId("work")).toBeUndefined();
+    forgetClovyHomeStoredSessionId("work", "another-session");
+    expect(readClovyHomeStoredSessionId("work")).toBe("session-work");
+    forgetClovyHomeStoredSessionId("work", "session-work");
+    expect(readClovyHomeStoredSessionId("work")).toBeUndefined();
   });
 
   it("moves a removed profile's Home thread into the existing default thread", () => {
-    writeJuneHomeStoredSessionId("default", "home-default");
-    writeJuneHomeStoredSessionId("research", "home-research");
+    writeClovyHomeStoredSessionId("default", "home-default");
+    writeClovyHomeStoredSessionId("research", "home-research");
     window.localStorage.setItem(
       "june:home:direct-turns:v1",
       JSON.stringify({
@@ -82,10 +82,10 @@ describe("June Home", () => {
       targetSessionId: "home-default",
       redundantSessionId: "home-research",
     });
-    reconcileJuneHomeProfileRemoval("research", "move");
+    reconcileClovyHomeProfileRemoval("research", "move");
 
-    expect(readJuneHomeStoredSessionId("research")).toBeUndefined();
-    expect(readJuneHomeStoredSessionId("default")).toBe("home-default");
+    expect(readClovyHomeStoredSessionId("research")).toBeUndefined();
+    expect(readClovyHomeStoredSessionId("default")).toBe("home-default");
     const turns = JSON.parse(
       window.localStorage.getItem("june:home:direct-turns:v1") ?? "{}",
     ) as Record<string, Array<{ id: string }>>;
@@ -107,7 +107,7 @@ describe("June Home", () => {
   });
 
   it("purges current and legacy Home history when a profile is deleted permanently", () => {
-    writeJuneHomeStoredSessionId("research", "home-research");
+    writeClovyHomeStoredSessionId("research", "home-research");
     for (const key of [
       "june:home:direct-turns:v1",
       "june:home:task-handoffs:v1",
@@ -120,9 +120,9 @@ describe("June Home", () => {
       );
     }
 
-    reconcileJuneHomeProfileRemoval("research", "delete");
+    reconcileClovyHomeProfileRemoval("research", "delete");
 
-    expect(readJuneHomeStoredSessionId("research")).toBeUndefined();
+    expect(readClovyHomeStoredSessionId("research")).toBeUndefined();
     for (const key of [
       "june:home:direct-turns:v1",
       "june:home:task-handoffs:v1",
@@ -150,11 +150,11 @@ describe("June Home", () => {
       status: "complete",
       parts: [{ type: "text", text: "Finished", status: "complete" }],
     };
-    writeJuneHomeStoredSessionId("default", "late-default");
-    writeJuneHomeStoredSessionId("moving", "late-source");
+    writeClovyHomeStoredSessionId("default", "late-default");
+    writeClovyHomeStoredSessionId("moving", "late-source");
     persistHomeDirectTurns("late-source", [userTurn]);
 
-    reconcileJuneHomeProfileRemoval("moving", "move");
+    reconcileClovyHomeProfileRemoval("moving", "move");
     insertHomeDirectReply("late-source", userTurn.id, assistantTurn);
 
     expect(readHomeDirectTurns("late-default").map((turn) => turn.id)).toEqual([
@@ -166,9 +166,9 @@ describe("June Home", () => {
     ) as Record<string, unknown>;
     expect(movedStore).not.toHaveProperty("late-source");
 
-    writeJuneHomeStoredSessionId("deleting", "deleted-source");
+    writeClovyHomeStoredSessionId("deleting", "deleted-source");
     persistHomeDirectTurns("deleted-source", [userTurn]);
-    reconcileJuneHomeProfileRemoval("deleting", "delete");
+    reconcileClovyHomeProfileRemoval("deleting", "delete");
     insertHomeDirectReply("deleted-source", userTurn.id, assistantTurn);
 
     const deletedStore = JSON.parse(
@@ -178,7 +178,7 @@ describe("June Home", () => {
   });
 
   it("keeps handoff metadata for every retained Home task card", () => {
-    writeJuneHomeStoredSessionId("handoffs", "home-many-handoffs");
+    writeClovyHomeStoredSessionId("handoffs", "home-many-handoffs");
     const handoffs = Array.from({ length: 40 }, (_, index) => ({
       id: `home-task-${index}`,
       title: `Task ${index}`,
@@ -240,23 +240,23 @@ describe("June Home", () => {
 
   it("keeps bare greetings in the Home conversation", () => {
     for (const greeting of [
-      "Hey June",
-      "Hey, June!",
-      "Hey there, June",
-      "Hey June 👋",
+      "Hey Clovy",
+      "Hey, Clovy!",
+      "Hey there, Clovy",
+      "Hey Clovy 👋",
       "hello",
-      "Greetings, June",
-      "Good to see you, June",
+      "Greetings, Clovy",
+      "Good to see you, Clovy",
       "Hello from Stockholm",
       "Hello from Paris 👋",
       "hello from New York",
-      "Morning June",
-      "Good morning, June.",
+      "Morning Clovy",
+      "Good morning, Clovy.",
     ]) {
       expect(homeConversationGreetingReply(greeting)).toBe("Hey! What can I help with?");
     }
 
-    expect(homeConversationGreetingReply("Hey June, research apples in Mexico")).toBeUndefined();
+    expect(homeConversationGreetingReply("Hey Clovy, research apples in Mexico")).toBeUndefined();
     expect(
       homeConversationGreetingReply("Hello from Stockholm, research the market"),
     ).toBeUndefined();
@@ -279,16 +279,18 @@ describe("June Home", () => {
       prompt: "Research good wines near southern France.",
     };
 
-    expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Greetings, Clovy", [prior])).toBe(true);
     expect(
-      isHomeTaskReplayWithoutNewIntent(replay, "Greetings, June", [{ ...prior, status: "failed" }]),
+      isHomeTaskReplayWithoutNewIntent(replay, "Greetings, Clovy", [
+        { ...prior, status: "failed" },
+      ]),
     ).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Research those wines again", [
         { ...prior, status: "failed" },
       ]),
     ).toBe(false);
-    expect(isHomeTaskReplayWithoutNewIntent(replay, "Good to see you, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Good to see you, Clovy", [prior])).toBe(true);
     expect(isHomeTaskReplayWithoutNewIntent(replay, "Please do not repeat that", [prior])).toBe(
       true,
     );
@@ -311,7 +313,7 @@ describe("June Home", () => {
         prior,
       ]),
     ).toBe(true);
-    expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, June", [prior])).toBe(true);
+    expect(isHomeTaskReplayWithoutNewIntent(replay, "Hello again, Clovy", [prior])).toBe(true);
     expect(
       isHomeTaskReplayWithoutNewIntent(replay, "Help me draft a customer reply", [prior]),
     ).toBe(true);
@@ -379,7 +381,7 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Apple research Mexico", prompt: "Look into Mexican apple farming." },
-        "Hey June, look into Mexican apple farming",
+        "Hey Clovy, look into Mexican apple farming",
         [
           {
             id: "home-task-apples",
@@ -490,7 +492,7 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Product review summary", prompt: "Summarize the product review." },
-        "Greetings, June",
+        "Greetings, Clovy",
         [
           {
             id: "home-task-reviews",
@@ -539,7 +541,7 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "AI research", prompt: "Research AI." },
-        "Greetings, June",
+        "Greetings, Clovy",
         [
           {
             id: "home-task-ai",
@@ -553,7 +555,7 @@ describe("June Home", () => {
     expect(
       isHomeTaskReplayWithoutNewIntent(
         { title: "Cat research", prompt: "Research cats." },
-        "Greetings, June",
+        "Greetings, Clovy",
         [
           {
             id: "home-task-cat",
@@ -592,7 +594,7 @@ describe("June Home", () => {
   });
 
   it("recovers an interrupted starting handoff without failing one active in this process", () => {
-    writeJuneHomeStoredSessionId("default", "home-recovery");
+    writeClovyHomeStoredSessionId("default", "home-recovery");
     const starting = {
       id: "home-task-starting",
       title: "Wine research",
@@ -615,16 +617,18 @@ describe("June Home", () => {
   });
 
   it("injects Home context without exposing it in the transcript or previews", () => {
-    const runtimePrompt = withJuneHomeContext("Help me plan tomorrow");
+    const runtimePrompt = withClovyHomeContext("Help me plan tomorrow");
 
     expect(runtimePrompt).toContain("[June home context]");
-    expect(stripJuneHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
-    expect(stripJuneHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
-    expect(stripJuneHomeContextFromPreview("[June home context]\nThis is Ju")).toBe("Home message");
+    expect(stripClovyHomeContext(runtimePrompt)).toBe("Help me plan tomorrow");
+    expect(stripClovyHomeContextFromPreview(runtimePrompt)).toBe("Help me plan tomorrow");
+    expect(stripClovyHomeContextFromPreview("[June home context]\nThis is Ju")).toBe(
+      "Home message",
+    );
   });
 
   it("keeps resolved Home task context while making the latest request authoritative", () => {
-    const prompt = withJuneHomeLatestTaskIntent(
+    const prompt = withClovyHomeLatestTaskIntent(
       "Research wines in France for the second region.",
       "Do the same for Japan",
     );
@@ -632,13 +636,13 @@ describe("June Home", () => {
     expect(prompt).toMatch(/^Do the same for Japan/);
     expect(prompt).toContain("Research wines in France for the second region.");
     expect(prompt).toContain("latest Home request above is authoritative");
-    expect(withJuneHomeLatestTaskIntent("Plan a trip to Rome.", "Plan a trip to Rome")).toBe(
+    expect(withClovyHomeLatestTaskIntent("Plan a trip to Rome.", "Plan a trip to Rome")).toBe(
       "Plan a trip to Rome.",
     );
   });
 
   it("requires retrieved sources for a current-information handoff", () => {
-    const prompt = withJuneHomeCurrentResearch("What games are on tonight?", {
+    const prompt = withClovyHomeCurrentResearch("What games are on tonight?", {
       recentMessages: [
         { role: "user", content: "I follow the Nuggets and Avalanche." },
         { role: "assistant", content: "Got it. Those are your Denver teams." },
@@ -672,7 +676,7 @@ describe("June Home", () => {
       createdAt: new Date(Date.UTC(2026, 0, 1, 3)).toISOString(),
     });
 
-    const context = buildJuneHomeConversationContext(messages);
+    const context = buildClovyHomeConversationContext(messages);
 
     expect(context.recentMessages.length).toBeGreaterThan(20);
     expect(context.recentMessages.length).toBeLessThanOrEqual(80);
@@ -683,7 +687,7 @@ describe("June Home", () => {
     ).toBe(false);
     expect(context.earlierContext).toContain("Project Nebula");
 
-    const researchPrompt = withJuneHomeCurrentResearch(
+    const researchPrompt = withClovyHomeCurrentResearch(
       "What is happening with the Nebula launch today?",
       context,
     );
@@ -692,11 +696,11 @@ describe("June Home", () => {
   });
 
   it("recognizes Hermes MCP name variants and reads their task arguments", () => {
-    expect(isJuneHomeStartTaskTool("start_task")).toBe(true);
-    expect(isJuneHomeStartTaskTool("mcp_june_home_start_task")).toBe(true);
-    expect(isJuneHomeStartTaskTool("june_home.start_task")).toBe(true);
-    expect(isJuneHomeStartTaskTool("Mcp june home start task")).toBe(true);
-    expect(isJuneHomeStartTaskTool("start_session")).toBe(false);
+    expect(isClovyHomeStartTaskTool("start_task")).toBe(true);
+    expect(isClovyHomeStartTaskTool("mcp_june_home_start_task")).toBe(true);
+    expect(isClovyHomeStartTaskTool("june_home.start_task")).toBe(true);
+    expect(isClovyHomeStartTaskTool("Mcp june home start task")).toBe(true);
+    expect(isClovyHomeStartTaskTool("start_session")).toBe(false);
 
     expect(
       juneHomeTaskRequestFromPayload({

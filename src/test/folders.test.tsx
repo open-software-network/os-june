@@ -60,7 +60,7 @@ describe("folders UI", () => {
   it("renders the primary entries and opens Home from the sidebar", async () => {
     const user = userEvent.setup();
     const onChangeView = vi.fn();
-    render(
+    const { container } = render(
       <Sidebar
         notes={notes}
         activeView="notes"
@@ -75,7 +75,8 @@ describe("folders UI", () => {
       />,
     );
 
-    expect(screen.getByRole("img", { name: "June" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Clovy" })).toHaveClass("sidebar-brand-mark");
+    expect(container.querySelector(".sidebar-brand .clovy-app-tile")).toBeNull();
     expect(screen.getByRole("button", { name: "Meeting notes" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Folders" })).toBeNull();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
@@ -296,21 +297,22 @@ describe("folders UI", () => {
       .spyOn(window, "innerHeight", "get")
       .mockImplementation(() => viewportHeight);
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const fixedMenuRect = {
+      top: 0,
+      bottom: 220,
+      left: 0,
+      right: 156,
+      x: 0,
+      y: 0,
+      width: 156,
+      height: 220,
+      toJSON: () => ({}),
+    } as DOMRect;
     const menuRectSpy = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockImplementation(function (this: HTMLElement) {
         if (this.classList.contains("sidebar-context-menu")) {
-          return {
-            top: 0,
-            bottom: 220,
-            left: 0,
-            right: 156,
-            x: 0,
-            y: 0,
-            width: 156,
-            height: 220,
-            toJSON: () => ({}),
-          } as DOMRect;
+          return fixedMenuRect;
         }
         if (this.classList.contains("notes-nav")) {
           return {
@@ -368,8 +370,9 @@ describe("folders UI", () => {
       });
 
       const trigger = await screen.findByRole("button", { name: "Actions for Viewport menu" });
-      vi.spyOn(trigger, "getBoundingClientRect").mockImplementation(
-        () =>
+      Object.defineProperty(trigger, "getBoundingClientRect", {
+        configurable: true,
+        value: () =>
           ({
             ...anchorRect,
             top: anchorRect.top,
@@ -382,7 +385,7 @@ describe("folders UI", () => {
             height: anchorRect.bottom - anchorRect.top,
             toJSON: () => ({}),
           }) as DOMRect,
-      );
+      });
 
       await user.click(trigger);
       const menu = await screen.findByRole("menu");

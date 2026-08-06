@@ -638,7 +638,7 @@ async fn wait_for_relay_connection(runtime: &CompanionRuntime) -> Result<(), App
         if tokio::time::timeout_at(deadline, connected).await.is_err() {
             return Err(AppError::new(
                 "companion_transport_unavailable",
-                "June could not prepare the secure companion connection.",
+                "Clovy could not prepare the secure companion connection.",
             ));
         }
     }
@@ -2084,7 +2084,7 @@ fn ensure_companion_pairing_enabled_with(enabled: bool) -> Result<(), AppError> 
     } else {
         Err(AppError::new(
             "companion_experimental_disabled",
-            "June Companion is off. Enable Companion pairing in Experiments, then restart June.",
+            "Clovy Companion is off. Enable Companion pairing in Experiments, then restart Clovy.",
         ))
     }
 }
@@ -2172,7 +2172,7 @@ fn resolve_desktop_display_name() -> String {
 }
 
 fn default_desktop_display_name() -> String {
-    "June on Mac".to_string()
+    "Clovy on Mac".to_string()
 }
 
 fn normalized_device_name(value: &str) -> Option<String> {
@@ -2350,7 +2350,7 @@ fn load_identity(_account_user_id: &str) -> Result<Option<StoredIdentity>, AppEr
 fn load_or_create_identity(_account_user_id: &str) -> Result<StoredIdentity, AppError> {
     Err(AppError::new(
         "companion_platform_unsupported",
-        "June companion linking is available on supported desktop platforms.",
+        "Clovy Companion linking is available on supported desktop platforms.",
     ))
 }
 
@@ -2721,7 +2721,7 @@ mod tests {
         assert_eq!(error.code, "companion_experimental_disabled");
         assert_eq!(
             error.message,
-            "June Companion is off. Enable Companion pairing in Experiments, then restart June."
+            "Clovy Companion is off. Enable Companion pairing in Experiments, then restart Clovy."
         );
     }
 

@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Preserved June browser policy broker; only cleanup is wired initially.
+#![allow(dead_code)] // Preserved Clovy browser policy broker; only cleanup is wired initially.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -2070,7 +2070,7 @@ fn parked_action_result(approval_id: &str) -> Value {
     json!({
         "parked": true,
         "actionId": approval_id,
-        "message": "Waiting for your approval in June.",
+        "message": "Waiting for your approval in Clovy.",
     })
 }
 

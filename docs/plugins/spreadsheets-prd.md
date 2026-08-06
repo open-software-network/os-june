@@ -8,12 +8,12 @@
 
 ## Thesis
 
-Spreadsheets gives June a local, inspectable way to turn meeting data and files
+Spreadsheets gives Clovy a local, inspectable way to turn meeting data and files
 into structured analysis. It should analyze an imported workbook, explain its
 logic, build or revise a safe copy, verify formulas and shape, and export an
 editable XLSX or CSV without relying on a cloud spreadsheet service.
 
-It ranks tenth because it is valuable and already appears in June's product
+It ranks tenth because it is valuable and already appears in Clovy's product
 story, but high-quality spreadsheet work needs deterministic calculation,
 formula safety, and visual verification. The shared artifact broker should land
 with Documents first.
@@ -27,15 +27,15 @@ is often unacceptable for financial, client, or personnel data.
 
 ## Product promise
 
-Work from a local copy, see what June changed, validate the workbook, and export
+Work from a local copy, see what Clovy changed, validate the workbook, and export
 only the version you approve. No macro execution and no silent overwrite.
 
 ## V1 experience
 
-- Import CSV, TSV, or XLSX into the June workspace.
+- Import CSV, TSV, or XLSX into the Clovy workspace.
 - Ask questions about sheets, ranges, formulas, anomalies, and summaries.
 - See a compact table preview and cited cell/range references.
-- Ask June to clean data, add a derived column, create a summary sheet, or build
+- Ask Clovy to clean data, add a derived column, create a summary sheet, or build
   a new workbook from meeting data.
 - Review a typed change summary, recalculation status, warnings, and preview.
 - Export a validated XLSX/CSV through the native save dialog.

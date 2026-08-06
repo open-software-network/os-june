@@ -1,5 +1,5 @@
 import { fileURLToPath, URL } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 // MV3 build: the background service worker and the popup are separate
 // entries; manifest.json rides along from public/. Entry names are pinned so
@@ -22,5 +22,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/test/**/*.test.ts"],
+    // Match the app test runner: one worker thread and no child-process pool.
+    pool: "threads",
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });

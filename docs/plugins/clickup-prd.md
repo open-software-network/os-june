@@ -8,13 +8,13 @@
 
 ## Thesis
 
-ClickUp can extend June's meeting-to-action flow to teams that consolidate
+ClickUp can extend Clovy's meeting-to-action flow to teams that consolidate
 projects, docs, goals, and time tracking in one workspace. V1 should stay
 narrow: selected Spaces/Lists, task context, and reviewed task/comment actions.
 
 ClickUp follows Asana because the jobs overlap, its API authentication uses a
 client secret, and current OAuth access tokens do not expire. Those properties
-need resolution before June can make a credible local-mode security claim.
+need resolution before Clovy can make a credible local-mode security claim.
 
 ## Customer and problem
 
@@ -24,7 +24,7 @@ chooses the wrong Workspace, Space, Folder, or List.
 
 ## Product promise
 
-Select the exact ClickUp locations June may use. June reads current task
+Select the exact ClickUp locations Clovy may use. Clovy reads current task
 context and proposes actions with the full hierarchy, field diff, and note
 content visible before approval.
 
@@ -32,7 +32,7 @@ content visible before approval.
 
 - Connect one Workspace and choose Spaces/Folders/Lists.
 - Search/read tasks, subtasks, comments, statuses, users, and custom fields.
-- Create a task or add a comment from a June meeting.
+- Create a task or add a comment from a Clovy meeting.
 - Update a bounded set of task fields after approval.
 - Disconnect and verify the long-lived token is invalidated or unusable.
 
@@ -43,7 +43,7 @@ content visible before approval.
 - One Workspace and selected location roots.
 - Metadata-first task search and bounded detail/comment reads.
 - Approved task create, comment, and selected-field update.
-- Live fetch and bounded polling while June is awake.
+- Live fetch and bounded polling while Clovy is awake.
 
 ### Later
 

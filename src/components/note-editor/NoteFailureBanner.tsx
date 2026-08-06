@@ -45,7 +45,7 @@ function friendlyFailureSegment(message: string) {
   let friendly = body;
   if (normalized.includes("no_speech") || normalized.includes("no speech")) {
     friendly = "No speech detected. Try speaking louder or moving closer to the microphone.";
-  } else if (isInvalidJuneResponseMessage(body)) {
+  } else if (isInvalidClovyResponseMessage(body)) {
     friendly = "The processing service returned an invalid response.";
   } else if (normalized.includes("metering_provider_failed")) {
     friendly = "Billing is temporarily unavailable. Please try again in a moment.";
@@ -57,7 +57,7 @@ function friendlyFailureSegment(message: string) {
   return source ? `${source}: ${friendly}` : friendly;
 }
 
-export function isInvalidJuneResponseMessage(message: string) {
+export function isInvalidClovyResponseMessage(message: string) {
   const normalized = message.trim().toLowerCase();
   return (
     normalized.includes("june_api_response_invalid") ||
@@ -109,7 +109,7 @@ export function NoteFailureBanner({
           ? audioPreserved
             ? `Your balance ran out. Your recording is saved locally, so ${topUpAction} and retry.`
             : `Your balance is too low. ${topUpLabel} to continue.`
-          : (displayMessage ?? "June couldn't finish processing this note.")}
+          : (displayMessage ?? "Clovy couldn't finish processing this note.")}
         {!isBalanceIssue && audioPreserved
           ? " Your recording is saved locally, so you can retry."
           : null}

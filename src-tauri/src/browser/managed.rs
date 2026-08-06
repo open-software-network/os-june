@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Preserved June-managed browser transport, not exposed in this PR.
+#![allow(dead_code)] // Preserved Clovy-managed browser transport, not exposed in this PR.
 
 //! The managed transport: a headless ephemeral browser session behind the
 //! JUN-291 `june_browser` transport seam (JUN-289, the routines track of ADR

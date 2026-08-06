@@ -136,7 +136,7 @@ export function ModelPickerPopover({
   suggestedListLabel?: string;
   allModelsLabel?: string;
   /** With a Venice API key saved, the pinned Auto section carries a billing
-   * note: Auto is a June-managed route, so it meters June credits and never
+   * note: Auto is a Clovy-managed route, so it meters Clovy credits and never
    * uses the key. The note keeps that visible at the moment Auto could be
    * switched on (JUN-329). */
   veniceApiKeyConfigured?: boolean;
@@ -847,7 +847,7 @@ export function ModelPickerPopover({
                   </div>
                   {veniceApiKeyConfigured ? (
                     <p className="agent-composer-model-auto-note">
-                      Auto is billed to June credits and does not use your Venice API key.
+                      Auto is billed to Clovy credits and does not use your Venice API key.
                     </p>
                   ) : null}
                 </>
@@ -1325,7 +1325,11 @@ function ModelPickerOption({
 function ModelPickerOptionText({ model }: { model: VeniceModelDto }) {
   return (
     <>
-      <span className="agent-composer-model-row-logo" aria-hidden>
+      <span
+        className="agent-composer-model-row-logo"
+        data-brand={model.id === AUTO_MODEL_ID ? "clovy" : undefined}
+        aria-hidden
+      >
         <ProviderLogo provider={model.provider} id={model.id} name={model.name} />
       </span>
       <span className="agent-composer-model-row-copy">

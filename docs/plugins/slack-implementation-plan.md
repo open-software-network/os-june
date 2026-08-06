@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -32,7 +32,7 @@ connector:
    can use a desktop-safe PKCE flow or another supported non-confidential flow.
 2. Evaluate Socket Mode and OAuth separately; Socket Mode avoids a public
    Events API URL but does not by itself solve installation secret custody.
-3. Reject embedding the secret, proxying all Slack tokens through June API, or
+3. Reject embedding the secret, proxying all Slack tokens through Clovy API, or
    using a shared static user token.
 4. If no local-safe public install exists, write an ADR for the chosen boundary
    before implementation. Options are a TEE token exchange with explicit copy,
@@ -68,7 +68,7 @@ call. Bots and edited/deleted messages are represented, not silently flattened.
 
 V1 local mode uses one of two on-device approaches selected by the spike:
 
-- Socket Mode while June is running, if public distribution and token custody
+- Socket Mode while Clovy is running, if public distribution and token custody
   are compatible; or
 - bounded polling of mentions and selected conversations with persisted cursors.
 
@@ -101,7 +101,7 @@ away-mode design, not a quiet exception in local mode.
 ## Verification
 
 - Auth matrix: first install, workspace-admin denial, token rotation, restart,
-  revoke at Slack, disconnect in June, and reauthorization.
+  revoke at Slack, disconnect in Clovy, and reauthorization.
 - Rust tests that provider-resolved channel ids cannot escape the allowlist.
 - Pagination, rate-limit, deleted-message, edited-message, thread, bot, and
   Slack Connect fixtures.

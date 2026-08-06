@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -27,7 +27,7 @@ or chooses an arbitrary filesystem destination.
 
 Timebox two weeks to compare:
 
-1. A Rust-native OOXML subset using ZIP/XML libraries and a June-owned document
+1. A Rust-native OOXML subset using ZIP/XML libraries and a Clovy-owned document
    intermediate representation.
 2. A pinned app-owned worker using audited document libraries, isolated from
    Hermes and packaged with reproducible wheels/binaries.
@@ -46,10 +46,10 @@ Hermes -> june_documents MCP -> Rust artifact broker -> document engine
                                           |-> versioned workspace artifacts
                                           |-> preview images/HTML
                                           `-> validation report
-June UI -> native save dialog -> explicit export copy
+Clovy UI -> native save dialog -> explicit export copy
 ```
 
-Use one June-owned intermediate representation (IR) for the supported subset:
+Use one Clovy-owned intermediate representation (IR) for the supported subset:
 document metadata, sections, block nodes, inline runs, styles, tables, images,
 links, headers/footers, and source references. MCP inputs and outputs use this
 IR; the engine owns OOXML.
@@ -64,7 +64,7 @@ IR; the engine owns OOXML.
 | `render_document` | Produce bounded preview artifacts |
 | `validate_document` | Re-open output and check structural/semantic invariants |
 | `compare_document_versions` | Return semantic changes and preview refs |
-| `export_document` | Request a June UI export handoff, never an arbitrary path |
+| `export_document` | Request a Clovy UI export handoff, never an arbitrary path |
 
 `revise_document` accepts typed operations such as replace block, insert after,
 delete block, set style, and update table cell. It does not accept raw XML.

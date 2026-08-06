@@ -124,7 +124,7 @@ jobs:
         run: |
           {
             echo "### Staging macOS DMG"
-            echo "This artifact is built against the staging OS Accounts and June API environment."
+            echo "This artifact is built against the staging OS Accounts and Clovy API environment."
             for dmg in src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/dmg/*.dmg; do
               [ -e "$dmg" ] || continue
               echo "- \`$dmg\`"

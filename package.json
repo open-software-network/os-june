@@ -18,9 +18,9 @@
     "computer-use:self-test": "node scripts/computer-use-self-test.mjs",
     "computer-use:self-test:live": "node scripts/computer-use-self-test.mjs --live",
     "build": "tsc && vite build",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "test:ui": "vitest run",
+    "test": "vitest run --configLoader=runner",
+    "test:coverage": "vitest run --configLoader=runner --coverage",
+    "test:ui": "vitest run --configLoader=runner",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
     "test:rust:coverage": "cargo llvm-cov --manifest-path src-tauri/Cargo.toml --all-targets --html --output-dir src-tauri/target/llvm-cov/html",
     "test:june-api": "cd june-api && cargo test --all-targets --all-features --locked",
@@ -35,8 +35,6 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p extension"
   },
   "dependencies": {
-    "@react-three/drei": "^9",
-    "@react-three/fiber": "^8",
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-autostart": "^2.5.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",
@@ -51,15 +49,12 @@
     "@tiptap/react": "^3.27.1",
     "@tiptap/starter-kit": "^3.27.1",
     "@tiptap/suggestion": "3.27.1",
-    "border-beam": "^1.2.0",
     "central-icons": "npm:@central-icons-react/round-outlined-radius-3-stroke-2@1.1.233",
     "central-icons-filled": "npm:@central-icons-react/round-filled-radius-3-stroke-2@1.1.241",
     "framer-motion": "^12.40.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "sonner": "^2.0.7",
-    "three": "^0.185.1",
-    "three-stdlib": "^2.36.1"
+    "sonner": "^2.0.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
@@ -67,16 +62,16 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",
+    "@types/node": "24.10.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
-    "@types/three": "^0.185",
     "@vitejs/plugin-react": "^4.3.4",
-    "@vitest/coverage-v8": "^2.1.8",
+    "@vitest/coverage-v8": "^4.1.10",
     "agentation": "^3.0.2",
     "jsdom": "^25.0.1",
     "playwright": "^1.61.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.10"
   }
 }

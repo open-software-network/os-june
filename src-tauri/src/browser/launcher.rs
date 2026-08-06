@@ -37,7 +37,7 @@ pub struct DetectedBrowser {
 
 /// Actionable copy shown when no supported browser is installed. This exact
 /// wording is a JUN-289 acceptance criterion (sentence case, no em dashes).
-pub const NO_BROWSER_MESSAGE: &str = "No compatible browser is installed. Install Google Chrome, Microsoft Edge, Brave, or Chromium so June can run its managed browser.";
+pub const NO_BROWSER_MESSAGE: &str = "No compatible browser is installed. Install Google Chrome, Microsoft Edge, Brave, or Chromium so Clovy can run its managed browser.";
 
 /// Detects the highest-priority installed browser, or `None` if none is present
 /// (callers surface [`NO_BROWSER_MESSAGE`]).

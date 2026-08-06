@@ -1,11 +1,11 @@
 import { playAgentSound } from "./agent-sounds";
 import { playRecordingSound } from "./recording-sounds";
 
-export type JuneSoundsDemoApi = {
+export type ClovySoundsDemoApi = {
   dispose: () => void;
 };
 
-type JuneSoundsDemoCommand =
+type ClovySoundsDemoCommand =
   | "all"
   | "recording"
   | "agent"
@@ -16,7 +16,7 @@ type JuneSoundsDemoCommand =
   | "needsInput";
 
 const HELP = [
-  "June sound family:",
+  "Clovy sound family:",
   '  __juneSounds("all")         recording and agent cues in sequence',
   '  __juneSounds("recording")   start, pause, stop',
   '  __juneSounds("agent")       ready, needs input',
@@ -38,7 +38,7 @@ const AGENT_SEQUENCE = [
   { delayMs: 1000, play: () => playAgentSound("needsInput") },
 ] as const;
 
-export function registerJuneSoundsDemo(): JuneSoundsDemoApi {
+export function registerClovySoundsDemo(): ClovySoundsDemoApi {
   let timers: number[] = [];
 
   function cancelSequence() {
@@ -57,7 +57,7 @@ export function registerJuneSoundsDemo(): JuneSoundsDemoApi {
     }
   }
 
-  const run = (command?: JuneSoundsDemoCommand) => {
+  const run = (command?: ClovySoundsDemoCommand) => {
     switch (command) {
       case "all":
         playSequence([

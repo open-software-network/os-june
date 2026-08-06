@@ -126,7 +126,7 @@ async function summarizeOrFallback(
     try {
       const summary = (await summarize(items)).trim();
       if (summary) return { text: summary, fallback: false };
-      const error = new Error("June model route returned an empty context summary");
+      const error = new Error("Clovy model route returned an empty context summary");
       onFallback?.(error);
     } catch (error) {
       if (isAbortError(error)) throw error;

@@ -17,7 +17,7 @@ const JUNE_POINTS = [
   {
     icon: IconSparkle,
     title: "Delegate real work",
-    detail: "Give June a task and come back to the result.",
+    detail: "Give Clovy a task and come back to the result.",
   },
   {
     icon: IconMicrophone,
@@ -106,7 +106,7 @@ export function SignInStep({
 
   return (
     <StepCard
-      title="Welcome to June"
+      title="Welcome to Clovy"
       subtitle="Private AI for everyday life and work."
       mark
       wide
@@ -132,7 +132,7 @@ export function SignInStep({
           onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
         >
           <IconTelegram size={16} aria-hidden />
-          <span>Join the June community on Telegram</span>
+          <span>Join the Clovy community on Telegram</span>
         </button>
       </p>
       {account.configured ? (

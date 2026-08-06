@@ -5,7 +5,7 @@
 
 import { helloMessage, parseHostMessage, PROTOCOL_VERSION, type HelloMessage } from "./protocol";
 
-export type IncompatibleRemedy = "updateJune" | "updateExtension" | "updateBoth";
+export type IncompatibleRemedy = "updateApp" | "updateExtension" | "updateBoth";
 
 export type PairingState =
   | { status: "disconnected" }
@@ -15,7 +15,7 @@ export type PairingState =
   | { status: "paired"; appVersion?: string }
   /** Protocol mismatch, including which independently updated half is older. */
   | { status: "incompatible"; expected?: number; remedy: IncompatibleRemedy }
-  /** The shim could not reach the app (June is not running). */
+  /** The shim could not reach the app (Clovy is not running). */
   | { status: "unreachable" };
 
 export type PairingEvent =
@@ -35,7 +35,7 @@ function incompatibleRemedy(appProtocolVersion?: number): IncompatibleRemedy {
   if (appProtocolVersion === undefined || appProtocolVersion === PROTOCOL_VERSION) {
     return "updateBoth";
   }
-  return appProtocolVersion < PROTOCOL_VERSION ? "updateJune" : "updateExtension";
+  return appProtocolVersion < PROTOCOL_VERSION ? "updateApp" : "updateExtension";
 }
 
 export function reducePairing(

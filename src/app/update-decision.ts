@@ -15,7 +15,7 @@ export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 
 // The manual-check success status. Shared so the reporter and the auto-dismiss
 // effect that matches on it (App), plus the dev demo, can't drift apart.
-export const UP_TO_DATE_STATUS = "June is up to date.";
+export const UP_TO_DATE_STATUS = "Clovy is up to date.";
 
 export type UpdateStatusDisplayState = {
   status: string | null;
@@ -92,7 +92,7 @@ export type UpdateInstallProgress = {
   contentLength?: number;
 };
 
-export async function checkForJuneUpdate<TUpdate extends UpdaterUpdate>(
+export async function checkForClovyUpdate<TUpdate extends UpdaterUpdate>(
   deps: UpdateCheckDeps<TUpdate>,
   mode: UpdateCheckMode,
 ) {
@@ -112,7 +112,7 @@ export async function checkForJuneUpdate<TUpdate extends UpdaterUpdate>(
   }
 }
 
-export function startPeriodicJuneUpdateChecks(
+export function startPeriodicClovyUpdateChecks(
   runUpdateCheck: (mode: UpdateCheckMode) => void,
   intervalMs = UPDATE_CHECK_INTERVAL_MS,
 ) {
@@ -120,14 +120,14 @@ export function startPeriodicJuneUpdateChecks(
   return () => window.clearInterval(timer);
 }
 
-export async function prepareJuneUpdate<TUpdate extends UpdaterUpdate>({
+export async function prepareClovyUpdate<TUpdate extends UpdaterUpdate>({
   update,
   reportProgress,
   reportReady,
   reportFailure,
 }: PrepareUpdateDeps<TUpdate>) {
   try {
-    await downloadAndInstallJuneUpdate(update, reportProgress);
+    await downloadAndInstallClovyUpdate(update, reportProgress);
     reportReady({
       update,
       version: update.version,
@@ -138,21 +138,21 @@ export async function prepareJuneUpdate<TUpdate extends UpdaterUpdate>({
   }
 }
 
-export async function installJuneUpdate<TUpdate extends UpdaterUpdate>({
+export async function installClovyUpdate<TUpdate extends UpdaterUpdate>({
   update,
   relaunch,
   reportProgress,
   reportFailure,
 }: InstallUpdateDeps<TUpdate>) {
   try {
-    await downloadAndInstallJuneUpdate(update, reportProgress);
+    await downloadAndInstallClovyUpdate(update, reportProgress);
     await relaunch();
   } catch (error) {
     reportFailure(messageFromUnknown(error));
   }
 }
 
-async function downloadAndInstallJuneUpdate<TUpdate extends UpdaterUpdate>(
+async function downloadAndInstallClovyUpdate<TUpdate extends UpdaterUpdate>(
   update: TUpdate,
   reportProgress: (progress: UpdateInstallProgress) => void,
 ) {

@@ -8,7 +8,7 @@ import {
   type OnboardingArea,
   type OnboardingMood,
 } from "../../lib/onboarding";
-import { junePersona, setJunePersona } from "../../lib/tauri";
+import { junePersona, setClovyPersona } from "../../lib/tauri";
 import {
   OnboardingCharacter,
   ONBOARDING_MOOD_PRESENTATION,
@@ -19,7 +19,7 @@ type SavedSelection = {
   mood: OnboardingMood;
 };
 
-export function JunePersonalitySettingsSection() {
+export function ClovyPersonalitySettingsSection() {
   const [area, setArea] = useState<OnboardingArea>("work");
   const [mood, setMood] = useState<OnboardingMood>("clearheaded");
   const [loaded, setLoaded] = useState(false);
@@ -57,7 +57,7 @@ export function JunePersonalitySettingsSection() {
         setLoaded(true);
       })
       .catch((cause) => {
-        if (!cancelled) setError(messageFromError(cause, "Unable to load June's personality."));
+        if (!cancelled) setError(messageFromError(cause, "Unable to load Clovy's personality."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -86,7 +86,7 @@ export function JunePersonalitySettingsSection() {
       queuedSelection.current = null;
 
       try {
-        const persona = await setJunePersona({
+        const persona = await setClovyPersona({
           area: selection.area,
           ...ONBOARDING_MOOD_PERSONALITY_PRESETS[selection.mood],
         });
@@ -107,7 +107,7 @@ export function JunePersonalitySettingsSection() {
             setArea(persisted.area);
             setMood(persisted.mood);
           }
-          setError(messageFromError(cause, "Unable to save June's personality."));
+          setError(messageFromError(cause, "Unable to save Clovy's personality."));
           setStatus(undefined);
         }
       }
@@ -123,13 +123,13 @@ export function JunePersonalitySettingsSection() {
         Personality
       </h2>
       <p className="settings-group-description">
-        Choose the voice June uses in Home and new agent sessions.
+        Choose the voice Clovy uses in Home and new agent sessions.
       </p>
       {loading ? (
         <div className="settings-card settings-personality-loading" aria-busy="true">
           <span className="settings-personality-skeleton settings-personality-skeleton-short" />
           <span className="settings-personality-skeleton" />
-          <span className="visually-hidden">Loading June's personality</span>
+          <span className="visually-hidden">Loading Clovy's personality</span>
         </div>
       ) : !loaded ? (
         <div className="settings-card settings-personality-load-error">
@@ -147,7 +147,7 @@ export function JunePersonalitySettingsSection() {
       ) : (
         <div className="settings-card settings-personality-card">
           <fieldset className="settings-personality-grid">
-            <legend className="visually-hidden">Choose June's personality</legend>
+            <legend className="visually-hidden">Choose Clovy's personality</legend>
             {ONBOARDING_MOODS.map((optionMood) => {
               const selected = optionMood === mood;
               const presentation = ONBOARDING_MOOD_PRESENTATION[optionMood];
@@ -183,7 +183,7 @@ export function JunePersonalitySettingsSection() {
             aria-live="polite"
             aria-atomic="true"
           >
-            <span className="settings-personality-preview-speaker">June</span>
+            <span className="settings-personality-preview-speaker">Clovy</span>
             <p className="settings-personality-preview-greeting shimmer">
               {ONBOARDING_MOOD_PRESENTATION[mood].greeting}
             </p>

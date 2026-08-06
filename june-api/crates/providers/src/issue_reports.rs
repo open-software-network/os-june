@@ -605,13 +605,20 @@ fn issue_title(description: &str) -> String {
         .lines()
         .map(str::trim)
         .map(report_line_content)
-        .find(|line| !line.is_empty() && *line != "I want to report an issue with June.")
+        .find(|line| {
+            !line.is_empty()
+                && !matches!(
+                    *line,
+                    "I want to report an issue with Clovy."
+                        | "I want to report an issue with June."
+                )
+        })
         .unwrap_or("(no description)");
     prefixed_issue_title(first_line)
 }
 
 /// Title from the diagnosis the report model already wrote. The report
-/// prompt asks June to open with an `Issue 1: <short title>` heading, so a
+/// prompt asks Clovy to open with an `Issue 1: <short title>` heading, so a
 /// single-issue report carries a model-written title we can lift verbatim
 /// instead of slicing the first content line out of the raw description.
 fn diagnosis_issue_title(diagnosis: &str) -> Option<String> {
@@ -621,7 +628,7 @@ fn diagnosis_issue_title(diagnosis: &str) -> Option<String> {
 fn prefixed_issue_title(summary: &str) -> String {
     let summary = summary.trim();
     let mut title = String::with_capacity(ISSUE_TITLE_MAX_CHARS + 16);
-    title.push_str("June report: ");
+    title.push_str("Clovy report: ");
     for (count, ch) in summary.chars().enumerate() {
         if count >= ISSUE_TITLE_MAX_CHARS {
             title.push('…');
@@ -920,7 +927,7 @@ mod issue_title_tests {
         let description = "I want to report an issue with June.\n\nWhat happened: recorder freezes on pause\n\nWhat I expected:\n";
         assert_eq!(
             issue_title(description),
-            "June report: recorder freezes on pause"
+            "Clovy report: recorder freezes on pause"
         );
     }
 
@@ -930,7 +937,7 @@ mod issue_title_tests {
             "I want to report an issue with June.\n\nWhat happened:\n\nIt crashed twice today.";
         assert_eq!(
             issue_title(description),
-            "June report: It crashed twice today."
+            "Clovy report: It crashed twice today."
         );
     }
 
@@ -938,7 +945,7 @@ mod issue_title_tests {
     fn title_falls_back_for_free_form_reports() {
         assert_eq!(
             issue_title("The recorder freezes\nwhen I pause it"),
-            "June report: The recorder freezes"
+            "Clovy report: The recorder freezes"
         );
     }
 
@@ -1022,7 +1029,7 @@ mod issue_title_tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(
             entries[0].title,
-            "June report: Clipped chat box in Routines"
+            "Clovy report: Clipped chat box in Routines"
         );
         assert!(
             entries[0]
@@ -1037,7 +1044,7 @@ mod issue_title_tests {
         assert!(!entries[0].body_markdown.contains("product question"));
         assert_eq!(
             entries[1].title,
-            "June report: Model control in Routines chat"
+            "Clovy report: Model control in Routines chat"
         );
         assert!(
             entries[1]
@@ -1069,7 +1076,7 @@ mod issue_title_tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(
             entries[0].title,
-            "June report: Clipped chat box in Routines"
+            "Clovy report: Clipped chat box in Routines"
         );
         assert!(
             entries[0]
@@ -1079,7 +1086,7 @@ mod issue_title_tests {
         assert!(!entries[0].body_markdown.contains("product question"));
         assert_eq!(
             entries[1].title,
-            "June report: Model control in Routines chat"
+            "Clovy report: Model control in Routines chat"
         );
         assert!(entries[0].body_markdown.contains("- Category: feature"));
         assert!(entries[1].body_markdown.contains("- Split issue: 2 of 2"));
@@ -1125,7 +1132,7 @@ mod issue_title_tests {
         let entries = issue_create_entries(&report);
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "June report: The recorder freezes");
+        assert_eq!(entries[0].title, "Clovy report: The recorder freezes");
         assert!(
             entries[0]
                 .body_markdown
@@ -1166,7 +1173,10 @@ mod issue_title_tests {
         let entries = issue_create_entries(&report);
 
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].title, "June report: Model-written report titles");
+        assert_eq!(
+            entries[0].title,
+            "Clovy report: Model-written report titles"
+        );
         assert!(
             entries[0]
                 .body_markdown
@@ -1197,7 +1207,7 @@ mod issue_title_tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].title,
-            "June report: The report contains many generated findings."
+            "Clovy report: The report contains many generated findings."
         );
         assert!(
             entries[0]
@@ -1458,7 +1468,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: The recorder freezes",
+                "title": "Clovy report: The recorder freezes",
                 "reward_amount_units": "0",
                 "asset_symbol": "POINTS",
                 "type": "bug",
@@ -1612,7 +1622,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: Clipped chat box in Routines",
+                "title": "Clovy report: Clipped chat box in Routines",
                 "file_ids": [],
             })))
             .respond_with(issue_created_with(7))
@@ -1622,7 +1632,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: Model control in Routines chat",
+                "title": "Clovy report: Model control in Routines chat",
                 "file_ids": [],
             })))
             .respond_with(issue_created_with(8))
@@ -1658,7 +1668,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: Clipped chat box in Routines",
+                "title": "Clovy report: Clipped chat box in Routines",
                 "type": "feature",
                 "file_ids": [],
             })))
@@ -1669,7 +1679,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/projects/bug-reports/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: Model control in Routines chat",
+                "title": "Clovy report: Model control in Routines chat",
                 "type": "feature",
                 "file_ids": [],
             })))
@@ -1796,7 +1806,7 @@ mod os_platform_tests {
         Mock::given(method("POST"))
             .and(path("/v1/orgs/june/bounties"))
             .and(body_partial_json(serde_json::json!({
-                "title": "June report: The recorder freezes",
+                "title": "Clovy report: The recorder freezes",
                 "reward_amount_units": "0",
                 "asset_symbol": "POINTS",
                 "type": "bug",

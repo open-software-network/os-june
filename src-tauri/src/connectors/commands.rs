@@ -229,7 +229,7 @@ pub struct ConnectorsSelectedTeamsSetRequest {
     pub teams: Vec<SelectedTeamDto>,
 }
 
-/// Replace the account's selected-team set. The selection is June's own
+/// Replace the account's selected-team set. The selection is Clovy's own
 /// authorization boundary (Linear has no teams-scoped grant), so it must
 /// never be empty: an empty set would make every team query answer nothing
 /// while looking connected.
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn selected_teams_payload_validation() {
-        // Empty set: the selection is June's authorization boundary and must
+        // Empty set: the selection is Clovy's authorization boundary and must
         // never be cleared to nothing.
         assert_eq!(
             validate_selected_teams(&[]).unwrap_err().code,

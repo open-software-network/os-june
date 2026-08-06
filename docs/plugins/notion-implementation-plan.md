@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -21,8 +21,8 @@
 
 Ship a Notion hosted MCP connector preview. Clicking **Connect** opens Notion's
 hosted MCP OAuth flow in the default browser, stores the returned OAuth material
-in the OS Keychain, and lets the user disconnect locally. When connected, June
-registers the read-only `june_notion` MCP server/toolset with Hermes so June can
+in the OS Keychain, and lets the user disconnect locally. When connected, Clovy
+registers the read-only `june_notion` MCP server/toolset with Hermes so Clovy can
 discover the hosted MCP read tools. This slice also registers the narrow
 `june_notion_actions` MCP server/toolset for approved page creation through
 Notion's hosted MCP `notion-create-pages` tool and approved page updates through
@@ -40,7 +40,7 @@ blocked until one of the selected-resource boundaries below is proven.
 The prior handoff reports that a hosted MCP prototype proved the live transport
 chain:
 
-- June Rust shell -> Keychain token -> rmcp Streamable HTTP -> Notion hosted MCP
+- Clovy Rust shell -> Keychain token -> rmcp Streamable HTTP -> Notion hosted MCP
   -> `tools/list`.
 - `notion_mcp_oauth_status` returned connected state with presence indicators
   for access token, refresh token, client id, and Keychain-only custody.
@@ -50,10 +50,10 @@ chain:
   tools such as page create/update.
 
 This reported result supports transport/auth viability only. It does not prove
-June can safely claim that Notion access is limited to user-selected pages. The
+Clovy can safely claim that Notion access is limited to user-selected pages. The
 hosted `notion-search` surface is also provider-defined and may include sources
 connected to the user's Notion workspace when that workspace enables them, so the
-preview copy must disclose that June is not exposing a page-only search index.
+preview copy must disclose that Clovy is not exposing a page-only search index.
 The reported transport result remains provisional until the prototype source or
 complete JSON evidence with secrets and private identifiers/content redacted is
 recovered.
@@ -118,10 +118,10 @@ ids, parent/ancestor metadata, cursors, and result counts after redaction.
 Exit criteria:
 
 - **Pass:** hosted MCP enforces selected-resource access for search, fetch, and
-  data-source reads. June may keep the selected-page privacy claim and promote
+  data-source reads. Clovy may keep the selected-page privacy claim and promote
   the hosted transport into production code.
 - **Fail:** hosted MCP behaves like broad workspace access. Keep Connect with
-  explicit unverified-scope disclosure, but do not promote it until June adds a
+  explicit unverified-scope disclosure, but do not promote it until Clovy adds a
   Rust-enforced authorized-root graph that filters or rejects every
   search/query/fetch response before Hermes sees any unselected id, title,
   snippet, metadata, or content, or chooses a different selected-resource access
@@ -136,7 +136,7 @@ Exit criteria:
 
 After scoping probes, verify:
 
-- Quit and relaunch June, then status and tool listing work from Keychain without
+- Quit and relaunch Clovy, then status and tool listing work from Keychain without
   browser reauth.
 - Reconnect does not create duplicate dynamic-client state.
 - Disconnect removes local Keychain material, updates runtime capability, and
@@ -161,7 +161,7 @@ selected-resource proof, and an honest privacy claim.
 | `june_notion_actions` | `notion-create-pages`, `notion-update-page` |
 
 These are the exact third-party canonical names currently returned by Notion's
-hosted MCP preview. June preserves them through discovery, policy checks, Rust
+hosted MCP preview. Clovy preserves them through discovery, policy checks, Rust
 preflight, and provider invocation. The OpenAI Agents SDK converts punctuation
 in function-tool names to underscores, so the model-facing aliases replace
 each hyphen with an underscore (for example, `notion_update_page`) before the

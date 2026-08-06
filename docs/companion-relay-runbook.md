@@ -4,15 +4,15 @@
 
 Set `JUNE__COMPANION__DATABASE_URL`. Companion endpoints are disabled outside
 local development if Postgres connect, migration, or snapshot load fails. Run
-the June API migration before traffic and verify active device/link counts load
+the Clovy API migration before traffic and verify active device/link counts load
 without identifiers in logs.
 
-Run exactly one companion-enabled June API replica. Pairing attempts and live
+Run exactly one companion-enabled Clovy API replica. Pairing attempts and live
 WebSocket senders are process-local in the MVP; multiple replicas can split the
 phone and desktop onto different processes. Scale-out is blocked until the
 shared pairing store and cross-instance ciphertext router in ADR 0045 exist.
 
-Expose the existing June API HTTPS port with WebSocket upgrade support. The
+Expose the existing Clovy API HTTPS port with WebSocket upgrade support. The
 desktop calls `/v1/companion/relay?deviceId=...` with its normal OS Accounts
 bearer. A desktop-approved phone generates and uses its opaque `Device`
 credential; only its hash reaches the relay and is stored with the linked

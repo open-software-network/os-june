@@ -1,14 +1,14 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="public/os-june-dark.svg">
-    <img src="public/os-june-light.svg" alt="June" width="140" height="41">
+    <source media="(prefers-color-scheme: dark)" srcset="public/clovy-wordmark.svg">
+    <img src="public/clovy-wordmark.svg" alt="Clovy" width="160">
   </picture>
 </p>
 
 <h3 align="center">Private AI on your Mac</h3>
 
 <p align="center">
-  June brings chat, voice dictation, meeting notes, and a local agent into a single
+  Clovy brings chat, voice dictation, meeting notes, and a local agent into a single
   private workspace. Local by default, routed through privacy-preserving AI, and
   open source so the privacy claims can be checked instead of believed.
 </p>
@@ -36,37 +36,37 @@
   <a href="https://x.com/OpenSoftwareCo">X</a>
 </p>
 
-![A 30 second tour of June: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/june-demo.gif)
+![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/june-demo.gif)
 
 
-## Why June
+## Why Clovy
 
 Most AI apps ask you to hand over your most sensitive data and trust them with
 it. Every prompt, file, and meeting reveals something about you, and a cloud
 agent with that reach is a remote company's window into your work.
 
-June is built the other way around. The app and the agent run on your Mac.
+Clovy is built the other way around. The app and the agent run on your Mac.
 Notes, recordings, transcripts, files, sessions, and agent memory stay on your
-machine by default. When June needs model inference, the request goes through
-June API, an open source, TEE-attested service that keeps provider keys
+machine by default. When Clovy needs model inference, the request goes through
+Clovy API, an open source, TEE-attested service that keeps provider keys
 server-side and routes to private models with zero data retention by default.
 You do not have to take any of this on faith: the entire product is MIT
 licensed, and the exact code serving production is cryptographically
 verifiable.
 
-## What June does
+## What Clovy does
 
 - **Chat.** Ask questions, do research, brainstorm, and build plans without
   the conversation training someone else's model.
-- **Dictation.** Hold a key, talk, release. June turns your voice into clean,
+- **Dictation.** Hold a key, talk, release. Clovy turns your voice into clean,
   polished writing and pastes it into whatever app you were using, with
   push-to-talk and hands-free modes and selectable writing styles.
-- **Meeting notes.** June detects supported meetings and offers to take notes,
+- **Meeting notes.** Clovy detects supported meetings and offers to take notes,
   without a bot joining the call. It records microphone or microphone plus
   system audio, orders the transcript into conversation turns, and generates
   editable notes. Saved audio is kept so failed steps can be retried without
   recording again.
-- **Agent.** A June-owned local agent built on the OpenAI Agents SDK that
+- **Agent.** A Clovy-owned local agent built on the OpenAI Agents SDK that
   helps with files, research, and drafts. Sessions are sandboxed by default
   and risky actions wait for your approval. Extend it with skills.
 - **Image generation.** Create images from a prompt, through the same private
@@ -78,13 +78,13 @@ verifiable.
 <table>
   <tr>
     <td width="33%">
-      <img src=".github/assets/june-meeting-notes.jpg" alt="A meeting note in June with a live transcription preview while recording">
+      <img src=".github/assets/june-meeting-notes.jpg" alt="A meeting note in Clovy with a live transcription preview while recording">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-agent-analysis.jpg" alt="A June agent session in private mode, reporting its analysis of a spreadsheet">
+      <img src=".github/assets/june-agent-analysis.jpg" alt="A Clovy agent session in private mode, reporting its analysis of a spreadsheet">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-model-picker.jpg" alt="The June model picker, with each model labeled with pricing, context window, and its privacy tier">
+      <img src=".github/assets/june-model-picker.jpg" alt="The Clovy model picker, with each model labeled with pricing, context window, and its privacy tier">
     </td>
   </tr>
   <tr>
@@ -94,7 +94,7 @@ verifiable.
   </tr>
 </table>
 
-## How June keeps it private
+## How Clovy keeps it private
 
 1. **Local by default.** App state, recordings, transcripts, and agent memory
    live on your machine. The agent runs locally inside a macOS write-jail
@@ -105,9 +105,9 @@ verifiable.
    own policies.
 3. **Minimal retention.** Open Software's services store account, login, and
    billing records. Prompts, audio, transcripts, and files are not among them.
-4. **Verifiable, not promised.** June and June API can be inspected independently
+4. **Verifiable, not promised.** Clovy and Clovy API can be inspected independently
    of any model routing service or Chat. The desktop releases are signed and
-   notarized, and their source is public. June API runs in an Intel TDX
+   notarized, and their source is public. Clovy API runs in an Intel TDX
    confidential VM on Phala Cloud and publishes three useful anchors:
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
@@ -119,14 +119,14 @@ verifiable.
 
    Every deployment serves a self-contained walkthrough at
    [`/verify`](https://june-api.opensoftware.co/verify). This evidence describes
-   June API only. The Open Software API and Chat publish their own source and
-   runtime evidence, and June does not need to pin their releases. Model privacy
+   Clovy API only. The Open Software API and Chat publish their own source and
+   runtime evidence, and Clovy does not need to pin their releases. Model privacy
    remains explicit provider evidence, which is why zero-retention private
    routing is the default.
 
 ## Download
 
-June runs on macOS 14 or later, Apple Silicon and Intel. Releases are signed,
+Clovy runs on macOS 14 or later, Apple Silicon and Intel. Releases are signed,
 notarized, and auto-updating, with `stable` and `rc` channels switchable
 in-app. It is free to start.
 
@@ -151,14 +151,14 @@ powers its metered AI calls.
 ```text
 src/         React and TypeScript frontend
 src-tauri/   Tauri v2 Rust desktop backend and native helpers
-june-api/    June API: models, transcription, generation, and billing
+june-api/    Clovy API: models, transcription, generation, and billing
 docs/        Architecture notes, ADRs, subsystem guides, and runbooks
 spec/        Enforceable coding rules
 specs/       Feature specs, plans, and validation notes
 ```
 
 The desktop app never holds provider or OS Accounts App API keys; those live
-only in June API. Start with [docs/index.md](docs/index.md) for the full doc
+only in Clovy API. Start with [docs/index.md](docs/index.md) for the full doc
 map, [CONTEXT.md](CONTEXT.md) for the domain glossary, and
 [AGENTS.md](AGENTS.md) for the contributor guide.
 
@@ -178,7 +178,7 @@ pnpm tauri:dev
 ```
 
 The example env files default to open source local mode: no OS Accounts login,
-no billing, and a local June API authenticated by a shared bearer token.
+no billing, and a local Clovy API authenticated by a shared bearer token.
 Provider keys belong only in `june-api/.env`, never in the root desktop
 `.env`. A Venice API key is enough for transcription, generation, and
 dictation cleanup.
@@ -191,14 +191,18 @@ against OS Accounts.
 
 ## Contributing
 
-June ships near-daily releases and development happens in the open.
+Clovy ships near-daily releases and development happens in the open.
+
+The product is Clovy, but shipped June-era identifiers such as the `os-june`
+repository, bundle and package names, environment variables, and release URLs
+remain stable for compatibility. See [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
 
 ```sh
 pnpm check         # lint and format (Biome)
 pnpm typecheck
 pnpm test          # frontend (Vitest)
 pnpm test:rust     # desktop Rust
-pnpm test:june-api # June API
+pnpm test:june-api # Clovy API
 ```
 
 `make verify` mirrors CI. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then
@@ -212,7 +216,7 @@ report security vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
 ## License
 
-June is MIT licensed. See [LICENSE](LICENSE). Bundled third-party runtime
+Clovy is MIT licensed. See [LICENSE](LICENSE). Bundled third-party runtime
 notices are tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## OS Platform

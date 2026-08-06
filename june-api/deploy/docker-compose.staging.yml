@@ -11,7 +11,7 @@ services:
   dstack-ingress:
     image: dstacktee/dstack-ingress:20251013@sha256:fee7a6075a271adb5a5ff72ff3ff49bcb9e22d5f4c9fa68fa683cfb3932f911c
     restart: unless-stopped
-    # Start after the app so the proxy isn't pointed at a cold June API on first
+    # Start after the app so the proxy isn't pointed at a cold Clovy API on first
     # boot. Plain start-ordering, not health-gated: the slim runtime image has no
     # curl/wget for a healthcheck, and restart-policy + the proxy's own retry
     # cover the brief window until june-api binds 8080.
@@ -27,7 +27,7 @@ services:
       # nginx's default client_max_body_size (1m) rejects large multipart and
       # image-edit requests with an HTML 413 the app cannot parse. Keep this
       # above june-api's largest route cap: issue reports have a 301 MiB total
-      # budget. June API still enforces every route's precise application cap.
+      # budget. Clovy API still enforces every route's precise application cap.
       - CLIENT_MAX_BODY_SIZE=302m
       - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN}
       - CERTBOT_EMAIL=${CERTBOT_EMAIL}

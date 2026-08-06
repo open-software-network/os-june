@@ -25,7 +25,7 @@ async function renderComposer(options: {
   let editor: Editor | null = null;
   render(
     <ComposerEditor
-      placeholder="Message June"
+      placeholder="Message Clovy"
       onChange={(text) => options.onChange?.(text)}
       onPendingChangePersist={(text) => options.onPendingChangePersist?.(text)}
       onContentChange={options.onContentChange}
@@ -105,7 +105,7 @@ describe("composer change publishing", () => {
     });
     expect(serialize).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message June" }), {
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message Clovy" }), {
       key: "Enter",
     });
 
@@ -130,7 +130,7 @@ describe("composer change publishing", () => {
     });
     const user = userEvent.setup();
 
-    await user.type(screen.getByRole("textbox", { name: "Message June" }), "/");
+    await user.type(screen.getByRole("textbox", { name: "Message Clovy" }), "/");
     expect(serialize).not.toHaveBeenCalled();
 
     fireEvent.mouseDown(screen.getByRole("option", { name: "Model" }));
@@ -144,7 +144,7 @@ describe("composer change publishing", () => {
     const onChange = vi.fn();
     const editor = await renderComposer({ onChange, serialize });
     vi.useFakeTimers();
-    const textbox = screen.getByRole("textbox", { name: "Message June" });
+    const textbox = screen.getByRole("textbox", { name: "Message Clovy" });
 
     fireEvent.compositionStart(textbox);
     act(() => {

@@ -1,8 +1,8 @@
-//! Linear native-app OAuth and the fixed GraphQL documents June needs.
+//! Linear native-app OAuth and the fixed GraphQL documents Clovy needs.
 //!
 //! Linear is a PKCE-only PUBLIC client: unlike Google's Desktop credential,
 //! no client secret exists anywhere in this flow - the token endpoint marks
-//! it optional for PKCE and June never sends one (see
+//! it optional for PKCE and Clovy never sends one (see
 //! docs/plugins/linear-oauth-spike.md). The browser handoff itself is the
 //! shared [`oauth::loopback_authorize`] primitive; this module owns Linear's
 //! auth-URL shape (COMMA-joined scopes, explicit `actor=user` - v1
@@ -42,7 +42,7 @@ const REVOKE_ENDPOINT: &str = "https://api.linear.app/oauth/revoke";
 const GRAPHQL_ENDPOINT: &str = "https://api.linear.app/graphql";
 const API_ERROR_MESSAGE_MAX_LEN: usize = 200;
 /// Teams pagination hard cap: 5 pages of 100 covers 500 teams, far beyond
-/// any workspace June plausibly serves; the cap bounds a pathological or
+/// any workspace Clovy plausibly serves; the cap bounds a pathological or
 /// adversarial cursor loop.
 const TEAMS_PAGE_SIZE: u32 = 100;
 const TEAMS_MAX_PAGES: usize = 5;
@@ -207,7 +207,7 @@ pub(super) async fn revoke_unpersisted_grant(tokens: &LinearTokenResponse) -> bo
 pub(super) fn unpersisted_grant_cleanup_failed() -> AppError {
     AppError::new(
         "connector_connect_cleanup_unconfirmed",
-        "June stopped connecting, but could not confirm that Linear removed the new authorization. Remove June in Linear's authorized applications settings before trying again.",
+        "Clovy stopped connecting, but could not confirm that Linear removed the new authorization. Remove Clovy in Linear's authorized applications settings before trying again.",
     )
 }
 
@@ -2235,7 +2235,7 @@ struct IdUrlWire {
     url: String,
 }
 
-/// The created comment, as returned to the agent: the id (the UUID June
+/// The created comment, as returned to the agent: the id (the UUID Clovy
 /// minted) plus the canonical Linear URL.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2273,7 +2273,7 @@ struct ProjectUpdatePayloadWire {
     project_update: Option<IdUrlWire>,
 }
 
-/// The created project update: the id (the UUID June minted) plus its URL.
+/// The created project update: the id (the UUID Clovy minted) plus its URL.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinearProjectUpdateRef {

@@ -21,7 +21,7 @@ const branch = spawnSync("git", ["branch", "--show-current"], {
 });
 const devAppIdentity = devAppIdentityForBranch(branch.status === 0 ? branch.stdout : "");
 
-if (devAppIdentity.productName !== "June") {
+if (devAppIdentity.productName !== "Clovy") {
   console.error(
     `Using development app identity ${devAppIdentity.productName} (${devAppIdentity.identifier}).`,
   );
@@ -98,7 +98,7 @@ async function resolveFrontendPort() {
 
 async function resolveApiPort() {
   return chooseDevPort({
-    name: "June API",
+    name: "Clovy API",
     explicitValue: process.env.JUNE_API_PORT,
     base: 8080,
     portIsFree,
@@ -136,7 +136,7 @@ const frontendPort = await resolveFrontendPort();
 const startsLocalApi = process.env.JUNE_DEV_SKIP_LOCAL_API !== "1";
 const apiPort = startsLocalApi ? await resolveApiPort() : undefined;
 if (apiPort !== undefined) {
-  console.error(`Using an isolated June API on http://127.0.0.1:${apiPort}.`);
+  console.error(`Using an isolated Clovy API on http://127.0.0.1:${apiPort}.`);
 }
 const developerDir =
   process.platform === "darwin" && existsSync("/Applications/Xcode.app/Contents/Developer")

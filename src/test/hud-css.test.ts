@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import agentHudCss from "../styles/agent-hud.css?raw";
 import hudCss from "../styles/hud.css?raw";
+import meetingHudCss from "../styles/meeting-hud.css?raw";
 import tokensCss from "../styles/tokens.css?raw";
 
 function cssRuleFor(css: string, selector: string) {
@@ -24,5 +26,21 @@ describe("dictation HUD styles", () => {
     expect(cssRuleFor(hudCss, ".hud")).toContain("box-shadow: var(--shadow-hud);");
     expect(cssRuleFor(hudCss, ".hud-error-layer")).toContain("box-shadow: var(--shadow-hud);");
     expect(cssRuleFor(hudCss, ".hud")).not.toContain("box-shadow: var(--shadow-md);");
+  });
+
+  it("keeps Clovy identity lime even when the appearance accent changes", () => {
+    for (const css of [hudCss, meetingHudCss, agentHudCss]) {
+      const root = cssRuleFor(css, ":root");
+      expect(root).toContain("--attention: var(--clovy-lime);");
+      expect(root).toContain("--attention-bright: var(--clovy-lime-top);");
+    }
+
+    const dictationSurface = cssRuleFor(hudCss, ".hud");
+    expect(dictationSurface).toContain("--hud-record-bg: var(--clovy-lime);");
+    expect(dictationSurface).toContain("--hud-record-fg: var(--clovy-ink);");
+
+    const keepRecording = cssRuleFor(meetingHudCss, "#mhud-end-keep");
+    expect(keepRecording).toContain("background: var(--clovy-lime);");
+    expect(keepRecording).toContain("color: var(--clovy-ink);");
   });
 });

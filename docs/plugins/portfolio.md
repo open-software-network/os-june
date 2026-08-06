@@ -1,4 +1,4 @@
-# June plugin portfolio: top 10
+# Clovy plugin portfolio: top 10
 
 - **Owner:** CEO + CTO
 - **Date:** 2026-07-13
@@ -7,7 +7,7 @@
 
 ## Executive decision
 
-June should launch a deliberately small, first-party plugin portfolio that
+Clovy should launch a deliberately small, first-party plugin portfolio that
 turns meeting context into completed work. The first ten plugins should be:
 
 | Rank | Plugin | Score | Portfolio role | Current state |
@@ -38,7 +38,7 @@ actions, interactive UI, search, sync, or deep research; installation policy
 and app permission policy remain separate. The directory is available across
 ChatGPT web, desktop, Work, and Codex.
 
-That model maps cleanly to June if June keeps its own canonical terms:
+That model maps cleanly to Clovy if Clovy keeps its own canonical terms:
 
 - A **plugin** is the user-facing capability bundle in the Plugins area.
 - A **Skill** provides reusable workflow guidance.
@@ -48,27 +48,27 @@ That model maps cleanly to June if June keeps its own canonical terms:
   third-party account. A connector may be one component of a plugin, but the
   words are not interchangeable.
 
-June should adopt the useful product layering without adopting cloud indexing
+Clovy should adopt the useful product layering without adopting cloud indexing
 as the default. A plugin can be installed while its optional connector is not
 connected. Connecting an account grants only provider scopes. A plugin's
-trust mode decides how June governs outward actions. None of those controls
+trust mode decides how Clovy governs outward actions. None of those controls
 override permissions in the source system.
 
 ## Surface inventory
 
 The benchmark exposes six capability families:
 
-| Family | Current benchmark behavior | June interpretation |
+| Family | Current benchmark behavior | Clovy interpretation |
 | --- | --- | --- |
 | Workflow packaging | Skills, apps, and app templates can ship together | First-party plugin bundles with a manifest, bundled skills, toolsets, and optional connectors |
 | Discovery | Directory, search, categories, featured listings, installed state | The JUN-275 Plugins area plus contextual suggestions in chat |
 | Invocation | Explicit selection, `@` mention, or model discovery | Plugin chips, slash/mention entry points, and a visible suggestion card |
 | Data access | Live search and optional pre-indexed sync | Live, metadata-first local connector reads; no provider corpus copied to OpenSoftware |
 | Action control | Read, routine write, important write, and admin policy | Existing `read_only -> approval -> autonomous` trust modes and broker-enforced approvals |
-| Administration | Role availability, app setup, action controls, domains, disconnect | Personal v1 connection controls; team policy only after June has an organization model |
+| Administration | Role availability, app setup, action controls, domains, disconnect | Personal v1 connection controls; team policy only after Clovy has an organization model |
 
 Interactive third-party widgets and cloud-wide pre-indexing are not launch
-requirements for June. June's local desktop surface, note graph, routines, and
+requirements for Clovy. Clovy's local desktop surface, note graph, routines, and
 approval cards already cover the higher-value parts of the job.
 
 ### Candidate census reviewed
@@ -90,13 +90,13 @@ every account sees every listing.
 | Software delivery | GitHub, GitHub Enterprise template, GitLab Issues, Replit, Lovable | GitHub selected; GitLab and hosted builders deferred |
 | File stores | Dropbox, Box | Deferred behind ecosystem file access and local artifacts |
 | CRM and sales | Salesforce, HubSpot, Pipedrive, Zoho CRM, Clay | Scored below the top ten; revisit when sales workflows are a primary ICP |
-| Customer support | Intercom, Help Scout, Zoho Desk | Scored below the top ten; narrower than June's current ICP |
+| Customer support | Intercom, Help Scout, Zoho Desk | Scored below the top ten; narrower than Clovy's current ICP |
 | Structured data and warehouses | Airtable, Databricks, Hex, Snowflake, BigQuery | Deferred for narrower ICP and admin/data-model complexity |
 | Creative work | Adobe, Canva, Figma | Deferred until the local artifact foundation proves itself |
-| Consumer and lifestyle | AllTrails, Apple Music, Booking.com, Expedia, Instacart, Spotify, Target, Tripadvisor, Zillow | Outside June's private work focus |
+| Consumer and lifestyle | AllTrails, Apple Music, Booking.com, Expedia, Instacart, Spotify, Target, Tripadvisor, Zillow | Outside Clovy's private work focus |
 | Agent execution | Browser interaction and computer interaction | Browser use and Computer use selected |
 | Local work products | Documents, spreadsheets, PDFs, presentations, visualizations, sites | Documents and Spreadsheets selected; adjacent formats follow the shared artifact broker |
-| Hosted and remote execution | ChatGPT Sites, DigitalOcean Droplet Workspace, Codex Remote | Deferred; June should first prove local artifacts and execution |
+| Hosted and remote execution | ChatGPT Sites, DigitalOcean Droplet Workspace, Codex Remote | Deferred; Clovy should first prove local artifacts and execution |
 | Role packages | Sales, Data Analytics, Product Design, Creative Production, Investment Banking, Public Equity Investing | Evaluated as packaging patterns; the underlying jobs score below the first ten |
 
 The census also reviewed the cross-cutting surfaces around each listing:
@@ -106,22 +106,22 @@ actions, per-action confirmation, role access, domain restriction, connection,
 disconnect, developer-mode custom apps, public review, app templates, locally
 built plugins, workspace sharing, role packages, Sites, remote workspaces,
 record-and-replay skill creation, RBAC, analytics, and organization policy.
-June's shared product contract below records which of those surfaces it should
+Clovy's shared product contract below records which of those surfaces it should
 adopt. Local-plugin sharing and a third-party marketplace are platform choices,
 not candidates in the end-user top-ten ranking.
 
 ## Ranking method
 
-Each candidate was scored out of 100. The rubric intentionally rewards June's
+Each candidate was scored out of 100. The rubric intentionally rewards Clovy's
 core loop and private architecture over directory visibility.
 
 | Criterion | Weight | Question |
 | --- | ---: | --- |
 | Core-loop fit | 25 | Does it improve capture -> understand -> act? |
-| ICP frequency | 20 | How often does June's confidential prosumer encounter the job? |
-| Action leverage | 15 | Can June complete work, not only retrieve context? |
+| ICP frequency | 20 | How often does Clovy's confidential prosumer encounter the job? |
+| Action leverage | 15 | Can Clovy complete work, not only retrieve context? |
 | Retention and composition | 15 | Does it create recurring use and combine with notes, routines, and other plugins? |
-| Privacy differentiation | 15 | Does local execution make June meaningfully more trustworthy or useful? |
+| Privacy differentiation | 15 | Does local execution make Clovy meaningfully more trustworthy or useful? |
 | Delivery confidence | 10 | Can the team ship a narrow, reliable v1 with known APIs and review paths? |
 
 Scores reflect evidence available on 2026-07-13, not permanent market facts.
@@ -174,7 +174,7 @@ top-ten decision without first changing the family's assumptions.
 | Consumer and lifestyle directory apps | 5 | 4 | 8 | 4 | 3 | 6 | 30 |
 
 The closest omission is HubSpot at 63, one point below Spreadsheets. CRM meeting
-follow-through is strong, but June's current ICP encounters it less often, its
+follow-through is strong, but Clovy's current ICP encounters it less often, its
 best proactive workflows need administrator setup or away-mode events, and
 distribution adds a difficult credential and review path. Customer evidence
 can change that decision; the threshold is now explicit.
@@ -182,7 +182,7 @@ can change that decision; the threshold is now explicit.
 The six role-specific plugins are not independently scored because they bundle
 skills and app integrations already represented by the capability candidates;
 including them would double-count the same value. They remain an important
-packaging pattern for future June skill collections, not a distinct connector
+packaging pattern for future Clovy skill collections, not a distinct connector
 or execution capability competing for an implementation slot.
 
 Provider deployment variants such as the GitHub Enterprise app template are
@@ -225,11 +225,11 @@ permit shipping multiple one-off OAuth stacks.
 
 Every launch plugin must satisfy the same contract:
 
-1. The listing states what the plugin can read and change; which June note,
+1. The listing states what the plugin can read and change; which Clovy note,
    conversation, memory, device, IP-address, and approximate-location context
    can reach the provider; what leaves the device for inference; whether
    OpenSoftware is in the connector data path; and links the provider's privacy
-   and retention policy. The approval preview identifies the June-originated
+   and retention policy. The approval preview identifies the Clovy-originated
    content disclosed by that specific action.
 2. Install, connect, grant, trust mode, and runtime mode are separate states.
 3. The Plugins tile, any capability-specific Settings control, and contextual
@@ -242,17 +242,17 @@ Every launch plugin must satisfy the same contract:
 6. Disconnect revokes provider access where supported, removes Keychain
    material, disables the runtime surface, ends active leases, and verifies the
    disconnected state.
-7. Provider content is untrusted input. Tool descriptions and the June soul
+7. Provider content is untrusted input. Tool descriptions and the Clovy soul
    carry injection warnings, while the broker remains the enforcement point.
 8. Routines receive explicit toolsets and an explicit account binding. No
    routine silently selects the first account.
 9. Automatic write retries require a provider-supported idempotency key. A
    local journal records `pending`, `committed`, or `ambiguous`, but cannot by
-   itself make a provider mutation idempotent. After an ambiguous timeout June
+   itself make a provider mutation idempotent. After an ambiguous timeout Clovy
    must reconcile provider state using a stable action fingerprint, or block
    replay and ask the user to confirm.
 10. No plugin introduces an upstream provider key into the desktop binary or
-    routes provider content through June API unless a separately approved
+    routes provider content through Clovy API unless a separately approved
     away-mode design requires it.
 
 ## Business model
@@ -298,17 +298,17 @@ rewrite the original top-ten decision.
   the first product/engineering wedge without multiplying overlapping setup.
 - **Intercom, Help Scout, and Zoho Desk:** useful support context, deferred
   until support teams are a validated primary segment.
-- **Figma, Canva, and presentation creation:** compelling output, but June
+- **Figma, Canva, and presentation creation:** compelling output, but Clovy
   should prove the shared artifact broker with Documents and Spreadsheets
   before adding remote design surfaces or a presentation renderer.
 - **Airtable and databases:** overlap with Spreadsheets, Notion, and Linear.
 - **Travel, shopping, real estate, education, music, and lifestyle:** visible
-  in the public app directory but outside June's private work focus.
+  in the public app directory but outside Clovy's private work focus.
 - **A third-party plugin marketplace:** the security, signing, update, and
   policy model is a separate product. The first ten are first-party bundles.
 - **Role-specific plugin packs, local-plugin sharing, and ChatGPT Sites:** useful
   packaging and platform benchmarks, but not additional account connectors.
-  June should revisit them after the first-party manifest, artifact broker,
+  Clovy should revisit them after the first-party manifest, artifact broker,
   and organization model exist.
 - **Cloud sync of entire provider corpora:** conflicts with the local-mode
   trust story. Live, scoped reads come first; away mode requires its own
@@ -333,6 +333,6 @@ days before this document was written.
 
 Each ranked plugin has a CEO-mode PRD and CTO-mode implementation plan in this
 directory. These documents are proposals unless their status says an existing
-June decision is already accepted. An implementation plan does not by itself
+Clovy decision is already accepted. An implementation plan does not by itself
 authorize a provider registration, a new permission, an external deploy, or a
 change to an accepted ADR.

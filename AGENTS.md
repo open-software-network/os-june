@@ -6,19 +6,19 @@ shell commands, and other important information, read
 
 <!-- SPECKIT END -->
 
-# June — Agent Instructions
+# Clovy — Agent Instructions
 
 ## Project
 
-June is a private-by-architecture **Tauri desktop app** for meeting notes: it
+Clovy is a private-by-architecture **Tauri desktop app** for meeting notes: it
 records a meeting or dictation, transcribes the audio, turns the transcript
 into a structured note, and hosts an AI agent you can chat with over your
 notes. The frontend is **React** (`src/`), the native shell is **Rust**
-(`src-tauri/`), and a confidential **Rust backend, June API** (`june-api/`),
+(`src-tauri/`), and a confidential **Rust backend, Clovy API** (`june-api/`),
 proxies all upstream AI and runs metered billing. Identity and credits come
-from **OS Accounts**; the agent harness is a June-owned TypeScript service
-built on the **OpenAI Agents SDK**; AI models are served through June's model
-routing. June API runs
+from **OS Accounts**; the agent harness is a Clovy-owned TypeScript service
+built on the **OpenAI Agents SDK**; AI models are served through Clovy's model
+routing. Clovy API runs
 inside a TEE (Phala) so prompt data is not readable by its own infra.
 
 > Read **[CONTEXT.md](CONTEXT.md)** before naming anything, and
@@ -27,6 +27,9 @@ inside a TEE (Phala) so prompt data is not readable by its own infra.
 ## OS Platform (shared brain)
 
 Platform-enabled repo — Product `june`, Team `os-core`, Issue prefix `JUN`.
+The product handle and issue prefix are retained June-era technical identities;
+the current product name is Clovy (see
+[ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md)).
 Use the `os_platform_*` MCP tools (https://platform-api.opensoftware.co/mcp);
 REST fallback `https://app.opensoftware.co/api` + `Authorization: Bearer
 $OS_PLATFORM_API_KEY`. Never print or store credentials.
@@ -141,7 +144,7 @@ distinct from the `specs/` Spec Kit feature specs.)
 - [control-sizes](spec/control-sizes.md) — control heights from `--control-*`, no raw min/max-heights
 - [scroll-fade](spec/scroll-fade.md) — clipped scrollers use the shared `useScrollFade` + `.scroll-fade` / `.scroll-fade-mask` primitive
 - [package-install-security](spec/package-install-security.md) — pnpm-only; new package installs go through `sfw`; 7-day `minimumReleaseAge` cooldown
-- [mcp-tool-naming](spec/mcp-tool-naming.md) — June-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
+- [mcp-tool-naming](spec/mcp-tool-naming.md) — Clovy-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
 
 ## PR and description conventions
 
@@ -156,8 +159,8 @@ Every PR description should state (the template in
 
 - whether the change was **tested visually** — for UI changes, attach a
   screenshot or recording;
-- whether it **needs a June API (backend) deploy** to work end to end (a desktop
-  change that depends on an unshipped June API change will not work until June
+- whether it **needs a Clovy API (backend) deploy** to work end to end (a desktop
+  change that depends on an unshipped Clovy API change will not work until Clovy
   API is deployed);
 - the **root cause**, for bug fixes (the actual cause, not just the symptom);
 - what is deliberately **out of scope**;
@@ -250,18 +253,23 @@ build scripts in `pnpm-workspace.yaml` — live in
 
 ## Boundaries
 
-- **Service-managed upstream provider keys live only in June API, never in the desktop binary.**
-  The app calls June API over `/v1/*`; June API holds the Venice/OpenAI service
+- **The rebrand does not rename shipped technical identity.** Keep existing
+  bundle, package, binary, repository, API, environment-variable, Keychain,
+  storage, deep-link, updater, extension, tool, and OS Platform identifiers
+  unless an explicit migration decision says otherwise. See
+  [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+- **Service-managed upstream provider keys live only in Clovy API, never in the desktop binary.**
+  The app calls Clovy API over `/v1/*`; Clovy API holds the Venice/OpenAI service
   keys and the OS Accounts App API key. A user's explicit Venice BYOK credential
-  is the exception: June stores it locally and forwards it only on eligible
+  is the exception: Clovy stores it locally and forwards it only on eligible
   Venice requests.
-- **June API must stay backward-compatible — no breaking changes.** June ships
+- **Clovy API must stay backward-compatible — no breaking changes.** Clovy ships
   and auto-updates in production, so installs in the wild keep calling older
   `/v1/*` contracts. Never remove or repurpose an existing endpoint, request
   field, or response shape; add new optional fields or new endpoints instead. A
   breaking API change strands every app version that has not updated yet.
-- **June presents as June.** The local harness is an implementation detail;
-  product instructions assert June's identity.
-- **Identity and credits are OS Accounts'.** June is an on-device client of OS
+- **Clovy presents as Clovy.** The local harness is an implementation detail;
+  product instructions assert Clovy's identity.
+- **Identity and credits are OS Accounts'.** Clovy is an on-device client of OS
   Accounts and never owns user or wallet state. The dependency arrow points
-  June → OS Accounts, never the reverse.
+  Clovy → OS Accounts, never the reverse.

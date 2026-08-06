@@ -23,7 +23,7 @@ max_agent_concurrent_requests_per_user = 8
 
 # Independent Browser use transport kill switches. Ops may override these as
 # JUNE__BROWSER_TRANSPORTS__ATTENDED_ENABLED and
-# JUNE__BROWSER_TRANSPORTS__MANAGED_ENABLED, then restart June API.
+# JUNE__BROWSER_TRANSPORTS__MANAGED_ENABLED, then restart Clovy API.
 [browser_transports]
 attended_enabled = true
 managed_enabled = true
@@ -49,7 +49,7 @@ os_platform_label = "bug"
 # no default reward asset configured).
 os_platform_reward_asset = "POINTS"
 # Server-side diagnosis: reports arriving without a client diagnosis get one
-# generated on this model at June's own expense (never metered) before they
+# generated on this model at Clovy's own expense (never metered) before they
 # are filed. Unset the model to turn diagnosis off. The call is bounded by
 # the timeout, a 1024-token output cap, and a per-user hourly cap that skips
 # the diagnosis (never the delivery) when exhausted.
@@ -107,7 +107,7 @@ viewer_accounts_url = ""
 viewer_client_id = ""
 max_ciphertext_bytes = 10485760
 
-# June Companion is fail-closed outside local development until a dedicated
+# Clovy Companion is fail-closed outside local development until a dedicated
 # Postgres URL is configured. APNs signing values are secret env-only inputs.
 [companion]
 database_url = ""
@@ -123,12 +123,12 @@ base_url = "https://api.openai.com/v1"
 [upstreams.venice]
 base_url = "https://api.venice.ai/api/v1"
 # Requests carrying a user-supplied (BYOK) Venice key go to `byok_base_url`
-# instead of `base_url`, because `base_url` may point at a June-managed
-# gateway that only accepts June's own service key. Unset, it defaults to
+# instead of `base_url`, because `base_url` may point at a Clovy-managed
+# gateway that only accepts Clovy's own service key. Unset, it defaults to
 # Venice's public API (https://api.venice.ai/api/v1).
 # byok_base_url = "https://api.venice.ai/api/v1"
 
-# Usage credit prices pass through upstream cost without a June markup.
+# Usage credit prices pass through upstream cost without a Clovy markup.
 # OpenAI lists ASR prices per MINUTE of audio ($0.003/min mini, $0.006/min 4o);
 # these are the per-second conversions: $/min ÷ 60 × 1000 credits/$ × 1e6.
 [pricing."gpt-4o-mini-transcribe"]
@@ -163,7 +163,7 @@ model_type = "asr"
 display_name = "Parakeet TDT 0.6B v3"
 privacy = "private"
 
-# Credit prices for June's legacy text-model ids. os-api's live catalog uses
+# Credit prices for Clovy's legacy text-model ids. os-api's live catalog uses
 # canonical ids, so it does not replace these aliases. The values include
 # the upstream cost of the most expensive enabled private route.
 # Keep GLM 5.2 in sync with DEFAULT_GENERATION_MODEL in the Tauri providers module.

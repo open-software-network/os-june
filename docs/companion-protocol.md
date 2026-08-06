@@ -1,4 +1,4 @@
-# June Companion protocol
+# Clovy Companion protocol
 
 The shared crate is `crates/june-companion-protocol`; desktop and iOS crypto
 use `crates/june-companion-crypto`.
@@ -83,8 +83,8 @@ the additive field, and new companions retain their generic Mac fallback when
 an older Desktop omits it.
 
 Agent session and message reads go through typed frontend intents backed by
-June's current agent-runtime session APIs. The companion receives the same
-sanitized display text as June Desktop: machine context, provider routing
+Clovy's current agent-runtime session APIs. The companion receives the same
+sanitized display text as Clovy Desktop: machine context, provider routing
 details, reasoning, tool calls/results, approvals, secrets, and media internals
 stay on the Mac. The always-mounted app shell serves reads even when the Agent
 screen is closed. Send and cancel intents wake the existing Agent workspace.
@@ -142,7 +142,7 @@ the source's lowercase SHA-256 digest, total size, offset, and exact completion
 state. The client advances by decoded byte count and verifies the complete
 file before display or photo-library save.
 
-Only the canonical full artifact is fetchable. June does not persist a
+Only the canonical full artifact is fetchable. Clovy does not persist a
 canonical media thumbnail, so a thumbnail tier would create a second artifact
 and retention contract. Mobile may derive a local thumbnail only after the
 full artifact passes integrity verification.
@@ -164,7 +164,7 @@ digest match.
 
 Mac browsing uses `browseRootsList`, paginated `browseDirList`, and
 `browseFileStat` under `filesBrowse`. Roots exist only after the signed-in user
-selects a directory in June Desktop Settings. Requests carry an opaque root id
+selects a directory in Clovy Desktop Settings. Requests carry an opaque root id
 and a relative path; responses contain bounded display labels, names, entry
 kinds, sizes, modification times, and cursors. `browseFileStat` mints a
 short-lived opaque Mac-file attachment reference. Absolute paths never cross
@@ -224,7 +224,7 @@ stored. The desktop writes an outcome-unknown reservation before every mutation
 crosses a side-effect boundary. A final response replaces the reservation and
 is returned on retry. If Desktop crashes in between, the reservation is
 returned as a distinct outcome-unknown error instead of dispatching the
-mutation again; the user checks June on the Mac before explicitly choosing the
+mutation again; the user checks Clovy on the Mac before explicitly choosing the
 action again. Results and reservations expire after seven days. Completed
 responses are capped at 1,024 per device; up to 128 unresolved reservations are
 retained separately, and reaching that bound refuses new mutations instead of

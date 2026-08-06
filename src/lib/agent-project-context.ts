@@ -154,7 +154,7 @@ function isDetailedContextSignature(signature: string | null): boolean {
 }
 
 /** Last delivered context signature per stored session id, persisted so a
- * June restart still knows a past conversation carries a project block —
+ * Clovy restart still knows a past conversation carries a project block —
  * without this, moving an old session out of its project after a reload
  * would skip the clearing marker and stale instructions would keep applying.
  * Losing the store is safe in the other direction: an empty map merely

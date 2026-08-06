@@ -72,7 +72,7 @@ impl AgentRecorderBroker {
             .ok_or_else(|| {
                 AppError::new(
                     "agent_recorder_window_unavailable",
-                    "The June window is unavailable.",
+                    "The Clovy window is unavailable.",
                 )
             })
             .and_then(|window| {
@@ -89,14 +89,14 @@ impl AgentRecorderBroker {
             Ok(Err(_)) => {
                 return Err(AppError::new(
                     "agent_recorder_cancelled",
-                    "The recorder request was cancelled before June answered.",
+                    "The recorder request was cancelled before Clovy answered.",
                 ));
             }
             Err(_) => {
                 self.remove_pending(&request_id);
                 return Err(AppError::new(
                     "agent_recorder_timeout",
-                    "The recorder request timed out waiting for June.",
+                    "The recorder request timed out waiting for Clovy.",
                 ));
             }
         };

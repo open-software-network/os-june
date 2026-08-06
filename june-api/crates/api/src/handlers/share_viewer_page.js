@@ -213,7 +213,7 @@
     var html = [];
     for (var i = 0; i < messages.length; i++) {
       var role = messages[i].role === "user" ? "user" : "assistant";
-      var label = role === "user" ? "You" : "June";
+      var label = role === "user" ? "You" : "Clovy";
       html.push(
         '<div class="turn ' + role + '" aria-label="' + label + '"><div class="turn-body">' +
         renderMarkdown(String(messages[i].content || "")) +

@@ -1,6 +1,6 @@
 /**
  * Client-side crypto for private sharing (JUN-308). WebCrypto only; used by
- * both the June app webview and the browser viewer. See
+ * both the Clovy app webview and the browser viewer. See
  * docs/private-sharing-design.md.
  *
  * - Content key (CK): 256-bit random per share; encrypts the share payload

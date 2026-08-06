@@ -412,10 +412,10 @@ fn build_auth_url(
 // origin cannot reach the app's bundled assets, so the two text faces the page
 // uses are embedded as data: URIs — the listener answers exactly one request,
 // so a follow-up fetch for a font file would find the port already closed —
-// and the design tokens from src/styles/tokens.css are baked at their clay
-// defaults (the page can't read the runtime accent, and clay is the fixed
+// and the design tokens from src/styles/tokens.css are baked at their sage
+// defaults (the page can't read the runtime accent, and sage is the fixed
 // brand identity the app icon and marks use). Mirrors the in-app welcome /
-// sign-in surface: warm gradient field, the JuneGradientMark glyph, ok-tone
+// sign-in surface: warm gradient field, the Clovy mark glyph, ok-tone
 // status pill, serif display title. Follows the system light/dark preference,
 // since the page can't read the app's theme setting either.
 const DIATYPE_REGULAR_WOFF2: &[u8] = include_bytes!("../../../public/ABCDiatype-Regular.woff2");
@@ -426,24 +426,25 @@ const SUCCESS_TEMPLATE: &str = r##"<!doctype html>
 <html lang=en>
 <meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>June</title>
+<title>Clovy</title>
 <style>
   @font-face{font-family:"ABC Diatype";src:url(data:font/woff2;base64,%%DIATYPE%%) format("woff2");font-weight:400;font-style:normal}
   @font-face{font-family:"Martina Plantijn";src:url(data:font/woff2;base64,%%MARTINA%%) format("woff2");font-weight:300 400;font-style:normal}
-  :root{--brand:#b5551f;--brand-wash:#976851;--background:color-mix(in oklch,oklch(95.13% 0.0015 84.59),var(--brand-wash) 3%);--foreground:oklch(27.24% 0.0015 84.59);--card:color-mix(in oklch,oklch(100% 0 none),var(--brand-wash) 2%);--muted-foreground:oklch(55.8% 0.0015 84.59);--success:oklch(48% 0.12 150);--warm-soft:color-mix(in oklch,var(--brand) 16%,var(--card))}
+  :root{--brand:#3f812f;--brand-wash:#5a7c56;--clovy-lime-top:#eefe92;--clovy-lime:#c4f979;--clovy-pine:#183d2f;--clovy-tile-top:#10271d;--clovy-tile-bottom:#020b08;--background:color-mix(in oklch,oklch(95.13% 0.0015 84.59),var(--brand-wash) 3%);--foreground:oklch(27.24% 0.0015 84.59);--card:color-mix(in oklch,oklch(100% 0 none),var(--brand-wash) 2%);--muted-foreground:oklch(55.8% 0.0015 84.59);--success:oklch(48% 0.12 150);--warm-soft:color-mix(in oklch,var(--brand) 16%,var(--card))}
   @media (prefers-color-scheme:dark){:root{--background:color-mix(in oklch,oklch(16.5% 0.0015 84.59),var(--brand-wash) 6%);--foreground:oklch(98.5% 0.0015 84.59);--card:color-mix(in oklch,oklch(19.5% 0.0015 84.59),var(--brand-wash) 6%);--muted-foreground:oklch(70.9% 0.0015 84.59);--success:oklch(72% 0.14 150);--warm-soft:color-mix(in oklch,var(--brand) 30%,var(--card))}}
   *{box-sizing:border-box}
   html,body{height:100%}
   body{margin:0;display:grid;place-items:center;padding:24px;background:linear-gradient(180deg,color-mix(in oklch,var(--background) 78%,var(--warm-soft)) 0%,var(--background) 52%,color-mix(in oklch,var(--background) 92%,var(--warm-soft)) 100%);color:var(--foreground);font-family:"ABC Diatype",ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:13px;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
   .stack{display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;max-width:340px;text-align:center}
-  .mark{margin-bottom:6px}
+  .mark{display:grid;place-items:center;width:64px;height:64px;margin-bottom:6px;border-radius:14px;background:linear-gradient(180deg,var(--clovy-tile-top),var(--clovy-tile-bottom));box-shadow:inset 0 0 0 1px color-mix(in oklch,var(--clovy-lime-top) 12%,transparent),0 8px 24px color-mix(in oklch,var(--clovy-tile-bottom) 20%,transparent)}
+  .mark svg{display:block;width:62%;height:auto;filter:drop-shadow(0 1px 2px color-mix(in oklch,var(--clovy-tile-bottom) 72%,transparent))}
   .status-pill{display:inline-flex;align-items:center;padding:1px 6px;border-radius:6px;background:color-mix(in oklch,var(--success) 14%,transparent);color:var(--success);font-size:11px;font-weight:400;line-height:1.4}
   .title{margin:0;font-family:"Martina Plantijn","Iowan Old Style",Georgia,serif;font-size:30px;font-weight:400;line-height:1.2;letter-spacing:0;text-wrap:balance}
   .sub{margin:0;font-size:14px;line-height:1.5;color:var(--muted-foreground)}
 </style>
 <body>
   <main class=stack>
-    <svg class=mark width=40 height=46 viewBox="0 0 12 14" fill=none aria-hidden=true><defs><linearGradient id=mark-gradient x1=6 y1=0 x2=6 y2=14 gradientUnits=userSpaceOnUse><stop style="stop-color:color-mix(in oklch,var(--brand) 55%,white)"/><stop offset=1 style="stop-color:var(--brand)"/></linearGradient></defs><g fill="url(#mark-gradient)"><path d="M11.5 6.5C11.7761 6.5 12 6.72386 12 7V8.5C12 8.77614 11.7761 9 11.5 9H10.4141C10.2815 9.00002 10.1543 9.05273 10.0605 9.14648L9.64648 9.56055C9.55273 9.6543 9.50002 9.78148 9.5 9.91406V11C9.5 11.2761 9.27614 11.5 9 11.5H3.41406C3.28148 11.5 3.1543 11.5527 3.06055 11.6465L2.64648 12.0605C2.55273 12.1543 2.50002 12.2815 2.5 12.4141V13.5C2.5 13.7761 2.27614 14 2 14H0.5C0.223858 14 0 13.7761 0 13.5V12C0 11.7239 0.223858 11.5 0.5 11.5H1.58594C1.71852 11.5 1.8457 11.4473 1.93945 11.3535L2.35352 10.9395C2.44727 10.8457 2.49998 10.7185 2.5 10.5859V9.5C2.5 9.22386 2.72386 9 3 9H8.58594C8.71852 8.99998 8.8457 8.94727 8.93945 8.85352L9.35352 8.43945C9.44727 8.3457 9.49998 8.21852 9.5 8.08594V7C9.5 6.72386 9.72386 6.5 10 6.5H11.5Z"/><path d="M11.5 0C11.7761 0 12 0.223858 12 0.5V2C12 2.27614 11.7761 2.5 11.5 2.5H10.4141C10.2815 2.50002 10.1543 2.55273 10.0605 2.64648L9.64648 3.06055C9.55273 3.1543 9.50002 3.28148 9.5 3.41406V4.5C9.5 4.77614 9.27614 5 9 5H3.41406C3.28148 5.00002 3.1543 5.05273 3.06055 5.14648L2.64648 5.56055C2.55273 5.6543 2.50002 5.78148 2.5 5.91406V7C2.5 7.27614 2.27614 7.5 2 7.5H0.5C0.223858 7.5 0 7.27614 0 7V5.5C0 5.22386 0.223858 5 0.5 5H1.58594C1.71852 4.99998 1.8457 4.94727 1.93945 4.85352L2.35352 4.43945C2.44727 4.3457 2.49998 4.21852 2.5 4.08594V3C2.5 2.72386 2.72386 2.5 3 2.5H8.58594C8.71852 2.49998 8.8457 2.44727 8.93945 2.35352L9.35352 1.93945C9.44727 1.8457 9.49998 1.71852 9.5 1.58594V0.5C9.5 0.223858 9.72386 0 10 0H11.5Z"/></g></svg>
+    <span class=mark aria-hidden=true><svg viewBox="0 0 257 264" fill=none><defs><linearGradient id=clovy-gradient x1=128.5 x2=128.5 y1=0 y2=264 gradientUnits=userSpaceOnUse><stop stop-color="var(--clovy-lime-top)"/><stop offset=1 stop-color="var(--clovy-lime)"/></linearGradient></defs><path fill-rule=evenodd clip-rule=evenodd fill="url(#clovy-gradient)" d="M99.8104 0.0262613C138.071 -1.09911 151.338 34.147 150.906 66.788C167.086 45.9839 192.628 28.1589 220.16 38.9501C241.444 47.2931 249.633 72.6964 240.35 92.9462C233.01 108.96 220.258 118.226 204.12 124.622C227.262 127.441 256.1 138.358 256.872 166.01C257.135 174.337 253.911 182.401 247.976 188.255C239.398 196.79 229.401 198.063 218.1 198.198C218.809 203.806 219.436 208.075 218.173 213.732C216.633 220.792 212.285 226.916 206.129 230.7C199.246 234.9 190.188 235.879 182.506 233.804C160.618 227.878 149.874 210.258 139.249 192.639C141.827 211.271 139.744 230.327 130.786 247.389C124.994 257.838 113.127 266.907 102.004 262.545C99.7278 261.652 98.0027 260.037 97.3554 257.294C95.4185 249.082 101.913 246.2 106.112 241.234C118.643 226.414 122.536 210.503 122.279 193.751C117.643 206.759 112.835 215.471 101.8 227.467C78.3712 252.945 34.7107 245.56 34.2548 206.465C34.1017 193.319 42.7063 179.94 52.4725 170.682C30.5596 169.39 9.31687 162.366 1.8827 139.435C-1.39788 128.962 -0.361542 117.612 4.75966 107.904C9.57541 98.6542 17.9531 91.7675 27.9599 88.8339C45.4751 83.5195 62.0831 89.9152 77.4052 98.0311C58.417 71.6194 44.7798 31.7735 77.2987 7.72646C83.6764 3.01084 91.9867 0.92448 99.8104 0.0262613ZM107.627 109C100.101 109 93.9999 119.074 93.9999 131.5C93.9999 137.007 95.1986 142.053 97.1884 145.964C98.1705 147.893 100.792 147.568 102.395 146.113C103.87 144.775 105.621 144 107.5 144C109.446 144 111.256 144.832 112.763 146.259C114.334 147.747 116.946 148.106 117.948 146.188C120.008 142.247 121.254 137.114 121.254 131.5C121.254 119.074 115.153 109 107.627 109ZM147.627 109C140.101 109 134 119.074 134 131.5C134 137.007 135.199 142.053 137.188 145.964C138.17 147.893 140.792 147.568 142.395 146.113C143.87 144.775 145.621 144 147.5 144C149.446 144 151.256 144.832 152.763 146.259C154.334 147.747 156.946 148.106 157.948 146.188C160.008 142.247 161.254 137.114 161.254 131.5C161.254 119.074 155.153 109 147.627 109Z"/></svg></span>
     <span class=status-pill>%%PILL%%</span>
     <h1 class=title>%%TITLE%%</h1>
     <p class=sub>%%SUB%%</p>
@@ -467,7 +468,7 @@ pub(crate) static SUCCESS_BODY: LazyLock<String> = LazyLock::new(|| {
     success_page(
         "Connected",
         "You're connected",
-        "You can close this tab and return to June.",
+        "You can close this tab and return to Clovy.",
     )
 });
 
@@ -798,6 +799,17 @@ pub(crate) fn random_b64url(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn success_page_carries_the_clovy_app_tile() {
+        let page = success_page("Signed in", "Signed in to Clovy", "Return to the app.");
+
+        assert!(page.contains("<title>Clovy</title>"));
+        assert!(page.contains("class=mark"));
+        assert!(page.contains("id=clovy-gradient"));
+        assert!(page.contains("Signed in to Clovy"));
+        assert!(!page.contains("%%TITLE%%"));
+    }
 
     #[test]
     fn cancellation_before_waiter_registration_stays_latched() {

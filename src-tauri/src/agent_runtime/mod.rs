@@ -1,4 +1,4 @@
-//! June-owned agent persistence and legacy import foundations.
+//! Clovy-owned agent persistence and legacy import foundations.
 
 pub mod api;
 pub mod domain;

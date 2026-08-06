@@ -6,13 +6,13 @@ import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { Toaster as SonnerToaster } from "sonner";
 import { DotSpinner } from "../DotSpinner";
 
-// The June-styled wrapper around sonner's toaster. Sonner ships as an unstyled
+// The Clovy-styled wrapper around sonner's toaster. Sonner ships as an unstyled
 // primitive here (toastOptions.unstyled) — every visual comes from the
 // `.june-toast*` rules in styles/app.css, so toasts inherit the design tokens
 // and follow all five theme presets plus dark mode automatically. The tone
 // icons are the filled central-icons-filled set (never sonner's bundled
 // Lucide-style set); the close glyph stays outline and the loading glyph is
-// June's own dot spinner.
+// Clovy's own dot spinner.
 //
 // `toast` is re-exported straight from sonner so callers fire notifications the
 // familiar way: `toast("Saved")`, `toast.success(...)`, `toast.error(...)`,
@@ -20,7 +20,7 @@ import { DotSpinner } from "../DotSpinner";
 // `toast(message, { action: { label, onClick } })`.
 export { toast } from "sonner";
 
-/** The tones June styles. Mirrors the subset of sonner's toast types we use. */
+/** The tones Clovy styles. Mirrors the subset of sonner's toast types we use. */
 export type ToastTone = "default" | "success" | "error" | "info" | "warning" | "loading";
 
 const TONE_ICON_SIZE = 16;
@@ -34,7 +34,7 @@ export function Toaster() {
   return (
     <SonnerToaster
       position="top-right"
-      containerAriaLabel="June notifications"
+      containerAriaLabel="Clovy notifications"
       // Clear the custom titlebar and use the same top/right inset from the
       // workspace corner.
       offset={{ top: "calc(var(--titlebar-h) + var(--sp-6))", right: "var(--sp-6)" }}

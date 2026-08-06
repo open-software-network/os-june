@@ -860,7 +860,7 @@ async fn video_status_from_response(
             let url = download_url.ok_or_else(|| {
                 AppError::new(
                     "video_download_missing",
-                    "June returned a completed video without downloadable media.",
+                    "Clovy returned a completed video without downloadable media.",
                 )
             })?;
             let bytes = download_video_bytes(&url).await?;
@@ -952,7 +952,7 @@ fn reject_oversized_video_bytes(size_bytes: u64) -> Result<(), AppError> {
 fn video_too_large_error() -> AppError {
     AppError::new(
         "video_too_large",
-        "The generated video is too large for June to retrieve.",
+        "The generated video is too large for Clovy to retrieve.",
     )
 }
 
@@ -1700,7 +1700,7 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are June, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: June is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks June to remember or update a lasting preference, call start_task with a standalone prompt to save it to June's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const JUNE_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy alias 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
 
 fn june_home_chat_system_prompt_with_persona(
     persona: &crate::agent_runtime::persona::JunePersonaSettings,
@@ -1892,7 +1892,7 @@ impl JuneHomeChatStream {
         if content.is_none() && task.is_none() {
             return Err(AppError::new(
                 "home_chat_empty",
-                "June returned an empty Home reply.",
+                "Clovy returned an empty Home reply.",
             ));
         }
         Ok(JuneHomeChatResponse { content, task })
@@ -2172,7 +2172,7 @@ fn buffered_june_home_chat_response(body: &[u8]) -> Result<JuneHomeChatResponse,
     if content.is_none() && task.is_none() {
         return Err(AppError::new(
             "home_chat_empty",
-            "June returned an empty Home reply.",
+            "Clovy returned an empty Home reply.",
         ));
     }
     Ok(JuneHomeChatResponse { content, task })
@@ -2185,7 +2185,7 @@ fn require_june_home_current_research(
     let Some(task) = response.task.as_mut() else {
         return Err(AppError::new(
             "home_chat_current_research_required",
-            "June couldn't start current research just now. Your message is still here, so you can try again.",
+            "Clovy couldn't start current research just now. Your message is still here, so you can try again.",
         ));
     };
     task.prompt = user_message.trim().to_string();
@@ -2273,7 +2273,7 @@ pub async fn june_home_chat(
             "type": "function",
             "function": {
                 "name": "start_task",
-                "description": "Create a focused June session for concrete work that benefits from tools, research, files, background execution, or current external information. This is required for news, weather, prices, scores, schedules, and other live facts.",
+                "description": "Create a focused Clovy session for concrete work that benefits from tools, research, files, background execution, or current external information. This is required for news, weather, prices, scores, schedules, and other live facts.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -2328,11 +2328,11 @@ pub async fn june_home_chat(
             Some(detail) => format!("status {status}: {detail}"),
             None => format!("status {status}"),
         };
-        eprintln!("June Home chat failed ({diagnostic})");
+        eprintln!("Clovy Home chat failed ({diagnostic})");
         return Err(AppError {
             code: "home_chat_failed".to_string(),
             message:
-                "June couldn't reply just now. Your message is still here, so you can try again."
+                "Clovy couldn't reply just now. Your message is still here, so you can try again."
                     .to_string(),
             details: Some(serde_json::json!({
                 "status": status,
@@ -3016,6 +3016,9 @@ fn clean_agent_session_title(value: &str) -> Option<String> {
         "I need to ",
         "I'd like you to ",
         "I'd like to ",
+        "Ask Clovy to ",
+        "Have Clovy ",
+        // Keep the former name as a title-cleanup alias for existing prompts.
         "Ask June to ",
         "Have June ",
     ];
@@ -3446,7 +3449,10 @@ where
             Err(error) => return Err(error),
         }
     }
-    Err(AppError::new("june_request_failed", "Couldn't reach June."))
+    Err(AppError::new(
+        "june_request_failed",
+        "Couldn't reach Clovy.",
+    ))
 }
 
 fn image_retryable_status(status: reqwest::StatusCode) -> bool {
@@ -3559,7 +3565,7 @@ where
     if envelope.success {
         return envelope
             .data
-            .ok_or_else(|| AppError::new("empty_response", "June returned no data."));
+            .ok_or_else(|| AppError::new("empty_response", "Clovy returned no data."));
     }
     if envelope.error_code == Some(ERR_TOKEN_EXPIRED) || status == reqwest::StatusCode::UNAUTHORIZED
     {
@@ -3574,7 +3580,7 @@ where
     if envelope.message.as_deref() == Some("venice_api_key_invalid") {
         return Err(AppError::new(
             "venice_api_key_invalid",
-            "June could not use your saved Venice API key. If June just updated, try again later. Otherwise, open Settings and replace the key.",
+            "Clovy could not use your saved Venice API key. If Clovy just updated, try again later. Otherwise, open Settings and replace the key.",
         ));
     }
     if envelope.message.as_deref() == Some("venice_api_key_model_unavailable") {
@@ -3594,7 +3600,7 @@ where
         "june_request_failed",
         envelope
             .message
-            .unwrap_or_else(|| "Couldn't reach June.".to_string()),
+            .unwrap_or_else(|| "Couldn't reach Clovy.".to_string()),
     );
     if let Some(retry_after_ms) = retry_after_ms {
         error.details = Some(serde_json::json!({ "retryAfterMs": retry_after_ms }));
@@ -4577,7 +4583,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     fn home_chat_prompt_keeps_new_intent_in_the_latest_message() {
         assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("only source of new intent"));
         assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("work mentioned only in an earlier turn"));
-        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey June' is conversation"));
+        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey Clovy'"));
+        assert!(JUNE_HOME_CHAT_SYSTEM_PROMPT.contains("legacy alias 'Hey June'"));
     }
 
     #[test]

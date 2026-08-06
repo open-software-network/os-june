@@ -1,4 +1,4 @@
-# June Companion privacy and metadata
+# Clovy Companion privacy and metadata
 
 End-to-end encrypted content includes note titles/bodies, prompts, agent
 messages/deltas/status payloads, curated model metadata, per-session model
@@ -19,7 +19,7 @@ risk erasing newer content. The relay receives a device credential only for
 verification and persists only the SHA-256 hash of its encoded authorization
 value; it never receives the Noise pairing secret.
 
-June API necessarily observes the desktop's OS Accounts user id, linked device ids and
+Clovy API necessarily observes the desktop's OS Accounts user id, linked device ids and
 public keys, device display names, link/revocation timestamps, APNs device
 token, source IP, connection times, frame timing, routing pairs, and ciphertext
 sizes. It stores trust metadata, device credential hashes, and APNs tokens, but
@@ -41,7 +41,7 @@ those values for tracking and declares no tracking domains.
 The phone's recent snapshot cache is AES-GCM encrypted with a random Keychain
 key. Both the key and cache file use after-first-unlock device-only protection
 so a content-free background push can refresh the cache while the screen is
-locked. June still requires device-owner authentication before rendering it.
+locked. Clovy still requires device-owner authentication before rendering it.
 The cache supports rendering only and is not offline synchronization.
 
 Selecting a model may change which upstream provider receives the next agent
@@ -57,5 +57,5 @@ cross only in bounded E2EE chunks and are verified against the repeated
 SHA-256 digest. Desktop retains no companion-specific byte copy: its bounded
 memory cache holds validated file handles only. If the user saves a verified
 result to the system photo library, Photos owns that additional copy and its
-retention; removing the desktop artifact or June Companion cache does not
+retention; removing the desktop artifact or Clovy Companion cache does not
 remove it.

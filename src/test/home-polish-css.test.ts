@@ -1,17 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { applyBrandVar, BRAND_PRESETS } from "../lib/brand";
 import appCss from "../styles/app.css?raw";
+import tokensCss from "../styles/tokens.css?raw";
 
-function cssRuleFor(selector: string) {
+function cssRuleFor(selector: string, css = appCss) {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(appCss);
+  const match = new RegExp(`(?:^|\\n)${escaped}\\s*\\{`).exec(css);
   if (!match) throw new Error(`Missing CSS rule for ${selector}`);
   const openIndex = match.index + match[0].length - 1;
   let depth = 0;
-  for (let index = openIndex; index < appCss.length; index += 1) {
-    if (appCss[index] === "{") depth += 1;
-    if (appCss[index] === "}") {
+  for (let index = openIndex; index < css.length; index += 1) {
+    if (css[index] === "{") depth += 1;
+    if (css[index] === "}") {
       depth -= 1;
-      if (depth === 0) return appCss.slice(openIndex + 1, index);
+      if (depth === 0) return css.slice(openIndex + 1, index);
     }
   }
   throw new Error(`Unclosed CSS rule for ${selector}`);
@@ -77,17 +79,28 @@ describe("Home polish styles", () => {
     expect(cells).toContain("vertical-align: top;");
   });
 
-  it("lets the small Home character acknowledge hover with a wink", () => {
-    const character = cssRuleFor(".agent-home-listening");
-    const wink = cssRuleFor(
-      ".agent-home-listening:hover .june-bloom-wink,\n.agent-home-greeting-mark:hover .june-bloom-wink",
-    );
+  it("lets the living Home mark move its body while keeping pine eyes", () => {
+    const body = cssRuleFor(".clovy-alive-body");
+    const sheen = cssRuleFor(".clovy-alive-sheen");
+    const eyes = cssRuleFor(".clovy-alive-eye");
 
-    expect(character).toContain("pointer-events: auto;");
-    expect(wink).toContain("opacity: 1;");
-    expect(appCss).toContain(
-      "animation: june-bloom-hover-eyes-wink calc(var(--t-slow) * 2) step-end 1;",
-    );
+    expect(body).toContain("transform-box: fill-box;");
+    expect(body).toContain("transform-origin: 50% 55%;");
+    expect(sheen).toContain("opacity: 0.16;");
+    expect(eyes).toContain("fill: var(--clovy-pine);");
+  });
+
+  it("contains the new-session tint inside a broad bottom-rising falloff", () => {
+    const glow = cssRuleFor(".agent-workspace::before");
+    const activeGlow = cssRuleFor('.agent-workspace[data-hero="true"]::before');
+
+    expect(glow).toContain("background: linear-gradient(");
+    expect(glow).toContain("to bottom");
+    expect(glow).toContain("var(--hero-wash-soft) 42%");
+    expect(glow).toContain("var(--hero-wash) 100%");
+    expect(glow).toContain("mask-image: linear-gradient(");
+    expect(glow).not.toContain("radial-gradient(");
+    expect(activeGlow).toContain("opacity: 1;");
   });
 
   it("drops a composer edge fade immediately when it reaches the visible caret", () => {
@@ -95,5 +108,75 @@ describe("Home polish styles", () => {
 
     expect(endCaret).toContain("opacity: 0;");
     expect(endCaret).toContain("transition: none;");
+  });
+});
+
+describe("Clovy theme-state parity", () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-brand");
+    document.documentElement.style.removeProperty("--brand");
+    document.documentElement.style.removeProperty("--brand-wash");
+  });
+
+  it("lifts the semantic accent and flips its foreground in dark mode", () => {
+    const darkTokens = cssRuleFor('[data-theme="dark"]', tokensCss);
+
+    expect(darkTokens).toContain("--primary: var(--brand-bright);");
+    expect(darkTokens).toContain("--primary-foreground: var(--clovy-ink);");
+  });
+
+  it("routes onboarding progress and checked switches through the semantic accent", () => {
+    const progress = cssRuleFor('.onboarding-progress-seg[data-state="current"]');
+    const checkedSwitch = cssRuleFor('.switch[data-state="checked"]');
+
+    expect(progress).toContain("background: var(--primary);");
+    expect(checkedSwitch).toContain("background: var(--primary);");
+  });
+
+  it("clears the active highlight from dormant send controls", () => {
+    const send = cssRuleFor(".agent-composer-send:disabled");
+    const steerSend = cssRuleFor(".agent-composer-steer-send:disabled");
+
+    expect(send).toContain("box-shadow: none;");
+    expect(steerSend).toContain("box-shadow: none;");
+  });
+
+  it("routes active composer sends through the selected Appearance accent", () => {
+    const send = cssRuleFor(".agent-composer-send");
+    const steerSend = cssRuleFor(".agent-composer-steer-send");
+
+    for (const rule of [send, steerSend]) {
+      expect(rule).toContain("background: var(--primary);");
+      expect(rule).toContain("color: var(--primary-foreground);");
+      expect(rule).not.toContain("var(--primary-action-background)");
+    }
+  });
+
+  it("uses the active Appearance accent for home shortcut icons", () => {
+    const icon = cssRuleFor(".agent-hero-chip-icon");
+
+    expect(icon).toContain("color: var(--primary);");
+  });
+
+  it("themes the living Home character without changing its identity default", () => {
+    const identityCharacter = cssRuleFor(".clovy-alive");
+    const homeCharacter = cssRuleFor('.clovy-alive[data-palette="appearance"]');
+    const sageCharacter = cssRuleFor(
+      ':root[data-brand="sage"] .clovy-alive[data-palette="appearance"]',
+    );
+
+    expect(identityCharacter).toContain("--clovy-alive-fill-bottom: var(--clovy-glow);");
+    expect(homeCharacter).toContain("--clovy-alive-fill-bottom: var(--primary);");
+    expect(homeCharacter).toContain("--clovy-alive-depth-color: color-mix(");
+    expect(homeCharacter).toContain("var(--primary) 68%");
+    expect(homeCharacter).toContain("var(--clovy-ink)");
+    expect(sageCharacter).toContain("--clovy-alive-fill-bottom: var(--clovy-glow);");
+    expect(sageCharacter).toContain("--clovy-alive-sheen-color: var(--clovy-lime-top);");
+  });
+
+  it.each(BRAND_PRESETS)("exposes $id as the active Appearance preset", ({ id }) => {
+    applyBrandVar(id);
+
+    expect(document.documentElement).toHaveAttribute("data-brand", id);
   });
 });

@@ -1352,7 +1352,7 @@ function FolderEmptyState({
             </button>
           </div>
           <p className="folder-empty-nudge">
-            Want June to follow instructions or remember details here? Set it up in{" "}
+            Want Clovy to follow instructions or remember details here? Set it up in{" "}
             <button
               type="button"
               className="settings-inline-link folder-empty-nudge-link"

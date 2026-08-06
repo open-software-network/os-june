@@ -429,7 +429,7 @@ mod tests {
     #[test]
     fn notification_request_accepts_camel_case_session_id() {
         let request: AppNotificationRequest = serde_json::from_value(serde_json::json!({
-            "title": "June finished",
+            "title": "Clovy finished",
             "body": "Make a PDF",
             "sound": "Ping",
             "group": "june-agent-session-4",

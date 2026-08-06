@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -73,14 +73,14 @@ reads accept bounded property lists from a reviewed registry.
   separately labeled in approval and excluded from batch approval.
 - Preflight re-reads object modification time and current property values.
 - Approval shows before/after fields, associations, destination links, and the
-  June note excerpt leaving the device.
+  Clovy note excerpt leaving the device.
 - Creation retries use a provider-supported idempotency mechanism if available.
-  Otherwise June reconciles recent engagements by a stable local fingerprint
+  Otherwise Clovy reconciles recent engagements by a stable local fingerprint
   and blocks replay when the outcome is ambiguous.
 
 ## Events and rate limits
 
-V1 uses bounded polling of linked records and recent updates while June is
+V1 uses bounded polling of linked records and recent updates while Clovy is
 awake. The provider's webhook API is app-level and requires a public HTTPS
 endpoint, so it is reserved for an accepted away-mode relay. Handle `429` and
 provider retry guidance with account-scoped backoff and a request budget.
@@ -96,7 +96,7 @@ provider retry guidance with account-scoped backoff and a request budget.
 ## Verification
 
 - OAuth connect, refresh, denied scope, portal removal, provider revoke, and
-  June disconnect.
+  Clovy disconnect.
 - Cross-pipeline forged-id and broad-scope regression tests.
 - Default and custom schema fixtures, archived stages, duplicate contacts,
   merged records, paging, partial responses, and rate limits.

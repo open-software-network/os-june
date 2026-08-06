@@ -180,7 +180,7 @@ describe("shouldBlockTextOnFunding", () => {
     ).toBe(false);
   });
 
-  it("keeps Auto on June credits even if its catalog provider were mislabeled", () => {
+  it("keeps Auto on Clovy credits even if its catalog provider were mislabeled", () => {
     expect(
       shouldBlockTextOnFunding(true, {
         activeModelId: "open-software/auto",

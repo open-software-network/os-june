@@ -9,7 +9,7 @@
 ## Thesis
 
 Microsoft 365 is the enterprise counterpart to Google Workspace and the
-largest remaining gap in June's work graph. One plugin should cover Outlook
+largest remaining gap in Clovy's work graph. One plugin should cover Outlook
 mail and calendar, OneDrive and SharePoint files, and selected Teams context
 through Microsoft Graph. The product outcome is not "connect Microsoft"; it is
 private meeting preparation and follow-through for users whose organizations
@@ -30,7 +30,7 @@ unbounded secondary index of that work.
 ## Product promise
 
 Connect a Microsoft account with delegated access, keep the refresh grant on
-the Mac, and let June prepare and act only within the scopes and resources the
+the Mac, and let Clovy prepare and act only within the scopes and resources the
 user and tenant have approved.
 
 ## V1 experience
@@ -40,10 +40,10 @@ user and tenant have approved.
 - System-browser authorization with clear personal-account versus work/school
   account and admin-consent outcomes.
 - Meeting brief from invite, attendees, recent mail, relevant files, Teams
-  context exposed by supported delegated APIs, and local June notes.
+  context exposed by supported delegated APIs, and local Clovy notes.
 - Draft mail, create/update a calendar event, and create or update a bounded
   file with approval.
-- Stable links and source labels in June output.
+- Stable links and source labels in Clovy output.
 - Disconnect locally and handle tenant-side revoke or conditional-access
   failure without partial phantom connection states.
 
@@ -70,7 +70,7 @@ user and tenant have approved.
   indexing.
 - Replacing Microsoft Purview, retention, or eDiscovery controls.
 - Promising every Teams resource is available through one user grant.
-- Storing Microsoft content in June API.
+- Storing Microsoft content in Clovy API.
 - Hiding admin-consent or conditional-access requirements from users.
 
 ## Packaging
@@ -85,7 +85,7 @@ user and tenant have approved.
 
 Use delegated user permissions, not application permissions. Tokens stay in
 Keychain and Graph calls originate on-device. Resource permissions and tenant
-policy remain authoritative. June must state that inference follows the
+policy remain authoritative. Clovy must state that inference follows the
 selected model path even though OpenSoftware is outside the connector path.
 
 Mail, files, and Teams messages are untrusted input. Write operations park in

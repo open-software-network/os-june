@@ -34,7 +34,7 @@ describe("pairing handshake", () => {
     expect(state).toEqual({ status: "paired", appVersion: "0.0.32" });
   });
 
-  it("prompts to update June when the extension protocol is newer", () => {
+  it("prompts to update the app when the extension protocol is newer", () => {
     const state = drive([
       { kind: "connect" },
       {
@@ -49,7 +49,7 @@ describe("pairing handshake", () => {
     expect(state).toEqual({
       status: "incompatible",
       expected: PROTOCOL_VERSION - 1,
-      remedy: "updateJune",
+      remedy: "updateApp",
     });
   });
 

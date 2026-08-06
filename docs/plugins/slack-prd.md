@@ -9,13 +9,13 @@
 ## Thesis
 
 Slack is where meeting decisions become team commitments and where those
-commitments are later lost. A June Slack plugin should let users prepare from
+commitments are later lost. A Clovy Slack plugin should let users prepare from
 relevant conversations, publish a reviewed meeting recap, answer follow-up
 questions from the local note graph, and turn messages into routines without
 copying the workspace into OpenSoftware infrastructure.
 
-Slack ranks third because it adds team distribution to June's private local
-context. The combination is more valuable than a generic chat bot: June can
+Slack ranks third because it adds team distribution to Clovy's private local
+context. The combination is more valuable than a generic chat bot: Clovy can
 connect a channel thread to the actual meeting note and transcript on the
 user's Mac.
 
@@ -25,11 +25,11 @@ Small teams use Slack as their operating memory, but important context is split
 between channels, DMs, meeting notes, and individual recollection. People
 rewrite status updates, lose decisions, and answer questions without the
 source meeting in view. Cloud assistants often solve retrieval by ingesting the
-workspace. June's customer wants the utility without creating another copy.
+workspace. Clovy's customer wants the utility without creating another copy.
 
 ## Product promise
 
-Connect one Slack workspace, choose the channels June may read, and let June
+Connect one Slack workspace, choose the channels Clovy may read, and let Clovy
 prepare or publish bounded team updates with every outward action visible and
 governed.
 
@@ -38,8 +38,8 @@ governed.
 - Connect from the plugin tile in the system browser.
 - Choose a small allowlist of channels. DMs and private channels are excluded
   until explicitly added and supported by the granted scopes.
-- Ask June to summarize a thread, prepare for a meeting, or find prior context.
-- From a June note, draft a channel recap with decisions, owners, and links.
+- Ask Clovy to summarize a thread, prepare for a meeting, or find prior context.
+- From a Clovy note, draft a channel recap with decisions, owners, and links.
 - Review and approve every post or reply before it leaves the Mac.
 - Use templates for daily standup, meeting recap, unanswered mentions, and
   promised follow-ups.
@@ -53,7 +53,7 @@ governed.
 - Search/read messages and threads only within selected channels.
 - Read mentions involving the connected user where scopes permit it.
 - Draft and post a message or thread reply behind approval.
-- Stable Slack links in June responses and notes.
+- Stable Slack links in Clovy responses and notes.
 - On-device polling while awake for mentions and selected-channel changes.
 
 ### Later
@@ -64,11 +64,11 @@ governed.
 
 ## Non-goals
 
-- Full-workspace indexing or retention in June.
+- Full-workspace indexing or retention in Clovy.
 - Reading every channel the authorizing user can see by default.
-- Posting as if June were the human without visible attribution.
+- Posting as if Clovy were the human without visible attribution.
 - Autonomous posting at launch.
-- Making Slack identity the source of June identity or team membership.
+- Making Slack identity the source of Clovy identity or team membership.
 
 ## Packaging
 
@@ -76,7 +76,7 @@ governed.
 - Skills: meeting recap, standup synthesis, decision follow-up, thread brief.
 - Templates: morning mentions, daily team recap, post-meeting actions.
 - Optional composition: Google/Microsoft calendar, GitHub, Linear, and local
-  June notes.
+  Clovy notes.
 
 ## Privacy and trust
 

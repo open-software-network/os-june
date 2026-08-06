@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes target `main` and the latest shipped June desktop and June API
+Security fixes target `main` and the latest shipped Clovy desktop and Clovy API
 release. Older releases may receive fixes when the impact warrants it.
 
 ## Reporting a vulnerability
@@ -21,9 +21,9 @@ private while we investigate, and coordinate disclosure timing with you.
 
 In scope:
 
-- June desktop app authentication, local storage, updater, permissions, and
+- Clovy desktop app authentication, local storage, updater, permissions, and
   signed release flow.
-- June API authentication, model proxying, billing authorization, request
+- Clovy API authentication, model proxying, billing authorization, request
   validation, logging, and deployment configuration.
 - GitHub Actions, release automation, container publishing, and signing
   material handling.

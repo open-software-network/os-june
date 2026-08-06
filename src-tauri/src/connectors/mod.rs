@@ -4,7 +4,7 @@
 //! the direct provider clients. The provider proxy and the trigger daemon
 //! consume this module: they resolve an access token via
 //! [`google_access_token`] / [`linear_access_token`] and call the [`google`]
-//! / [`linear`] functions with it. June API and OpenSoftware infrastructure
+//! / [`linear`] functions with it. Clovy API and OpenSoftware infrastructure
 //! are never in the connector data path.
 //!
 //! Secrets live ONLY in the keychain ([`store`]); the SQLite index carries
@@ -318,10 +318,10 @@ fn github_app_slug() -> String {
 /// settings otherwise.
 fn github_not_installed_message(slug: &str) -> String {
     if slug.is_empty() {
-        "Install the June GitHub App on at least one repository, then connect again. You can manage app installations at github.com/settings/installations.".to_string()
+        "Install the Clovy GitHub App on at least one repository, then connect again. You can manage app installations at github.com/settings/installations.".to_string()
     } else {
         format!(
-            "Install the June GitHub App on at least one repository, then connect again. Open github.com/apps/{slug} to choose repositories."
+            "Install the Clovy GitHub App on at least one repository, then connect again. Open github.com/apps/{slug} to choose repositories."
         )
     }
 }
@@ -1087,7 +1087,7 @@ pub async fn begin_connect(
         return Err(AppError::new(
             "connector_single_account_only",
             format!(
-                "June local mode uses one Google account at a time. Disconnect {existing_email} before connecting another."
+                "Clovy local mode uses one Google account at a time. Disconnect {existing_email} before connecting another."
             ),
         ));
     }
@@ -1124,7 +1124,7 @@ pub async fn begin_connect(
             .ok_or_else(|| {
                 AppError::new(
                     "connector_missing_refresh_token",
-                    "Google did not return a refresh token. Remove June's access at myaccount.google.com/permissions and connect again.",
+                    "Google did not return a refresh token. Remove Clovy's access at myaccount.google.com/permissions and connect again.",
                 )
             })?,
     };
@@ -1252,7 +1252,7 @@ where
                         Err(repair_error) => Err(AppError::new(
                             "connector_connect_rollback_failed",
                             format!(
-                                "June could not remove or mark the canceled Linear connection for retry (delete: {}; repair: {}). Remove June in Linear's authorized applications settings before trying again.",
+                                "Clovy could not remove or mark the canceled Linear connection for retry (delete: {}; repair: {}). Remove Clovy in Linear's authorized applications settings before trying again.",
                                 delete_error.code, repair_error.code
                             ),
                         )),
@@ -1279,7 +1279,7 @@ where
         (Err(token_error), Err(account_error)) => Err(AppError::new(
             "connector_connect_rollback_failed",
             format!(
-                "June could not safely restore the Linear connection after cancellation (custody: {}; account: {}). Remove June in Linear's authorized applications settings before trying again.",
+                "Clovy could not safely restore the Linear connection after cancellation (custody: {}; account: {}). Remove Clovy in Linear's authorized applications settings before trying again.",
                 token_error.code, account_error.code
             ),
         )),
@@ -1425,7 +1425,7 @@ pub async fn begin_connect_linear(
             return Err(AppError::new(
                 "connector_single_account_only",
                 format!(
-                    "June local mode uses one Linear workspace at a time. Disconnect {display} before connecting another."
+                    "Clovy local mode uses one Linear workspace at a time. Disconnect {display} before connecting another."
                 ),
             ));
         }
@@ -1460,7 +1460,7 @@ pub async fn begin_connect_linear(
                 .ok_or_else(|| {
                     AppError::new(
                         "connector_missing_refresh_token",
-                        "Linear did not return a refresh token. Remove June's access in Linear settings and connect again.",
+                        "Linear did not return a refresh token. Remove Clovy's access in Linear settings and connect again.",
                     )
                 })?,
         };
@@ -1714,7 +1714,7 @@ pub async fn begin_connect_github(
             }),
         );
         // Open the verification URI in the default browser so the user
-        // can approve the device without leaving June.
+        // can approve the device without leaving Clovy.
         let _ = crate::os_accounts::open_in_browser(&device_code.verification_uri);
     })
     .await?;
@@ -1766,12 +1766,12 @@ pub async fn begin_connect_github(
         return Err(AppError::new(
             "connector_single_account_only",
             format!(
-                "June local mode uses one GitHub account at a time. Disconnect {display} before connecting another."
+                "Clovy local mode uses one GitHub account at a time. Disconnect {display} before connecting another."
             ),
         ));
     }
 
-    // June-side grant markers: GitHub returns no scope field; the markers are
+    // Clovy-side grant markers: GitHub returns no scope field; the markers are
     // determined by what the user requested. When write is being added to an
     // existing account, union the requested markers with the stored ones so a
     // write-escalation never drops the read marker.
@@ -2110,14 +2110,14 @@ pub async fn disconnect(
 fn linear_teams_not_selected_error() -> AppError {
     AppError::new(
         "linear_teams_not_selected",
-        "Select Linear teams in settings before June can read this workspace.",
+        "Select Linear teams in settings before Clovy can read this workspace.",
     )
 }
 
 fn linear_team_not_granted_error() -> AppError {
     AppError::new(
         "linear_team_not_granted",
-        "That team is not in June's selected teams.",
+        "That team is not in Clovy's selected teams.",
     )
 }
 
@@ -2207,7 +2207,7 @@ pub fn mint_action_id() -> String {
 pub fn linear_issue_conflict_error() -> AppError {
     AppError::new(
         "linear_issue_conflict",
-        "This issue changed since June last read it. Re-read it and try again.",
+        "This issue changed since Clovy last read it. Re-read it and try again.",
     )
 }
 
@@ -2218,7 +2218,7 @@ pub fn linear_action_ambiguous_error(action_id: &str) -> AppError {
     AppError::new(
         "linear_action_ambiguous",
         format!(
-            "June could not confirm whether Linear applied this change. Check Linear before retrying; action id {action_id}."
+            "Clovy could not confirm whether Linear applied this change. Check Linear before retrying; action id {action_id}."
         ),
     )
 }
@@ -3186,14 +3186,14 @@ mod tests {
         assert_eq!(conflict.code, "linear_issue_conflict");
         assert_eq!(
             conflict.message,
-            "This issue changed since June last read it. Re-read it and try again."
+            "This issue changed since Clovy last read it. Re-read it and try again."
         );
 
         let ambiguous = linear_action_ambiguous_error("action-123");
         assert_eq!(ambiguous.code, "linear_action_ambiguous");
         assert_eq!(
             ambiguous.message,
-            "June could not confirm whether Linear applied this change. Check Linear before retrying; action id action-123."
+            "Clovy could not confirm whether Linear applied this change. Check Linear before retrying; action id action-123."
         );
     }
 

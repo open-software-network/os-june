@@ -12,7 +12,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 
-const INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
+const INSTRUCTIONS: &str = "You are Clovy, a private personal AI assistant. Use the tools provided by the Clovy app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
 const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
 
@@ -215,7 +215,7 @@ pub async fn compact_agent_session(
         if !matches!(replacement, ContextSummaryReplacement::Applied(_)) {
             return Err(AppError::new(
                 "agent_compact_conflict",
-                "The conversation changed while June was compacting it. Wait for the current turn to finish, then try again.",
+                "The conversation changed while Clovy was compacting it. Wait for the current turn to finish, then try again.",
             ));
         }
     }
@@ -687,7 +687,7 @@ pub async fn cancel_agent_run(
         let Some(cancelled_run) = repository.cancel_waiting_run(&run.id).await? else {
             return Err(AppError::new(
                 "agent_waiting_cancel_conflict",
-                "This request is already resuming. Wait for June to continue before stopping it.",
+                "This request is already resuming. Wait for Clovy to continue before stopping it.",
             ));
         };
         crate::companion::cancel_computer_use_approvals_for_session(&app, &run.session_id);
@@ -1570,7 +1570,7 @@ fn unique_download_path(downloads: &Path, source: &Path) -> Result<PathBuf, AppE
         .ok_or_else(|| {
             AppError::new(
                 "agent_artifact_download_failed",
-                "The June file does not have a downloadable filename.",
+                "The Clovy file does not have a downloadable filename.",
             )
         })?;
     let candidate = downloads.join(file_name);
@@ -1676,7 +1676,7 @@ pub async fn update_agent_skill(
     if !path.is_file() {
         return Err(AppError::new(
             "agent_skill_read_only",
-            "User-global skills are read-only in June.",
+            "User-global skills are read-only in Clovy.",
         ));
     }
     let temporary = path.with_extension("md.tmp");
@@ -1698,7 +1698,7 @@ pub async fn update_agent_skill(
         .await
         .ok()
         .and_then(|text| skill_description(&text))
-        .unwrap_or_else(|| "June agent skill".into());
+        .unwrap_or_else(|| "Clovy agent skill".into());
     Ok(
         json!({ "id": request.skill_id, "name": request.skill_id, "description": description, "source": "managed", "enabled": skill, "editable": true }),
     )
@@ -1750,7 +1750,7 @@ pub(crate) async fn agent_skill_catalog(
                 .await
                 .ok()
                 .and_then(|text| skill_description(&text))
-                .unwrap_or_else(|| "June agent skill".into());
+                .unwrap_or_else(|| "Clovy agent skill".into());
             result.push(json!({ "id": id, "name": id, "description": description, "source": if managed { "managed" } else { "user_global" }, "enabled": overrides.get(&id).copied().unwrap_or(true), "editable": managed }));
         }
     }
@@ -1770,7 +1770,7 @@ pub async fn set_agent_skill_enabled(
     let Some(managed_root) = managed_root else {
         return Err(AppError::new(
             "agent_skill_read_only",
-            "User-global skills are read-only in June.",
+            "User-global skills are read-only in Clovy.",
         ));
     };
     let skill = repository(&app)
@@ -1782,7 +1782,7 @@ pub async fn set_agent_skill_enabled(
             .await
             .ok()
             .and_then(|text| skill_description(&text))
-            .unwrap_or_else(|| "June agent skill".into());
+            .unwrap_or_else(|| "Clovy agent skill".into());
     Ok(
         json!({ "id": skill.id, "name": skill.id, "description": description, "source": "managed", "enabled": skill.enabled, "editable": true }),
     )
@@ -1945,7 +1945,7 @@ async fn run_params(
             let entry = skill_lookup.get(name);
             let description = entry
                 .and_then(|skill| skill.get("description").and_then(Value::as_str))
-                .unwrap_or("June agent skill")
+                .unwrap_or("Clovy agent skill")
                 .to_string();
             let source = entry
                 .and_then(|skill| skill.get("source").and_then(Value::as_str))
@@ -1980,30 +1980,30 @@ async fn tool_descriptors(
     workspace: &str,
 ) -> Result<Value, AppError> {
     let mut tools = json!([
-        { "name": "search_june", "description": "Search June notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
-        { "name": "list_memories", "description": "Recall durable facts, preferences, and decisions from June's memory store. Pass projectId to include that project's memories.", "parameters": { "type": "object", "properties": { "projectId": { "type": "string" }, "includeGlobal": { "type": "boolean", "default": true }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 8 }, "offset": { "type": "integer", "minimum": 0, "default": 0 } }, "required": [], "additionalProperties": false } },
-        { "name": "save_memory", "description": "Save a durable fact, preference, or decision in June's memory store. Pass projectId when it belongs to the current project.", "parameters": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 4000 }, "projectId": { "type": "string" } }, "required": ["content"], "additionalProperties": false }, "requiresApproval": true },
-        { "name": "forget_memory", "description": "Permanently forget one June memory by id when the user asks June to forget it.", "parameters": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false }, "requiresApproval": true },
+        { "name": "search_june", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
+        { "name": "list_memories", "description": "Recall durable facts, preferences, and decisions from Clovy's memory store. Pass projectId to include that project's memories.", "parameters": { "type": "object", "properties": { "projectId": { "type": "string" }, "includeGlobal": { "type": "boolean", "default": true }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 8 }, "offset": { "type": "integer", "minimum": 0, "default": 0 } }, "required": [], "additionalProperties": false } },
+        { "name": "save_memory", "description": "Save a durable fact, preference, or decision in Clovy's memory store. Pass projectId when it belongs to the current project.", "parameters": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 4000 }, "projectId": { "type": "string" } }, "required": ["content"], "additionalProperties": false }, "requiresApproval": true },
+        { "name": "forget_memory", "description": "Permanently forget one Clovy memory by id when the user asks Clovy to forget it.", "parameters": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false }, "requiresApproval": true },
         { "name": "generate_image", "description": "Generate an image from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" } }, "required": ["prompt"], "additionalProperties": false } },
-        { "name": "edit_image", "description": "Edit an image file in the June session workspace and show the result in the conversation.", "parameters": { "type": "object", "properties": { "sourcePath": { "type": "string" }, "instruction": { "type": "string" } }, "required": ["sourcePath", "instruction"], "additionalProperties": false } },
+        { "name": "edit_image", "description": "Edit an image file in the Clovy session workspace and show the result in the conversation.", "parameters": { "type": "object", "properties": { "sourcePath": { "type": "string" }, "instruction": { "type": "string" } }, "required": ["sourcePath", "instruction"], "additionalProperties": false } },
         { "name": "generate_video", "description": "Generate a short video from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" }, "duration": { "type": "string" }, "aspectRatio": { "type": "string" }, "audio": { "type": "boolean" } }, "required": ["prompt"], "additionalProperties": false } },
-        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in June. When the june-obsidian skill is available, load it before Obsidian note work. Call this tool before every distinct Obsidian task because the user may change or disconnect the vault while the session remains open. If connected is false, do not guess a vault path. If available is false, do not infer or reconstruct its path. A returned path is current discovery only, not write authorization; stay within that vault and use only filesystem operations allowed by the current safety mode.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
-        { "name": "start_recording", "description": "Start a visible June recording only when the user explicitly asks to begin recording now.", "parameters": { "type": "object", "properties": { "sourceMode": { "type": "string", "enum": ["microphoneOnly", "microphonePlusSystem"] } }, "required": [], "additionalProperties": false }, "requiresApproval": true },
-        { "name": "stop_recording", "description": "Stop the recording currently visible in June.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }, "requiresApproval": true },
-        { "name": "recording_status", "description": "Check whether June is currently recording and return the active recording metadata.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
-        { "name": "start_session", "description": "Start an attended June Browser use session.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
-        { "name": "close_session", "description": "Close an attended June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": false } },
-        { "name": "navigate", "description": "Navigate a June Browser use session to a URL.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "url": { "type": "string" } }, "required": ["session_id", "url"], "additionalProperties": true } },
-        { "name": "snapshot", "description": "Read the visible page and interactive references from a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
-        { "name": "screenshot", "description": "Capture a screenshot from a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
-        { "name": "click", "description": "Click an interactive reference in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "ref": { "type": "string" } }, "required": ["session_id", "ref"], "additionalProperties": true } },
-        { "name": "fill", "description": "Fill an interactive reference in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "ref": { "type": "string" }, "value": { "type": "string" } }, "required": ["session_id", "ref", "value"], "additionalProperties": true } },
-        { "name": "press", "description": "Press a key in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "key": { "type": "string" } }, "required": ["session_id", "key"], "additionalProperties": true } },
-        { "name": "back", "description": "Navigate back in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
-        { "name": "list_tabs", "description": "List tabs owned by a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
-        { "name": "open_tab", "description": "Open a task-owned tab in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "url": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
-        { "name": "switch_tab", "description": "Switch the active task-owned tab in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "tab_id": {} }, "required": ["session_id", "tab_id"], "additionalProperties": true } },
-        { "name": "close_tab", "description": "Close a task-owned tab in a June Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "tab_id": {} }, "required": ["session_id", "tab_id"], "additionalProperties": true } },
+        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in Clovy. When the june-obsidian skill is available, load it before Obsidian note work. Call this tool before every distinct Obsidian task because the user may change or disconnect the vault while the session remains open. If connected is false, do not guess a vault path. If available is false, do not infer or reconstruct its path. A returned path is current discovery only, not write authorization; stay within that vault and use only filesystem operations allowed by the current safety mode.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "start_recording", "description": "Start a visible Clovy recording only when the user explicitly asks to begin recording now.", "parameters": { "type": "object", "properties": { "sourceMode": { "type": "string", "enum": ["microphoneOnly", "microphonePlusSystem"] } }, "required": [], "additionalProperties": false }, "requiresApproval": true },
+        { "name": "stop_recording", "description": "Stop the recording currently visible in Clovy.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }, "requiresApproval": true },
+        { "name": "recording_status", "description": "Check whether Clovy is currently recording and return the active recording metadata.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "start_session", "description": "Start an attended Clovy Browser use session.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "close_session", "description": "Close an attended Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": false } },
+        { "name": "navigate", "description": "Navigate a Clovy Browser use session to a URL.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "url": { "type": "string" } }, "required": ["session_id", "url"], "additionalProperties": true } },
+        { "name": "snapshot", "description": "Read the visible page and interactive references from a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
+        { "name": "screenshot", "description": "Capture a screenshot from a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
+        { "name": "click", "description": "Click an interactive reference in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "ref": { "type": "string" } }, "required": ["session_id", "ref"], "additionalProperties": true } },
+        { "name": "fill", "description": "Fill an interactive reference in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "ref": { "type": "string" }, "value": { "type": "string" } }, "required": ["session_id", "ref", "value"], "additionalProperties": true } },
+        { "name": "press", "description": "Press a key in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "key": { "type": "string" } }, "required": ["session_id", "key"], "additionalProperties": true } },
+        { "name": "back", "description": "Navigate back in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
+        { "name": "list_tabs", "description": "List tabs owned by a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
+        { "name": "open_tab", "description": "Open a task-owned tab in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "url": { "type": "string" } }, "required": ["session_id"], "additionalProperties": true } },
+        { "name": "switch_tab", "description": "Switch the active task-owned tab in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "tab_id": {} }, "required": ["session_id", "tab_id"], "additionalProperties": true } },
+        { "name": "close_tab", "description": "Close a task-owned tab in a Clovy Browser use session.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "tab_id": {} }, "required": ["session_id", "tab_id"], "additionalProperties": true } },
         { "name": "accept_shared_tab", "description": "Accept a one-use browser tab share code supplied by the user.", "parameters": { "type": "object", "properties": { "session_id": { "type": "string" }, "share_code": { "type": "string" } }, "required": ["session_id", "share_code"], "additionalProperties": true } },
         { "name": "web_search", "description": "Search the public web.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_fetch", "description": "Fetch a public web page.", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false } },
@@ -2015,17 +2015,17 @@ async fn tool_descriptors(
         { "name": "preview_file", "description": "Read file metadata and a bounded text preview.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"], "additionalProperties": false } },
         { "name": "search_files", "description": "Search text files.", "parameters": { "type": "object", "properties": { "query": { "type": "string" }, "path": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "run_shell", "description": "Run a shell command in the session workspace. Values in secretEnv must be opaque references returned by request_secret.", "parameters": { "type": "object", "properties": { "command": { "type": "string" }, "secretEnv": { "type": "object", "additionalProperties": { "type": "string" } } }, "required": ["command"], "additionalProperties": false }, "requiresApproval": true },
-        { "name": "list_skills", "description": "List available June skills.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
-        { "name": "load_skill", "description": "Load instructions for one June skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
-        ,{ "name": "list_routines", "description": "List June routines and their schedules.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } }
-        ,{ "name": "create_routine", "description": "Create a June routine after the user has confirmed its instructions and timing.", "parameters": { "type": "object", "properties": { "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string", "description": "RFC 3339, every <n>m/h/d, or a five-field cron expression." }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["prompt", "schedule", "safetyMode"], "additionalProperties": false }, "requiresApproval": true }
-        ,{ "name": "update_routine", "description": "Update an existing June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" }, "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string" }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
-        ,{ "name": "pause_routine", "description": "Pause a June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
-        ,{ "name": "resume_routine", "description": "Resume a paused June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
-        ,{ "name": "delete_routine", "description": "Delete a June routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        { "name": "list_skills", "description": "List available Clovy skills.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "load_skill", "description": "Load instructions for one Clovy skill.", "parameters": { "type": "object", "properties": { "name": { "type": "string" } }, "required": ["name"], "additionalProperties": false } }
+        ,{ "name": "list_routines", "description": "List Clovy routines and their schedules.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } }
+        ,{ "name": "create_routine", "description": "Create a Clovy routine after the user has confirmed its instructions and timing.", "parameters": { "type": "object", "properties": { "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string", "description": "RFC 3339, every <n>m/h/d, or a five-field cron expression." }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["prompt", "schedule", "safetyMode"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "update_routine", "description": "Update an existing Clovy routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" }, "name": { "type": "string" }, "prompt": { "type": "string" }, "schedule": { "type": "string" }, "safetyMode": { "type": "string", "enum": ["sandboxed", "unrestricted"] } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "pause_routine", "description": "Pause a Clovy routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "resume_routine", "description": "Resume a paused Clovy routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
+        ,{ "name": "delete_routine", "description": "Delete a Clovy routine.", "parameters": { "type": "object", "properties": { "routineId": { "type": "string" } }, "required": ["routineId"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_clarification", "description": "Pause and ask the user a question when their answer is required to continue.", "parameters": { "type": "object", "properties": { "question": { "type": "string" }, "choices": { "type": "array", "items": { "type": "string" } } }, "required": ["question", "choices"], "additionalProperties": false }, "requiresApproval": true }
         ,{ "name": "request_secret", "description": "Securely request a secret from the user. The result is an opaque one-use reference for a safety-controlled tool, never the secret value.", "parameters": { "type": "object", "properties": { "reason": { "type": "string" } }, "required": ["reason"], "additionalProperties": false }, "requiresApproval": true }
-        ,{ "name": "computer_use", "description": "Operate the attended computer-use session through June's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
+        ,{ "name": "computer_use", "description": "Operate the attended computer-use session through Clovy's permission and approval broker.", "parameters": { "type": "object", "properties": { "action": { "type": "string" }, "arguments": {} }, "required": ["action"], "additionalProperties": true }, "requiresApproval": true }
     ]);
     let subsystem = crate::agent_mcp::AgentMcpSubsystem::new(
         crate::agent_mcp::AgentMcpRepository::new(repository.pool.clone()),
@@ -2363,7 +2363,7 @@ fn message_with_attachment_context(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "[June attachment manifest v1]\nThe following files are available locally. Use June's file tools to inspect them when needed:\n{manifest}\n\n{message}"
+        "[June attachment manifest v1]\nThe following files are available locally. Use Clovy's file tools to inspect them when needed:\n{manifest}\n\n{message}"
     )
 }
 
@@ -2920,7 +2920,7 @@ mod tests {
         );
         assert_eq!(
             skill_description(&content).as_deref(),
-            Some("Work with the Obsidian vault currently selected in June.")
+            Some("Work with the Obsidian vault currently selected in Clovy.")
         );
     }
 

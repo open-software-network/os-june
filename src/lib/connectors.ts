@@ -5,7 +5,7 @@
  * event-trigger metadata.
  *
  * Kept separate from the React components and the Tauri bindings so all of it
- * is unit-testable without a Tauri runtime. Copy follows June's UI rules.
+ * is unit-testable without a Tauri runtime. Copy follows Clovy's UI rules.
  */
 
 import { IconBolt } from "central-icons/IconBolt";
@@ -102,7 +102,7 @@ export const BUNDLE_META: Readonly<Partial<Record<ConnectorScopeBundle, Connecto
     github_write: {
       label: "Create and update issues and comments",
       description:
-        "June allows drafting issues and comments on your behalf. Every write asks for your approval before it runs.",
+        "Clovy allows drafting issues and comments on your behalf. Every write asks for your approval before it runs.",
       feature: "create and update issues",
     },
   });
@@ -221,12 +221,12 @@ const STATUS_LABELS: Readonly<
 const CONNECTED_BLURB = "This account is ready. Tokens stay in your Mac's Keychain.";
 
 const RECONNECT_BLURB: Readonly<Record<ConnectorProvider, string>> = Object.freeze({
-  google: "Google needs you to sign in again before June can use this account.",
-  linear: "Linear needs you to sign in again before June can use this workspace.",
-  notion: "Notion needs you to connect again before June can use its hosted MCP tools.",
-  github: "GitHub needs you to sign in again before June can use this account.",
+  google: "Google needs you to sign in again before Clovy can use this account.",
+  linear: "Linear needs you to sign in again before Clovy can use this workspace.",
+  notion: "Notion needs you to connect again before Clovy can use its hosted MCP tools.",
+  github: "GitHub needs you to sign in again before Clovy can use this account.",
 });
-const UNAVAILABLE_BLURB = "June could not confirm the Notion connection. Try again in a moment.";
+const UNAVAILABLE_BLURB = "Clovy could not confirm the Notion connection. Try again in a moment.";
 
 function accountStatusBlurb(status: ConnectorAccountStatus, provider: ConnectorProvider): string {
   if (status === "reconnect_required") return RECONNECT_BLURB[provider];

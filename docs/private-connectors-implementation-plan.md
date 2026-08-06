@@ -1,15 +1,15 @@
 # Implementation plan: Private connectors & away-mode relay
 
 **Owner:** CTO · **Date:** 2026-07-09 · **Status:** Draft for review · **PRD:** [private-connectors-prd.md](private-connectors-prd.md)
-**Repos:** `os-june` (app + June API), `os-accounts` (metering/action slugs), `os-marketing-page` (verify page, comparison copy)
+**Repos:** `os-june` (app + Clovy API), `os-accounts` (metering/action slugs), `os-marketing-page` (verify page, comparison copy)
 
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" and "the Hermes bridge" refer to the removed embedded Hermes
-> runtime. Agent-facing MCP registration is now June-owned per
+> runtime. Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below as
-> "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -38,9 +38,9 @@ revocation immediate in both.
 
 ### 0.2 The two trust modes
 
-**Mode A — Local (default).** OAuth via Google's native-app flow with PKCE and loopback redirect. Refresh token minted directly to the device, stored in Keychain. All provider API calls originate on-device from local MCP servers. OpenSoftware's infrastructure is not in the *connector* data path (token custody + provider calls); model inference for routines still follows the user's provider selection — June API by default, fully local with a local model. Polling (1–5 min while awake) drives proactive triggers.
+**Mode A — Local (default).** OAuth via Google's native-app flow with PKCE and loopback redirect. Refresh token minted directly to the device, stored in Keychain. All provider API calls originate on-device from local MCP servers. OpenSoftware's infrastructure is not in the *connector* data path (token custody + provider calls); model inference for routines still follows the user's provider selection — Clovy API by default, fully local with a local model. Polling (1–5 min while awake) drives proactive triggers.
 
-**Mode B — Away (opt-in).** For real-time triggers while the Mac sleeps, and later for Slack (Events API has no polling equivalent). A relay service runs inside the June API enclave (Intel TDX on Phala Cloud, same chain as today):
+**Mode B — Away (opt-in).** For real-time triggers while the Mac sleeps, and later for Slack (Events API has no polling equivalent). A relay service runs inside the Clovy API enclave (Intel TDX on Phala Cloud, same chain as today):
 - Provider webhooks (Gmail `users.watch` → Pub/Sub push, Calendar push channels, Slack Events) terminate inside the enclave.
 - The user's refresh token is *lent* to the relay at enable-time, encrypted in transit to the enclave's attested key, then sealed (§3.3).
 - The relay fetches minimal event payloads, encrypts them to the device's registered X25519 public key, enqueues ciphertext, and deletes on acknowledged delivery (TTL 72h).
@@ -56,15 +56,15 @@ Mac app (Tauri)
 ├── routines engine (existing) + **trust modes** + **template gallery (skills)**
 └── approval pipeline (existing agent approvals UI) — reused for sends/edits
 
-June API (enclave, june-api/ workspace)
+Clovy API (enclave, june-api/ workspace)
 ├── **relay crate** — webhook receivers, event fetch, per-device encrypt, queue
 ├── **token vault** — sealed user grants (Phala KMS key release on attestation)
 └── metering (existing authorize→charge) + **new action slugs**
 
 OS Accounts — new action slugs, no schema changes expected
-  (June API side is not free: ActionSlug is a closed enum in june-domain
+  (Clovy API side is not free: ActionSlug is a closed enum in june-domain
   with per-action hold-TTL config in june-config — each new slug is a
-  June API change too, see §3.5)
+  Clovy API change too, see §3.5)
 Marketing site — /verify expansion, threat-model docs page, comparison rows
 ```
 
@@ -140,19 +140,19 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ### 3.3 Token vault (sealed user grants)
 
-- Enable flow: device fetches + verifies enclave attestation → encrypts the refresh token to the enclave's ephemeral provisioning key → relay re-encrypts ("seals") with a vault key derived via Phala KMS, released only to the approved June API code measurement → stores ciphertext.
+- Enable flow: device fetches + verifies enclave attestation → encrypts the refresh token to the enclave's ephemeral provisioning key → relay re-encrypts ("seals") with a vault key derived via Phala KMS, released only to the approved Clovy API code measurement → stores ciphertext.
 - **Reset/upgrade behavior:** new deployment attests → KMS releases the same vault key → tokens decrypt; no user action. If key derivation is lost (measurement change without KMS policy update), the vault is unrecoverable *by design* — devices re-lend tokens on next checkin; away-mode degrades for hours, never breaks. Ship the re-lend path first and treat it as the recovery story; KMS continuity is an optimization.
 - **Revocation:** disable away-mode → device instructs relay to delete vault entry + queue; app also revokes the Google grant if the user asks ("disconnect fully"). Every path visible in Settings.
 
 ### 3.4 Verifiability & governance
 
-- Extend reproducible builds + `/verify` to cover the relay image (it's the same June API workspace, so mostly free).
-- Publish a threat-model page (docs + marketing): exactly what away-mode adds to the trust surface — Intel TDX, Phala KMS, OpenSoftware upgrade governance — what it doesn't (no plaintext content at rest; no connector data path in local mode), and what the operator can still observe (queue routing metadata: who receives how many events, when; plus inference routing when routines use June API rather than a local model). This page is the source of truth for all marketing claims; copy review gates on it (claims-guardrails discipline).
+- Extend reproducible builds + `/verify` to cover the relay image (it's the same Clovy API workspace, so mostly free).
+- Publish a threat-model page (docs + marketing): exactly what away-mode adds to the trust surface — Intel TDX, Phala KMS, OpenSoftware upgrade governance — what it doesn't (no plaintext content at rest; no connector data path in local mode), and what the operator can still observe (queue routing metadata: who receives how many events, when; plus inference routing when routines use Clovy API rather than a local model). This page is the source of truth for all marketing claims; copy review gates on it (claims-guardrails discipline).
 - Upgrade governance: relay releases follow the existing rc→stable promote workflow; add a release-transparency note (measurement hash published per release in `os-june-releases`).
 
 ### 3.5 Metering
 
-- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged. Each new slug is also a June API change: a variant in the closed `ActionSlug` enum (june-domain) plus per-action hold-TTL and pricing entries in june-config — plan the two-repo rollout together (config first, additive).
+- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged. Each new slug is also a Clovy API change: a variant in the closed `ActionSlug` enum (june-domain) plus per-action hold-TTL and pricing entries in june-config — plan the two-repo rollout together (config first, additive).
 
 **Exit criteria:** external security review of relay + vault (scope: enclave boundary, KMS policy, queue lifecycle); chaos tests green (enclave reset mid-queue, KMS unavailable, poisoned webhook payloads); attestation check enforced client-side; threat-model page live.
 
@@ -177,7 +177,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 - **Unit:** PKCE flow, token refresh/rotation/revocation, seal/unseal round-trip, queue TTL + delete-on-ack, scope-registry escalation logic.
 - **Integration:** live-account test rig (dedicated Google test org) in CI-adjacent runs; team dogfood with real inboxes on the rc channel.
 - **Chaos (P3):** enclave reset mid-queue, KMS outage, webhook replay/forgery, device key loss.
-- **Rollout:** P1+P2 behind rc-channel flag (≤100 users pre-verification) → stable at Google verification; P3 opt-in beta with explicit trust-surface consent screen → GA after external audit. Per-connector kill switches (remote config via June API).
+- **Rollout:** P1+P2 behind rc-channel flag (≤100 users pre-verification) → stable at Google verification; P3 opt-in beta with explicit trust-surface consent screen → GA after external audit. Per-connector kill switches (remote config via Clovy API).
 
 ## Sequencing summary
 

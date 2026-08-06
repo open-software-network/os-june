@@ -1,7 +1,7 @@
 # Companion TestFlight and App Store readiness
 
 - Register the unique bundle id. The companion has no OS Accounts OAuth client
-  or callback; account authentication remains in June Desktop.
+  or callback; account authentication remains in Clovy Desktop.
 - Add development and distribution signing teams/profiles and verify the APNs
   entitlement in the archived app.
 - Supply complete AppIcon assets, screenshots for supported iPhone/iPad sizes,
@@ -15,7 +15,7 @@
   keyboard, pointer, split view, rotation, offline/reconnect, memory pressure,
   and background termination on current iPhone and iPad hardware.
 - Test TestFlight against production pairing, relay DNS/TLS, Postgres, APNs, and
-  a single-replica June API deployment. Confirm older desktop/API contracts
+  a single-replica Clovy API deployment. Confirm older desktop/API contracts
   remain additive and keep horizontal scale disabled until ADR 0045's shared
   routing prerequisites ship.
 - Attach the independent security review and penetration-test disposition.

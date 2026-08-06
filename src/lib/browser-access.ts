@@ -1,6 +1,6 @@
 import { experimentalBrowserUseEnabled } from "./experimental-flags";
 
-/** The literal token June emits when a task needs Browser use while the
+/** The literal token Clovy emits when a task needs Browser use while the
  * Browser access grant is off. The agent can never flip the setting itself:
  * the flag file lives outside every sandbox write root by design, so the
  * request is rendered as a card the user approves with one click. */
@@ -24,7 +24,7 @@ export function stripBrowserAccessRequest(text: string) {
     .trim();
 }
 
-/** Sent into the session after the user approves the request, so June knows
+/** Sent into the session after the user approves the request, so Clovy knows
  * the grant is live and retries on the freshly restarted runtime. */
 export const BROWSER_ACCESS_ENABLED_MESSAGE =
   "I enabled Browser use. The session can now drive the browser through the june_browser tools; try the browser task again.";

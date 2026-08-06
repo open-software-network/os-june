@@ -26,7 +26,7 @@ it("renders an accessible, layout-stable three-dot typing bubble", () => {
   const { container } = render(<AgentThinking visible variant="typing-bubble" />);
 
   const status = screen.getByRole("status");
-  expect(status).toHaveTextContent("June is typing");
+  expect(status).toHaveTextContent("Clovy is typing");
   expect(status).toHaveAttribute("aria-live", "polite");
   expect(status).toHaveAttribute("aria-atomic", "true");
   expect(status).toHaveAttribute("data-variant", "typing-bubble");

@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -20,8 +20,8 @@
 ## Technical objective
 
 Productize the pinned upstream macOS capture/input implementation behind a
-June-owned helper, native policy broker, June grant, TCC onboarding,
-model-capability gating, and June-native approval cards. Hermes never receives
+Clovy-owned helper, native policy broker, Clovy grant, TCC onboarding,
+model-capability gating, and Clovy-native approval cards. Hermes never receives
 the upstream toolset or helper transport.
 
 ## Phase 0: sandbox spike
@@ -42,7 +42,7 @@ new ADR before hardening the plan.
 ## Packaging
 
 - Pin the driver source/version to an exact Git commit in the repo.
-- Compile the June-owned narrow helper only in controlled build tooling; never
+- Compile the Clovy-owned narrow helper only in controlled build tooling; never
   install or update it at runtime.
 - Sign it with the app release identity and include it as a Tauri resource.
 - Give each debug worktree a stable derived helper identity and reset only that
@@ -55,22 +55,22 @@ new ADR before hardening the plan.
 ## Grant and TCC state
 
 One Computer use grant is managed from Plugins and represented in the runtime
-config. June does not duplicate this control in Settings. Granting does not
+config. Clovy does not duplicate this control in Settings. Granting does not
 fabricate macOS permission. The state machine is:
 
 `off -> grant_on_permission_missing -> permission_prompted -> ready -> error`
 
 Poll the OS permission state after an explanatory screen. Distinguish
 Accessibility from Screen recording and provide direct System Settings help.
-Revoking the June grant disables the toolset immediately even if macOS
+Revoking the Clovy grant disables the toolset immediately even if macOS
 permission remains; removing TCC access is an explicit user follow-up.
 
 ## Runtime and approvals
 
-- Keep both upstream Computer Use toolsets disabled. Expose only June's single
+- Keep both upstream Computer Use toolsets disabled. Expose only Clovy's single
   app-owned MCP tool when every native readiness gate passes.
 - Route the first access to each verified target app through the Rust
-  authorization registry and June approval card. The authorization lasts only
+  authorization registry and Clovy approval card. The authorization lasts only
   for the active attended task.
 - Instruct the agent to invoke the requested operation immediately and wait for the native
   decision. It must not ask for a textual approval or name the internal
@@ -92,7 +92,7 @@ permission remains; removing TCC access is an explicit user follow-up.
    version failure, release self-test.
 3. **TCC + tile (JUN-296, 2 weeks).** State machine, education, model gate,
    grant/revoke.
-4. **Approval bridge (JUN-296, 1-2 weeks).** Runtime approval events to June
+4. **Approval bridge (JUN-296, 1-2 weeks).** Runtime approval events to Clovy
    cards, stop and timeout semantics.
 5. **Hardening (2 weeks).** Target-app isolation, sensitive-action denylist,
    crash recovery, signed-build matrix.
@@ -114,7 +114,7 @@ permission remains; removing TCC access is an explicit user follow-up.
 ## Rollout
 
 Developer-only, internal signed builds, rc opt-in, then Pro stable. Maintain a
-remote driver kill switch keyed by June version and macOS version. The release
+remote driver kill switch keyed by Clovy version and macOS version. The release
 self-test blocks promotion if capture or background input fails. Telemetry is
 content-free: OS version bucket, driver version, operation class, latency,
 approval outcome, failure class.

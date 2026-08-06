@@ -42,7 +42,7 @@ function numericErrorCode(err: unknown): number | undefined {
 }
 
 /** Whether a share request failed because the share is unknown, revoked, or
- * not owned by the caller. The June API collapses all of these to a 404 whose
+ * not owned by the caller. The Clovy API collapses all of these to a 404 whose
  * message is `share_not_found` (non-enumeration); the structured code is the
  * generic `june_request_failed`, so we match the message. Lets the owner
  * dialog treat a definitively-gone share differently from a transient error. */
@@ -50,14 +50,14 @@ export function isShareNotFoundError(err: unknown): boolean {
   return messageFromError(err) === "share_not_found";
 }
 
-/** Human-readable share command error. The June API's share endpoints answer
+/** Human-readable share command error. The Clovy API's share endpoints answer
  * with bare machine codes as messages (`sharing_unavailable` when the server
  * has no share database configured, `share_not_found` for unknown or revoked
  * shares); user-facing surfaces must not leak those raw codes. */
 export function describeShareError(err: unknown): string {
   const message = messageFromError(err);
   if (message === "sharing_unavailable") {
-    return "Sharing isn't available on this June server yet. Try again after the next update.";
+    return "Sharing isn't available on this Clovy server yet. Try again after the next update.";
   }
   if (message === "share_not_found") {
     return "This share no longer exists. It may have been stopped.";
@@ -68,7 +68,7 @@ export function describeShareError(err: unknown): string {
 /** Whether an error message means the user's balance ran out. String match is
  * intentional and a known weakness — billing failures reach us as plain text
  * from several layers (Tauri commands and upstream provider errors),
- * none of which carry a structured code today. The patterns cover the June
+ * none of which carry a structured code today. The patterns cover the Clovy
  * API's friendly message and the raw provider error
  * (`... 'error_code': 4301, 'message': 'insufficient_credits'`). */
 export function isInsufficientCreditsMessage(message?: string) {
@@ -83,7 +83,7 @@ export function isInsufficientCreditsMessage(message?: string) {
  * (trim the input, attach a smaller file, start a fresh session), NOT something
  * to retry as-is. Like {@link isInsufficientCreditsMessage}, string matching is
  * a known weakness: the same condition reaches us as plain text from several
- * layers — the June API's `prompt_too_long`/`request_too_large`, the provider
+ * layers — the Clovy API's `prompt_too_long`/`request_too_large`, the provider
  * proxy's rewritten "maximum context length" wording, and the legacy agent
  * harness's terminal
  * "Cannot compress further." when it cannot shrink a single oversized turn

@@ -1,6 +1,6 @@
 <!doctype html>
 <!--
-  Dev-only living styleguide. Renders June's real design tokens (and, later,
+  Dev-only living styleguide. Renders Clovy's real design tokens (and, later,
   real components) against the real src/styles/app.css in a plain browser, so
   the design system can be reviewed and iterated without the native build.
   Nothing here ships: vite builds only the rollupOptions inputs (index /
@@ -15,13 +15,13 @@
     ?section=<id>            open a specific section (e.g. ?section=type)
     ?theme=light|dark        force a theme (else os-june:theme / system)
     ?brand=rose|clay|sage|ocean|plum
-                             force a brand preset (else os-june:brand / clay)
+                             force a brand preset (else os-june:brand / sage)
 -->
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>June styleguide</title>
+    <title>Clovy styleguide</title>
     <script>
       // Pre-paint theme bootstrap, same as index.html (plus a ?theme=
       // override so a link can pick a theme). Keep the storage key in sync
@@ -53,7 +53,7 @@
           var brands = {
             clay: ["#b5551f", "#976851"],
             rose: ["#a5655c", "#9e6961"],
-            sage: ["#527f4d", "#5a7c56"],
+            sage: ["#3f812f", "#5a7c56"],
             ocean: ["#3d7b9a", "#467a95"],
             // "blue" was renamed to "ocean"; keep the alias so a stored
             // "blue" still pre-paints its swatch instead of flashing clay.
@@ -63,7 +63,7 @@
             amber: ["#b5551f", "#976851"],
             plum: ["#965d84", "#8f6380"],
           };
-          var accent = brands[brand] || brands.clay;
+          var accent = brands[brand] || brands.sage;
           document.documentElement.style.setProperty("--brand", accent[0]);
           document.documentElement.style.setProperty(
             "--brand-wash",

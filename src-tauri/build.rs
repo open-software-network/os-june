@@ -106,7 +106,7 @@ fn ensure_bundled_extension_dir() {
 /// rust-analyzer runs. Packaging entry points run
 /// `scripts/prepare-cua-driver.mjs` first and replace this placeholder with the
 /// authenticated narrow helper built from the locked upstream source commit.
-/// A real bundle is re-signed here so its nested signature matches June's
+/// A real bundle is re-signed here so its nested signature matches Clovy's
 /// build identity.
 fn prepare_computer_use_driver() {
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
@@ -235,7 +235,7 @@ fn verify_computer_use_driver_source(
             .pointer("/juneBuild/sourceSha256")
             .and_then(serde_json::Value::as_str),
         Some(expected_source_hash.as_str()),
-        "computer use helper stamp does not match June's helper source"
+        "computer use helper stamp does not match Clovy's helper source"
     );
 }
 
@@ -382,8 +382,9 @@ fn ensure_agent_runtime_placeholder() {
     }
 }
 
-/// Remove pre-rename ("June") helper bundles from `.tauri-helper` so
-/// stale copies don't linger next to the renamed June bundles.
+/// Remove generated helper bundles from `.tauri-helper` before rebuilding them.
+/// Their June-era paths stay fixed because Tauri resource lookup and signed
+/// upgrade checks depend on them.
 fn clean_legacy_helper_bundles() {
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() != Some("macos") {
         return;
@@ -463,7 +464,7 @@ fn build_system_audio_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>June</string>
+  <string>Clovy</string>
   <key>CFBundleExecutable</key>
   <string>june-system-audio-recorder</string>
   <key>CFBundleIdentifier</key>
@@ -471,7 +472,7 @@ fn build_system_audio_helper() {
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>June</string>
+  <string>Clovy</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -483,7 +484,7 @@ fn build_system_audio_helper() {
   <key>LSUIElement</key>
   <true/>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>June records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
+  <string>Clovy records system audio locally so generated notes can include meeting or media audio from your Mac.</string>
 </dict>
 </plist>
 "#
@@ -723,7 +724,7 @@ fn build_dictation_helper() {
   <key>CFBundleDevelopmentRegion</key>
   <string>en</string>
   <key>CFBundleDisplayName</key>
-  <string>June Dictation Helper</string>
+  <string>Clovy Dictation Helper</string>
   <key>CFBundleExecutable</key>
   <string>june-dictation-helper</string>
   <key>CFBundleIdentifier</key>
@@ -733,7 +734,7 @@ fn build_dictation_helper() {
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>June Dictation Helper</string>
+  <string>Clovy Dictation Helper</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -745,7 +746,7 @@ fn build_dictation_helper() {
   <key>LSMinimumSystemVersion</key>
   <string>{DICTATION_HELPER_MIN_MACOS_VERSION}</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>June needs microphone access to turn your speech into text.</string>
+  <string>Clovy needs microphone access to turn your speech into text.</string>
 </dict>
 </plist>
 "#
@@ -760,7 +761,7 @@ fn build_dictation_helper() {
 
     let icon_bytes = std::fs::read(&icon_source).unwrap_or_else(|error| {
         panic!(
-            "June app icon {} should be readable: {error}",
+            "Clovy app icon {} should be readable: {error}",
             icon_source.display()
         )
     });
@@ -768,7 +769,7 @@ fn build_dictation_helper() {
     if !icon_current {
         std::fs::write(&icon_destination, icon_bytes).unwrap_or_else(|error| {
             panic!(
-                "June app icon should be copied to dictation helper resources at {}: {error}",
+                "Clovy app icon should be copied to dictation helper resources at {}: {error}",
                 icon_destination.display()
             )
         });

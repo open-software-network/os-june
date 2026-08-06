@@ -15,7 +15,7 @@ export type SystemAudioAvailability =
  * The single question every system-audio surface asks. `permissionState` is the
  * platform grant/status and `ready` is whether this device can actually capture;
  * neither answers on its own, and a granted source can still be uncapturable.
- * Offering the user a control June cannot honor is the bug this collapses.
+ * Offering the user a control Clovy cannot honor is the bug this collapses.
  */
 export function systemAudioAvailability(
   readiness: RecordingSourceReadinessDto | undefined,

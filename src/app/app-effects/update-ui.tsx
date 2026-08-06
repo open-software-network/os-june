@@ -2,8 +2,8 @@ import { IconChevronRightSmall } from "central-icons/IconChevronRightSmall";
 import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import type { CSSProperties } from "react";
 import type { AgentSessionStatusDetail } from "../../lib/agent-events";
-import type { JuneUpdate } from "../../lib/updater";
-import { JuneMark } from "../../components/account/AccountGate";
+import type { ClovyUpdate } from "../../lib/updater";
+import { ClovyMark } from "../../components/brand/ClovyLogo";
 import { Spinner } from "../../components/ui/Spinner";
 import type { UpdateInstallProgress, UpdatePromptPayload } from "../update-decision";
 
@@ -40,7 +40,7 @@ export function UpdateHub({
   onDismissStatus,
   onRelaunch,
 }: {
-  readyUpdate: UpdatePromptPayload<JuneUpdate> | null;
+  readyUpdate: UpdatePromptPayload<ClovyUpdate> | null;
   status: string | null;
   failed: boolean;
   statusLeaving: boolean;
@@ -84,7 +84,7 @@ function UpdateRelaunchCard({
   relaunching,
   onRelaunch,
 }: {
-  payload: UpdatePromptPayload<JuneUpdate>;
+  payload: UpdatePromptPayload<ClovyUpdate>;
   status: string | null;
   failed: boolean;
   relaunching: boolean;
@@ -98,13 +98,13 @@ function UpdateRelaunchCard({
         type="button"
         className="update-relaunch-card"
         disabled={relaunching}
-        aria-label={`Relaunch to update to June ${payload.version}`}
+        aria-label={`Relaunch to update to Clovy ${payload.version}`}
         onClick={onRelaunch}
       >
         {/* One motion cue per card: while relaunching the mark slot swaps to the
          * dot spinner (no title shimmer) and the title stays plain text. */}
         <span className="update-relaunch-mark" aria-hidden>
-          {relaunching ? <Spinner size="sm" aria-hidden /> : <JuneMark />}
+          {relaunching ? <Spinner size="sm" aria-hidden /> : <ClovyMark variant="mono" />}
         </span>
         <span className="update-relaunch-copy">
           <span className="update-relaunch-title">
@@ -154,7 +154,7 @@ function UpdateStatusCard({
     >
       <div className="update-status-row">
         <span className="update-status-mark" aria-hidden>
-          {busy ? <Spinner size="sm" aria-hidden /> : <JuneMark />}
+          {busy ? <Spinner size="sm" aria-hidden /> : <ClovyMark variant="mono" />}
         </span>
         <span
           className={failed ? "update-status-text update-status-text-failed" : "update-status-text"}

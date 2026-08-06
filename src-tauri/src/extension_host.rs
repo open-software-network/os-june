@@ -2,13 +2,13 @@
 
 //! App side of Browser use extension pairing (JUN-287, ADR 0017).
 //!
-//! The June extension talks Chrome native messaging to a small shim binary
+//! The Clovy extension talks Chrome native messaging to a small shim binary
 //! (`june-nm-shim`, see `shim` below); the shim relays every frame to the
 //! authenticated loopback listener this module runs. Chrome spawns the shim,
 //! so credentials cannot ride in its environment: the listener writes a
 //! connection descriptor (port + per-run token) to the selected app data dir.
 //! Listener startup persists that selection in an owner-only pointer because
-//! Chrome does not inherit June's debug/prod environment choice. Writing it on
+//! Chrome does not inherit Clovy's debug/prod environment choice. Writing it on
 //! every start also migrates native-host registrations made by older builds.
 //!
 //! Wire format on both legs is Chrome's native messaging framing: a 4-byte
@@ -65,7 +65,7 @@ pub(crate) fn validate_extension_manifest(path: &std::path::Path) -> Result<(), 
     if derived != EXTENSION_ID {
         return Err(AppError::new(
             "bundled_extension_invalid",
-            "The bundled extension manifest does not match June's extension id.",
+            "The bundled extension manifest does not match Clovy's extension id.",
         ));
     }
     Ok(())
@@ -178,7 +178,7 @@ fn persist_descriptor_selection(
     if !allowed_descriptor_paths(home).contains(&selected_descriptor) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "extension host descriptor is outside June's app data directories",
+            "extension host descriptor is outside Clovy's app data directories",
         ));
     }
     write_descriptor_pointer(&descriptor_pointer_path(home), &selected_descriptor)?;
@@ -357,7 +357,7 @@ pub fn shim_data_dir() -> Option<PathBuf> {
 }
 
 /// Resolve the descriptor selected when the native host was registered.
-/// Chrome does not inherit June's environment, so the shim must not recompute
+/// Chrome does not inherit Clovy's environment, so the shim must not recompute
 /// an `OS_JUNE_USE_PROD_DATA_DIR` choice from its own process environment.
 pub fn shim_descriptor_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -515,13 +515,13 @@ impl ExtensionHost {
             let connection_id = shared.paired_connection.ok_or_else(|| {
                 AppError::new(
                     "extension_not_paired",
-                    "The June browser extension is not paired.",
+                    "The Clovy browser extension is not paired.",
                 )
             })?;
             let sender = shared.paired_sender.clone().ok_or_else(|| {
                 AppError::new(
                     "extension_not_paired",
-                    "The June browser extension is not paired.",
+                    "The Clovy browser extension is not paired.",
                 )
             })?;
             shared.next_request_id += 1;
@@ -858,7 +858,7 @@ fn random_token() -> String {
 pub fn host_manifest_json(shim_path: &std::path::Path) -> Value {
     json!({
         "name": NATIVE_HOST_NAME,
-        "description": "June browser extension connector",
+        "description": "Clovy browser extension connector",
         "path": shim_path.to_string_lossy(),
         "type": "stdio",
         "allowed_origins": [format!("chrome-extension://{EXTENSION_ID}/")],
@@ -964,7 +964,7 @@ pub fn register_browser_extension_host(
     if !state.status().listener_running {
         return Err(AppError::new(
             "extension_host_not_running",
-            "The extension host is not running yet. Wait a moment and try again, or restart June.",
+            "The extension host is not running yet. Wait a moment and try again, or restart Clovy.",
         ));
     }
     let shim_path = shim_candidates(&app)
@@ -1047,7 +1047,7 @@ pub mod shim {
 
     /// Entry point for the `june-nm-shim` binary: wires real stdio and exits
     /// nonzero when the app side is unreachable (after telling the extension
-    /// why, so the popup can say "June is not running").
+    /// why, so the popup can say "Clovy is not running").
     pub fn run() -> i32 {
         // `Stdin`/`Stdout` (not their locks): the Chrome-side reader moves to
         // the pump thread, and `StdinLock` is not `Send`.

@@ -49,7 +49,7 @@ else
   apps=("$ROOT_DIR"/src-tauri/target/release/bundle/macos/*.app)
 fi
 if [[ "${#apps[@]}" -ne 1 ]]; then
-  echo "Expected exactly one signed June app bundle for target ${target:-native}, found ${#apps[@]}." >&2
+  echo "Expected exactly one signed Clovy app bundle for target ${target:-native}, found ${#apps[@]}." >&2
   exit 1
 fi
 

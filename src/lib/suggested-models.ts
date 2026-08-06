@@ -34,7 +34,7 @@ export function autoPillDesignation(costQuality: number | undefined): string | u
 /**
  * Curated picks for the model picker's "Suggested" tab — the handful of
  * models we actually recommend, weighed on benchmark performance, price,
- * tool use, and privacy. June's agent needs tool calling, so every text pick
+ * tool use, and privacy. Clovy's agent needs tool calling, so every text pick
  * supports tools; each model's live catalog privacy badge remains the source
  * of truth for whether it is private or anonymized.
  *
@@ -45,7 +45,7 @@ export function autoPillDesignation(costQuality: number | undefined): string | u
  * Curation snapshot (July 2026), from the live Venice catalog plus public
  * benchmarks (SWE-bench agentic coding, Artificial Analysis intelligence
  * index):
- * - GLM 5.2: latest GLM flagship and June's default text model, with
+ * - GLM 5.2: latest GLM flagship and Clovy's default text model, with
  *   reasoning effort controls, tool use, 200K context, $1.75/$5.50 per 1M
  *   tokens.
  * - Kimi K3: newest Kimi flagship, built for multimodal reasoning and long
@@ -147,7 +147,7 @@ export const SUGGESTED_MODELS: Record<ProviderModelMode, SuggestedModel[]> = {
 export const DEFAULT_GENERATION_SUGGESTION_ID = SUGGESTED_MODELS.generation[0].id;
 
 /**
- * The model June switches to when the user attaches an image while a
+ * The model Clovy switches to when the user attaches an image while a
  * non-vision model is active. The switch must land on a model that can both
  * read images AND run tools — a vision model without function calling would
  * brick the agent the same way the model picker guards against — so we filter

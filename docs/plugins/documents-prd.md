@@ -8,7 +8,7 @@
 
 ## Thesis
 
-Documents turns June's strongest raw material - conversations, transcripts,
+Documents turns Clovy's strongest raw material - conversations, transcripts,
 notes, and connected context - into a finished local artifact. It should create
 and revise professional documents without requiring a cloud document service
 and without overwriting the user's original.
@@ -20,23 +20,23 @@ design outputs.
 
 ## Customer and problem
 
-June users leave meetings with the information needed for a brief, proposal,
+Clovy users leave meetings with the information needed for a brief, proposal,
 memo, decision record, or client follow-up, but still assemble the document by
 hand. Generic chat output is not a finished deliverable: it lacks structure,
 consistent styles, page-aware verification, editable format, and source links.
 
 ## Product promise
 
-Ask June for a finished document. It builds an editable local artifact from the
+Ask Clovy for a finished document. It builds an editable local artifact from the
 sources you chose, shows a preview and validation report, and exports only when
 you approve the destination.
 
 ## V1 experience
 
-- Start from a June note, selected local files, or connected sources.
+- Start from a Clovy note, selected local files, or connected sources.
 - Choose a template or describe the document: memo, brief, proposal, decision
   record, agenda, or meeting recap.
-- June creates a versioned artifact in its workspace and shows a rendered
+- Clovy creates a versioned artifact in its workspace and shows a rendered
   preview plus outline, page/section count, and warnings.
 - Ask for revisions in chat; every revision creates a recoverable version.
 - Export DOCX, Markdown, or plain text through a native save dialog.
@@ -64,7 +64,7 @@ you approve the destination.
 - Pixel-perfect round-trip editing of arbitrary DOCX files.
 - Running macros, embedded objects, or external links automatically.
 - Overwriting the imported original.
-- Uploading documents to June API for storage.
+- Uploading documents to Clovy API for storage.
 
 ## Packaging
 

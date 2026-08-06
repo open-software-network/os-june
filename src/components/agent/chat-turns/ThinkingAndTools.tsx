@@ -133,7 +133,7 @@ function AgentToolPartRow({ part }: { part: Extract<AgentChatPart, { type: "tool
 
 // Long tool runs stop growing the transcript a row per call: past this many
 // rows, settled (complete/failed) calls fold behind a single count line while
-// running calls stay visible below it, so what June is doing right now is
+// running calls stay visible below it, so what Clovy is doing right now is
 // never hidden and failures are still called out on the fold itself.
 const AGENT_TOOL_STACK_FOLD_THRESHOLD = 3;
 

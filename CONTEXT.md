@@ -1,10 +1,10 @@
-# June
+# Clovy
 
-June is a Tauri desktop app that records meetings/dictation, transcribes
+Clovy is a Tauri desktop app that records meetings/dictation, transcribes
 the audio, turns the transcript into structured notes, and hosts an AI agent
 you can chat with over those notes. It depends on the **OS Accounts**
 identity-and-credits platform for sign-in and for billing metered AI usage,
-and runs a June-owned **agent harness** built on the OpenAI Agents SDK.
+and runs a Clovy-owned **agent harness** built on the OpenAI Agents SDK.
 
 This document is a glossary, not a spec. Terms are canonical; the `_Avoid_`
 lines are binding. Implementation, endpoints, and code shape live under
@@ -14,35 +14,39 @@ lines are binding. Implementation, endpoints, and code shape live under
 
 ### Platform
 
-**June (the app)**:
+**Clovy (the app)**:
 The user-facing Tauri desktop product — the macOS `.app` users install. The
 binary on disk is named `os-june`, the Cargo package is `os-june`, the
 bundle identifier is `co.opensoftware.june`.
+Those are shipped June-era compatibility identities, not current product copy;
+see [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
 _Avoid_: notetaker, OS Notetaker (legacy names — fully removed from code as of
-the bundle rename; don't reintroduce).
+the earlier bundle rename; don't reintroduce), June as the current product
+name.
 
-**June API**:
+**Clovy API**:
 The confidential backend service that holds the App API key and the upstream
 AI provider keys, runs `authorize`→`charge` against OS Accounts on behalf of
-the June app, and proxies the metered AI calls (transcription, generation,
-agent chat, web). Lives in the same repo as June under its own Cargo
+the Clovy app, and proxies the metered AI calls (transcription, generation,
+agent chat, web). Lives in the same repo as Clovy under its own Cargo
 workspace; ships as a separate container image to GHCR and runs in a TEE.
 Cargo crates use the `june-*` prefix; the binary is `june`.
-_Avoid_: backend, proxy, AI proxy (use **June API**).
+Those technical identities remain stable for compatibility under ADR-0054.
+_Avoid_: backend, proxy, AI proxy (use **Clovy API**).
 
 **OS Accounts**:
 The Open Software identity-and-credits platform. Source of truth for *who the
-user is* and *how many credits they have*. June and June API both depend on
+user is* and *how many credits they have*. Clovy and Clovy API both depend on
 it; it never depends on them.
 _Avoid_: accounts, the identity service, the auth service.
 
 **Upstream provider**:
-A third-party AI service June API calls on the user's behalf — currently
+A third-party AI service Clovy API calls on the user's behalf — currently
 **OpenAI** (transcription only), **Venice** (transcription, generation, agent
 chat, web), and **Phala** (TEE fallback for routed text inference).
-Service-managed upstream provider API keys live only in June API's environment,
-never in June. A user's explicit Venice BYOK credential is stored locally by
-June and forwarded only on eligible Venice requests. In code, each direct
+Service-managed upstream provider API keys live only in Clovy API's environment,
+never in Clovy. A user's explicit Venice BYOK credential is stored locally by
+Clovy and forwarded only on eligible Venice requests. In code, each direct
 integration sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
 `june-domain` and implemented in `june-providers`; routed text calls reuse the
@@ -51,7 +55,7 @@ route metadata.
 _Avoid_: AI provider, model provider, vendor, "the LLM".
 
 **Model routing service**:
-The Open Software API (`os-api`) used for service-managed text inference. June
+The Open Software API (`os-api`) used for service-managed text inference. Clovy
 API requests `preferred` private routing; the service selects Venice private
 zero-retention first and Phala TEE as fallback, without falling below
 zero-retention. Venice BYOK requests remain direct and do not use this routing
@@ -61,12 +65,12 @@ _Avoid_: gateway, router (unqualified).
 ### Notes
 
 **Note**:
-The central June artifact — a persistent, user-editable markdown document,
+The central Clovy artifact — a persistent, user-editable markdown document,
 listed in the sidebar and optionally organized into folders. Created blank or
 filled by **note generation**, and owns any manual notes the user types. A
 **recording session** is note-backed: the recording attaches to a note, never
 the reverse, and a note need not have a recording at all.
-_Avoid_: meeting (June has no meeting entity), document, summary.
+_Avoid_: meeting (Clovy has no meeting entity), document, summary.
 
 **Project (folder)**:
 The user-facing organizational unit — "Projects" in the UI, the `folders`
@@ -77,7 +81,7 @@ _Avoid_: workspace (overloaded), profile (a different, reverted concept).
 
 **Project instructions**:
 The user-written, per-project text (max 4000 chars, on the folder row) that
-June follows in sessions filed in that project. Delivered by injecting a
+Clovy follows in sessions filed in that project. Delivered by injecting a
 delimited project-context block into the session's prompt text at run
 boundaries — never via the global SOUL.md (see
 [ADR-0027](docs/adr/0027-june-owned-project-memory-store.md)).
@@ -85,7 +89,7 @@ _Avoid_: system prompt (that is SOUL territory), folder description (a
 separate, filing-help field).
 
 **Data partition**:
-The local isolation boundary used when June reads or writes notes, projects,
+The local isolation boundary used when Clovy reads or writes notes, projects,
 agent sessions, memories, and related assignments. `default` is the fallback
 partition for data created before partitioning and for stored sessions without
 an explicit mapping. The **current data partition** is the partition selected
@@ -93,7 +97,7 @@ for the active app view.
 _Avoid_: profile, active profile, tenant, account.
 
 **Memory entry**:
-One durable fact June remembers, stored in June's own SQLite `memories`
+One durable fact Clovy remembers, stored in Clovy's own SQLite `memories`
 table — global or scoped to one project — written by the agent through
 `june_context` memory tools (or by the user in Settings), inspectable and
 editable in the "Memory" settings tab and the project detail view. Deletion
@@ -107,7 +111,7 @@ profile).
 **Recording session**:
 One note-backed capture lifecycle (a UUID) that owns its source mode,
 artifacts, elapsed time, and status; the unit of recovery and retry.
-_Avoid_: meeting object (June deliberately has no separate "meeting" entity).
+_Avoid_: meeting object (Clovy deliberately has no separate "meeting" entity).
 
 **Source mode**:
 The capture scope chosen before recording starts: `MicrophoneOnly` or
@@ -189,9 +193,9 @@ The platform-native helper (`mac-dictation-helper` on macOS,
 capture and text insertion into the **paste target**. It is the authoritative
 source for helper-owned microphone state, destination selection, and platform
 paste readiness. On Windows, an exact Dictate-button request or a global
-shortcut started while June's composer owns focus may be delivered through
+shortcut started while Clovy's composer owns focus may be delivered through
 acknowledged in-app insertion, but only when the helper verifies the initiating
-June window's exact handle and original process identity. The foreground window
+Clovy window's exact handle and original process identity. The foreground window
 at stop is irrelevant to this logical in-app destination and may be the
 non-focusable dictation HUD.
 On macOS it is also authoritative for Accessibility permission state.
@@ -199,14 +203,14 @@ _Avoid_: dictation app, keyboard helper.
 
 **Dictation take**:
 One helper-owned dictation capture from `listening_started` until its text is
-delivered or the capture is discarded. June gives each take an opaque
+delivered or the capture is discarded. Clovy gives each take an opaque
 identity before asking the helper to start; a helper paired with an older
-coordinator mints the identity itself. The identity lets June cancel pending
+coordinator mints the identity itself. The identity lets Clovy cancel pending
 dictation transcription, cleanup, history, and delivery without affecting a
 newer take. Cancellation is terminal; a late result never regains delivery
 authority.
 _Avoid_: recording session (that is note-backed), utterance (that identifies a
-metered June API request, not the user-visible capture lifecycle).
+metered Clovy API request, not the user-visible capture lifecycle).
 
 **Paste target**:
 The destination where a finished dictation transcript is delivered. For native
@@ -228,7 +232,7 @@ focus target.
 ### Agent runtime
 
 **Home conversation**:
-June's persistent relationship-level conversation for quick answers, ongoing
+Clovy's persistent relationship-level conversation for quick answers, ongoing
 context, and task handoffs. Each data partition has at most one Home backing
 session. Concrete work can start a normal focused **agent session** without
 leaving Home, and the Home backing session is omitted from focused-session
@@ -236,13 +240,13 @@ lists and native recent-session shortcuts.
 _Avoid_: dashboard, default agent session, Hermes Home.
 
 **Agent harness**:
-The June-owned local service that runs the OpenAI Agents SDK model and tool
+The Clovy-owned local service that runs the OpenAI Agents SDK model and tool
 loop. It is a trusted orchestration process, while Rust owns secrets,
 persistence, approvals, and every machine-touching tool.
 _Avoid_: brain, Hermes, gateway.
 
 **Runtime protocol**:
-June's versioned newline-delimited JSON-RPC contract over the agent harness's
+Clovy's versioned newline-delimited JSON-RPC contract over the agent harness's
 stdin and stdout. It carries run requests, host tool calls, streaming events,
 interruptions, cancellation, and shutdown without exposing a localhost port.
 _Avoid_: gateway, WebSocket control plane.
@@ -257,30 +261,30 @@ _Avoid_: permission, profile.
 ### Legacy agent data
 
 **Legacy agent home**:
-The preserved on-disk home from June versions that used Hermes. The migration
-reads its state database once, transactionally, then retains the directory
-only as recovery data. The current app never starts or reads the retired
-runtime after a successful import.
+The preserved on-disk home from versions released under the June name that
+used Hermes. The migration reads its state database once, transactionally,
+then retains the directory only as recovery data. The current app never starts
+or reads the retired runtime after a successful import.
 _Avoid_: runtime home, active profile.
 
 **Browser use**:
 The consent-gated capability (JUN-278, ADR 0017) that lets the agent operate
 a live browser. Attended sessions drive the user's own Chromium-family
-browser through the June extension, in task-owned or explicitly user-shared
-tabs; sandboxed routines get a June-managed, anonymous, ephemeral headless
+browser through the Clovy extension, in task-owned or explicitly user-shared
+tabs; sandboxed routines get a Clovy-managed, anonymous, ephemeral headless
 browser limited to the public web. All actions flow through the Rust browser
 broker; consequential actions park for approval.
 _Avoid_: web browsing (that is `june_web` search/fetch), browser toolset
-(the upstream runtime feature June does not expose).
+(the upstream runtime feature Clovy does not expose).
 
 **Browser access grant**:
 The stored, on-device opt-in that allows Browser use in attended sessions.
-Turning it off disables June's internal `june_browser` MCP server and ends
+Turning it off disables Clovy's internal `june_browser` MCP server and ends
 active browser broker sessions.
 _Avoid_: browser permission, browser toggle.
 
 **Routine Browser use opt-in**:
-The default-off, per-routine grant that lets one sandboxed routine use June's
+The default-off, per-routine grant that lets one sandboxed routine use Clovy's
 anonymous managed browser for public pages. It is distinct from the attended
 Browser access grant and never exposes the user's signed-in browser session.
 _Avoid_: routine browser permission, global routine browsing.
@@ -289,16 +293,16 @@ _Avoid_: routine browser permission, global routine browsing.
 The consent-gated capability (JUN-278 phase 2) that lets the agent operate
 Mac apps in the background without moving the user's real pointer, stealing
 keyboard focus, or changing the active Space. It uses the pinned runtime's
-computer-use toolset and a June-bundled pinned cua-driver.
+computer-use toolset and a Clovy-bundled pinned cua-driver.
 The first access to each verified target app requires one authorization for
 the current attended task; requires a vision-capable model. Bringing a parked
-window into June's current Stage Manager group is part of that authorized app
+window into Clovy's current Stage Manager group is part of that authorized app
 use and does not ask again.
 _Avoid_: desktop automation (vague), computer_use toolset (that is the
-upstream mechanism, not the June capability).
+upstream mechanism, not the Clovy capability).
 
 **Computer use cursor**:
-The small, semi-transparent, click-through pointer June shows at Computer use's
+The small, semi-transparent, click-through pointer Clovy shows at Computer use's
 virtual action position while an attended task is active. It follows clicks and
 drags reported by the signed helper but never moves or follows the user's real
 pointer.
@@ -306,7 +310,7 @@ _Avoid_: mouse cursor (ambiguous with the user's real pointer), cursor movement
 (the real pointer does not move).
 
 **Stored session id** vs **runtime session id**:
-The persistent id June keys all UI and history on, versus the live process's
+The persistent id Clovy keys all UI and history on, versus the live process's
 per-resume id. `session.create` returns both; conflating them attaches
 traces/artifacts to the wrong identity.
 _Avoid_: "the session id" (always say which).
@@ -314,12 +318,12 @@ _Avoid_: "the session id" (always say which).
 **Archived session**:
 An agent session the user has archived out of the live lists (the product
 verb is **archive**; renamed from "completed" 2026-07-27). The mark is
-**June-owned local state** keyed by the stored session id, persisted as
-`completed_sessions(session_id, completed_at)`, and set only by June.
+**Clovy-owned local state** keyed by the stored session id, persisted as
+`completed_sessions(session_id, completed_at)`, and set only by Clovy.
 Archived sessions leave the sidebar entirely and surface under the sessions
 page's Archived status filter. Distinct from both the runtime session
 *status* `completed` (the agent finished running) and Hermes' `archived`
-flag (a runtime read-filter June never writes). See
+flag (a runtime read-filter Clovy never writes). See
 [ADR-0032](docs/adr/0032-session-completion-june-owned-local-state.md),
 including its 2026-07-27 addendum.
 _Avoid_: completed (in user-facing copy; internal persistence names keep
@@ -339,28 +343,28 @@ The ProseMirror chat input with slash commands and attachment chips.
 _Avoid_: textbox.
 
 **Issue report**:
-A bug / feedback / feature submission to the June team, collected by the
-report dialog (composer "+", sidebar, or settings) and sent straight to June
+A bug / feedback / feature submission to the Clovy team, collected by the
+report dialog (composer "+", sidebar, or settings) and sent straight to Clovy
 API `/v1/issue-reports` — no agent turn runs and nothing is authorized or
-charged. The team-facing **diagnosis** is generated inside June API at
-delivery time on a server-configured model, at June's expense, and is never
+charged. The team-facing **diagnosis** is generated inside Clovy API at
+delivery time on a server-configured model, at Clovy's expense, and is never
 shown to the user (see
 [ADR-0012](docs/adr/0012-direct-issue-report-submission.md)).
 _Avoid_: bug report for the mechanism (bug is one of three report
-categories), June's reply for the diagnosis (the user never sees it),
+categories), Clovy's reply for the diagnosis (the user never sees it),
 investigation turn (the removed chip flow; old clients only).
 
 **Slash command**:
 A `/name arg` handled client-side before submit — builtin `/model`, `/file`,
 `/image`, and `/video`, plus skill slash commands. `/image <prompt>` starts
-June's image generation fast path without invoking the model (kill switch:
+Clovy's image generation fast path without invoking the model (kill switch:
 `IMAGE_GENERATION_ENABLED`); `/video <prompt>` starts the video generation fast
 path (kill switch: `VIDEO_GENERATION_ENABLED`).
 _Avoid_: gateway command.
 
 **Steer**:
 A user instruction delivered into a still-running agent session without
-interrupting it. A steer is first-party and local to June — never a Hermes
+interrupting it. A steer is first-party and local to Clovy — never a Hermes
 wire frame. A steer the run never consumed is resent as an ordinary follow-up
 when the run completes cleanly, and dropped when the run fails or is
 cancelled.
@@ -376,7 +380,7 @@ _Avoid_: trait (`traits` is a separate, non-authoritative Venice field).
 
 **Attachment**:
 A file or image referenced by path. Agent-composer attachments are copied by
-Rust into the June-owned session workspace before a run starts. Image
+Rust into the Clovy-owned session workspace before a run starts. Image
 attachments are included as vision input when the selected model supports
 vision; other files are exposed through the same safety-controlled file tools.
 Native-picker issue-report attachments keep their original local paths.
@@ -385,7 +389,7 @@ _Avoid_: upload (unqualified).
 **Note reference**:
 A plain-text token — `@note:<id>`, optionally followed by the quoted note
 title — that points the agent at one specific note. Inserted as a composer
-chip via `@`, seeded by "Ask June" on a note, or pasted from "Copy note
+chip via `@`, seeded by "Ask Clovy" on a note, or pasted from "Copy note
 reference"; the agent resolves it on demand through `june_context`'s
 `get_meeting_note` tool (see
 [ADR-0010](docs/adr/0010-note-references-in-agent-chat.md)).
@@ -394,22 +398,22 @@ is UI; the reference is the token).
 
 **Skill / Toolset / MCP server**:
 A Skill is a bundled/installed capability pack; a Toolset is a togglable tool
-group; an MCP server is an external tool provider (June ships no June-managed
-MCP servers after ADR-0040; June-owned capabilities are host tools in the agent
+group; an MCP server is an external tool provider (Clovy ships no Clovy-managed
+MCP servers after ADR-0040; Clovy-owned capabilities are host tools in the agent
 loop). User-supplied external MCP servers remain supported through the `mcp_`
 dispatch prefix. Connector toolsets include `june_gmail`, `june_gcal`,
 `june_notion`, and their `*_actions` counterparts. Linear's official hosted
 MCP supplies a dynamic external tool inventory under the `mcp_linear_*`
 runtime namespace; `june_linear` and `june_linear_actions` remain historical
-routine toolset identities, not June-owned MCP servers. `june_notion` is the
+routine toolset identities, not Clovy-owned MCP servers. `june_notion` is the
 hosted Notion MCP read toolset; `june_notion_actions` is the separately
 approval-gated create/update toolset.
 _Avoid_: using "tool" for all three.
 
 **Obsidian plugin**:
-The June-owned local capability for discovering the user-selected Obsidian vault
+The Clovy-owned local capability for discovering the user-selected Obsidian vault
 at task time through the `get_obsidian_vault` host tool. The vault selection is
-stored in June-owned `obsidian.json`; it is not a runtime environment variable.
+stored in Clovy-owned `obsidian.json`; it is not a runtime environment variable.
 Discovery is current state, not write authorization. In Sandboxed mode, only
 `list_files`, `read_file`, and `search_files` may access the vault; writes are
 host-denied. Disconnect removes future discovery but cannot revoke a path
@@ -417,8 +421,8 @@ already disclosed to a live unrestricted runtime.
 _Avoid_: Obsidian connector, `OBSIDIAN_VAULT_PATH`, `june_obsidian` MCP server.
 
 **Plugin**:
-A user-facing capability bundle in June's Plugins area. A plugin may combine
-Skills, Toolsets, June-owned host tools, routine templates, and optional
+A user-facing capability bundle in Clovy's Plugins area. A plugin may combine
+Skills, Toolsets, Clovy-owned host tools, routine templates, and optional
 Connectors around one job. Enabling or installing the bundle is distinct from
 connecting a third-party account and from choosing a routine's trust mode.
 The ranked portfolio and shared product contract live in
@@ -429,15 +433,15 @@ integration (too broad), plugin for a Tauri framework package.
 ### Connectors
 
 **Connector**:
-A private-by-architecture integration between June and a third-party account
+A private-by-architecture integration between Clovy and a third-party account
 (shipped: Google Gmail + Calendar, Linear, GitHub, and the Notion hosted MCP
 preview). The user authorizes the provider on their Mac; local connector
 credentials remain in OS credential storage, and Rust owns direct provider or
 hosted MCP calls. External MCP servers receive credentials only on
-device-originated requests and never persist June's local custody. Google
+device-originated requests and never persist Clovy's local custody. Google
 ships `june_gmail` and `june_gcal` read servers plus their `*_actions`
 counterparts. Linear uses its official hosted MCP with workspace-wide OAuth
-access; June dynamically registers its valid tools and approval-gates anything
+access; Clovy dynamically registers its valid tools and approval-gates anything
 not clearly annotated read-only. Notion preview ships `june_notion` for hosted
 MCP reads and `june_notion_actions` for approval-gated page creation and
 updates. GitHub ships `june_github` reads plus approval-only
@@ -449,10 +453,10 @@ updates. GitHub ships `june_github` reads plus approval-only
 _Avoid_: integration (unqualified), plugin, the Google API.
 
 **Linear workspace access**:
-The workspace-wide `read` and `write` OAuth grant June uses with Linear's
-official hosted MCP. June does not add a selected-team authorization boundary
+The workspace-wide `read` and `write` OAuth grant Clovy uses with Linear's
+official hosted MCP. Clovy does not add a selected-team authorization boundary
 or maintain a provider-specific tool allowlist. The hosted server controls the
-tool inventory; June validates each descriptor, runs clearly read-only tools
+tool inventory; Clovy validates each descriptor, runs clearly read-only tools
 directly, and requires approval for every ambiguous or mutating tool.
 _Avoid_: selected teams, team scopes, team filter.
 
@@ -461,7 +465,7 @@ The default (and, in v1, only) connector trust model: the OAuth grant is
 minted to the device and stored in the Keychain, and connector calls go
 straight from the device to the provider. OpenSoftware holds no credential that
 can read the user's mail and is not in the *connector* data path. (Routine
-model inference still follows the user's provider selection: June API by
+model inference still follows the user's provider selection: Clovy API by
 default, or a local model. The "not in the data path" claim covers token
 custody and provider calls, never inference.)
 _Avoid_: on-device mode, private mode (unqualified). Contrast with **away
@@ -471,7 +475,7 @@ mode** (the proposed Phase 3 TEE relay, not yet shipped).
 The per-routine governance of *outward* connector actions:
 `read_only` -> `approval` (default) -> `autonomous`. Read-only routines get
 only the read servers; approval routines route every mutating call through
-June's own approval surface; autonomous routines execute granted tools without
+Clovy's own approval surface; autonomous routines execute granted tools without
 prompting. Distinct from **Runtime mode** (Sandboxed/Unrestricted), which
 governs *local system access* — the two are never conflated.
 _Avoid_: permission level, autonomy level (say **trust mode**), mixing with
@@ -480,29 +484,29 @@ Sandboxed/Unrestricted.
 **Earned autonomy**:
 The rule that a routine may only be switched to the `autonomous` **trust mode**
 after it has run correctly under `approval` at least three times. Converts
-June's "the agent can make mistakes" honesty into a mechanic.
+Clovy's "the agent can make mistakes" honesty into a mechanic.
 _Avoid_: auto mode, trust score.
 
 **Trigger** (connector):
 A typed event that fires a routine outside the cron schedule:
 `email_received` or `event_upcoming`. Produced by the on-device trigger daemon
 polling Gmail history deltas and upcoming calendar events, delivered by
-claiming the active routine through June's durable routine scheduler. A
+claiming the active routine through Clovy's durable routine scheduler. A
 far-future timer schedule prevents duplicate timer runs. A trigger is a wake-up,
 not a payload: the routine re-reads state through its tools.
 _Avoid_: webhook (local mode has none; that is away mode), push, notification.
 
 **Biography**:
-The editable profile June builds on first connect from on-device notes and
+The editable profile Clovy builds on first connect from on-device notes and
 transcripts plus the user's mail and calendar ("here's what I already know, and
 it never left your Mac"). Stored locally, feeds the soul's context, fully
 deletable and regenerable.
 _Avoid_: profile (overloaded with **provider settings** and the account
-snapshot), persona, memory (that is the June **memory entry** store; the
+snapshot), persona, memory (that is the Clovy **memory entry** store; the
 upstream agent memory toolset is a third thing again — qualify which).
 
 **Admin surface**:
-A June-native management view for the local agent harness: skills, MCP servers,
+A Clovy-native management view for the local agent harness: skills, MCP servers,
 connector health, and similar settings. Rust owns configuration, secrets, and
 safety policy. The UI never exposes raw harness diagnostics.
 _Avoid_: admin panel, runtime UI.
@@ -510,17 +514,17 @@ _Avoid_: admin panel, runtime UI.
 ### AI work & billing
 
 **Dictation**:
-A latency-critical June mode where the user pushes-to-talk, speaks, releases,
+A latency-critical Clovy mode where the user pushes-to-talk, speaks, releases,
 and expects cleaned-up text inserted into the **paste target**. A short phrase
 round-trips in a few hundred milliseconds; a sustained block of speech can take
 many seconds, and everything on the paste path must stay correct across that
-whole window. Distinct from **note transcription**. Goes through June API in
+whole window. Distinct from **note transcription**. Goes through Clovy API in
 v1, so the binary holds no upstream provider key.
 _Avoid_: speech-to-text (too generic — covers both dictation and note
 transcription).
 
 **Note transcription**:
-June records a full meeting or capture session, then transcribes the saved
+Clovy records a full meeting or capture session, then transcribes the saved
 audio as a single batch operation and runs **note generation** on the
 transcript. Higher latency tolerance than dictation; cost typically dominates
 dictation by 100×+ per call.
@@ -566,7 +570,7 @@ _Avoid_: img2vid jargon, animate (unqualified — say **image-to-video**).
 **Safe mode**:
 The per-device toggle that asks Venice to blur adult content on generated and
 edited images (`safe_mode`). On by default; the user turns it off in Settings
-or via the **safe-mode consent dialog** June shows before or during a
+or via the **safe-mode consent dialog** Clovy shows before or during a
 potentially explicit generation. Enforcement is Venice's; the dialog gate
 only decides when to *offer* the dialog, never what gets generated. On the
 agent path the gate is free (on-device wordlist plus the model's own
@@ -583,13 +587,13 @@ _Avoid_: NSFW filter/toggle (say **safe mode**), censorship, "video safe
 mode" (there is only one safe mode).
 
 **Credit price** (per upstream model):
-The number of OS Accounts credits June charges per unit of consumed work
+The number of OS Accounts credits Clovy charges per unit of consumed work
 (audio seconds for transcription, tokens for generation) for a given upstream
 model. Stored as a typed lookup keyed by `model_id`; the live Venice catalog
 extends the built-in fallback each boot. An upstream model with no credit
 price is rejected at the boundary before any work runs — there is no "default
 rate".
-_Avoid_: rate, tariff, cost (cost is the *upstream's* dollar cost to June;
+_Avoid_: rate, tariff, cost (cost is the *upstream's* dollar cost to Clovy;
 credit price is what the user pays in credits).
 
 **Hold** / **authorize**:
@@ -624,19 +628,19 @@ _Avoid_: tier, subscription (that is the whole object, not the level).
 **Credit grant**:
 Credits deposited into the wallet by OS Accounts when a plan starts, renews,
 or upgrades. Arrives asynchronously after the plan change itself resolves, so
-"plan flipped" and "credits arrived" are two separate moments — June polls
+"plan flipped" and "credits arrived" are two separate moments — Clovy polls
 the account snapshot until the grant lands rather than assuming credits are
 present the instant the plan changes.
 _Avoid_: top-up (a user-initiated purchase), refill.
 
-### June companion
+### Clovy companion
 
-**June Companion**:
+**Clovy Companion**:
 The separate native iPhone and iPad app that presents typed views of data held
-by a user's running June Desktop. Its native SwiftUI is not June Desktop, and
-the shared Rust crypto library is not June's embedded **Hermes**
+by a user's running Clovy Desktop. Its native SwiftUI is not Clovy Desktop, and
+the shared Rust crypto library is not Clovy's embedded **Hermes**
 agent runtime.
-_Avoid_: mobile June, Tauri mobile, WebView companion.
+_Avoid_: mobile Clovy, Tauri mobile, WebView companion.
 
 **Linked device**:
 One phone, tablet, or desktop installation with its own stable device id and
@@ -662,7 +666,7 @@ decrypt companion frames or replace the device's Curve25519 private key.
 _Avoid_: OS Accounts token, desktop token, pairing secret.
 
 **Companion relay**:
-The June API module that authenticates devices and routes bounded opaque
+The Clovy API module that authenticates devices and routes bounded opaque
 ciphertext between linked devices. It cannot decrypt a **companion frame** and
 does not queue offline control requests.
 _Avoid_: Gateway (reserved for the Hermes JSON-RPC boundary), remote command
@@ -676,7 +680,7 @@ _Avoid_: raw command, Hermes frame, Tauri command.
 
 **Companion media result**:
 A bounded metadata reference to a canonical image or video artifact generated
-by June's agent for one stored session and run. The reference is not the media
+by Clovy's agent for one stored session and run. The reference is not the media
 itself; a linked device with `mediaRead` fetches the verified full artifact in
 chunks.
 _Avoid_: media upload, attachment path, inline media.
@@ -714,8 +718,8 @@ _Avoid_: profile, balance (unqualified).
 **Avatar** (`avatar_seed`):
 The network-wide generated account presentation owned by OS Accounts. A saved
 selection is a renderer-versioned `v1:<payload>` seed; without a supported
-selection, June derives `v1:default:<User.id>` without writing it. The seed
-fixes cloud geometry across conforming Apps, while June supplies colors from
+selection, Clovy derives `v1:default:<User.id>` without writing it. The seed
+fixes cloud geometry across conforming Apps, while Clovy supplies colors from
 the active theme. An explicit refresh may remain local while its profile write
 cannot sync.
 _Avoid_: App avatar, unversioned avatar seed, silently replacing an unsupported
@@ -733,7 +737,7 @@ _Avoid_: pet (legacy name — survives only in an old storage key), overlay
 (unqualified), floating window.
 
 **Permission**:
-A platform grant June needs for native capture or insertion. On macOS these
+A platform grant Clovy needs for native capture or insertion. On macOS these
 are TCC grants: microphone, accessibility, or screen/system audio recording.
 TCC grants are bundle-scoped, so the authoritative source is the bundle that
 captures: the dictation helper for dictation mic + accessibility state, the
@@ -747,9 +751,9 @@ mic grant as covering the other.
 
 ## Flagged ambiguities
 
-- **"proxy"** usually means **June API** (the thing in front of OpenAI /
-  Venice), not a network proxy in the HTTP-CONNECT sense. Prefer **June API**.
-  (June also runs a separate on-device **provider proxy** for identity
+- **"proxy"** usually means **Clovy API** (the thing in front of OpenAI /
+  Venice), not a network proxy in the HTTP-CONNECT sense. Prefer **Clovy API**.
+  (Clovy also runs a separate on-device **provider proxy** for identity
   stripping — qualify when you mean that.)
 - **"transcribe"** is overloaded between **dictation** (short, latency-
   critical) and **note transcription** (long, batch). Always qualify which.
@@ -758,7 +762,7 @@ mic grant as covering the other.
 - **"the session id"** is ambiguous — say **stored** (persistent, UI-facing) or
   **runtime** (live process) session id.
 - **"the model"** never means the agent harness; it is the LLM selected through
-  June's model gateway and called by the runtime.
+  Clovy's model gateway and called by the runtime.
 - **"channel"** is overloaded: a **Source** lane (mic/system), a **release
   channel** (stable/rc), or a WAV interleave channel. Qualify.
 
@@ -767,7 +771,7 @@ mic grant as covering the other.
 > **Dev:** "Can I add a Whisper model to the picker?"
 >
 > **PM:** "Sure, but make sure it has a **credit price** before you list it,
-> otherwise **June API** rejects transcribe requests for that **upstream
+> otherwise **Clovy API** rejects transcribe requests for that **upstream
 > model**. The picker shouldn't show models the server can't price."
 >
 > **Dev:** "Got it. And the credit price covers both **dictation** and **note

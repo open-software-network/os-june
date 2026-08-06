@@ -37,7 +37,7 @@ if (-not $SevenZipPath -or -not (Test-Path -LiteralPath $SevenZipPath -PathType 
   throw "A usable 7-Zip executable is required."
 }
 
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("June Windows payload " + [guid]::NewGuid())
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("Clovy Windows payload " + [guid]::NewGuid())
 try {
   New-Item -ItemType Directory -Path $tempRoot | Out-Null
   $installerRoot = Join-Path $tempRoot "installer contents"

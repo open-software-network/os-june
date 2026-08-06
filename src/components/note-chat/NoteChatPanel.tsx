@@ -86,7 +86,7 @@ function clampNoteChatWidth(width: number) {
 }
 
 /** The first message of a note chat carries the note reference token so
- * June resolves the note; the panel already says which note it's about, so
+ * Clovy resolves the note; the panel already says which note it's about, so
  * the token is chrome, not content, in the panel's own transcript. */
 function stripLeadingNoteToken(text: string) {
   return text.replace(/^@note:[\w-]+(?: \("[^"]*"\))?\s*/, "");
@@ -130,7 +130,7 @@ function assistantPartNode(part: AgentChatPart, index: number, onRetry?: () => v
   }
 }
 
-/** The contextual Ask June chat: a fixed side panel next to the meeting note,
+/** The contextual Ask Clovy chat: a fixed side panel next to the meeting note,
  * mirroring the agent artifact panel's attach mechanics (sibling card on the
  * window background; the main card slides left via the :has() margin in
  * app.css). The conversation is a real agent session scoped to the
@@ -407,20 +407,20 @@ export function NoteChatPanel({
         className="note-chat-resize-handle"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize Ask June panel"
+        aria-label="Resize Ask Clovy panel"
         onPointerDown={startResize}
       />
       <aside
         ref={panelRef}
         className="note-chat-panel"
-        aria-label="Ask June about this note"
+        aria-label="Ask Clovy about this note"
         data-entered={entered || undefined}
         onAnimationEnd={(event) => {
           if (event.animationName === "note-chat-panel-in") setEntered(true);
         }}
       >
         <header className="note-chat-bar">
-          <h2 className="note-chat-bar-title">Ask June</h2>
+          <h2 className="note-chat-bar-title">Ask Clovy</h2>
           <button
             type="button"
             className="icon-button"
@@ -434,7 +434,7 @@ export function NoteChatPanel({
           <button
             type="button"
             className="icon-button"
-            aria-label="Close Ask June"
+            aria-label="Close Ask Clovy"
             title="Close"
             onClick={onClose}
           >
@@ -591,8 +591,8 @@ export function NoteChatPanel({
                   <button
                     type="button"
                     className="agent-composer-stop"
-                    aria-label="Stop June"
-                    title="Stop June"
+                    aria-label="Stop Clovy"
+                    title="Stop Clovy"
                     onClick={stop}
                   >
                     <IconStop size={16} />

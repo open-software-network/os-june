@@ -1,11 +1,11 @@
 /**
- * Orchestration for generating an image from chat and handing it to June's
+ * Orchestration for generating an image from chat and handing it to Clovy's
  * EXISTING inline image display path.
  *
- * June imports a pasted or dropped image into the session workspace and shows it inline as a composer
+ * Clovy imports a pasted or dropped image into the session workspace and shows it inline as a composer
  * attachment (`attachmentStateFrom` -> `attachImageToSession`, rendered from
  * `previewDataUrl`). This module reuses that path verbatim for a GENERATED
- * image: it calls the June API image endpoint, decodes the base64 result,
+ * image: it calls the Clovy API image endpoint, decodes the base64 result,
  * imports the bytes into the workspace, and returns the same
  * `AgentAttachmentState` a pasted image produces. The caller drops the
  * attachment into the composer list exactly as it does for a paste.
@@ -25,7 +25,7 @@ import { messageFromError } from "./errors";
 import type { GeneratedImageDto } from "./tauri";
 
 export type GenerateChatImageDeps = {
-  /** Calls the June API image endpoint; `model` falls back server-side. */
+  /** Calls the Clovy API image endpoint; `model` falls back server-side. */
   generate: (
     prompt: string,
     model: string | undefined,
@@ -52,7 +52,7 @@ export type GenerateChatImageResult =
 export type EditChatImageDeps = {
   /** Reads the source workspace file as a `data:<mime>;base64,...` URL. */
   readImageData: (path: string) => Promise<string | null>;
-  /** Calls the June API image-edit endpoint. */
+  /** Calls the Clovy API image-edit endpoint. */
   edit: (
     imageBase64: string,
     prompt: string,
@@ -98,7 +98,7 @@ function generatedImageFileName(mimeType: string): string {
 
 /**
  * Generate an image from `prompt` and return it as a composer attachment that
- * renders through June's existing inline image path. Never throws: validation
+ * renders through Clovy's existing inline image path. Never throws: validation
  * and provider/import failures come back as `{ status: "error", message }`.
  */
 export async function generateChatImage(
@@ -126,7 +126,7 @@ export async function generateChatImage(
   if (!parseImageDataUrl(dataUrl)) {
     return {
       status: "error",
-      message: "June returned an image it can't display.",
+      message: "Clovy returned an image it can't display.",
     };
   }
 
@@ -177,7 +177,7 @@ export async function editChatImage(
   if (!parsedSource) {
     return {
       status: "error",
-      message: "June couldn't read the source image.",
+      message: "Clovy couldn't read the source image.",
     };
   }
 
@@ -192,7 +192,7 @@ export async function editChatImage(
   if (!parseImageDataUrl(dataUrl)) {
     return {
       status: "error",
-      message: "June returned an image it can't display.",
+      message: "Clovy returned an image it can't display.",
     };
   }
 

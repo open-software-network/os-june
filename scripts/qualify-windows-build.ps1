@@ -24,8 +24,8 @@ $ExpectedSha = $ExpectedSha.ToLowerInvariant()
 $shortSha = $ExpectedSha.Substring(0, 12)
 $safeBranch = $Branch -replace '[^A-Za-z0-9._-]', '-'
 $repoParent = Split-Path -Parent $repo
-$caller = Join-Path $repoParent "June Windows Qualification"
-if ($caller -eq $repo) { $caller = Join-Path $repoParent "June Windows Qualification Runner" }
+$caller = Join-Path $repoParent "Clovy Windows Qualification"
+if ($caller -eq $repo) { $caller = Join-Path $repoParent "Clovy Windows Qualification Runner" }
 $outputDirectory = Join-Path $repo "artifacts\windows-unsigned"
 if (-not $EvidenceDirectory) {
   $EvidenceDirectory = Join-Path $repo ".tmp\windows-qualification\$safeBranch\$shortSha"

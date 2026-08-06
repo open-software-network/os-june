@@ -32,7 +32,7 @@ pub const CALENDAR_EVENTS: &str = "https://www.googleapis.com/auth/calendar.even
 pub const LINEAR_READ: &str = "read";
 pub const LINEAR_WRITE: &str = "write";
 
-/// GitHub June-side grant markers. These are NOT provider OAuth scopes.
+/// GitHub Clovy-side grant markers. These are NOT provider OAuth scopes.
 pub const GITHUB_READ: &str = "read";
 pub const GITHUB_WRITE: &str = "write";
 
@@ -207,7 +207,7 @@ struct ProviderDefinition {
 }
 
 /// Presentation order is policy: Google, Linear, GitHub, then the dedicated
-/// hosted Notion flow. All remain enabled on the platforms June ships today.
+/// hosted Notion flow. All remain enabled on the platforms Clovy ships today.
 const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     ProviderDefinition {
         provider: ConnectorProvider::Google,
@@ -510,7 +510,7 @@ pub fn requested_linear_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
     scopes
 }
 
-/// Full set of June-side grant markers to store for a GitHub connect.
+/// Full set of Clovy-side grant markers to store for a GitHub connect.
 pub fn requested_github_scopes(bundles: &[ScopeBundle]) -> Vec<&'static str> {
     let mut scopes: Vec<&'static str> = vec![GITHUB_READ];
     for bundle in bundles {

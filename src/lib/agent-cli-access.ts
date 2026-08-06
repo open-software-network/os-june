@@ -1,4 +1,4 @@
-/** The literal token June emits when an agent CLI fails because the sandbox
+/** The literal token Clovy emits when an agent CLI fails because the sandbox
  * blocks its state folders. The agent can never flip the setting itself: the
  * flag file lives outside every sandbox write root by design, so the request
  * is rendered as a card the user approves with one click. */
@@ -18,7 +18,7 @@ export function stripAgentCliAccessRequest(text: string) {
     .trim();
 }
 
-/** Sent into the session after the user approves the request, so June knows
+/** Sent into the session after the user approves the request, so Clovy knows
  * the grant is live and retries after the agent harness restarts. */
 export const AGENT_CLI_ACCESS_ENABLED_MESSAGE =
   "I enabled Agent CLI access. The session now has write access to the CLI state folders; try the CLI again.";

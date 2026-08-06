@@ -73,7 +73,7 @@ function Preview() {
     >
       <section ref={anchorRef} style={{ position: "relative", width: "480px" }}>
         <div className="agent-composer-box">
-          <div style={{ minHeight: "72px", padding: "12px" }}>Ask June anything</div>
+          <div style={{ minHeight: "72px", padding: "12px" }}>Ask Clovy anything</div>
           <div className="agent-composer-toolbar">
             <span style={{ color: "var(--muted-foreground)", paddingInline: "8px" }}>+</span>
             <div className="agent-composer-actions">

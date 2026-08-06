@@ -2,10 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DownloadEvent } from "../lib/updater";
 import {
-  checkJuneUpdate,
+  checkClovyUpdate,
   getReleaseChannel,
   reconcileToStable,
-  relaunchJune,
+  relaunchClovy,
   setReleaseChannel,
 } from "../lib/updater";
 
@@ -31,11 +31,11 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
-describe("checkJuneUpdate", () => {
+describe("checkClovyUpdate", () => {
   it("returns null when fetch_update reports nothing", async () => {
     invokeMock.mockResolvedValueOnce(null);
 
-    expect(await checkJuneUpdate()).toBeNull();
+    expect(await checkClovyUpdate()).toBeNull();
     // No channel argument (fetch_update reads the persisted channel in Rust);
     // reconcile=false keeps a routine check forward-only.
     expect(invokeMock).toHaveBeenCalledWith("fetch_update", {
@@ -46,7 +46,7 @@ describe("checkJuneUpdate", () => {
   it("returns a synthetic update carrying version and notes", async () => {
     invokeMock.mockResolvedValueOnce({ version: "1.2.3-rc.4", body: "notes" });
 
-    const update = await checkJuneUpdate();
+    const update = await checkClovyUpdate();
 
     expect(update?.version).toBe("1.2.3-rc.4");
     expect(update?.body).toBe("notes");
@@ -54,7 +54,7 @@ describe("checkJuneUpdate", () => {
 
   it("installs through install_update, forwarding progress events", async () => {
     invokeMock.mockResolvedValueOnce({ version: "1.2.3" });
-    const update = await checkJuneUpdate();
+    const update = await checkClovyUpdate();
 
     const seen: DownloadEvent[] = [];
     invokeMock.mockImplementationOnce(async (_command, args) => {
@@ -114,11 +114,11 @@ describe("release channel setting", () => {
   });
 });
 
-describe("relaunchJune", () => {
+describe("relaunchClovy", () => {
   it("routes through the Rust command that tears down children first", async () => {
     invokeMock.mockResolvedValueOnce(undefined);
 
-    await relaunchJune();
+    await relaunchClovy();
 
     // Not the plugin `relaunch()`: the command runs the dictation-helper and
     // agent runtime teardown before restarting so the relaunched instance is not

@@ -11,7 +11,7 @@
 
 Local token custody works. Linear's authorization-code flow supports PKCE with
 an optional client secret, a loopback redirect, rotating refresh tokens, and a
-revoke endpoint. No confidential exchange, backend credential, or June API
+revoke endpoint. No confidential exchange, backend credential, or Clovy API
 involvement is needed, so the Linear connector extends the ADR-0016 local-mode
 pattern as-is and **no new ADR is required for v1**. The plan's ADR threshold
 (confidential token exchange, app credential, or webhook relay) is not
@@ -24,15 +24,15 @@ triggered.
 Yes. The token exchange at `POST https://api.linear.app/oauth/token` marks
 `client_secret` optional for PKCE flows; `client_id`, `code`, `code_verifier`,
 and `redirect_uri` complete the exchange. `code_challenge_method` supports
-`plain` and `S256`; June always uses S256. PKCE is optional on Linear's side,
-so June must enforce it client-side rather than rely on the provider requiring
+`plain` and `S256`; Clovy always uses S256. PKCE is optional on Linear's side,
+so Clovy must enforce it client-side rather than rely on the provider requiring
 it. `http://localhost:<port>/...` redirect URIs are accepted as registered
 callback URLs.
 
 **Redirect URI matching caveat:** unlike Google, Linear matches the redirect
 URI against the registered callback URLs exactly - it does not implement RFC
 8252's rule to ignore the port on loopback addresses (observed in the wild:
-Linear's MCP OAuth rejects ephemeral loopback ports). June therefore binds
+Linear's MCP OAuth rejects ephemeral loopback ports). Clovy therefore binds
 one of a fixed candidate port list (`44741`, `44742`, `44743`; override with
 `LINEAR_OAUTH_LOOPBACK_PORT`) and the OAuth application must register a
 `http://127.0.0.1:<port>/callback` URL for each candidate. Confirm during
@@ -66,7 +66,7 @@ visibility beyond the selected-team grant.
 because issue updates and project updates have no granular scope. So v1
 requests `read,write` in one consent, with every mutation still parked for
 approval in the Rust proxy. There is no teams-scoped provider grant; selected
-teams remain a June-side authorization enforced in Rust.
+teams remain a Clovy-side authorization enforced in Rust.
 
 ### 5. Rate limits and GraphQL complexity
 
@@ -92,7 +92,7 @@ recency reads. Cursors persist per the plan's SQLite state.
 Provider-supported: `IssueCreateInput.id`, `CommentCreateInput.id`, and
 `ProjectUpdateCreateInput.id` each accept a client-supplied UUID v4 ("The
 identifier in UUID v4 format. If none is provided, the backend will generate
-one."). June mints the object UUID as the journal's action id, so an ambiguous
+one."). Clovy mints the object UUID as the journal's action id, so an ambiguous
 timeout reconciles by querying that exact id: a replay with the same id cannot
 double-create. This satisfies shared-contract point 9 without the
 fingerprint-only fallback the plan reserved for a provider without idempotency

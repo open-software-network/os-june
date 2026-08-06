@@ -56,7 +56,7 @@ function request(method, params = {}) {
 
 const initializeStartedAt = performance.now();
 const initialized = await request("runtime.initialize", {
-  clientName: "June runtime benchmark",
+  clientName: "Clovy runtime benchmark",
   clientVersion: "0.0.0",
 });
 const initializedAt = performance.now();

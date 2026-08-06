@@ -8,7 +8,7 @@
 
 ## Thesis
 
-GitLab Issues brings June's meeting context into software delivery for teams
+GitLab Issues brings Clovy's meeting context into software delivery for teams
 outside GitHub. The plugin should prepare from selected issues and issue
 comments, then create reviewed issues or comments with source traceability.
 
@@ -25,14 +25,14 @@ code and metadata exposure.
 
 ## Product promise
 
-Connect GitLab.com, choose groups and projects, and let June read live delivery
+Connect GitLab.com, choose groups and projects, and let Clovy read live delivery
 context or propose bounded issue/comment actions under approval.
 
 ## V1 experience
 
 - Authorize with PKCE and select groups/projects.
 - Search/read issues, issue comments, labels, milestones, and project metadata.
-- Create an issue or add a comment from a June meeting.
+- Create an issue or add a comment from a Clovy meeting.
 - Preview destination, visibility, labels, assignees, and disclosed note text.
 - Disconnect and verify provider access and tools are gone.
 
@@ -43,7 +43,7 @@ context or propose bounded issue/comment actions under approval.
 - GitLab.com only, one account, explicit project allowlist.
 - Metadata-first search and bounded issue/comment reads.
 - Approved issue creation and issue comment.
-- Local polling while June is awake.
+- Local polling while Clovy is awake.
 
 ### Later
 

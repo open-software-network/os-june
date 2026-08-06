@@ -1,7 +1,7 @@
 //! Connector trigger daemon.
 //!
 //! A background tokio task that polls Google for the events routines subscribe
-//! to and wakes the matching routine through the June-owned scheduler.
+//! to and wakes the matching routine through the Clovy-owned scheduler.
 //! The event is a wake-up only: the routine re-reads state through its tools.
 //!
 //! - `email_received`: Gmail `history.list` from a stored cursor (seeded from

@@ -28,7 +28,7 @@ export function useDictationEvents(dependencies: UseDictationEventsDependencies)
       );
       if (helperEvent.type === "final_transcript") {
         // T3 of the referral delight nudge: a dictation landed (often while
-        // June is backgrounded; the card waits to be found).
+        // Clovy is backgrounded; the card waits to be found).
         recordDictationFinished();
         return;
       }
@@ -38,7 +38,7 @@ export function useDictationEvents(dependencies: UseDictationEventsDependencies)
           prompt,
           title: titleFromPrompt(prompt),
           status: "received",
-          summary: "June is starting.",
+          summary: "Clovy is starting.",
         });
         markAgentNewSessionPending(prompt);
         setActiveView("agent");

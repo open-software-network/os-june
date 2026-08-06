@@ -296,7 +296,7 @@ describe("agent runtime adapter", () => {
           createdAt: "2026-07-22T12:00:02Z",
           toolName: "write_file",
           title: "File change requested",
-          description: "June wants to update the project.",
+          description: "Clovy wants to update the project.",
           command: "write_file README.md",
           allowAlways: true,
         },
@@ -317,7 +317,7 @@ describe("agent runtime adapter", () => {
           status: "pending",
           createdAt: "2026-07-22T12:00:03Z",
           question: "Which project should I update?",
-          choices: ["June", "Platform"],
+          choices: ["Clovy", "Platform"],
         },
       },
     };
@@ -365,7 +365,7 @@ describe("agent runtime adapter", () => {
             id: "clarification-1",
             runId: "run-1",
             question: "Which project should I update?",
-            choices: ["June", "Platform"],
+            choices: ["Clovy", "Platform"],
             status: "pending",
           },
         ],
@@ -396,7 +396,7 @@ describe("agent runtime adapter", () => {
       items: reconcileAgentInterruptionResolution(projection.items, {
         runId: "run-1",
         interruptionId: "clarification-1",
-        resolution: { kind: "clarification", answer: "June" },
+        resolution: { kind: "clarification", answer: "Clovy" },
       }),
     };
     projection = {
@@ -413,7 +413,7 @@ describe("agent runtime adapter", () => {
         parts: [{ type: "approval", status: "resolved", choice: "once" }],
       },
       {
-        parts: [{ type: "clarify", status: "resolved", answer: "June" }],
+        parts: [{ type: "clarify", status: "resolved", answer: "Clovy" }],
       },
       {
         parts: [{ type: "secret", status: "resolved" }],
@@ -438,7 +438,7 @@ describe("agent runtime adapter", () => {
           createdAt: "2026-07-22T12:00:02Z",
           toolName: "write_file",
           title: "File change requested",
-          description: "June wants to update the project.",
+          description: "Clovy wants to update the project.",
           allowAlways: true,
         },
       },

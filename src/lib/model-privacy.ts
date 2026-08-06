@@ -36,13 +36,13 @@ export const E2EE_MODEL_DESCRIPTION =
 export const PRIVATE_MODEL_DESCRIPTION =
   "Private model with zero data retention. No prompt data is stored, shared with a third party, or trained on.";
 export const ANONYMOUS_MODEL_DESCRIPTION =
-  "The model provider may retain prompts, though they're anonymized. Your identity is stripped before anything leaves June. For sensitive content, pick a Private or E2EE model.";
+  "The model provider may retain prompts, though they're anonymized. Your identity is stripped before anything leaves Clovy. For sensitive content, pick a Private or E2EE model.";
 
 type ModelPrivacySignals = Pick<VeniceModelDto, "privacy" | "traits"> &
   Partial<Pick<VeniceModelDto, "capabilities">>;
 
 /** The agent drives everything through tool calls, so a text model without
- * function calling bricks June — prompts run but no file, shell, or memory
+ * function calling bricks Clovy — prompts run but no file, shell, or memory
  * tool ever executes. Venice's E2EE models are the common case: encrypted
  * inference can't expose tools. The capability name comes from Venice's
  * catalog (`supportsFunctionCalling`); match defensively on the normalized
@@ -66,7 +66,7 @@ export function modelAvailableForMode(
   mode: ProviderModelMode,
   model: Partial<Pick<VeniceModelDto, "id" | "capabilities" | "provider">>,
 ) {
-  // Auto is June's first-party router, not a concrete provider model. Its
+  // Auto is Clovy's first-party router, not a concrete provider model. Its
   // catalog row therefore does not need to duplicate every capability of the
   // concrete model selected at request time.
   if (mode === "generation" && model.id === AUTO_MODEL_ID) return true;

@@ -76,7 +76,7 @@ describe("private catalog filter", () => {
 });
 
 describe("model mode availability", () => {
-  it("keeps June Auto available without pretending it is a concrete tool model", () => {
+  it("keeps Clovy Auto available without pretending it is a concrete tool model", () => {
     expect(
       modelAvailableForMode("generation", {
         id: "open-software/auto",

@@ -37,7 +37,7 @@ describe("upstream-provider recovery", () => {
     );
     // A user message that quotes the opener and then diverges is the user's
     // own text and must stay visible.
-    const quote = "[June upstream provider recovery] is what June sends, right?";
+    const quote = "[June upstream provider recovery] is what Clovy sends, right?";
     expect(displayedUpstreamProviderRecoveryPreview(quote)).toBe(quote);
     expect(displayedUpstreamProviderRecoveryPreview(undefined)).toBeUndefined();
     expect(displayedUpstreamProviderRecoveryPreview("   ")).toBe("   ");

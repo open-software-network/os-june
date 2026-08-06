@@ -13,7 +13,7 @@ use std::{
 use thiserror::Error;
 use tokio::time::timeout;
 
-const ISSUE_REPORT_DIAGNOSIS_SYSTEM_PROMPT: &str = r"You diagnose June issue reports for internal triage.
+const ISSUE_REPORT_DIAGNOSIS_SYSTEM_PROMPT: &str = r"You diagnose Clovy issue reports for internal triage.
 
 Return only numbered issue sections. Emit every section with exactly this markdown heading shape:
 **Issue N — Title:**

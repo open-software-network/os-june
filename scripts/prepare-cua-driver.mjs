@@ -115,19 +115,19 @@ writeFileSync(
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
-  <key>CFBundleDisplayName</key><string>June Computer Use Driver</string>
+  <key>CFBundleDisplayName</key><string>Clovy Computer Use Driver</string>
   <key>CFBundleExecutable</key><string>${pin.executable}</string>
   <key>CFBundleIdentifier</key><string>${bundleIdentifier}</string>
   <key>CFBundleIconFile</key><string>${iconFileName}</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-  <key>CFBundleName</key><string>June Computer Use Driver</string>
+  <key>CFBundleName</key><string>Clovy Computer Use Driver</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${pin.version}</string>
   <key>CFBundleVersion</key><string>${pin.version}</string>
   <key>LSMinimumSystemVersion</key><string>${pin.minimumMacOSVersion}</string>
   <key>LSUIElement</key><true/>
-  <key>NSAccessibilityUsageDescription</key><string>June uses Accessibility only to operate the app windows you ask it to control.</string>
-  <key>NSScreenCaptureUsageDescription</key><string>June captures only the app windows you ask it to operate so June can understand and complete your task.</string>
+  <key>NSAccessibilityUsageDescription</key><string>Clovy uses Accessibility only to operate the app windows you ask it to control.</string>
+  <key>NSScreenCaptureUsageDescription</key><string>Clovy captures only the app windows you ask it to operate so Clovy can understand and complete your task.</string>
 </dict>
 </plist>
 `,

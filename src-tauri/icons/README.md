@@ -10,16 +10,17 @@ pnpm icons
 That runs `scripts/generate-icons.mjs`, which produces two things:
 
 - **Base icon set** (`*.png`, `icon.icns`, `icon.ico`, `android/`, `ios/`) from
-  `june-app-icon.svg` via the Tauri CLI's `tauri icon`.
+  `clovy-app-icon.svg` via the Tauri CLI's `tauri icon`.
 - **Themed dock icons** (`themed/icon-<brand>.png`, one per accent) from the
-  single template `themed/_src/icon.template.svg`. The per-brand accent hexes
-  come straight from `BRAND_PRESETS` in `src/lib/brand.ts`, which is the single
-  source of truth. The template's two background gradient stops are the accent
-  hex nudged lighter and darker in HSL.
+  single template `themed/_src/icon.template.svg`. Sage keeps the canonical
+  bright lime Clovy; Rose, Clay, Ocean, and Plum use a luminous mark in the
+  selected hue on a dark matching backdrop. The per-brand accent hexes come
+  straight from `BRAND_PRESETS` in `src/lib/brand.ts`, which is the single
+  source of truth.
 
 ## When to run it
 
-- You changed `june-app-icon.svg` (the base mark).
+- You changed `clovy-app-icon.svg` (the base mark).
 - You changed a preset hex in `src/lib/brand.ts`.
 - You added or removed a preset in `src/lib/brand.ts`. Themed PNGs for dropped
   brands are deleted automatically.
