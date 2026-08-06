@@ -6,7 +6,7 @@ import {
 import type { JsonObject, JsonValue } from "./types.js";
 import type { SteeringMessage } from "./types.js";
 
-export const MODEL_CHAT_COMPLETIONS_TOOL = "__june_model_chat_completions";
+export const MODEL_CHAT_COMPLETIONS_TOOL = "__clovy_model_chat_completions";
 const AUTO_MODEL_ID = "open-software/auto";
 const AUTO_MODEL_PREFIX = "__june_auto_generation__:";
 const RESOLVED_AUTO_MODEL_PREFIX = "__june_auto_resolved__:";
@@ -47,7 +47,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   getModel(modelName?: string): Model {
     if (!modelName) throw new Error("A model name is required for Clovy model routing");
     const client = {
-      baseURL: "stdio://june-host",
+      baseURL: "stdio://clovy-host",
       chat: {
         completions: {
           create: async (body: unknown, options?: { signal?: AbortSignal }) => {
@@ -295,9 +295,9 @@ function requireStreamPage(value: JsonValue): StreamPage {
 }
 
 async function collectChatCompletion(chunks: AsyncIterable<JsonObject>): Promise<JsonObject> {
-  let id = `june-${crypto.randomUUID()}`;
+  let id = `clovy-${crypto.randomUUID()}`;
   let created = Math.floor(Date.now() / 1_000);
-  let model = "june-routed-model";
+  let model = "clovy-routed-model";
   let usage: JsonValue | undefined;
   const choices = new Map<number, {
     content: string;

@@ -7,7 +7,7 @@ are enabled.
 
 The shipped helper bundle names and development executable aliases documented
 below retain their June-era technical identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ## State guide
 

@@ -6,10 +6,10 @@ the app executable and installer with Authenticode, signs updater artifacts with
 the Tauri updater key, and attaches Windows assets to the existing
 `open-software-network/os-june-releases` release.
 
-The release repository, `June_*` artifact names, `os-june.exe`, and the
-`$env:LOCALAPPDATA\June` install path are retained June-era compatibility
-identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy_*` names are canonical release artifacts. The existing release
+repository, June-named artifact aliases, `os-june.exe`, and the
+`$env:LOCALAPPDATA\June` install path remain compatibility identities under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ## Windows support
 
@@ -43,7 +43,7 @@ Create or confirm these before cutting the first Windows release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_JUNE_API_URL`.
+  `PRODUCTION_CLOVY_API_URL`.
 Keep the Authenticode certificate separate from the Tauri updater key. The
 certificate establishes the Windows publisher signature. The updater key signs
 the update artifact that Tauri verifies before installation.
@@ -81,7 +81,7 @@ The Windows workflow performs the release steps in order:
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm typecheck` and `pnpm test`.
-6. Builds the Node 24 agent runtime as `june-agent-runtime.exe`, writes its
+6. Builds the Node 24 agent runtime as `clovy-agent-runtime.exe`, writes its
    SHA-256 checksum, and runs a startup smoke test from a path with spaces.
 7. Authenticode-signs the agent runtime executable and verifies its signature.
 8. Builds and signs the Windows dictation helper, then builds the Windows NSIS
@@ -128,12 +128,12 @@ The default evidence directory is
 
 ## Validation
 
-After the workflow publishes assets, download `June_x64-setup.exe` from
+After the workflow publishes assets, download `Clovy_x64-setup.exe` from
 `open-software-network/os-june-releases`, copy it to a clean Windows 11 VM, and
 run:
 
 ```powershell
-$installer = "$env:USERPROFILE\Downloads\June_x64-setup.exe"
+$installer = "$env:USERPROFILE\Downloads\Clovy_x64-setup.exe"
 Get-AuthenticodeSignature $installer | Format-List
 Start-Process -FilePath $installer -ArgumentList "/S" -Wait
 Start-Process "$env:LOCALAPPDATA\June\os-june.exe"

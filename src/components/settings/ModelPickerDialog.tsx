@@ -294,7 +294,7 @@ export function modelSpecEntries(model: VeniceModelDto): { label: string; value:
   // Use Clovy's billed credit price (with margin) for the input/output split.
   // The raw `pricing.*.usd` on the DTO is upstream provider metadata the backend
   // keeps for reference only — the user-facing price must come from the credit
-  // price (see june-api handlers/models.rs), so it is never shown as the price
+  // price (see clovy-api handlers/models.rs), so it is never shown as the price
   // here. Anything without the credit split defers to `pricingLabel`, which
   // resolves the price the same way the rest of the app does.
   if (

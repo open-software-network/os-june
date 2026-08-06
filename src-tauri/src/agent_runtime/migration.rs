@@ -19,6 +19,9 @@ use std::{
 };
 use thiserror::Error;
 
+// Persisted migration keys are append-only wire values. Retaining the shipped
+// key prevents an upgraded Clovy build (or a rollback) from importing the same
+// Hermes state a second time.
 const MIGRATION_KEY: &str = "hermes-to-june-agent-runtime-v2";
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
 const LEGACY_GATEWAY_STOP_TIMEOUT: Duration = Duration::from_secs(2);

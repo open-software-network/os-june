@@ -3,15 +3,15 @@
 ## Recommendation
 
 Use a project skill as the first-class interface for full integration QA where
-an agent opens June, clicks through the changed flow, inspects visible state,
+an agent opens Clovy, clicks through the changed flow, inspects visible state,
 and reports evidence. Keep deterministic test suites in CI, and promote only
 stable, repeatable live checks into Playwright or Tauri WebDriver after they
 have proven useful in repeated agent runs.
 
-This gives June three QA layers:
+This gives Clovy three QA layers:
 
 1. Deterministic CI for contracts and logic: `pnpm test`, `pnpm test:rust`,
-   `pnpm test:june-api`, and targeted Rust or Vitest suites.
+   `pnpm test:clovy-api`, and targeted Rust or Vitest suites.
 2. Agent-driven live QA for product workflows: `$agent-e2e-qa` starts the app,
    chooses Browser, Chrome, or Computer Use, records and compresses the
    walkthrough as video when possible, then reports pass/fail evidence.
@@ -23,7 +23,7 @@ This gives June three QA layers:
 
 ## Why a skill first
 
-A single script is too narrow for the cases this repo needs to prove. June has
+A single script is too narrow for the cases this repo needs to prove. Clovy has
 React views, Tauri commands, WKWebView behavior, native windows, tray and menu
 behavior, global hotkeys, audio devices, OS permissions, OS Accounts handoffs,
 and Stripe-adjacent flows. Those surfaces need different tools and different
@@ -33,9 +33,9 @@ A skill can make the routing decision at runtime:
 
 - Browser for web preview, DOM assertions, console errors, and screenshots.
 - Background Playwright for web-reachable agent flows that should record video
-  without bringing June or Chrome to the foreground. The bundled helper can
-   shim the Tauri shell while routing prompts through the isolated June agent
-   runtime.
+  without bringing Clovy or Chrome to the foreground. The bundled helper can
+  shim the Tauri shell while routing prompts through the isolated legacy
+  Hermes QA harness.
 - Chrome for flows that intentionally hand off to the user's browser session.
 - Computer Use for native Tauri windows, overlays, hotkeys, menu bar, tray,
   file pickers, permission panes, and audio UI.
@@ -51,8 +51,8 @@ screenshots or logs, and clear gaps for anything that was blocked.
 ## Repo-specific runbook
 
 Default local data mode should avoid live OS Accounts unless the flow under test
-is specifically account or billing QA. `.env.example` and `june-api/.env.example`
-support local development with `OS_JUNE_LOCAL_DEV=1` and `local-dev-token`.
+is specifically account or billing QA. `.env.example` and `clovy-api/.env.example`
+support local development with `OS_CLOVY_LOCAL_DEV=1` and `local-dev-token`.
 
 Use these entry points:
 
@@ -60,7 +60,7 @@ Use these entry points:
 - Native Tauri: `pnpm tauri:dev`
 - First-run onboarding replay: `pnpm tauri:dev --replay-onboarding`
 
-`pnpm tauri:dev` starts or reuses Vite at `127.0.0.1:1421` and the local June
+`pnpm tauri:dev` starts or reuses Vite at `127.0.0.1:1421` and the local Clovy
 API at `127.0.0.1:8080`. Before reusing an occupied port, verify that the
 process belongs to this repo.
 

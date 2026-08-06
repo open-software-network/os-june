@@ -44,7 +44,7 @@ function numericErrorCode(err: unknown): number | undefined {
 /** Whether a share request failed because the share is unknown, revoked, or
  * not owned by the caller. The Clovy API collapses all of these to a 404 whose
  * message is `share_not_found` (non-enumeration); the structured code is the
- * generic `june_request_failed`, so we match the message. Lets the owner
+ * generic `clovy_request_failed`, so we match the message. Lets the owner
  * dialog treat a definitively-gone share differently from a transient error. */
 export function isShareNotFoundError(err: unknown): boolean {
   return messageFromError(err) === "share_not_found";

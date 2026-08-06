@@ -66,7 +66,7 @@ const NO_ROUTINES: RoutineJob[] = [];
 const NO_RUNS: RoutineRunSession[] = [];
 const RUN_HISTORY_REFRESH_MS = 10000;
 // Must match the native event name in src-tauri/src/agent_runtime/host.rs.
-const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+const AGENT_RUNTIME_EVENT = "clovy://agent-runtime-event";
 
 /**
  * Advances the earned-autonomy counter by reporting each finished run to the
@@ -995,7 +995,7 @@ function RoutineErrorBanner({
   );
 }
 
-const DEJUNE_MODE_OPTIONS = [
+const ROUTINE_EXECUTION_MODE_OPTIONS = [
   {
     unrestricted: false,
     icon: <IconShieldCheck size={16} aria-hidden />,
@@ -1118,7 +1118,7 @@ function DescribeBar({
             aria-label="What can this routine change?"
           >
             <p className="agent-sandbox-menu-title">What can this routine change?</p>
-            {DEJUNE_MODE_OPTIONS.map((option) => (
+            {ROUTINE_EXECUTION_MODE_OPTIONS.map((option) => (
               <button
                 key={option.title}
                 type="button"

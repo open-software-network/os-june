@@ -1,3 +1,4 @@
+import "./lib/storage-compat-bootstrap";
 import { listen } from "@tauri-apps/api/event";
 import { IconCheckmark2Small } from "central-icons/IconCheckmark2Small";
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
@@ -69,14 +70,14 @@ type HudEntry = {
   storedSessionId?: string;
 };
 
-const EXPANDED_KEY = "june:agent-hud:expanded";
+const EXPANDED_KEY = "clovy:agent-hud:expanded";
 // Emitted by the native panel (agent_hud.rs) when it swallows a right- or
 // ctrl-click so the WKWebView never raises its own context menu. Keep this in
 // sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.
-const AGENT_HUD_CONTEXT_MENU_EVENT = "june:agent-hud:context-menu";
+const AGENT_HUD_CONTEXT_MENU_EVENT = "clovy:agent-hud:context-menu";
 // Emitted by agent_hud.rs whenever the main window gains or loses focus.
 // Keep in sync with AGENT_HUD_MAIN_FOCUS_EVENT there.
-const AGENT_HUD_MAIN_FOCUS_EVENT = "june:agent-hud:main-focus";
+const AGENT_HUD_MAIN_FOCUS_EVENT = "clovy:agent-hud:main-focus";
 const MAX_VISIBLE_ROWS = 3;
 // Keep a finished session on screen long enough to actually read the "Done"
 // row before it fades out, rather than blinking away the instant it lands.

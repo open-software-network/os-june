@@ -257,6 +257,6 @@ export function stripRenderedMediaReferences(value: string, holdTrailingPartial 
 export function displayedComposerUserMessageText(content: string): string {
   return content
     .replace(/\n*\[Image attached at:\s*[^\]]+\]\s*(?:\[[^\]\n]+\]\s*)*$/i, "")
-    .replace(/^\s*\[June attachment manifest v1\][\s\S]*?\n\n/, "")
+    .replace(/^\s*\[(?:Clovy|June) attachment manifest v1\][\s\S]*?\n\n/, "")
     .trim();
 }

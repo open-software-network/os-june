@@ -8,7 +8,7 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::oneshot;
 
-const REQUEST_EVENT: &str = "june://agent-recorder-request";
+const REQUEST_EVENT: &str = "clovy://agent-recorder-request";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(420);
 const COMPLETED_CAP: usize = 32;
 

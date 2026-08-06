@@ -6,7 +6,7 @@ import type { P3aSettingsDto } from "./tauri";
 // doc occasionally running ahead of an older installed build.
 const TELEMETRY_DOCS_REF = "main";
 
-export const P3A_SETTINGS_CHANGED_EVENT = "june:p3a";
+export const P3A_SETTINGS_CHANGED_EVENT = "clovy:p3a";
 export const TELEMETRY_INFO_URL = `https://github.com/open-software-network/os-june/blob/${TELEMETRY_DOCS_REF}/docs/telemetry.md`;
 export const TELEMETRY_QUESTIONS_URL = `https://github.com/open-software-network/os-june/blob/${TELEMETRY_DOCS_REF}/docs/telemetry-questions.md`;
 

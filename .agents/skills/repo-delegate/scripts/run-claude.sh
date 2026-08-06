@@ -109,7 +109,7 @@ printf '%s\n' "$prompt" | claude -p \
   --setting-sources project \
   --disallowedTools "Agent" "Task" \
   --allowedTools "Bash(pnpm check:*)" "Bash(pnpm typecheck:*)" "Bash(pnpm test:*)" \
-    "Bash(pnpm test:rust:*)" "Bash(pnpm test:june-api:*)" "Bash(pnpm test:hermes-smoke:*)" \
+    "Bash(pnpm test:rust:*)" "Bash(pnpm test:clovy-api:*)" "Bash(pnpm test:hermes-smoke:*)" \
     "Bash(pnpm install:*)" "Bash(pnpm build:*)" \
     "Bash(cargo test:*)" "Bash(cargo fmt:*)" "Bash(cargo clippy:*)" "Bash(cargo check:*)" \
     "Bash(cargo +1.95.0-aarch64-apple-darwin test:*)" \

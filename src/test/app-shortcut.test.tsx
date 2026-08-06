@@ -252,7 +252,7 @@ vi.mock("../lib/tauri", () => ({
   updateNote: mocks.updateNote,
   patchNote: mocks.patchNote,
   completeNoteSaveFlush: mocks.completeNoteSaveFlush,
-  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "june://flush-pending-note-saves",
+  NOTE_SAVE_FLUSH_REQUESTED_EVENT: "clovy://flush-pending-note-saves",
   checkRecordingSourceReadiness: mocks.checkRecordingSourceReadiness,
   companionCompleteFrontendRequest: mocks.companionCompleteFrontendRequest,
   companionConsumeAttachments: mocks.companionConsumeAttachments,
@@ -416,9 +416,9 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.setItem("june:active-agent-profile", "default");
-    window.localStorage.removeItem("june:agent:last-open-session");
-    window.localStorage.removeItem("june.agent.sessionModels");
+    window.localStorage.setItem("clovy:active-agent-profile", "default");
+    window.localStorage.removeItem("clovy:agent:last-open-session");
+    window.localStorage.removeItem("clovy.agent.sessionModels");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
@@ -612,7 +612,7 @@ describe("App shortcuts", () => {
     await user.click(await screen.findByRole("button", { name: "Meeting notes" }));
 
     await waitFor(() =>
-      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+      expect(mocks.listen.mock.calls.some(([event]) => event === "clovy://companion-request")).toBe(
         true,
       ),
     );
@@ -622,7 +622,7 @@ describe("App shortcuts", () => {
     };
     act(() => {
       for (const [event, handler] of mocks.listen.mock.calls) {
-        if (event === "june://companion-request") handler({ payload });
+        if (event === "clovy://companion-request") handler({ payload });
       }
     });
 
@@ -657,9 +657,9 @@ describe("App shortcuts", () => {
     });
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-models-list",
           intent: { type: "modelsList" },
@@ -711,14 +711,14 @@ describe("App shortcuts", () => {
       settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
     });
     window.localStorage.setItem(
-      "june.agent.sessionModels",
+      "clovy.agent.sessionModels",
       JSON.stringify({ [session.id]: "__june_auto_generation__:20" }),
     );
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-model-get",
           intent: { type: "sessionModelGet", data: { storedSessionId: session.id } },
@@ -738,7 +738,7 @@ describe("App shortcuts", () => {
     );
 
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-model-set",
           intent: {
@@ -758,7 +758,7 @@ describe("App shortcuts", () => {
         },
       }),
     );
-    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({
+    expect(JSON.parse(window.localStorage.getItem("clovy.agent.sessionModels") ?? "{}")).toEqual({
       [session.id]: "kimi-k2-6",
     });
     expect(mocks.startAgentRun).not.toHaveBeenCalled();
@@ -779,7 +779,7 @@ describe("App shortcuts", () => {
     });
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => rememberSessionModel(session.id, "kimi-k2-6"));
 
     await waitFor(() =>
@@ -807,7 +807,7 @@ describe("App shortcuts", () => {
     setCurrentDataPartitionName("partition-a");
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     mocks.companionPublishAgentEvent.mockClear();
     mocks.listVeniceModels.mockClear();
     const catalog = deferred<VeniceModelsResponse>();
@@ -845,9 +845,9 @@ describe("App shortcuts", () => {
     });
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-model-rejected",
           intent: {
@@ -867,7 +867,7 @@ describe("App shortcuts", () => {
         }),
       ),
     );
-    expect(window.localStorage.getItem("june.agent.sessionModels")).toBeNull();
+    expect(window.localStorage.getItem("clovy.agent.sessionModels")).toBeNull();
   });
 
   it("pages companion agent messages backward from the newest turns", async () => {
@@ -919,7 +919,7 @@ describe("App shortcuts", () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+      expect(mocks.listen.mock.calls.some(([event]) => event === "clovy://companion-request")).toBe(
         true,
       ),
     );
@@ -937,7 +937,7 @@ describe("App shortcuts", () => {
       };
       act(() => {
         for (const [event, handler] of mocks.listen.mock.calls) {
-          if (event === "june://companion-request") handler({ payload });
+          if (event === "clovy://companion-request") handler({ payload });
         }
       });
     };
@@ -1000,13 +1000,13 @@ describe("App shortcuts", () => {
     render(<App />);
 
     await waitFor(() =>
-      expect(mocks.listen.mock.calls.some(([event]) => event === "june://companion-request")).toBe(
+      expect(mocks.listen.mock.calls.some(([event]) => event === "clovy://companion-request")).toBe(
         true,
       ),
     );
     act(() => {
       for (const [event, handler] of mocks.listen.mock.calls) {
-        if (event === "june://companion-request") {
+        if (event === "clovy://companion-request") {
           handler({
             payload: {
               operationId: "operation-media",
@@ -1056,9 +1056,9 @@ describe("App shortcuts", () => {
     mocks.companionReadAgentMediaChunk.mockResolvedValue(chunk);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-media-fetch",
           intent: {
@@ -1104,9 +1104,9 @@ describe("App shortcuts", () => {
     mocks.companionReadAgentMediaChunk.mockReturnValue(chunk.promise);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-media-partition",
           intent: {
@@ -1162,9 +1162,9 @@ describe("App shortcuts", () => {
     });
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-media-missing",
           intent: {
@@ -1213,9 +1213,9 @@ describe("App shortcuts", () => {
     render(<App />);
 
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-focus")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-focus")?.({
+      mocks.listeners.get("clovy://companion-focus")?.({
         payload: { agent: { storedSessionId: "session-companion" } },
       });
     });
@@ -1243,9 +1243,9 @@ describe("App shortcuts", () => {
     );
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-sandboxed-send",
           intent: {
@@ -1289,9 +1289,9 @@ describe("App shortcuts", () => {
     mocks.getAgentSession.mockResolvedValue(target);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-attachment-send",
           intent: {
@@ -1341,9 +1341,9 @@ describe("App shortcuts", () => {
     rememberSessionModel(target.id, "model-staged-by-phone");
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-staged-model-send",
           intent: {
@@ -1365,7 +1365,9 @@ describe("App shortcuts", () => {
         }),
       ),
     );
-    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({});
+    expect(JSON.parse(window.localStorage.getItem("clovy.agent.sessionModels") ?? "{}")).toEqual(
+      {},
+    );
   });
 
   it("reports acceptance when attachment cleanup fails after run dispatch", async () => {
@@ -1375,9 +1377,9 @@ describe("App shortcuts", () => {
     mocks.companionConsumeAttachments.mockRejectedValueOnce(new Error("cleanup failed"));
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-cleanup-failure",
           intent: {
@@ -1427,9 +1429,9 @@ describe("App shortcuts", () => {
     const firstApp = render(<App />);
 
     await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-project-send",
           intent: {
@@ -1459,9 +1461,9 @@ describe("App shortcuts", () => {
     render(<App />);
 
     await waitFor(() => expect(mocks.listSessionFolders).toHaveBeenCalled());
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-project-cleared-send",
           intent: {
@@ -1484,7 +1486,7 @@ describe("App shortcuts", () => {
     );
     expect(mocks.startAgentRun).toHaveBeenCalledWith(
       expect.objectContaining({
-        prompt: expect.stringContaining("\n[/June project context]\n\nWhat now?"),
+        prompt: expect.stringContaining("\n[/Clovy project context]\n\nWhat now?"),
       }),
     );
   });
@@ -1498,9 +1500,9 @@ describe("App shortcuts", () => {
     mocks.createAgentSession.mockResolvedValue(created);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-new-session-send",
           intent: {
@@ -1538,10 +1540,10 @@ describe("App shortcuts", () => {
     ]);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     setCurrentDataPartitionName("partition-b");
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-stale-send",
           intent: {
@@ -1574,10 +1576,10 @@ describe("App shortcuts", () => {
     ]);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     setCurrentDataPartitionName("partition-b");
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-stale-cancel",
           intent: {
@@ -1611,9 +1613,9 @@ describe("App shortcuts", () => {
     mocks.listAgentSkills.mockReturnValue(skills.promise);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-mid-await-send",
           intent: {
@@ -1656,9 +1658,9 @@ describe("App shortcuts", () => {
     mocks.getLatestAgentRun.mockReturnValue(latestRun.promise);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-mid-await-cancel",
           intent: {
@@ -1713,9 +1715,9 @@ describe("App shortcuts", () => {
     mocks.listAgentItems.mockReturnValue(items.promise);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-request")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-request")).toBe(true));
     act(() => {
-      mocks.listeners.get("june://companion-request")?.({
+      mocks.listeners.get("clovy://companion-request")?.({
         payload: {
           operationId: "operation-mid-await-messages",
           intent: {
@@ -1769,10 +1771,10 @@ describe("App shortcuts", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     await screen.findByRole("heading", { name: /Meeting notes/ });
-    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-focus")).toBe(true));
     setCurrentDataPartitionName("partition-b");
     act(() => {
-      mocks.listeners.get("june://companion-focus")?.({
+      mocks.listeners.get("clovy://companion-focus")?.({
         payload: { agent: { storedSessionId: cached.id } },
       });
     });
@@ -2111,12 +2113,12 @@ describe("App shortcuts", () => {
     const disabled = render(<App />);
 
     await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
-    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
-    expect(mocks.listeners.has("june://companion-focus")).toBe(false);
-    expect(mocks.listeners.has("june://companion-request")).toBe(false);
+    await waitFor(() => expect(mocks.listeners.has("clovy://agent-runtime-event")).toBe(true));
+    expect(mocks.listeners.has("clovy://companion-focus")).toBe(false);
+    expect(mocks.listeners.has("clovy://companion-request")).toBe(false);
     expect(companionFrontendConsumerAvailable()).toBe(false);
     act(() => {
-      mocks.listeners.get("june://agent-runtime-event")?.({
+      mocks.listeners.get("clovy://agent-runtime-event")?.({
         payload: {
           method: "message.delta",
           sessionId: "session-companion",
@@ -2150,11 +2152,11 @@ describe("App shortcuts", () => {
     ]);
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://companion-focus")).toBe(true));
-    expect(mocks.listeners.has("june://companion-request")).toBe(true);
+    await waitFor(() => expect(mocks.listeners.has("clovy://companion-focus")).toBe(true));
+    expect(mocks.listeners.has("clovy://companion-request")).toBe(true);
     await waitFor(() => expect(companionFrontendConsumerAvailable()).toBe(true));
     act(() => {
-      mocks.listeners.get("june://agent-runtime-event")?.({
+      mocks.listeners.get("clovy://agent-runtime-event")?.({
         payload: {
           method: "message.delta",
           sessionId: "session-companion",
@@ -2195,12 +2197,12 @@ describe("App shortcuts", () => {
     setCurrentDataPartitionName("partition-b");
     render(<App />);
 
-    await waitFor(() => expect(mocks.listeners.has("june://agent-runtime-event")).toBe(true));
+    await waitFor(() => expect(mocks.listeners.has("clovy://agent-runtime-event")).toBe(true));
     mocks.companionPublishAgentEvent.mockClear();
     mocks.listSessionPartitions.mockClear();
 
     act(() => {
-      mocks.listeners.get("june://agent-runtime-event")?.({
+      mocks.listeners.get("clovy://agent-runtime-event")?.({
         payload: {
           protocolVersion: 1,
           eventId: "event-partition-a-delta",
@@ -2216,7 +2218,7 @@ describe("App shortcuts", () => {
           },
         },
       });
-      mocks.listeners.get("june://agent-runtime-event")?.({
+      mocks.listeners.get("clovy://agent-runtime-event")?.({
         payload: {
           protocolVersion: 1,
           eventId: "event-partition-a-run-started",
@@ -2227,7 +2229,7 @@ describe("App shortcuts", () => {
           data: { startedAt: now, model: "auto" },
         },
       });
-      mocks.listeners.get("june://agent-runtime-event")?.({
+      mocks.listeners.get("clovy://agent-runtime-event")?.({
         payload: {
           protocolVersion: 1,
           eventId: "event-partition-a-tool-completed",
@@ -2645,7 +2647,7 @@ describe("App shortcuts", () => {
       preview: "Stored session preview",
       last_active: now,
     };
-    window.localStorage.setItem("june:agent:last-open-session", staleSession.id);
+    window.localStorage.setItem("clovy:agent:last-open-session", staleSession.id);
     mocks.listAgentSessions.mockResolvedValue([staleSession]);
     const sessionStorageSetItem = window.sessionStorage.setItem.bind(window.sessionStorage);
     const sessionStorageSetItemSpy = vi
@@ -2679,7 +2681,7 @@ describe("App shortcuts", () => {
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     } finally {
       sessionStorageSetItemSpy.mockRestore();
-      window.localStorage.removeItem("june:agent:last-open-session");
+      window.localStorage.removeItem("clovy:agent:last-open-session");
       restoreNavigator();
     }
   });

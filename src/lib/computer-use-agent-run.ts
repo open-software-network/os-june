@@ -1,3 +1,5 @@
+// Compatibility toolset identity retained for restored agent-run settings;
+// ADR-0040 replaced the former Clovy-owned MCP integration with host tools.
 export const COMPUTER_USE_AGENT_RUN_TOOLSETS = ["june_computer_use"] as const;
 
 const COMPUTER_USE_PHRASE = String.raw`computer(?:\s+|-)use`;

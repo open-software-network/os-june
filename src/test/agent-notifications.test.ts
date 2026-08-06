@@ -38,9 +38,9 @@ describe("agent notifications", () => {
     vi.clearAllMocks();
     delete (
       globalThis as typeof globalThis & {
-        __juneAgentNotificationTimes?: Map<string, number>;
+        __clovyAgentNotificationTimes?: Map<string, number>;
       }
-    ).__juneAgentNotificationTimes;
+    ).__clovyAgentNotificationTimes;
   });
 
   it("maps attention to sound and native delivery based on what the user can see", () => {
@@ -167,7 +167,7 @@ describe("agent notifications", () => {
     expect(tauriMocks.sendAppNotification).toHaveBeenCalledWith({
       title: "Clovy is ready",
       body: "Make a PDF",
-      group: "june-agent-session-3",
+      group: "clovy-agent-session-3",
       sessionId: "session-3",
     });
     expect(tauriMocks.sendAppNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
@@ -232,7 +232,7 @@ describe("agent notifications", () => {
     expect(notificationMocks.sendNotification).toHaveBeenCalledWith({
       title: "Clovy is ready",
       body: "Make a PDF",
-      group: "june-agent-session-fallback",
+      group: "clovy-agent-session-fallback",
     });
     expect(notificationMocks.sendNotification.mock.calls[0]?.[0]).not.toHaveProperty("sound");
   });
@@ -352,9 +352,9 @@ describe("agent notifications", () => {
       expect(tauriMocks.sendAppNotification).toHaveBeenCalledTimes(2);
       const recent = (
         globalThis as typeof globalThis & {
-          __juneAgentNotificationTimes?: Map<string, number>;
+          __clovyAgentNotificationTimes?: Map<string, number>;
         }
-      ).__juneAgentNotificationTimes;
+      ).__clovyAgentNotificationTimes;
       expect(recent?.size).toBe(1);
     } finally {
       vi.useRealTimers();

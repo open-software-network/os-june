@@ -60,7 +60,7 @@ function friendlyFailureSegment(message: string) {
 export function isInvalidClovyResponseMessage(message: string) {
   const normalized = message.trim().toLowerCase();
   return (
-    normalized.includes("june_api_response_invalid") ||
+    normalized.includes("clovy_api_response_invalid") ||
     normalized.includes("processing service returned an invalid response") ||
     /^expected value at line \d+ column \d+$/.test(normalized)
   );

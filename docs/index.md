@@ -64,6 +64,7 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0052](adr/0052-companion-media-results-use-canonical-artifacts.md) - companion image/video results reuse canonical agent artifacts and cross E2EE only as bounded references plus verified full-file chunks
 - [adr/0053](adr/0053-companion-computer-use-approvals-are-one-shot.md) - linked companions may approve one exact Computer use interruption under the desktop policy ceiling, with a short-lived one-shot permit
 - [adr/0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md) - Clovy is the product name while shipped June-era bundle, storage, API, update, and tool identities remain stable
+- [adr/0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md) - supersedes ADR-0054: Clovy becomes canonical through idempotent migration and rollback-safe aliases while immutable OS identities preserve existing installs
 
 ## Enforceable rules (spec/)
 
@@ -131,7 +132,7 @@ Per-repo config the engineering skills read before acting (see the
   - [Azure Boards](plugins/azure-boards-prd.md) - [implementation plan](plugins/azure-boards-implementation-plan.md)
   - [Canva](plugins/canva-prd.md) - [implementation plan](plugins/canva-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
-- [june-api-prd.md](june-api-prd.md) — Clovy API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
+- [clovy-api-prd.md](clovy-api-prd.md) — Clovy API: upstream AI calls + OS Accounts authorize/charge (the canonical service spec)
 - [telemetry.md](telemetry.md) — public overview of Clovy telemetry, current behavior, and policies
 - [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — Clovy P3A: opt-in, privacy-preserving product telemetry
 - [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for Clovy P3A phases
@@ -144,7 +145,7 @@ Per-repo config the engineering skills read before acting (see the
 - [development.md](development.md) — local development: quick start, running against staging or an ephemeral Phala CVM, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
 - [onboarding-design.md](onboarding-design.md) — onboarding flow design (verify against what shipped)
-- ~~os-accounts-backend.md~~ — historical; superseded by `june-api-prd.md`
+- ~~os-accounts-backend.md~~ — historical; superseded by `clovy-api-prd.md`
 
 ## Release & ops runbooks
 

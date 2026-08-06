@@ -19,14 +19,14 @@ function cssRuleFor(selector: string) {
 
 describe("download toast styles", () => {
   it("keeps the status on one line and gives overflow space to the filename", () => {
-    const message = cssRuleFor(".june-download-toast-message");
+    const message = cssRuleFor(".clovy-download-toast-message");
     expect(message).toContain("width: 100%;");
 
-    const action = cssRuleFor(".june-download-toast-action");
+    const action = cssRuleFor(".clovy-download-toast-action");
     expect(action).toContain("flex-shrink: 0;");
     expect(action).toContain("white-space: nowrap;");
 
-    const file = cssRuleFor(".june-download-toast-file");
+    const file = cssRuleFor(".clovy-download-toast-file");
     expect(file).toContain("flex: 1;");
     expect(file).toContain("min-width: 0;");
     expect(file).toContain("overflow: hidden;");

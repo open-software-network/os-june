@@ -5,7 +5,7 @@ import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
 import { IconTelegram } from "central-icons/IconTelegram";
 import { fallbackDictationCapabilities } from "../../../lib/platform";
-import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
+import { clovyOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
@@ -13,7 +13,7 @@ import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
 // Desktop platforms with bundled helpers can introduce the full agent,
 // dictation, and notes surface. Unsupported platforms narrow the welcome
 // promise until native helpers are turnkey there.
-const JUNE_POINTS = [
+const CLOVY_POINTS = [
   {
     icon: IconSparkle,
     title: "Delegate real work",
@@ -36,7 +36,7 @@ const JUNE_POINTS = [
   },
 ];
 
-const WINDOWS_JUNE_POINTS = [
+const WINDOWS_CLOVY_POINTS = [
   {
     icon: IconSparkle,
     title: "Keep work together",
@@ -47,7 +47,7 @@ const WINDOWS_JUNE_POINTS = [
     title: "Capture meetings",
     detail: "Turn microphone recordings into clear notes.",
   },
-  JUNE_POINTS[3],
+  CLOVY_POINTS[3],
 ];
 
 /**
@@ -68,7 +68,7 @@ export function SignInStep({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
   const capabilities = fallbackDictationCapabilities();
-  const points = capabilities.available ? JUNE_POINTS : WINDOWS_JUNE_POINTS;
+  const points = capabilities.available ? CLOVY_POINTS : WINDOWS_CLOVY_POINTS;
   const introClassName = capabilities.available ? "welcome-card-intro" : undefined;
 
   const cancelInFlight = useCallback(async () => {
@@ -129,7 +129,7 @@ export function SignInStep({
         <button
           type="button"
           className="onboarding-community-link"
-          onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
+          onClick={() => void clovyOpenCommunityPage().catch(() => undefined)}
         >
           <IconTelegram size={16} aria-hidden />
           <span>Join the Clovy community on Telegram</span>

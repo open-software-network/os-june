@@ -1,11 +1,12 @@
 //! Identity-only integration with OS Accounts (Login with Open Software).
 //!
 //! Tokens live in the OS keychain (never the webview). Debug builds use a
-//! separate keychain service by default. Metering goes through June API,
+//! separate keychain service by default. Metering goes through Clovy API,
 //! which holds the App API key — never this binary.
 //!
 //! Debug builds can opt into a plaintext token file for local development via
-//! `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1`; release builds always use Keychain.
+//! `OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE=1`; the June-era variable remains a
+//! compatibility fallback. Release builds always use Keychain.
 
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -29,26 +30,33 @@ use tokio::{
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const DEFAULT_LOOPBACK_PORT: u16 = 8765;
-// Scopes June needs. profile:read/profile:write for /me and the User's avatar
+// Scopes Clovy needs. profile:read/profile:write for /me and the User's avatar
 // seed, billing:read for /billing/balance, billing:write for subscription
-// checkout, and credits:spend so June API can authorize-and-charge against the
+// checkout, and credits:spend so Clovy API can authorize-and-charge against the
 // user's credits for note transcription / generation / dictation work.
 const OAUTH_SCOPES: &str = "profile:read profile:write billing:read billing:write credits:spend";
-// June's OS Accounts token store. Keep this app-scoped so June does not
+// Clovy's OS Accounts token store. Keep this app-scoped so Clovy does not
 // touch credentials written by other Open Software apps on startup.
-const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.accounts";
-const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.accounts";
+const KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy.accounts";
+const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy-dev.accounts";
+const LEGACY_KEYCHAIN_SERVICE: &str = "co.opensoftware.june.accounts";
+const LEGACY_DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.accounts";
 const KEYCHAIN_USER: &str = "tokens";
-const LOCAL_DEV_ENV: &str = "OS_JUNE_LOCAL_DEV";
-const LOCAL_DEV_BEARER_TOKEN_ENV: &str = "OS_JUNE_LOCAL_DEV_BEARER_TOKEN";
-const LOCAL_DEV_USER_ID_ENV: &str = "OS_JUNE_LOCAL_DEV_USER_ID";
+const LOCAL_DEV_ENV: &str = "OS_CLOVY_LOCAL_DEV";
+const LEGACY_LOCAL_DEV_ENV: &str = "OS_JUNE_LOCAL_DEV";
+const LOCAL_DEV_BEARER_TOKEN_ENV: &str = "OS_CLOVY_LOCAL_DEV_BEARER_TOKEN";
+const LEGACY_LOCAL_DEV_BEARER_TOKEN_ENV: &str = "OS_JUNE_LOCAL_DEV_BEARER_TOKEN";
+const LOCAL_DEV_USER_ID_ENV: &str = "OS_CLOVY_LOCAL_DEV_USER_ID";
+const LEGACY_LOCAL_DEV_USER_ID_ENV: &str = "OS_JUNE_LOCAL_DEV_USER_ID";
 const DEFAULT_LOCAL_DEV_BEARER_TOKEN: &str = "local-dev-token";
 const DEFAULT_LOCAL_DEV_USER_ID: &str = "usr_local_dev";
 #[cfg(debug_assertions)]
-const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
+const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE";
+const LEGACY_DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
 #[cfg(debug_assertions)]
 const DEV_PLAINTEXT_TOKEN_FILE: &str = "dev-os-accounts-tokens.json";
-const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_JUNE_USE_PROD_ACCOUNTS_TOKENS";
+const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_CLOVY_USE_PROD_ACCOUNTS_TOKENS";
+const LEGACY_USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_JUNE_USE_PROD_ACCOUNTS_TOKENS";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 #[cfg(debug_assertions)]
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(5);
@@ -424,9 +432,9 @@ impl Config {
 
     /// Where OS Accounts redirects after the user signs in. Dev builds use a
     /// loopback HTTP listener (works in `pnpm tauri:dev`, no installed bundle
-    /// required). Release builds use the `osjune://` custom URI scheme,
-    /// registered by `tauri-plugin-deep-link` against the signed `.app`
-    /// bundle — no temp HTTP listener, no macOS firewall prompt, cleaner UX.
+    /// required). Release builds keep initiating the legacy `osjune://`
+    /// callback until OS Accounts provisions `clovy://`; both schemes are
+    /// registered and accepted so that external cutover can be independent.
     fn redirect_uri(&self) -> String {
         #[cfg(debug_assertions)]
         {
@@ -455,21 +463,17 @@ fn env_or_build_trimmed(key: &str, build_value: Option<&'static str>) -> String 
     }
 }
 
-fn env_truthy(key: &str) -> bool {
-    matches!(
-        env_trimmed(key).to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 pub(crate) fn local_dev_enabled() -> bool {
     load_local_env();
-    env_truthy(LOCAL_DEV_ENV)
+    crate::env_compat::truthy(LOCAL_DEV_ENV, LEGACY_LOCAL_DEV_ENV)
 }
 
 fn local_dev_bearer_token() -> String {
     load_local_env();
-    let token = env_trimmed(LOCAL_DEV_BEARER_TOKEN_ENV);
+    let token = crate::env_compat::trimmed(
+        LOCAL_DEV_BEARER_TOKEN_ENV,
+        LEGACY_LOCAL_DEV_BEARER_TOKEN_ENV,
+    );
     if token.is_empty() {
         DEFAULT_LOCAL_DEV_BEARER_TOKEN.to_string()
     } else {
@@ -479,7 +483,10 @@ fn local_dev_bearer_token() -> String {
 
 fn local_dev_user_id() -> String {
     load_local_env();
-    normalize_local_dev_user_id(&env_trimmed(LOCAL_DEV_USER_ID_ENV))
+    normalize_local_dev_user_id(&crate::env_compat::trimmed(
+        LOCAL_DEV_USER_ID_ENV,
+        LEGACY_LOCAL_DEV_USER_ID_ENV,
+    ))
 }
 
 fn normalize_local_dev_user_id(value: &str) -> String {
@@ -913,7 +920,7 @@ fn upgrade_session_request(plan: &str) -> serde_json::Value {
     serde_json::json!({ "plan": plan })
 }
 
-/// Omitting `plan` keeps the accounts-API default (Pro), so June stays
+/// Omitting `plan` keeps the accounts-API default (Pro), so Clovy stays
 /// compatible with deployments that predate plan tiers.
 fn subscription_checkout_request(plan: Option<&str>) -> serde_json::Value {
     let plan = plan.map(str::trim).filter(|plan| !plan.is_empty());
@@ -966,7 +973,7 @@ fn change_plan_request(plan: &str) -> serde_json::Value {
     serde_json::json!({ "plan": plan })
 }
 
-/// Trim a plan slug, treating a blank string as "no plan" so June never sends an
+/// Trim a plan slug, treating a blank string as "no plan" so Clovy never sends an
 /// empty slug the accounts API would reject with `unknown_plan`.
 fn normalized_plan(plan: &str) -> Option<&str> {
     let plan = plan.trim();
@@ -1012,8 +1019,9 @@ pub async fn os_accounts_referral_summary() -> Result<ReferralSummary, AppError>
 }
 
 /// Register the deep-link handler at app setup. Forwards every exact
-/// `osjune://auth/callback?...` URL to any in-flight login so the login
-/// flow can validate `state` before accepting it. Works in both cold-launch
+/// `clovy://auth/callback?...` or legacy `osjune://auth/callback?...` URL to
+/// any in-flight login so the login flow can validate `state` before accepting
+/// it. Works in both cold-launch
 /// (OS starts the app with the URL) and warm-launch (app already running, OS
 /// hands the URL to the existing instance via tauri-plugin-single-instance's
 /// deep-link feature).
@@ -1029,15 +1037,7 @@ pub fn setup_deep_link(app: &tauri::App) {
         let Some(url) = event.urls().first().cloned() else {
             return;
         };
-        if url.scheme() != "osjune" {
-            return;
-        }
-        // Match on the parsed URL components — `starts_with` would also
-        // accept `osjune://auth/callback-extra?...` and similar, letting
-        // an unrelated webpage drain the one-shot. CSRF would still reject
-        // downstream, but tightening the gate here keeps the in-flight
-        // login intact when a stray URL fires the handler.
-        if url.host_str() != Some("auth") || url.path() != "/callback" {
+        if !is_auth_callback_url(&url) {
             return;
         }
         let url_str = url.to_string();
@@ -1056,6 +1056,12 @@ pub fn setup_deep_link(app: &tauri::App) {
             let _ = tx.send(url_str);
         }
     });
+}
+
+fn is_auth_callback_url(url: &url::Url) -> bool {
+    matches!(url.scheme(), "clovy" | "osjune")
+        && url.host_str() == Some("auth")
+        && url.path() == "/callback"
 }
 
 /// Dispatch to the loopback (dev) or deep-link (release) variant. Opens
@@ -1410,7 +1416,7 @@ fn classify_refresh_failure(status: u16, parsed_rejection: bool) -> AppError {
 }
 
 /// Whether a failed refresh is worth retrying. The OS Accounts contract is that
-/// application-level refresh-token rejections always reach June as a well-formed
+/// application-level refresh-token rejections always reach Clovy as a well-formed
 /// JSON envelope (`success: false`). Server/infra wobble (5xx) and rate limiting
 /// (429) are always transient; every other status is definitive only when that
 /// envelope parsed. A bare 4xx from an edge, WAF, or platform outage is not proof
@@ -1980,9 +1986,9 @@ async fn store_tokens(account: &StoredAccount) -> Result<(), AppError> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn store_platform_tokens(json: String) -> Result<(), AppError> {
-    let service = keychain_service().to_string();
+    let (service, legacy_service) = keychain_services();
     tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(&service, KEYCHAIN_USER).and_then(|entry| entry.set_password(&json))
+        crate::credential_compat::set_password(service, legacy_service, KEYCHAIN_USER, &json)
     })
     .await
     .map_err(|e| AppError::new("keychain_write_failed", e.to_string()))?
@@ -2021,11 +2027,11 @@ async fn load_tokens() -> Option<TokenPair> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn load_platform_tokens() -> Option<StoredAccount> {
-    let service = keychain_service().to_string();
+    let (service, legacy_service) = keychain_services();
     let raw = tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(&service, KEYCHAIN_USER)
+        crate::credential_compat::get_password(service, legacy_service, KEYCHAIN_USER)
             .ok()
-            .and_then(|entry| entry.get_password().ok())
+            .flatten()
     })
     .await
     .ok()??;
@@ -2034,14 +2040,9 @@ async fn load_platform_tokens() -> Option<StoredAccount> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn load_platform_account_for_logout() -> Result<Option<StoredAccount>, AppError> {
-    let service = keychain_service().to_string();
+    let (service, legacy_service) = keychain_services();
     let raw = tokio::task::spawn_blocking(move || {
-        let entry = keyring::Entry::new(&service, KEYCHAIN_USER)?;
-        match entry.get_password() {
-            Ok(raw) => Ok(Some(raw)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(error),
-        }
+        crate::credential_compat::get_password(service, legacy_service, KEYCHAIN_USER)
     })
     .await
     .map_err(|error| AppError::new("keychain_read_failed", error.to_string()))?
@@ -2077,11 +2078,9 @@ async fn clear_tokens() {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 async fn clear_platform_tokens() {
-    let service = keychain_service().to_string();
+    let (service, legacy_service) = keychain_services();
     let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(entry) = keyring::Entry::new(&service, KEYCHAIN_USER) {
-            let _ = entry.delete_credential();
-        }
+        let _ = crate::credential_compat::delete_password(service, legacy_service, KEYCHAIN_USER);
     })
     .await;
 }
@@ -2089,34 +2088,37 @@ async fn clear_platform_tokens() {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 async fn clear_platform_tokens() {}
 
-fn keychain_service() -> &'static str {
-    keychain_service_for_build(cfg!(debug_assertions), use_prod_accounts_tokens())
+fn keychain_services() -> (&'static str, &'static str) {
+    keychain_services_for_build(cfg!(debug_assertions), use_prod_accounts_tokens())
 }
 
-fn keychain_service_for_build(debug_assertions: bool, use_prod: bool) -> &'static str {
+fn keychain_services_for_build(
+    debug_assertions: bool,
+    use_prod: bool,
+) -> (&'static str, &'static str) {
     if debug_assertions && !use_prod {
-        DEV_KEYCHAIN_SERVICE
+        (DEV_KEYCHAIN_SERVICE, LEGACY_DEV_KEYCHAIN_SERVICE)
     } else {
-        KEYCHAIN_SERVICE
+        (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE)
     }
 }
 
 fn use_prod_accounts_tokens() -> bool {
     load_local_env();
-    cfg!(debug_assertions) && env_truthy(USE_PROD_ACCOUNTS_TOKENS_ENV)
+    cfg!(debug_assertions)
+        && crate::env_compat::truthy(
+            USE_PROD_ACCOUNTS_TOKENS_ENV,
+            LEGACY_USE_PROD_ACCOUNTS_TOKENS_ENV,
+        )
 }
 
 #[cfg(debug_assertions)]
 fn use_dev_plaintext_token_store() -> bool {
     load_local_env();
-    std::env::var(DEV_PLAINTEXT_TOKEN_STORE_ENV)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    crate::env_compat::truthy(
+        DEV_PLAINTEXT_TOKEN_STORE_ENV,
+        LEGACY_DEV_PLAINTEXT_TOKEN_STORE_ENV,
+    )
 }
 
 #[cfg(debug_assertions)]
@@ -2397,13 +2399,36 @@ mod tests {
 
     #[test]
     fn callback_validation_accepts_matching_state() {
-        assert!(matches!(
-            validate_callback_code(
-                "osjune://auth/callback?code=good&state=expected",
-                "expected"
-            ),
-            CallbackCode::Code(code) if code == "good"
-        ));
+        for scheme in ["clovy", "osjune"] {
+            assert!(matches!(
+                validate_callback_code(
+                    &format!("{scheme}://auth/callback?code=good&state=expected"),
+                    "expected"
+                ),
+                CallbackCode::Code(code) if code == "good"
+            ));
+        }
+    }
+
+    #[test]
+    fn deep_link_gate_accepts_both_identity_sets_and_rejects_prefix_matches() {
+        for value in [
+            "clovy://auth/callback?code=good",
+            "osjune://auth/callback?code=good",
+        ] {
+            assert!(is_auth_callback_url(
+                &url::Url::parse(value).expect("valid URL")
+            ));
+        }
+        for value in [
+            "clovy://auth/callback-extra?code=bad",
+            "osjune://other/callback?code=bad",
+            "https://auth/callback?code=bad",
+        ] {
+            assert!(!is_auth_callback_url(
+                &url::Url::parse(value).expect("valid URL")
+            ));
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -2458,20 +2483,26 @@ mod tests {
 
     #[test]
     fn release_builds_use_the_production_keychain_service() {
-        assert_eq!(keychain_service_for_build(false, false), KEYCHAIN_SERVICE);
+        assert_eq!(
+            keychain_services_for_build(false, false),
+            (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE)
+        );
     }
 
     #[test]
     fn debug_builds_use_a_separate_keychain_service_by_default() {
         assert_eq!(
-            keychain_service_for_build(true, false),
-            DEV_KEYCHAIN_SERVICE
+            keychain_services_for_build(true, false),
+            (DEV_KEYCHAIN_SERVICE, LEGACY_DEV_KEYCHAIN_SERVICE)
         );
     }
 
     #[test]
     fn debug_builds_can_opt_into_the_production_keychain_service() {
-        assert_eq!(keychain_service_for_build(true, true), KEYCHAIN_SERVICE);
+        assert_eq!(
+            keychain_services_for_build(true, true),
+            (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE)
+        );
     }
 
     #[test]

@@ -1,12 +1,12 @@
 import type { AgentSessionStatusDetail } from "./agent-events";
 import type { AgentSessionDto } from "./agent-runtime-contract";
 
-export const AGENT_MENU_BAR_STATE_EVENT = "june:menu-bar:agent-state";
-export const AGENT_MENU_BAR_NEW_SESSION_EVENT = "june:menu-bar:new-agent-session";
-export const AGENT_MENU_BAR_OPEN_SESSION_EVENT = "june:menu-bar:open-agent-session";
-export const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT = "june:menu-bar:set-agent-hud";
-export const CLOSE_TAB_EVENT = "june://close-tab";
-export const OPEN_SETTINGS_EVENT = "june://open-settings";
+export const AGENT_MENU_BAR_STATE_EVENT = "clovy:menu-bar:agent-state";
+export const AGENT_MENU_BAR_NEW_SESSION_EVENT = "clovy:menu-bar:new-agent-session";
+export const AGENT_MENU_BAR_OPEN_SESSION_EVENT = "clovy:menu-bar:open-agent-session";
+export const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT = "clovy:menu-bar:set-agent-hud";
+export const CLOSE_TAB_EVENT = "clovy://close-tab";
+export const OPEN_SETTINGS_EVENT = "clovy://open-settings";
 
 export type AgentMenuBarSessionStatus = "idle" | "running" | "waitingForUser";
 

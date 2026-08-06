@@ -14,7 +14,7 @@ Clovy is a private-by-architecture **Tauri desktop app** for meeting notes: it
 records a meeting or dictation, transcribes the audio, turns the transcript
 into a structured note, and hosts an AI agent you can chat with over your
 notes. The frontend is **React** (`src/`), the native shell is **Rust**
-(`src-tauri/`), and a confidential **Rust backend, Clovy API** (`june-api/`),
+(`src-tauri/`), and a confidential **Rust backend, Clovy API** (`clovy-api/`),
 proxies all upstream AI and runs metered billing. Identity and credits come
 from **OS Accounts**; the agent harness is a Clovy-owned TypeScript service
 built on the **OpenAI Agents SDK**; AI models are served through Clovy's model
@@ -29,7 +29,7 @@ inside a TEE (Phala) so prompt data is not readable by its own infra.
 Platform-enabled repo — Product `june`, Team `os-core`, Issue prefix `JUN`.
 The product handle and issue prefix are retained June-era technical identities;
 the current product name is Clovy (see
-[ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md)).
+[ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md)).
 Use the `os_platform_*` MCP tools (https://platform-api.opensoftware.co/mcp);
 REST fallback `https://app.opensoftware.co/api` + `Authorization: Bearer
 $OS_PLATFORM_API_KEY`. Never print or store credentials.
@@ -73,14 +73,14 @@ os-june/
 │   ├── lib/                 # agent runtime contracts, model privacy, Tauri bindings, ...
 │   ├── styles/              # app.css + tokens.css (design tokens)
 │   └── test/                # vitest suites (all frontend tests live here)
-├── src-tauri/               # Rust native shell (Cargo package `os-june`)
+├── src-tauri/               # Rust native shell (Cargo package `clovy`)
 │   ├── src/audio/           # recording, source separation, turn detection, live preview
 │   ├── src/agent_runtime/   # sidecar protocol, tools, persistence, and migration
 │   ├── src/os_accounts.rs   # OS Accounts login (PKCE), keychain token store
 │   ├── src/providers/       # model-settings persistence
 │   ├── src/commands.rs      # the Tauri command surface
 │   └── native/              # macOS system-audio helper (Swift) + dictation helper
-├── june-api/                # Rust backend (Cargo workspace, crates prefixed `june-`)
+├── clovy-api/               # Rust backend (Cargo workspace, crates prefixed `clovy-`)
 │   └── crates/              # domain / services / providers / config / api / app  (hexagonal)
 ├── docs/                    # see docs/index.md — ADRs, subsystem docs, runbooks, PRDs, QA
 ├── specs/                   # Spec Kit feature specs (001-003)
@@ -228,7 +228,7 @@ build scripts in `pnpm-workspace.yaml` — live in
   storage tests fail locally (experimental web storage shadows jsdom's
   `localStorage`); run `NODE_OPTIONS=--no-experimental-webstorage pnpm test`
   and do not "fix" the tests.
-- **Rust tests:** `pnpm test:rust` (src-tauri) and `pnpm test:june-api` (the
+- **Rust tests:** `pnpm test:rust` (src-tauri) and `pnpm test:clovy-api` (the
   backend workspace).
 - **Agent runtime gate:** `pnpm agent-runtime:typecheck` +
   `pnpm agent-runtime:test` + `pnpm agent-runtime:build` before changing the
@@ -237,7 +237,7 @@ build scripts in `pnpm-workspace.yaml` — live in
   `scripts/`, including the lucide import ban) and `pnpm typecheck`
   (`tsc --noEmit`); `pnpm format` / `pnpm check:write` apply Biome fixes. Rust
   uses `cargo fmt` / `cargo clippy` (config lives under `src-tauri/` and
-  `june-api/`). Biome ratchets high-volume retrofit rules (a11y, hook-deps,
+  `clovy-api/`). Biome ratchets high-volume retrofit rules (a11y, hook-deps,
   non-null assertions) to `warn` in `biome.json`; keep new code clean and fix
   the warnings incrementally. Never leave checks broken.
 - **CI parity:** `make verify` runs the full gate locally (Biome, typecheck,
@@ -253,11 +253,14 @@ build scripts in `pnpm-workspace.yaml` — live in
 
 ## Boundaries
 
-- **The rebrand does not rename shipped technical identity.** Keep existing
-  bundle, package, binary, repository, API, environment-variable, Keychain,
-  storage, deep-link, updater, extension, tool, and OS Platform identifiers
-  unless an explicit migration decision says otherwise. See
-  [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+- **Clovy-canonical identity migrates through a compatibility bridge.** New
+  package, service, environment, credential, storage, native-host, deep-link,
+  and artifact names use Clovy. Preserve every released June-era reader with
+  canonical-first fallback, copy-on-read, dual-write, or published aliases as
+  appropriate. Keep immutable bundle, executable, updater, OS Platform, and
+  externally provisioned identities until a verified transfer exists. Never
+  remove an alias without satisfying the retirement gates in
+  [ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 - **Service-managed upstream provider keys live only in Clovy API, never in the desktop binary.**
   The app calls Clovy API over `/v1/*`; Clovy API holds the Venice/OpenAI service
   keys and the OS Accounts App API key. A user's explicit Venice BYOK credential

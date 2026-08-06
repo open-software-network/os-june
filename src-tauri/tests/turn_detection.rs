@@ -1,8 +1,8 @@
-use hound::{SampleFormat, WavSpec, WavWriter};
-use os_june_lib::audio::turns::{
+use clovy_lib::audio::turns::{
     coalesce_turns_for_transcription, detect_turns, split_wav_for_transcription, AudioTurn,
     DetectionSource, MAX_TRANSCRIPTION_CHUNK_MS,
 };
+use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 

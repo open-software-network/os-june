@@ -30,8 +30,8 @@ const mocks = vi.hoisted(() => ({
   p3aRecord: vi.fn(),
   setClovyPersona: vi.fn(),
   osAccountsLogin: vi.fn(),
-  juneOpenCommunityPage: vi.fn(),
-  juneOpenVerifyPage: vi.fn(),
+  clovyOpenCommunityPage: vi.fn(),
+  clovyOpenVerifyPage: vi.fn(),
   osAccountsCancelLogin: vi.fn(),
   osAccountsOpenPortal: vi.fn(),
   listen: vi.fn(),
@@ -59,8 +59,8 @@ vi.mock("../lib/tauri", () => ({
   p3aRecord: mocks.p3aRecord,
   setClovyPersona: mocks.setClovyPersona,
   osAccountsLogin: mocks.osAccountsLogin,
-  juneOpenCommunityPage: mocks.juneOpenCommunityPage,
-  juneOpenVerifyPage: mocks.juneOpenVerifyPage,
+  clovyOpenCommunityPage: mocks.clovyOpenCommunityPage,
+  clovyOpenVerifyPage: mocks.clovyOpenVerifyPage,
   osAccountsCancelLogin: mocks.osAccountsCancelLogin,
   osAccountsOpenPortal: mocks.osAccountsOpenPortal,
 }));
@@ -161,7 +161,7 @@ describe("OnboardingFlow", () => {
     mocks.checkRecordingSourceReadiness.mockResolvedValue(systemAudioReadiness(true));
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
-    mocks.juneOpenCommunityPage.mockResolvedValue(undefined);
+    mocks.clovyOpenCommunityPage.mockResolvedValue(undefined);
     mocks.osAccountsOpenPortal.mockResolvedValue(undefined);
     mocks.setDictationLanguage.mockResolvedValue(undefined);
     mocks.setDictationShortcut.mockResolvedValue(undefined);
@@ -517,7 +517,7 @@ describe("OnboardingFlow", () => {
       }),
     );
 
-    expect(mocks.juneOpenCommunityPage).toHaveBeenCalledOnce();
+    expect(mocks.clovyOpenCommunityPage).toHaveBeenCalledOnce();
   });
 
   it("shows Windows-accurate welcome copy", async () => {
@@ -572,7 +572,7 @@ describe("OnboardingFlow", () => {
   it("resets only onboarding progress when replaying the wizard", () => {
     markOnboardingComplete();
     setOnboardingResumeStep("setup");
-    localStorage.setItem("june.agent.riskAcknowledged", "true");
+    localStorage.setItem("clovy.agent.riskAcknowledged", "true");
 
     resetOnboardingForReplay();
 
@@ -587,7 +587,7 @@ describe("OnboardingFlow", () => {
 
     applyOnboardingReplayFlag({
       DEV: false,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
+      VITE_CLOVY_REPLAY_ONBOARDING: "1",
     });
 
     expect(isOnboardingComplete()).toBe(true);
@@ -595,11 +595,19 @@ describe("OnboardingFlow", () => {
 
     applyOnboardingReplayFlag({
       DEV: true,
-      VITE_JUNE_REPLAY_ONBOARDING: "1",
+      VITE_CLOVY_REPLAY_ONBOARDING: "1",
     });
 
     expect(isOnboardingComplete()).toBe(false);
     expect(onboardingResumeStep()).toBeNull();
+  });
+
+  it("accepts the June-era onboarding replay variable as a fallback", () => {
+    markOnboardingComplete();
+
+    applyOnboardingReplayFlag({ DEV: true, VITE_JUNE_REPLAY_ONBOARDING: "1" });
+
+    expect(isOnboardingComplete()).toBe(false);
   });
 
   it("requests the mic permission when the mic screen shows", async () => {
@@ -788,7 +796,7 @@ describe("subscribeToOnboardingComplete", () => {
     // A sibling window (the HUD) receives both the storage event and the
     // BroadcastChannel message for the same completion; the guard collapses
     // them into a single invocation.
-    localStorage.setItem("june.onboarding.completedVersion", "999");
+    localStorage.setItem("clovy.onboarding.completedVersion", "999");
     window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 
@@ -801,7 +809,7 @@ describe("subscribeToOnboardingComplete", () => {
     const unsubscribe = subscribeToOnboardingComplete(callback);
     unsubscribe();
 
-    localStorage.setItem("june.onboarding.completedVersion", "999");
+    localStorage.setItem("clovy.onboarding.completedVersion", "999");
     window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 

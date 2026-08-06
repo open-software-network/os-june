@@ -4,12 +4,12 @@ use super::{
     FrontendActivityGuard, FrontendIntent, StoredIdentity,
 };
 use crate::{commands::repositories, db::repositories::Repositories, domain::types::AppError};
-use futures_util::{SinkExt, StreamExt};
-use june_companion_crypto::Session;
-use june_companion_protocol::{
+use clovy_companion_crypto::Session;
+use clovy_companion_protocol::{
     decode_frame, decode_peer_hello, encode_frame, Body, Capability, Event, FailureCode, Frame,
     ProtocolError, ProtocolFailure, RelayEnvelope, Response, ResultPayload,
 };
+use futures_util::{SinkExt, StreamExt};
 use rand::Rng;
 use serde::Serialize;
 use std::{
@@ -324,7 +324,7 @@ async fn connect_once(app: &AppHandle) -> Result<(), AppError> {
                 match event {
                     Event::AgentDelta { stored_session_id, text } => {
                         let pending = pending_deltas.entry(stored_session_id.clone()).or_default();
-                        if pending.len().saturating_add(text.len()) > june_companion_protocol::MAX_TEXT_BYTES {
+                        if pending.len().saturating_add(text.len()) > clovy_companion_protocol::MAX_TEXT_BYTES {
                             let ready = std::mem::take(pending);
                             if !ready.is_empty() {
                                 publish_event(
@@ -385,7 +385,7 @@ fn relay_upgrade_request(
     request.headers_mut().insert(AUTHORIZATION, authorization);
     request
         .headers_mut()
-        .extend(crate::june_api::app_version_headers());
+        .extend(crate::clovy_api::app_version_headers());
     Ok(request)
 }
 
@@ -753,7 +753,7 @@ async fn dispatch_request(
             };
             if app
                 .emit(
-                    "june://companion-request",
+                    "clovy://companion-request",
                     FrontendRequest {
                         operation_id,
                         intent,
@@ -800,7 +800,7 @@ async fn send_envelope(
     ciphertext: Vec<u8>,
 ) -> Result<(), AppError> {
     let envelope = RelayEnvelope {
-        version: june_companion_protocol::PROTOCOL_VERSION,
+        version: clovy_companion_protocol::PROTOCOL_VERSION,
         sender_device_id,
         recipient_device_id,
         message_id: Uuid::new_v4(),
@@ -812,7 +812,7 @@ async fn send_envelope(
         .map_err(|_| transport_error("The companion response exceeded its size limit."))?;
     let encoded = serde_json::to_vec(&envelope)
         .map_err(|_| transport_error("The companion relay frame could not be encoded."))?;
-    if encoded.len() > june_companion_protocol::MAX_RELAY_ENVELOPE_BYTES {
+    if encoded.len() > clovy_companion_protocol::MAX_RELAY_ENVELOPE_BYTES {
         return Err(transport_error(
             "The companion relay frame exceeded its size limit.",
         ));
@@ -895,8 +895,8 @@ fn transport_error(message: &str) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use june_companion_crypto::{generate_identity, KEY_BYTES};
-    use june_companion_protocol::{
+    use clovy_companion_crypto::{generate_identity, KEY_BYTES};
+    use clovy_companion_protocol::{
         encode_peer_hello, AgentStatus, BrowseEntry, Capability, MediaKind, MediaResultReference,
         Page, PeerHello, ProtocolError, MAX_PAGE_CURSOR_BYTES,
     };
@@ -1057,9 +1057,9 @@ mod tests {
             Uuid::new_v4(),
             1,
             current_time_ms(),
-            june_companion_protocol::Capability::FilesBrowse,
+            clovy_companion_protocol::Capability::FilesBrowse,
             Body::Response(Response {
-                capability: june_companion_protocol::Capability::FilesBrowse,
+                capability: clovy_companion_protocol::Capability::FilesBrowse,
                 result: ResultPayload::BrowseEntries(Page::<BrowseEntry> {
                     items: Vec::new(),
                     next_cursor: Some("x".repeat(MAX_PAGE_CURSOR_BYTES + 1)),
@@ -1139,7 +1139,7 @@ mod tests {
         let mobile = generate_identity().unwrap();
         let desktop = generate_identity().unwrap();
         let event = Event::SessionModelChanged {
-            selection: june_companion_protocol::SessionModelSelection {
+            selection: clovy_companion_protocol::SessionModelSelection {
                 stored_session_id: "session-1".to_string(),
                 model_id: "open-software/auto".to_string(),
                 model_name: "Auto".to_string(),
@@ -1172,7 +1172,7 @@ mod tests {
         };
         let event = Event::AgentStatus {
             stored_session_id: "session-1".to_string(),
-            status: june_companion_protocol::AgentStatus::Idle,
+            status: clovy_companion_protocol::AgentStatus::Idle,
             media: Vec::new(),
         };
 

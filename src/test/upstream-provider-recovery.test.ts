@@ -4,6 +4,7 @@ import {
   UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
   createUpstreamProviderRecoveryStore,
   displayedUpstreamProviderRecoveryPreview,
+  displayedUpstreamProviderRecoveryText,
   upstreamProviderRecoveryIds,
 } from "../lib/upstream-provider-recovery";
 
@@ -25,6 +26,7 @@ function providerFailure(id: string): AgentChatTurn {
 
 describe("upstream-provider recovery", () => {
   it("replaces any truncation of the recovery prompt in previews, but not a quote that diverges", () => {
+    expect(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT).toMatch(/^\[Clovy upstream provider recovery\]/);
     expect(displayedUpstreamProviderRecoveryPreview(UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT)).toBe(
       "Try again",
     );
@@ -35,6 +37,8 @@ describe("upstream-provider recovery", () => {
     expect(displayedUpstreamProviderRecoveryPreview("[June upstream provider recovery]")).toBe(
       "Try again",
     );
+    const legacyPrompt = UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT.replaceAll("Clovy", "June");
+    expect(displayedUpstreamProviderRecoveryText(legacyPrompt)).toBe("Try again");
     // A user message that quotes the opener and then diverges is the user's
     // own text and must stay visible.
     const quote = "[June upstream provider recovery] is what Clovy sends, right?";

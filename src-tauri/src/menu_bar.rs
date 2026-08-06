@@ -41,17 +41,17 @@ const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-templat
 const TRAY_ICON_DICTATING_DARK_PNG: &[u8] = include_bytes!("../icons/tray-icon-dictating-dark.png");
 const TRAY_ICON_DICTATING_LIGHT_PNG: &[u8] =
     include_bytes!("../icons/tray-icon-dictating-light.png");
-const AGENT_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:agent-state";
+const AGENT_MENU_BAR_STATE_EVENT: &str = "clovy:menu-bar:agent-state";
 /// Carries the native dictation indicator (a bare `true`/`false`) from the
 /// dictation seam to the tray, so all tray mutation stays inside this module.
-const DICTATION_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:dictation-state";
+const DICTATION_MENU_BAR_STATE_EVENT: &str = "clovy:menu-bar:dictation-state";
 /// Carries the note-recording indicator (a bare `true`/`false`) from the capture
 /// supervisor to the tray. Same rationale as the dictation event.
-const MEETING_RECORDING_MENU_BAR_STATE_EVENT: &str = "june:menu-bar:recording-state";
-const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "june:menu-bar:new-agent-session";
-const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "june:menu-bar:open-agent-session";
-const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "june:menu-bar:set-agent-hud";
-const AGENT_MENU_BAR_OPEN_SETTINGS_EVENT: &str = "june://open-settings";
+const MEETING_RECORDING_MENU_BAR_STATE_EVENT: &str = "clovy:menu-bar:recording-state";
+const AGENT_MENU_BAR_NEW_SESSION_EVENT: &str = "clovy:menu-bar:new-agent-session";
+const AGENT_MENU_BAR_OPEN_SESSION_EVENT: &str = "clovy:menu-bar:open-agent-session";
+const AGENT_MENU_BAR_SET_AGENT_HUD_EVENT: &str = "clovy:menu-bar:set-agent-hud";
+const AGENT_MENU_BAR_OPEN_SETTINGS_EVENT: &str = "clovy://open-settings";
 
 const MENU_SHOW_ID: &str = "agent_menu_bar_show";
 const MENU_SETTINGS_ID: &str = "agent_menu_bar_settings";

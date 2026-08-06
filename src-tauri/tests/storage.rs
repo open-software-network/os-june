@@ -1,5 +1,5 @@
 use chrono::{SecondsFormat, Utc};
-use os_june_lib::db::{migrations::run_migrations, repositories::Repositories};
+use clovy_lib::db::{migrations::run_migrations, repositories::Repositories};
 use sqlx::query::query;
 use sqlx::row::Row;
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePoolOptions};

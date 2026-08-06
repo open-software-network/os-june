@@ -1099,7 +1099,7 @@ pub enum SourceState {
 }
 
 // ---- Private sharing (JUN-308) -------------------------------------------
-// Wire DTOs for the june-api /v1/shares endpoints plus the local key-store
+// Wire DTOs for the clovy-api /v1/shares endpoints plus the local key-store
 // commands. Ciphertext, IVs, envelopes, and keys cross the IPC boundary as
 // base64url strings; the Tauri layer only moves ciphertext and metadata,
 // never plaintext or unwrapped keys (crypto happens in the webview).

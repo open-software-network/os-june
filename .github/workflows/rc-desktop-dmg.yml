@@ -125,7 +125,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
-          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          PRODUCTION_CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL || secrets.PRODUCTION_JUNE_API_URL }}
           PRODUCTION_LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
         run: |
           set -euo pipefail
@@ -145,7 +145,7 @@ jobs:
             PRODUCTION_OS_ACCOUNTS_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_ID \
             PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET \
-            PRODUCTION_JUNE_API_URL \
+            PRODUCTION_CLOVY_API_URL \
             PRODUCTION_LINEAR_OAUTH_CLIENT_ID
           do
             if [ -z "${!name:-}" ]; then
@@ -340,19 +340,19 @@ jobs:
               tar -xzf "$archive"
             )
           done
-          echo "JUNE_AGENT_RUNTIME_TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
-          echo "JUNE_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
-          echo "JUNE_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node" >> "$GITHUB_ENV"
-          export JUNE_AGENT_RUNTIME_TARGET=universal-apple-darwin
-          export JUNE_AGENT_RUNTIME_NODE_ARM64="$download_dir/node-v${node_version}-darwin-arm64/bin/node"
-          export JUNE_AGENT_RUNTIME_NODE_X64="$download_dir/node-v${node_version}-darwin-x64/bin/node"
+          echo "CLOVY_AGENT_RUNTIME_TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
+          echo "CLOVY_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
+          echo "CLOVY_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node" >> "$GITHUB_ENV"
+          export CLOVY_AGENT_RUNTIME_TARGET=universal-apple-darwin
+          export CLOVY_AGENT_RUNTIME_NODE_ARM64="$download_dir/node-v${node_version}-darwin-arm64/bin/node"
+          export CLOVY_AGENT_RUNTIME_NODE_X64="$download_dir/node-v${node_version}-darwin-x64/bin/node"
           pnpm agent-runtime:build
           node scripts/build-agent-runtime.mjs
-          smoke_dir="$RUNNER_TEMP/June agent runtime smoke"
+          smoke_dir="$RUNNER_TEMP/Clovy agent runtime smoke"
           mkdir -p "$smoke_dir"
-          cp .tauri-agent-runtime/june-agent-runtime "$smoke_dir/june-agent-runtime"
-          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch arm64
-          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch x86_64
+          cp .tauri-agent-runtime/clovy-agent-runtime "$smoke_dir/clovy-agent-runtime"
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch arm64
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
 
       - name: Prepare universal Computer use helper
         run: pnpm computer-use:prepare -- --release --target universal-apple-darwin
@@ -361,7 +361,7 @@ jobs:
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          JUNE_AGENT_RUNTIME_PREBUILT: "1"
+          CLOVY_AGENT_RUNTIME_PREBUILT: "1"
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
@@ -372,10 +372,10 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
-          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL || secrets.PRODUCTION_JUNE_API_URL }}
           LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # New installs start in Auto at its default Higher Quality preference.
-          OS_JUNE_AUTO_MODE_DEFAULT: "true"
+          OS_CLOVY_AUTO_MODE_DEFAULT: "true"
         with:
           args: --bundles app,dmg --target universal-apple-darwin -- --locked
           # The DMG is notarized after the build, so don't let tauri-action
@@ -415,7 +415,7 @@ jobs:
             exit 1
           fi
           app="${apps[0]}"
-          runtime="$app/Contents/Resources/native/bin/june-agent-runtime"
+          runtime="$app/Contents/Resources/native/bin/clovy-agent-runtime"
           checksum="$runtime.sha256"
           test -x "$runtime"
           test -s "$checksum"
@@ -429,11 +429,11 @@ jobs:
             echo "::error::The rc app still contains a Hermes or Python payload."
             exit 1
           fi
-          smoke_dir="$RUNNER_TEMP/June packaged runtime smoke"
+          smoke_dir="$RUNNER_TEMP/Clovy packaged runtime smoke"
           mkdir -p "$smoke_dir"
-          cp "$runtime" "$smoke_dir/june-agent-runtime"
-          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch arm64
-          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/june-agent-runtime" --smoke-arch x86_64
+          cp "$runtime" "$smoke_dir/clovy-agent-runtime"
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch arm64
+          node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
           codesign --verify --deep --strict --verbose=2 "$app"
 
           dmg="${dmgs[0]}"
@@ -466,15 +466,23 @@ jobs:
           release_dir="$RUNNER_TEMP/rc-release-assets"
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
-          stable_dmg="$release_dir/June_universal.dmg"
-          versioned_dmg="$release_dir/June_v${VERSION}_universal.dmg"
-          app_archive="$release_dir/June_universal.app.tar.gz"
-          app_signature="$release_dir/June_universal.app.tar.gz.sig"
+          stable_dmg="$release_dir/Clovy_universal.dmg"
+          versioned_dmg="$release_dir/Clovy_v${VERSION}_universal.dmg"
+          app_archive="$release_dir/Clovy_universal.app.tar.gz"
+          app_signature="$release_dir/Clovy_universal.app.tar.gz.sig"
+          legacy_stable_dmg="$release_dir/June_universal.dmg"
+          legacy_versioned_dmg="$release_dir/June_v${VERSION}_universal.dmg"
+          legacy_app_archive="$release_dir/June_universal.app.tar.gz"
+          legacy_app_signature="$release_dir/June_universal.app.tar.gz.sig"
           latest_rc_json="$release_dir/latest-rc.json"
           cp "$dmg" "$stable_dmg"
           cp "$dmg" "$versioned_dmg"
           cp "${app_archives[0]}" "$app_archive"
           cp "${app_signatures[0]}" "$app_signature"
+          cp "$stable_dmg" "$legacy_stable_dmg"
+          cp "$versioned_dmg" "$legacy_versioned_dmg"
+          cp "$app_archive" "$legacy_app_archive"
+          cp "$app_signature" "$legacy_app_signature"
 
           # rc-build.json records the source commit so promote-desktop.yml can
           # rebuild the clean X.Y.Z from this exact tree.
@@ -493,7 +501,7 @@ jobs:
           const signature = fs.readFileSync(process.env.SIGNATURE_PATH, "utf8");
           const notes = fs.readFileSync(process.env.NOTES_PATH, "utf8").trim();
           const url =
-            "https://github.com/open-software-network/os-june-releases/releases/download/rc/June_universal.app.tar.gz";
+            "https://github.com/open-software-network/os-june-releases/releases/download/rc/Clovy_universal.app.tar.gz";
           const platform = { signature, url };
           const latest = {
             version,
@@ -530,7 +538,7 @@ jobs:
 
           # The candidate-specific DMG is append-only: an existing name means
           # this version was already attempted and must never be replaced.
-          gh release upload rc "$versioned_dmg" \
+          gh release upload rc "$versioned_dmg" "$legacy_versioned_dmg" \
             --repo open-software-network/os-june-releases
 
           # Fixed RC release channel assets intentionally follow the newest candidate.
@@ -538,6 +546,9 @@ jobs:
             "$stable_dmg" \
             "$app_archive" \
             "$app_signature" \
+            "$legacy_stable_dmg" \
+            "$legacy_app_archive" \
+            "$legacy_app_signature" \
             "$latest_rc_json" \
             "$rc_build_json" \
             --repo open-software-network/os-june-releases \
@@ -566,7 +577,7 @@ jobs:
           const releaseUrl =
             "https://github.com/open-software-network/os-june-releases/releases/tag/rc";
           const downloadUrl =
-            `https://github.com/open-software-network/os-june-releases/releases/download/rc/June_v${version}_universal.dmg`;
+            `https://github.com/open-software-network/os-june-releases/releases/download/rc/Clovy_v${version}_universal.dmg`;
           const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
 
           const payload = {
@@ -713,8 +724,8 @@ jobs:
       - name: Test and build extension
         run: |
           set -euo pipefail
-          pnpm --filter june-extension typecheck
-          pnpm --filter june-extension test
+          pnpm --filter clovy-extension typecheck
+          pnpm --filter clovy-extension test
           pnpm extension:build
 
       - name: Download prior extension release metadata
@@ -734,11 +745,17 @@ jobs:
               --pattern "extension-build.json" \
               --dir "$prior/rc"
           fi
-          if grep -Fqx "June-extension.zip" <<< "$rc_assets"; then
+          if grep -Fqx "Clovy-extension.zip" <<< "$rc_assets"; then
+            gh release download rc \
+              --repo open-software-network/os-june-releases \
+              --pattern "Clovy-extension.zip" \
+              --dir "$prior/rc"
+          elif grep -Fqx "June-extension.zip" <<< "$rc_assets"; then
             gh release download rc \
               --repo open-software-network/os-june-releases \
               --pattern "June-extension.zip" \
               --dir "$prior/rc"
+            mv "$prior/rc/June-extension.zip" "$prior/rc/Clovy-extension.zip"
           fi
 
           stable_tag="$(gh release view \
@@ -797,7 +814,7 @@ jobs:
           assets="$(gh release view rc \
             --repo open-software-network/os-june-releases \
             --json assets --jq '.assets[].name')"
-          for asset in extension-build.json June-extension.zip; do
+          for asset in extension-build.json Clovy-extension.zip June-extension.zip; do
             if grep -Fqx "$asset" <<< "$assets"; then
               gh release delete-asset rc "$asset" \
                 --repo open-software-network/os-june-releases \
@@ -859,8 +876,8 @@ jobs:
           if [ -f "$prior/rc/extension-build.json" ]; then
             args+=(--previous-rc-metadata "$prior/rc/extension-build.json")
           fi
-          if [ -f "$prior/rc/June-extension.zip" ]; then
-            args+=(--previous-rc-package "$prior/rc/June-extension.zip")
+          if [ -f "$prior/rc/Clovy-extension.zip" ]; then
+            args+=(--previous-rc-package "$prior/rc/Clovy-extension.zip")
           fi
           if [ "${{ steps.prior-store.outputs.reusable }}" = "true" ]; then
             args+=(--reuse-previous-rc true)
@@ -889,15 +906,23 @@ jobs:
           set -euo pipefail
           metadata="${{ steps.extension.outputs.metadata_path }}"
           if [ "$RELEASE_REQUIRED" = "true" ]; then
-            gh release upload rc "${{ steps.extension.outputs.package_path }}" \
+            package="${{ steps.extension.outputs.package_path }}"
+            legacy_package="$(dirname "$package")/June-extension.zip"
+            cp "$package" "$legacy_package"
+            gh release upload rc "$package" "$legacy_package" \
               --repo open-software-network/os-june-releases \
               --clobber
-          elif gh release view rc \
-            --repo open-software-network/os-june-releases \
-            --json assets --jq '.assets[].name' | grep -Fqx "June-extension.zip"; then
-            gh release delete-asset rc "June-extension.zip" \
+          else
+            assets="$(gh release view rc \
               --repo open-software-network/os-june-releases \
-              --yes
+              --json assets --jq '.assets[].name')"
+            for package_name in Clovy-extension.zip June-extension.zip; do
+              if grep -Fqx "$package_name" <<< "$assets"; then
+                gh release delete-asset rc "$package_name" \
+                  --repo open-software-network/os-june-releases \
+                  --yes
+              fi
+            done
           fi
           # Metadata is the commit marker. Publishing it last means promotion
           # never trusts a package upload that did not complete.

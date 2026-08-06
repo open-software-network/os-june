@@ -9,21 +9,24 @@ pub mod audio;
 pub mod browser;
 mod browser_broker;
 pub mod claude_projects;
+pub mod clovy_api;
 pub mod commands;
 pub mod companion;
 pub mod computer_use;
 mod computer_use_cursor;
 mod computer_use_permission_drag;
 pub mod connectors;
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod credential_compat;
 pub mod db;
 pub mod dictation;
 pub mod domain;
+mod env_compat;
 pub mod experimental_settings;
 pub mod extension_host;
 pub mod feature_flags;
 mod filesystem;
 pub mod image_safety;
-pub mod june_api;
 pub mod macos_menu_icons;
 pub mod meeting_calendar_context;
 pub mod meeting_detection;
@@ -49,12 +52,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
-const CHECK_FOR_UPDATES_EVENT: &str = "june://check-for-updates";
+const CHECK_FOR_UPDATES_EVENT: &str = "clovy://check-for-updates";
 const CLOSE_TAB_MENU_ID: &str = "close_tab";
-const CLOSE_TAB_EVENT: &str = "june://close-tab";
+const CLOSE_TAB_EVENT: &str = "clovy://close-tab";
 const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
-const OPEN_SETTINGS_EVENT: &str = "june://open-settings";
+const OPEN_SETTINGS_EVENT: &str = "clovy://open-settings";
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -198,6 +201,8 @@ pub fn run() {
             agent_runtime::api::read_agent_skill,
             agent_runtime::api::update_agent_skill,
             agent_runtime::api::set_agent_skill_enabled,
+            agent_runtime::persona::clovy_persona,
+            agent_runtime::persona::set_clovy_persona,
             agent_runtime::persona::june_persona,
             agent_runtime::persona::set_june_persona,
             agent_recorder::resolve_agent_recorder_request,
@@ -219,7 +224,8 @@ pub fn run() {
             routines::list_agent_routine_runs,
             routines::routine_browser_access_get,
             routines::routine_browser_access_set,
-            june_api::june_home_chat,
+            clovy_api::clovy_home_chat,
+            clovy_api::june_home_chat,
             commands::experimental_flags_get,
             commands::experimental_flags_set,
             companion::companion_begin_pairing,
@@ -295,6 +301,9 @@ pub fn run() {
             commands::open_privacy_settings,
             commands::reveal_path,
             commands::unpack_bundled_extension,
+            commands::clovy_open_verify_page,
+            commands::clovy_open_community_page,
+            commands::clovy_open_external_url,
             commands::june_open_verify_page,
             commands::june_open_community_page,
             commands::june_open_external_url,
@@ -528,7 +537,11 @@ fn setup_computer_use_asset_scope(app: &mut tauri::App) {
 fn should_register_single_instance_plugin() -> bool {
     single_instance_enabled_for_build(
         cfg!(debug_assertions),
-        std::env::var_os("OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE").is_some(),
+        crate::env_compat::var_os(
+            "OS_CLOVY_ENABLE_DEV_SINGLE_INSTANCE",
+            "OS_JUNE_ENABLE_DEV_SINGLE_INSTANCE",
+        )
+        .is_some(),
     )
 }
 

@@ -1,8 +1,8 @@
 //! Authenticated, narrow Computer use helper.
 //!
 //! This binary links the pinned upstream macOS implementation, but it does
-//! not expose upstream's CLI or complete MCP registry. June starts it over a
-//! private local socket and authenticates both June's peer process and a fresh
+//! not expose upstream's CLI or complete MCP registry. Clovy starts it over a
+//! private local socket and authenticates both Clovy's peer process and a fresh
 //! in-memory capability. LaunchServices owns the helper process so macOS TCC
 //! grants belong to this bundle, while direct launches still provide no
 //! desktop-control surface.
@@ -44,7 +44,7 @@ const UPSTREAM_VERSION: &str = "0.5.0";
 const UPSTREAM_COMMIT: &str = "51582fd2ad8cffb68b2c6c81077d391132d7a0e1";
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 #[cfg(target_os = "macos")]
-const POINTER_NOTIFICATION_METHOD: &str = "june/pointer";
+const POINTER_NOTIFICATION_METHOD: &str = "clovy/pointer";
 #[cfg(target_os = "macos")]
 const SIGNATURE_DETAILS_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "macos")]
@@ -120,7 +120,7 @@ const ALLOWED_TOOLS: &[&str] = &[
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.as_slice() == ["--version"] {
-        println!("june-computer-use-driver {UPSTREAM_VERSION} {UPSTREAM_COMMIT}");
+        println!("clovy-computer-use-driver {UPSTREAM_VERSION} {UPSTREAM_COMMIT}");
         return;
     }
     let result = match args.as_slice() {
@@ -151,7 +151,7 @@ async fn serve_stdio() -> anyhow::Result<()> {
 #[cfg(target_os = "macos")]
 async fn serve_daemon() -> anyhow::Result<()> {
     isolate_process_group()?;
-    let socket_path = std::env::var("JUNE_COMPUTER_USE_SOCKET")
+    let socket_path = std::env::var("CLOVY_COMPUTER_USE_SOCKET")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("the private Clovy socket is missing"))?;
     if !socket_path.is_absolute() {
@@ -183,7 +183,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn request_startup_permission() {
-    match std::env::var("JUNE_COMPUTER_USE_PERMISSION_PROMPT").as_deref() {
+    match std::env::var("CLOVY_COMPUTER_USE_PERMISSION_PROMPT").as_deref() {
         Ok("accessibility") => {
             let _ = platform_macos::permissions::status::request_accessibility();
         }
@@ -476,7 +476,7 @@ fn packaged_process_signature_matches(audit_token: &[u8], helper_app: &std::path
     else {
         return false;
     };
-    let Some(requirement) = june_process_requirement(&helper.team_identifier) else {
+    let Some(requirement) = clovy_process_requirement(&helper.team_identifier) else {
         return false;
     };
     let audit_token = CFData::from_buffer(audit_token);
@@ -534,7 +534,7 @@ fn signature_details(
 }
 
 #[cfg(target_os = "macos")]
-fn june_process_requirement(team_identifier: &str) -> Option<SecRequirement> {
+fn clovy_process_requirement(team_identifier: &str) -> Option<SecRequirement> {
     if team_identifier.is_empty()
         || team_identifier.len() > 64
         || !team_identifier
@@ -639,7 +639,7 @@ fn terminate_child_and_reap(mut child: Child) -> bool {
         Ok(Some(_)) => true,
         Ok(None) | Err(_) => {
             let _ = thread::Builder::new()
-                .name("june-helper-child-reaper".to_string())
+                .name("clovy-helper-child-reaper".to_string())
                 .spawn(move || {
                     let _ = child.wait();
                 });
@@ -687,16 +687,16 @@ extern "C" {
 
 #[cfg(target_os = "macos")]
 fn initialize_capability(params: Option<&Value>) -> Option<&str> {
-    params?
-        .get("capabilities")?
-        .get("experimental")?
-        .get("juneComputerUseCapability")?
+    let experimental = params?.get("capabilities")?.get("experimental")?;
+    experimental
+        .get("clovyComputerUseCapability")
+        .or_else(|| experimental.get("juneComputerUseCapability"))?
         .as_str()
 }
 
 #[cfg(target_os = "macos")]
 fn valid_capability(candidate: &str) -> bool {
-    let expected = std::env::var("JUNE_COMPUTER_USE_HELPER_CAPABILITY").unwrap_or_default();
+    let expected = std::env::var("CLOVY_COMPUTER_USE_HELPER_CAPABILITY").unwrap_or_default();
     if expected.len() < 32 || candidate.len() != expected.len() {
         return false;
     }
@@ -1118,6 +1118,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initialize_accepts_canonical_and_legacy_capability_fields() {
+        let canonical = json!({
+            "capabilities": {
+                "experimental": {
+                    "clovyComputerUseCapability": "canonical",
+                    "juneComputerUseCapability": "legacy"
+                }
+            }
+        });
+        let legacy = json!({
+            "capabilities": {
+                "experimental": { "juneComputerUseCapability": "legacy" }
+            }
+        });
+
+        assert_eq!(initialize_capability(Some(&canonical)), Some("canonical"));
+        assert_eq!(initialize_capability(Some(&legacy)), Some("legacy"));
+    }
+
+    #[test]
     fn stage_join_continues_when_any_native_path_dispatched() {
         assert!(stage_join_was_dispatched(true, false, false));
         assert!(stage_join_was_dispatched(false, true, false));
@@ -1192,9 +1212,9 @@ mod tests {
 
     #[test]
     fn live_process_requirement_rejects_untrusted_team_syntax() {
-        assert!(june_process_requirement("ABCDE12345").is_some());
-        assert!(june_process_requirement("").is_none());
-        assert!(june_process_requirement("ABCDE12345\" or true").is_none());
+        assert!(clovy_process_requirement("ABCDE12345").is_some());
+        assert!(clovy_process_requirement("").is_none());
+        assert!(clovy_process_requirement("ABCDE12345\" or true").is_none());
     }
 
     #[test]

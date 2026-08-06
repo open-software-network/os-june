@@ -14,7 +14,7 @@ export type QueuedAgentFollowUps = Record<string, QueuedAgentFollowUp>;
 
 export const ATTACHMENT_FOLLOW_UP_NOTE = "The files are attached to this message.";
 
-const STORAGE_KEY = "june.agent.queuedFollowUps";
+const STORAGE_KEY = "clovy.agent.queuedFollowUps";
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return value === "instant" || value === "medium" || value === "hard";

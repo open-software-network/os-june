@@ -2431,7 +2431,7 @@ input:focus-visible,
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
   opacity: 0.12;
   filter: blur(var(--home-typing-blur));
-  animation: june-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
+  animation: clovy-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
   transform: none;
 }
 
@@ -2446,7 +2446,7 @@ input:focus-visible,
 /* Each dot drifts between a blurred haze and a brief moment of focus, so the
  * passage between states is where the softness lives — thought resolving,
  * not a cursor blinking. */
-@keyframes june-home-typing-breath {
+@keyframes clovy-home-typing-breath {
   0%,
   100% {
     opacity: 0.12;
@@ -2643,11 +2643,11 @@ input:focus-visible,
 }
 
 .agent-home-nudges-idle button {
-  animation: june-home-chip-in var(--t-slow) var(--ease-out) both;
+  animation: clovy-home-chip-in var(--t-slow) var(--ease-out) both;
   animation-delay: calc(var(--chip-i, 0) * var(--t-fast));
 }
 
-@keyframes june-home-chip-in {
+@keyframes clovy-home-chip-in {
   from {
     opacity: 0;
     transform: translateY(var(--sp-2));
@@ -6109,7 +6109,7 @@ button.agent-user-attachment:hover {
  * than --shadow-lg — a floating notice, not a raised card). Only the tone icon
  * is tinted; the surface stays neutral so the whole toast family reads as one
  * calm system. */
-.june-toast {
+.clovy-toast {
   /* Height model: the row is center-aligned, so every child — tone icon, text,
    * action, close — sits on one optical line and a single-line toast reads
    * perfectly centered. Height is driven by the tallest child (the controls)
@@ -6135,14 +6135,14 @@ button.agent-user-attachment:hover {
   -webkit-font-smoothing: antialiased;
 }
 
-.june-toast:focus-visible {
+.clovy-toast:focus-visible {
   box-shadow:
     var(--shadow-md),
     0 0 0 2px var(--focus-ring);
 }
 
 /* Leading tone glyph, vertically centered against the message. */
-.june-toast-icon {
+.clovy-toast-icon {
   order: 0;
   display: inline-flex;
   flex-shrink: 0;
@@ -6151,7 +6151,7 @@ button.agent-user-attachment:hover {
   color: var(--muted-foreground);
 }
 
-.june-toast-content {
+.clovy-toast-content {
   order: 1;
   display: flex;
   flex-direction: column;
@@ -6160,7 +6160,7 @@ button.agent-user-attachment:hover {
   flex: 1;
 }
 
-.june-toast-title {
+.clovy-toast-title {
   font-size: var(--fs-md);
   font-weight: 400;
   letter-spacing: 0;
@@ -6174,21 +6174,21 @@ button.agent-user-attachment:hover {
  * toast's height, but only fades their content when running styled — its
  * fade rule is gated on [data-styled='true'], which unstyled mode disables.
  * Replicate it here so squashed back toasts never show overflowing text. */
-.june-toast[data-expanded="false"][data-front="false"] {
+.clovy-toast[data-expanded="false"][data-front="false"] {
   overflow: hidden;
 }
 
-.june-toast[data-expanded="false"][data-front="false"] > * {
+.clovy-toast[data-expanded="false"][data-front="false"] > * {
   opacity: 0;
 }
 
-.june-toast-description {
+.clovy-toast-description {
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
   line-height: 1.5;
 }
 
-.june-download-toast-message {
+.clovy-download-toast-message {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
@@ -6196,12 +6196,12 @@ button.agent-user-attachment:hover {
   width: 100%;
 }
 
-.june-download-toast-action {
+.clovy-download-toast-action {
   flex-shrink: 0;
   white-space: nowrap;
 }
 
-.june-download-toast-file {
+.clovy-download-toast-file {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -6210,31 +6210,31 @@ button.agent-user-attachment:hover {
 }
 
 /* Tone accents: the leading glyph only. */
-.june-toast--success .june-toast-icon {
+.clovy-toast--success .clovy-toast-icon {
   color: var(--success);
 }
 
-.june-toast--error .june-toast-icon {
+.clovy-toast--error .clovy-toast-icon {
   color: var(--destructive);
 }
 
-.june-toast--warning .june-toast-icon {
+.clovy-toast--warning .clovy-toast-icon {
   color: var(--warm-strong);
 }
 
-.june-toast--info .june-toast-icon {
+.clovy-toast--info .clovy-toast-icon {
   color: var(--brand);
 }
 
 /* The dot spinner already carries its own size and currentColor. */
-.june-toast--loading .june-toast-icon {
+.clovy-toast--loading .clovy-toast-icon {
   color: var(--muted-foreground);
 }
 
 /* Actions use the existing grey .btn-secondary family, sized down to a compact
  * control for the toast. */
-.june-toast .june-toast-action,
-.june-toast .june-toast-cancel {
+.clovy-toast .clovy-toast-action,
+.clovy-toast .clovy-toast-cancel {
   flex-shrink: 0;
   height: var(--control-sm);
   padding: 0 var(--sp-3);
@@ -6244,18 +6244,18 @@ button.agent-user-attachment:hover {
   white-space: nowrap;
 }
 
-.june-toast .june-toast-action {
+.clovy-toast .clovy-toast-action {
   order: 3;
 }
 
-.june-toast .june-toast-cancel {
+.clovy-toast .clovy-toast-cancel {
   order: 2;
 }
 
 /* Sonner renders the close button first. Order it to the far right and let
  * .icon-button provide the squircle hit target, matched to the action button's
  * height so the pair reads as a set; keep it quiet at rest. */
-.june-toast .june-toast-close {
+.clovy-toast .clovy-toast-close {
   order: 4;
   position: static;
   flex-shrink: 0;
@@ -6267,7 +6267,7 @@ button.agent-user-attachment:hover {
   letter-spacing: 0;
 }
 
-.june-toast .june-toast-close:hover {
+.clovy-toast .clovy-toast-close:hover {
   color: var(--foreground);
 }
 

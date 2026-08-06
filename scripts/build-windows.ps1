@@ -8,17 +8,17 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $repoRoot "artifacts\windows-unsigned" }
 elseif (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory = Join-Path $repoRoot $OutputDirectory }
 $callerLocation = Get-Location
-$hadPrebuilt = Test-Path Env:JUNE_AGENT_RUNTIME_PREBUILT
-$previousPrebuilt = $env:JUNE_AGENT_RUNTIME_PREBUILT
-$hadRuntimeTarget = Test-Path Env:JUNE_AGENT_RUNTIME_TARGET
-$previousRuntimeTarget = $env:JUNE_AGENT_RUNTIME_TARGET
+$hadPrebuilt = Test-Path Env:CLOVY_AGENT_RUNTIME_PREBUILT
+$previousPrebuilt = $env:CLOVY_AGENT_RUNTIME_PREBUILT
+$hadRuntimeTarget = Test-Path Env:CLOVY_AGENT_RUNTIME_TARGET
+$previousRuntimeTarget = $env:CLOVY_AGENT_RUNTIME_TARGET
 $previousPath = $env:PATH
 $mutexPath = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd([char[]]"\/").ToUpperInvariant()
 $mutexBytes = [System.Text.Encoding]::UTF8.GetBytes($mutexPath)
 $mutexHasher = [System.Security.Cryptography.SHA256]::Create()
 try { $mutexHash = [Convert]::ToHexString($mutexHasher.ComputeHash($mutexBytes)) }
 finally { $mutexHasher.Dispose() }
-$buildMutex = [System.Threading.Mutex]::new($false, "Local\JuneWindowsBuild-$mutexHash")
+$buildMutex = [System.Threading.Mutex]::new($false, "Local\ClovyWindowsBuild-$mutexHash")
 $hasBuildMutex = $false
 
 function Require-Command([string]$Name) {
@@ -83,7 +83,7 @@ try {
   if ([string]::IsNullOrWhiteSpace($cargoTargetDirectory)) { throw "Cargo metadata did not report a target directory." }
   & pnpm agent-runtime:build
   if ($LASTEXITCODE -ne 0) { throw "Agent runtime TypeScript build failed." }
-  Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue
+  Remove-Item Env:CLOVY_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue
   & node scripts/build-agent-runtime.mjs --target windows
   if ($LASTEXITCODE -ne 0) { throw "Windows agent runtime SEA build failed." }
 
@@ -94,12 +94,12 @@ try {
   }
   $appExecutable = Join-Path $releaseDirectory "os-june.exe"
   Remove-Item -LiteralPath $appExecutable -Force -ErrorAction SilentlyContinue
-  $env:JUNE_AGENT_RUNTIME_PREBUILT = "1"
-  $env:JUNE_AGENT_RUNTIME_TARGET = "windows"
+  $env:CLOVY_AGENT_RUNTIME_PREBUILT = "1"
+  $env:CLOVY_AGENT_RUNTIME_TARGET = "windows"
   & node scripts/tauri-build.mjs --target $targetTriple --no-sign
   if ($LASTEXITCODE -ne 0) { throw "Unsigned Tauri release build failed." }
-  if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt } else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT }
-  if ($hadRuntimeTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $previousRuntimeTarget } else { Remove-Item Env:JUNE_AGENT_RUNTIME_TARGET }
+  if ($hadPrebuilt) { $env:CLOVY_AGENT_RUNTIME_PREBUILT = $previousPrebuilt } else { Remove-Item Env:CLOVY_AGENT_RUNTIME_PREBUILT }
+  if ($hadRuntimeTarget) { $env:CLOVY_AGENT_RUNTIME_TARGET = $previousRuntimeTarget } else { Remove-Item Env:CLOVY_AGENT_RUNTIME_TARGET }
 
   $installers = @(Get-ChildItem -LiteralPath $nsisDirectory -File -Filter "*-setup.exe")
   if ($installers.Count -ne 1) { throw "Expected exactly one release NSIS installer; found $($installers.Count)." }
@@ -120,10 +120,10 @@ try {
 finally {
   try {
     $env:PATH = $previousPath
-    if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $previousPrebuilt }
-    else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
-    if ($hadRuntimeTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $previousRuntimeTarget }
-    else { Remove-Item Env:JUNE_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
+    if ($hadPrebuilt) { $env:CLOVY_AGENT_RUNTIME_PREBUILT = $previousPrebuilt }
+    else { Remove-Item Env:CLOVY_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
+    if ($hadRuntimeTarget) { $env:CLOVY_AGENT_RUNTIME_TARGET = $previousRuntimeTarget }
+    else { Remove-Item Env:CLOVY_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
     Set-Location -LiteralPath $callerLocation
   }
   finally {

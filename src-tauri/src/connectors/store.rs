@@ -5,11 +5,11 @@
 //! workspace id), and NEVER anywhere else: the SQLite index only carries
 //! non-secret account metadata (emails, scopes, status) so accounts can be
 //! enumerated without touching the keychain. Each provider gets its own
-//! keychain SERVICE (`co.opensoftware.june.<provider>`), so two providers'
+//! Clovy Keychain service (`co.opensoftware.clovy.<provider>`), so two providers'
 //! tokens never collide even if they ever shared an account id. Debug builds
 //! use a separate keychain service per provider, and can opt into a
 //! plaintext token file for local development via
-//! `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` (also what unit tests exercise,
+//! `OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE=1` (also what unit tests exercise,
 //! since the Keychain is unavailable in CI); that file is per provider too.
 
 use super::ConnectorProvider;
@@ -17,11 +17,15 @@ use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june";
-const DEV_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june-dev";
+const KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.clovy";
+const DEV_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.clovy-dev";
+const LEGACY_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june";
+const LEGACY_DEV_KEYCHAIN_SERVICE_PREFIX: &str = "co.opensoftware.june-dev";
 #[cfg(debug_assertions)]
-const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
-const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_JUNE_USE_PROD_ACCOUNTS_TOKENS";
+const DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE";
+const LEGACY_DEV_PLAINTEXT_TOKEN_STORE_ENV: &str = "OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE";
+const USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_CLOVY_USE_PROD_ACCOUNTS_TOKENS";
+const LEGACY_USE_PROD_ACCOUNTS_TOKENS_ENV: &str = "OS_JUNE_USE_PROD_ACCOUNTS_TOKENS";
 
 /// The dev plaintext token file's basename for a provider (under
 /// `target/`). Kept separate per provider for the same reason the keychain
@@ -95,9 +99,9 @@ async fn store_platform_tokens(
     account_id: String,
     json: String,
 ) -> Result<(), AppError> {
-    let service = keychain_service(provider);
+    let (service, legacy_service) = keychain_services(provider);
     tokio::task::spawn_blocking(move || {
-        keyring::Entry::new(&service, &account_id).and_then(|entry| entry.set_password(&json))
+        crate::credential_compat::set_password(&service, &legacy_service, &account_id, &json)
     })
     .await
     .map_err(|e| AppError::new("connector_keychain_write_failed", e.to_string()))?
@@ -118,20 +122,14 @@ async fn load_platform_tokens(
     provider: ConnectorProvider,
     account_id: &str,
 ) -> Result<Option<StoredConnectorTokens>, AppError> {
-    let service = keychain_service(provider);
+    let (service, legacy_service) = keychain_services(provider);
     let user = account_id.to_string();
     let raw = tokio::task::spawn_blocking(move || {
-        match keyring::Entry::new(&service, &user).and_then(|entry| entry.get_password()) {
-            Ok(raw) => Ok(Some(raw)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(AppError::new(
-                "connector_keychain_read_failed",
-                e.to_string(),
-            )),
-        }
+        crate::credential_compat::get_password(&service, &legacy_service, &user)
     })
     .await
-    .map_err(|e| AppError::new("connector_keychain_read_failed", e.to_string()))??;
+    .map_err(|e| AppError::new("connector_keychain_read_failed", e.to_string()))?
+    .map_err(|e| AppError::new("connector_keychain_read_failed", e.to_string()))?;
     let Some(raw) = raw else {
         return Ok(None);
     };
@@ -161,19 +159,14 @@ async fn delete_platform_tokens(
     provider: ConnectorProvider,
     account_id: &str,
 ) -> Result<(), AppError> {
-    let service = keychain_service(provider);
+    let (service, legacy_service) = keychain_services(provider);
     let user = account_id.to_string();
     tokio::task::spawn_blocking(move || {
-        match keyring::Entry::new(&service, &user).and_then(|entry| entry.delete_credential()) {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(AppError::new(
-                "connector_keychain_delete_failed",
-                e.to_string(),
-            )),
-        }
+        crate::credential_compat::delete_password(&service, &legacy_service, &user)
     })
     .await
     .map_err(|e| AppError::new("connector_keychain_delete_failed", e.to_string()))?
+    .map_err(|e| AppError::new("connector_keychain_delete_failed", e.to_string()))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -193,8 +186,8 @@ fn secure_storage_unavailable() -> AppError {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
-fn keychain_service(provider: ConnectorProvider) -> String {
-    keychain_service_for_build(
+fn keychain_services(provider: ConnectorProvider) -> (String, String) {
+    keychain_services_for_build(
         provider,
         cfg!(debug_assertions),
         use_prod_connector_tokens(),
@@ -202,29 +195,42 @@ fn keychain_service(provider: ConnectorProvider) -> String {
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
-fn keychain_service_for_build(
+fn keychain_services_for_build(
     provider: ConnectorProvider,
     debug_assertions: bool,
     use_prod: bool,
-) -> String {
-    let prefix = if debug_assertions && !use_prod {
-        DEV_KEYCHAIN_SERVICE_PREFIX
+) -> (String, String) {
+    let (prefix, legacy_prefix) = if debug_assertions && !use_prod {
+        (
+            DEV_KEYCHAIN_SERVICE_PREFIX,
+            LEGACY_DEV_KEYCHAIN_SERVICE_PREFIX,
+        )
     } else {
-        KEYCHAIN_SERVICE_PREFIX
+        (KEYCHAIN_SERVICE_PREFIX, LEGACY_KEYCHAIN_SERVICE_PREFIX)
     };
-    format!("{prefix}.{}", provider.as_str())
+    (
+        format!("{prefix}.{}", provider.as_str()),
+        format!("{legacy_prefix}.{}", provider.as_str()),
+    )
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn use_prod_connector_tokens() -> bool {
     crate::os_accounts::load_local_env();
-    cfg!(debug_assertions) && super::env_truthy(USE_PROD_ACCOUNTS_TOKENS_ENV)
+    cfg!(debug_assertions)
+        && crate::env_compat::truthy(
+            USE_PROD_ACCOUNTS_TOKENS_ENV,
+            LEGACY_USE_PROD_ACCOUNTS_TOKENS_ENV,
+        )
 }
 
 #[cfg(debug_assertions)]
 fn use_dev_plaintext_token_store() -> bool {
     crate::os_accounts::load_local_env();
-    super::env_truthy(DEV_PLAINTEXT_TOKEN_STORE_ENV)
+    crate::env_compat::truthy(
+        DEV_PLAINTEXT_TOKEN_STORE_ENV,
+        LEGACY_DEV_PLAINTEXT_TOKEN_STORE_ENV,
+    )
 }
 
 #[cfg(any(debug_assertions, test))]
@@ -479,32 +485,50 @@ mod tests {
     #[test]
     fn keychain_service_separates_dev_and_release() {
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Google, true, false),
-            "co.opensoftware.june-dev.google"
+            keychain_services_for_build(ConnectorProvider::Google, true, false),
+            (
+                "co.opensoftware.clovy-dev.google".to_string(),
+                "co.opensoftware.june-dev.google".to_string(),
+            )
         );
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Google, true, true),
-            "co.opensoftware.june.google"
+            keychain_services_for_build(ConnectorProvider::Google, true, true),
+            (
+                "co.opensoftware.clovy.google".to_string(),
+                "co.opensoftware.june.google".to_string(),
+            )
         );
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Google, false, false),
-            "co.opensoftware.june.google"
+            keychain_services_for_build(ConnectorProvider::Google, false, false),
+            (
+                "co.opensoftware.clovy.google".to_string(),
+                "co.opensoftware.june.google".to_string(),
+            )
         );
     }
 
     #[test]
     fn keychain_service_separates_providers() {
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Linear, true, false),
-            "co.opensoftware.june-dev.linear"
+            keychain_services_for_build(ConnectorProvider::Linear, true, false),
+            (
+                "co.opensoftware.clovy-dev.linear".to_string(),
+                "co.opensoftware.june-dev.linear".to_string(),
+            )
         );
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Linear, true, true),
-            "co.opensoftware.june.linear"
+            keychain_services_for_build(ConnectorProvider::Linear, true, true),
+            (
+                "co.opensoftware.clovy.linear".to_string(),
+                "co.opensoftware.june.linear".to_string(),
+            )
         );
         assert_eq!(
-            keychain_service_for_build(ConnectorProvider::Linear, false, false),
-            "co.opensoftware.june.linear"
+            keychain_services_for_build(ConnectorProvider::Linear, false, false),
+            (
+                "co.opensoftware.clovy.linear".to_string(),
+                "co.opensoftware.june.linear".to_string(),
+            )
         );
     }
 }

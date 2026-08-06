@@ -8,10 +8,10 @@ export type CurrentDataPartition = {
 };
 
 export const DEFAULT_DATA_PARTITION = "default";
-export const DATA_PARTITION_CHANGED_EVENT = "june:data-partition-changed";
+export const DATA_PARTITION_CHANGED_EVENT = "clovy:data-partition-changed";
 // Keep the legacy storage key so existing local data partition selection is
 // preserved even though the removed UI concept is no longer exposed by name.
-const CURRENT_DATA_PARTITION_STORAGE_KEY = "june:active-agent-profile";
+const CURRENT_DATA_PARTITION_STORAGE_KEY = "clovy:active-agent-profile";
 
 export type DataPartitionChangedDetail = { partition: string };
 

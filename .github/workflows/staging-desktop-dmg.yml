@@ -70,7 +70,7 @@ jobs:
           STAGING_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
           STAGING_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_ID }}
           STAGING_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_SECRET }}
-          STAGING_JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
+          STAGING_CLOVY_API_URL: ${{ secrets.STAGING_CLOVY_API_URL || secrets.STAGING_JUNE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -86,7 +86,7 @@ jobs:
             STAGING_OS_ACCOUNTS_CLIENT_ID \
             STAGING_GOOGLE_OAUTH_CLIENT_ID \
             STAGING_GOOGLE_OAUTH_CLIENT_SECRET \
-            STAGING_JUNE_API_URL
+            STAGING_CLOVY_API_URL
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required to build a staging distributable signed and notarized DMG."
@@ -108,13 +108,13 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_SECRET }}
-          JUNE_API_URL: ${{ secrets.STAGING_JUNE_API_URL }}
+          CLOVY_API_URL: ${{ secrets.STAGING_CLOVY_API_URL || secrets.STAGING_JUNE_API_URL }}
         run: pnpm tauri:build:signed-dmg --target universal-apple-darwin
 
       - name: Upload DMG
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: os-june-staging-dmg-${{ github.sha }}
+          name: clovy-staging-dmg-${{ github.sha }}
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/dmg/*.dmg

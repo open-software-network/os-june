@@ -19,6 +19,8 @@ on:
       - "scripts/**"
       - "src/**"
       - "src-tauri/**"
+      - "crates/clovy-companion-crypto/**"
+      - "crates/clovy-companion-protocol/**"
       - "crates/june-companion-crypto/**"
       - "crates/june-companion-protocol/**"
       - "tsconfig.json"
@@ -40,6 +42,8 @@ on:
       - "scripts/**"
       - "src/**"
       - "src-tauri/**"
+      - "crates/clovy-companion-crypto/**"
+      - "crates/clovy-companion-protocol/**"
       - "crates/june-companion-crypto/**"
       - "crates/june-companion-protocol/**"
       - "tsconfig.json"
@@ -152,17 +156,17 @@ jobs:
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/(clovy|june)-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(crates/(clovy|june)-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
             echo "companion=true" >> "$GITHUB_OUTPUT"
           else
             echo "companion=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|crates/june-companion-(crypto|protocol)/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.github/workflows/desktop\.yml$|crates/(clovy|june)-companion-(crypto|protocol)/|hud\.html$|index\.html$|meeting-hud\.html$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|public/|scripts/|src/|src-tauri/|tsconfig\.json$|vite\.config\.ts$)'; then
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
@@ -210,7 +214,7 @@ jobs:
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: companion-cargo-registry-${{ runner.os }}-${{ hashFiles('crates/june-companion-*/Cargo.lock') }}
+          key: companion-cargo-registry-${{ runner.os }}-${{ hashFiles('crates/*-companion-*/Cargo.lock') }}
           restore-keys: |
             companion-cargo-registry-${{ runner.os }}-
 
@@ -218,9 +222,11 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
+            crates/clovy-companion-crypto/target
+            crates/clovy-companion-protocol/target
             crates/june-companion-crypto/target
             crates/june-companion-protocol/target
-          key: companion-cargo-target-${{ runner.os }}-${{ hashFiles('crates/june-companion-*/Cargo.lock') }}
+          key: companion-cargo-target-${{ runner.os }}-${{ hashFiles('crates/*-companion-*/Cargo.lock') }}
           restore-keys: |
             companion-cargo-target-${{ runner.os }}-
 
@@ -329,7 +335,7 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: june-windows-unsigned-release-nsis
+          name: clovy-windows-unsigned-release-nsis
           path: artifacts/windows-unsigned/*-setup.exe
           if-no-files-found: error
 

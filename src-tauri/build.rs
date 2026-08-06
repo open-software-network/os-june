@@ -14,7 +14,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_SECRET");
-    println!("cargo:rerun-if-env-changed=JUNE_API_URL");
+    println!("cargo:rerun-if-env-changed=CLOVY_API_URL");
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
         link_swift_runtime();
@@ -133,11 +133,11 @@ fn prepare_computer_use_driver() {
     let executable = app_dir
         .join("Contents")
         .join("MacOS")
-        .join("june-computer-use-driver");
+        .join("clovy-computer-use-driver");
     let stamp = app_dir
         .join("Contents")
         .join("Resources")
-        .join("june-cua-driver-pin.json");
+        .join("clovy-cua-driver-pin.json");
     println!("cargo:rerun-if-env-changed=APPLE_SIGNING_IDENTITY");
     println!("cargo:rerun-if-changed={}", executable.display());
     println!("cargo:rerun-if-changed={}", stamp.display());
@@ -203,7 +203,7 @@ fn verify_computer_use_driver_source(
     assert_eq!(
         fields.as_slice(),
         [
-            "june-computer-use-driver",
+            "clovy-computer-use-driver",
             expected_version,
             expected_commit
         ],
@@ -232,7 +232,7 @@ fn verify_computer_use_driver_source(
     let expected_source_hash = format!("{:x}", source_hash.finalize());
     assert_eq!(
         stamp
-            .pointer("/juneBuild/sourceSha256")
+            .pointer("/clovyBuild/sourceSha256")
             .and_then(serde_json::Value::as_str),
         Some(expected_source_hash.as_str()),
         "computer use helper stamp does not match Clovy's helper source"
@@ -320,17 +320,19 @@ fn ensure_nm_shim_placeholder() {
     else {
         return;
     };
-    let shim = helper_dir.join("june-nm-shim");
-    if shim.exists() {
-        return;
-    }
-    if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
-        std::fs::write(
-            &shim,
-            b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
-        )
-    }) {
-        println!("cargo:warning=could not create nm shim placeholder: {error}");
+    for name in ["clovy-nm-shim", "june-nm-shim"] {
+        let shim = helper_dir.join(name);
+        if shim.exists() {
+            continue;
+        }
+        if let Err(error) = std::fs::create_dir_all(&helper_dir).and_then(|_| {
+            std::fs::write(
+                &shim,
+                b"placeholder: replaced by scripts/bundle-nm-shim.sh\n",
+            )
+        }) {
+            println!("cargo:warning=could not create {name} placeholder: {error}");
+        }
     }
 }
 
@@ -356,9 +358,9 @@ fn ensure_agent_runtime_placeholder() {
         return;
     }
     let executable = if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("windows") {
-        runtime_dir.join("june-agent-runtime.exe")
+        runtime_dir.join("clovy-agent-runtime.exe")
     } else {
-        runtime_dir.join("june-agent-runtime")
+        runtime_dir.join("clovy-agent-runtime")
     };
     if !executable.exists() {
         if let Err(error) = std::fs::write(
@@ -687,7 +689,7 @@ fn build_dictation_helper() {
         .expect("dictation helper resources dir should be created");
     let executable = macos_dir.join("june-dictation-helper");
     let icon_source = manifest_dir.join("icons").join("icon.icns");
-    let icon_destination = resources_dir.join("June.icns");
+    let icon_destination = resources_dir.join("Clovy.icns");
 
     let executable_current = swift_helper_executable_current(&source, &executable);
     let mut should_sign = false;
@@ -730,7 +732,7 @@ fn build_dictation_helper() {
   <key>CFBundleIdentifier</key>
   <string>co.opensoftware.june.dictation-helper</string>
   <key>CFBundleIconFile</key>
-  <string>June.icns</string>
+  <string>Clovy.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>

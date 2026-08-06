@@ -4,14 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Versioned wire contract for the Clovy Companion"
+description = "Compatibility forwarding crate for clovy-companion-protocol"
 
 [dependencies]
-base64 = "0.22"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-thiserror = "2"
-uuid = { version = "1", features = ["serde", "v4"] }
-
-[dev-dependencies]
-pretty_assertions = "1"
+clovy-companion-protocol = { path = "../clovy-companion-protocol" }

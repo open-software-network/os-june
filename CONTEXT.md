@@ -16,10 +16,10 @@ lines are binding. Implementation, endpoints, and code shape live under
 
 **Clovy (the app)**:
 The user-facing Tauri desktop product — the macOS `.app` users install. The
-binary on disk is named `os-june`, the Cargo package is `os-june`, the
-bundle identifier is `co.opensoftware.june`.
-Those are shipped June-era compatibility identities, not current product copy;
-see [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+Cargo package is `clovy`; the binary on disk remains `os-june` and the bundle
+identifier remains `co.opensoftware.june` for installed-app, updater, and
+permission continuity. See
+[ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 _Avoid_: notetaker, OS Notetaker (legacy names — fully removed from code as of
 the earlier bundle rename; don't reintroduce), June as the current product
 name.
@@ -30,8 +30,9 @@ AI provider keys, runs `authorize`→`charge` against OS Accounts on behalf of
 the Clovy app, and proxies the metered AI calls (transcription, generation,
 agent chat, web). Lives in the same repo as Clovy under its own Cargo
 workspace; ships as a separate container image to GHCR and runs in a TEE.
-Cargo crates use the `june-*` prefix; the binary is `june`.
-Those technical identities remain stable for compatibility under ADR-0054.
+Cargo crates use the `clovy-*` prefix and the binary is `clovy-api`; deployment
+continues publishing June-era image and service aliases for released clients
+under ADR-0055.
 _Avoid_: backend, proxy, AI proxy (use **Clovy API**).
 
 **OS Accounts**:
@@ -49,7 +50,7 @@ never in Clovy. A user's explicit Venice BYOK credential is stored locally by
 Clovy and forwarded only on eligible Venice requests. In code, each direct
 integration sits behind a domain trait
 (`Transcriber`, `Generator`, `AgentChatCompleter`, ...) defined in
-`june-domain` and implemented in `june-providers`; routed text calls reuse the
+`clovy-domain` and implemented in `clovy-providers`; routed text calls reuse the
 OpenAI-compatible Venice adapter and report the selected upstream as additive
 route metadata.
 _Avoid_: AI provider, model provider, vendor, "the LLM".

@@ -124,7 +124,7 @@ jobs:
           PRODUCTION_OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
-          PRODUCTION_JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          PRODUCTION_CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL || secrets.PRODUCTION_JUNE_API_URL }}
           PRODUCTION_LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
         run: |
           $missing = 0
@@ -139,7 +139,7 @@ jobs:
             "PRODUCTION_OS_ACCOUNTS_CLIENT_ID",
             "PRODUCTION_GOOGLE_OAUTH_CLIENT_ID",
             "PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET",
-            "PRODUCTION_JUNE_API_URL",
+            "PRODUCTION_CLOVY_API_URL",
             "PRODUCTION_LINEAR_OAUTH_CLIENT_ID"
           )
 
@@ -224,7 +224,7 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: |
-          $runtime = Get-Item ".tauri-agent-runtime/june-agent-runtime.exe" -ErrorAction Stop
+          $runtime = Get-Item ".tauri-agent-runtime/clovy-agent-runtime.exe" -ErrorAction Stop
           ./scripts/windows-sign.ps1 $runtime.FullName
           if ($LASTEXITCODE -ne 0) {
             throw "Agent runtime signing failed."
@@ -235,9 +235,9 @@ jobs:
           }
           $digest = (Get-FileHash -Algorithm SHA256 $runtime.FullName).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$($runtime.FullName).sha256" -Value $digest -NoNewline
-          $smokeDir = Join-Path $env:RUNNER_TEMP "June agent runtime smoke"
+          $smokeDir = Join-Path $env:RUNNER_TEMP "Clovy agent runtime smoke"
           New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
-          $smokeRuntime = Join-Path $smokeDir "june-agent-runtime.exe"
+          $smokeRuntime = Join-Path $smokeDir "clovy-agent-runtime.exe"
           Copy-Item -LiteralPath $runtime.FullName -Destination $smokeRuntime -Force
           node scripts/build-agent-runtime.mjs --smoke $smokeRuntime
           if ($LASTEXITCODE -ne 0) {
@@ -251,15 +251,15 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
-          JUNE_API_URL: ${{ secrets.PRODUCTION_JUNE_API_URL }}
+          CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL || secrets.PRODUCTION_JUNE_API_URL }}
           LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # Match macOS: new installs start in Auto at Higher Quality.
-          OS_JUNE_AUTO_MODE_DEFAULT: "true"
+          OS_CLOVY_AUTO_MODE_DEFAULT: "true"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
-          JUNE_AGENT_RUNTIME_PREBUILT: "1"
+          CLOVY_AGENT_RUNTIME_PREBUILT: "1"
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload
@@ -300,7 +300,7 @@ jobs:
           if ($listingText -notmatch [regex]::Escape("os-june.exe")) {
             throw "NSIS installer payload does not include os-june.exe."
           }
-          foreach ($expected in @("native/bin/june-agent-runtime.exe", "native/bin/june-agent-runtime.exe.sha256", "native/bin/june-dictation-helper.exe")) {
+          foreach ($expected in @("native/bin/clovy-agent-runtime.exe", "native/bin/clovy-agent-runtime.exe.sha256", "native/bin/june-dictation-helper.exe")) {
             if ($listingText -notmatch [regex]::Escape($expected)) {
               throw "NSIS installer payload does not include bundled file $expected."
             }
@@ -314,7 +314,7 @@ jobs:
       - name: Upload Windows artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: june-windows-production-nsis-${{ github.sha }}
+          name: clovy-windows-production-nsis-${{ github.sha }}
           path: src-tauri/target/release/bundle/nsis/*
           if-no-files-found: error
 
@@ -330,10 +330,18 @@ jobs:
           }
 
           $setupSig = Get-Item "$($setup.FullName).sig" -ErrorAction Stop
-          $stableSetup = Join-Path $env:RUNNER_TEMP "June_x64-setup.exe"
-          $stableSetupSig = Join-Path $env:RUNNER_TEMP "June_x64-setup.exe.sig"
+          $canonicalVersionedSetup = Join-Path $env:RUNNER_TEMP "Clovy_$($env:VERSION)_x64-setup.exe"
+          $canonicalVersionedSetupSig = "$canonicalVersionedSetup.sig"
+          $stableSetup = Join-Path $env:RUNNER_TEMP "Clovy_x64-setup.exe"
+          $stableSetupSig = Join-Path $env:RUNNER_TEMP "Clovy_x64-setup.exe.sig"
+          $legacyStableSetup = Join-Path $env:RUNNER_TEMP "June_x64-setup.exe"
+          $legacyStableSetupSig = Join-Path $env:RUNNER_TEMP "June_x64-setup.exe.sig"
+          Copy-Item -LiteralPath $setup.FullName -Destination $canonicalVersionedSetup -Force
+          Copy-Item -LiteralPath $setupSig.FullName -Destination $canonicalVersionedSetupSig -Force
           Copy-Item -LiteralPath $setup.FullName -Destination $stableSetup -Force
           Copy-Item -LiteralPath $setupSig.FullName -Destination $stableSetupSig -Force
+          Copy-Item -LiteralPath $setup.FullName -Destination $legacyStableSetup -Force
+          Copy-Item -LiteralPath $setupSig.FullName -Destination $legacyStableSetupSig -Force
 
           $manifest = Get-Content -Raw $env:RELEASE_MANIFEST_PATH | ConvertFrom-Json
           if ($manifest.version -ne $env:VERSION -and $manifest.version -ne "v$env:VERSION") {
@@ -343,7 +351,7 @@ jobs:
             $manifest | Add-Member -MemberType NoteProperty -Name "platforms" -Value ([pscustomobject]@{})
           }
 
-          $assetName = [System.Uri]::EscapeDataString($setup.Name)
+          $assetName = [System.Uri]::EscapeDataString((Split-Path -Leaf $canonicalVersionedSetup))
           $assetUrl = "https://github.com/open-software-network/os-june-releases/releases/download/v$env:VERSION/$assetName"
           $signature = (Get-Content -Raw $setupSig.FullName).Trim()
           $manifest.platforms | Add-Member -Force -MemberType NoteProperty -Name "windows-x86_64" -Value ([pscustomobject]@{
@@ -356,11 +364,15 @@ jobs:
           $assets = @(
             $setup.FullName,
             $setupSig.FullName,
+            $canonicalVersionedSetup,
+            $canonicalVersionedSetupSig,
             $stableSetup,
             $stableSetupSig,
+            $legacyStableSetup,
+            $legacyStableSetupSig,
             $env:RELEASE_MANIFEST_PATH
           )
-          foreach ($asset in $assets) {
+          foreach ($asset in $assets | Select-Object -Unique) {
             gh release upload "v$env:VERSION" $asset --repo open-software-network/os-june-releases --clobber
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to upload $asset."
@@ -374,6 +386,6 @@ jobs:
             "### Production Windows release",
             "- Version: ``$env:VERSION``",
             "- Release repo: ``open-software-network/os-june-releases``",
-            "- Marketing download: ``https://github.com/open-software-network/os-june-releases/releases/latest/download/June_x64-setup.exe``",
+            "- Marketing download: ``https://github.com/open-software-network/os-june-releases/releases/latest/download/Clovy_x64-setup.exe``",
             "- Updater platform key: ``windows-x86_64``"
           ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

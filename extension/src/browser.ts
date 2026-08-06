@@ -6,7 +6,7 @@ import {
 } from "./protocol";
 
 const GROUP_TITLE = "Clovy";
-const MUTATION_BINDING = "__juneDomMutation";
+const MUTATION_BINDING = "__clovyDomMutation";
 const CHUNK_BYTES = 256 * 1024;
 const INLINE_SNAPSHOT_BYTES = 384 * 1024;
 
@@ -234,9 +234,9 @@ async function attach(tabId: number): Promise<void> {
   await cdp(tabId, "Runtime.enable");
   await cdp(tabId, "Runtime.addBinding", { name: MUTATION_BINDING });
   const installMutationObserver = `(() => {
-      if (globalThis.__juneMutationObserver) return;
-      globalThis.__juneMutationObserver = new MutationObserver(() => globalThis.${MUTATION_BINDING}());
-      globalThis.__juneMutationObserver.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
+      if (globalThis.__clovyMutationObserver) return;
+      globalThis.__clovyMutationObserver = new MutationObserver(() => globalThis.${MUTATION_BINDING}());
+      globalThis.__clovyMutationObserver.observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
     })()`;
   await cdp(tabId, "Page.addScriptToEvaluateOnNewDocument", { source: installMutationObserver });
   await cdp(tabId, "Runtime.evaluate", { expression: installMutationObserver });

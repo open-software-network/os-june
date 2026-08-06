@@ -153,13 +153,13 @@ catalog CI test green.
   opt-out, including across a later re-enable.
   Reports still include an ISO week so OS Accounts can aggregate by reporting
   period, but no precise event timestamp is sent.
-- Transport uses `june_api.rs`'s authenticated JSON helper. This protects the
+- Transport uses `clovy_api.rs`'s authenticated JSON helper. This protects the
   public Clovy API route from unauthenticated writes while keeping user identity
   out of the telemetry report and out of the OS Accounts aggregate write.
 - Wire format:
 
 ```json
-POST {JUNE_API_URL}/v1/p3a/reports
+POST {CLOVY_API_URL}/v1/p3a/reports
 { "schema": 1, "questionId": "dictation.sessions", "bucket": 0,
   "platform": "macos", "versionSeries": "0.0.x", "epoch": "2026-W28" }
 ```
@@ -183,7 +183,7 @@ config, no breaking `/v1/*` changes — additive only):
 - `crates/services`: `P3aReportService` owns the Clovy-side question catalog
   and validation.
 - `crates/providers`: `OsAccountsP3aSink` forwards to OS Accounts with
-  `JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
+  `CLOVY__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
   Accounts user token. Local dev uses `LogP3aSink`.
 
 ### OS Accounts: storage + dashboards

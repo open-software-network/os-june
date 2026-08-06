@@ -21,15 +21,29 @@ pub struct CommandEnvelope {
     #[serde(default)]
     pub composer_request_id: Option<String>,
     #[serde(default)]
-    pub june_process_id: Option<u32>,
+    pub clovy_process_id: Option<u32>,
     #[serde(default)]
-    pub june_window_handle: Option<isize>,
+    pub clovy_window_handle: Option<isize>,
+    #[serde(default, rename = "juneProcessId")]
+    pub legacy_june_process_id: Option<u32>,
+    #[serde(default, rename = "juneWindowHandle")]
+    pub legacy_june_window_handle: Option<isize>,
     #[serde(default)]
     pub inserted: Option<bool>,
     #[serde(default)]
     pub duration_seconds: Option<u64>,
     #[serde(flatten)]
     pub _extra: serde_json::Map<String, Value>,
+}
+
+impl CommandEnvelope {
+    pub fn resolved_clovy_process_id(&self) -> Option<u32> {
+        self.clovy_process_id.or(self.legacy_june_process_id)
+    }
+
+    pub fn resolved_clovy_window_handle(&self) -> Option<isize> {
+        self.clovy_window_handle.or(self.legacy_june_window_handle)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -89,16 +103,27 @@ mod tests {
     }
 
     #[test]
-    fn composer_command_accepts_exact_june_window_identity() {
+    fn composer_command_prefers_canonical_clovy_window_identity() {
         let command: CommandEnvelope = serde_json::from_str(
-            r#"{"type":"start_listening","composerRequestId":"request-1","juneProcessId":42,"juneWindowHandle":1234,"takeId":"take-1"}"#,
+            r#"{"type":"start_listening","composerRequestId":"request-1","clovyProcessId":42,"clovyWindowHandle":1234,"juneProcessId":41,"juneWindowHandle":1233,"takeId":"take-1"}"#,
         )
         .expect("composer command parses");
 
         assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
-        assert_eq!(command.june_process_id, Some(42));
-        assert_eq!(command.june_window_handle, Some(1234));
+        assert_eq!(command.resolved_clovy_process_id(), Some(42));
+        assert_eq!(command.resolved_clovy_window_handle(), Some(1234));
         assert_eq!(command.take_id.as_deref(), Some("take-1"));
+    }
+
+    #[test]
+    fn composer_command_accepts_legacy_june_window_identity() {
+        let command: CommandEnvelope = serde_json::from_str(
+            r#"{"type":"start_listening","composerRequestId":"request-1","juneProcessId":42,"juneWindowHandle":1234}"#,
+        )
+        .expect("legacy composer command parses");
+
+        assert_eq!(command.resolved_clovy_process_id(), Some(42));
+        assert_eq!(command.resolved_clovy_window_handle(), Some(1234));
     }
 
     #[test]
@@ -124,7 +149,7 @@ mod tests {
         .expect("composer acknowledgement parses");
 
         assert_eq!(command.composer_request_id.as_deref(), Some("request-1"));
-        assert_eq!(command.june_process_id, Some(42));
+        assert_eq!(command.resolved_clovy_process_id(), Some(42));
         assert_eq!(command.inserted, Some(true));
     }
 

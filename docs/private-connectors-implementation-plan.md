@@ -56,14 +56,14 @@ Mac app (Tauri)
 ├── routines engine (existing) + **trust modes** + **template gallery (skills)**
 └── approval pipeline (existing agent approvals UI) — reused for sends/edits
 
-Clovy API (enclave, june-api/ workspace)
+Clovy API (enclave, clovy-api/ workspace)
 ├── **relay crate** — webhook receivers, event fetch, per-device encrypt, queue
 ├── **token vault** — sealed user grants (Phala KMS key release on attestation)
 └── metering (existing authorize→charge) + **new action slugs**
 
 OS Accounts — new action slugs, no schema changes expected
-  (Clovy API side is not free: ActionSlug is a closed enum in june-domain
-  with per-action hold-TTL config in june-config — each new slug is a
+  (Clovy API side is not free: ActionSlug is a closed enum in clovy-domain
+  with per-action hold-TTL config in clovy-config — each new slug is a
   Clovy API change too, see §3.5)
 Marketing site — /verify expansion, threat-model docs page, comparison rows
 ```
@@ -126,7 +126,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ## Phase 3 — Away-mode TEE relay (~6 weeks, starts after P1 core lands)
 
-### 3.1 Relay crate in `june-api/`
+### 3.1 Relay crate in `clovy-api/`
 
 - **Webhook ingress:** Gmail (Pub/Sub push subscription with OIDC token validation — validation must bind the token to our expected audience, issuer, and the push subscription's service account, not merely verify the signature), Calendar (push channels + renewal cron; verify the channel token/id against the registered watch), generic provider interface for Slack later. Replay protection on all ingress paths: the dedupe key must be derived, scoping the provider `message-id` to the registered watch/subscription (and user) boundary — a bare provider message-id is not globally unique, so two subscriptions sharing an opaque id could let one tenant's event suppress another's, or let an attacker's own subscription replay a colliding id to block a victim event. Endpoints live inside the enclave; TLS terminates inside (existing pattern).
 - **Event pipeline:** notification → fetch *minimal* payload with the user's token (headers/metadata only where possible; never bodies unless the routine's scope requires it) → serialize → encrypt to device key → enqueue → discard plaintext. Plaintext lifetime = milliseconds inside enclave memory.
@@ -152,7 +152,7 @@ Design rules: tools return compact structured summaries by default (subject/send
 
 ### 3.5 Metering
 
-- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged. Each new slug is also a Clovy API change: a variant in the closed `ActionSlug` enum (june-domain) plus per-action hold-TTL and pricing entries in june-config — plan the two-repo rollout together (config first, additive).
+- New slugs in OS Accounts: `connector_relay_event` (per delivered event, cheap — cover infra), and away-mode gated to **Pro** (clean plan differentiator; Hobby keeps local-only connectors). FundingGate behavior unchanged. Each new slug is also a Clovy API change: a variant in the closed `ActionSlug` enum (clovy-domain) plus per-action hold-TTL and pricing entries in clovy-config — plan the two-repo rollout together (config first, additive).
 
 **Exit criteria:** external security review of relay + vault (scope: enclave boundary, KMS policy, queue lifecycle); chaos tests green (enclave reset mid-queue, KMS unavailable, poisoned webhook payloads); attestation check enforced client-side; threat-model page live.
 

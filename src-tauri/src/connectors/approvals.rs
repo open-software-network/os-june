@@ -9,7 +9,7 @@
 //! - A routine in `autonomous` mode with the tool explicitly granted runs
 //!   without interruption.
 //! - Everything else parks: the action is registered in a process-global
-//!   pending-approval registry, a `june://connector-approvals-changed` event
+//!   pending-approval registry, a `clovy://connector-approvals-changed` event
 //!   fires, and the call blocks until the user approves or declines in the UI,
 //!   or a 600s timeout elapses.
 //!
@@ -35,7 +35,7 @@ use tokio::sync::oneshot;
 /// How long a parked action waits for the user before it gives up. Matches the
 /// connector OAuth login window so a slow-but-real approval is never cut short.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(600);
-const APPROVALS_CHANGED_EVENT: &str = "june://connector-approvals-changed";
+const APPROVALS_CHANGED_EVENT: &str = "clovy://connector-approvals-changed";
 
 /// The outcome of gating a mutating connector action.
 #[derive(Debug, Clone, PartialEq, Eq)]

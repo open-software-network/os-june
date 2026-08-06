@@ -49,11 +49,11 @@ if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/actions/setup-pnpm/|\.g
   needs_frontend=true
 fi
 
-if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
+if printf '%s\n' "$changed_files" | grep -Eq '^(crates/clovy-companion-(crypto|protocol)/|src-tauri/|\.github/workflows/desktop\.yml$)'; then
   needs_rust_macos=true
 fi
 
-if printf '%s\n' "$changed_files" | grep -Eq '^(crates/june-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
+if printf '%s\n' "$changed_files" | grep -Eq '^(crates/clovy-companion-(crypto|protocol)/|\.github/workflows/desktop\.yml$|Makefile$|scripts/local-ci\.sh$)'; then
   needs_companion=true
 fi
 

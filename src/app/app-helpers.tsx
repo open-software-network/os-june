@@ -188,7 +188,7 @@ export function withFakeRecovery(payload: BootstrapResponse): {
     enabled =
       new URLSearchParams(window.location.search).get("fake-recovery") === "1" ||
       window.location.hash.toLowerCase() === "#fake-recovery" ||
-      localStorage.getItem("os-june:dev:fake-recovery") === "1";
+      localStorage.getItem("os-clovy:dev:fake-recovery") === "1";
   } catch {
     return { payload };
   }

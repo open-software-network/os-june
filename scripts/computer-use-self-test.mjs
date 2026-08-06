@@ -25,7 +25,7 @@ const bundleDir = path.resolve(
   options.bundle || path.join(rootDir, ".tauri-helper", pin.bundleName),
 );
 const executable = path.join(bundleDir, "Contents", "MacOS", pin.executable);
-const stampPath = path.join(bundleDir, "Contents", "Resources", "june-cua-driver-pin.json");
+const stampPath = path.join(bundleDir, "Contents", "Resources", "clovy-cua-driver-pin.json");
 
 async function main() {
   if (process.platform !== "darwin") {
@@ -136,7 +136,7 @@ function validateBundle() {
     );
   }
   const version = run(executable, ["--version"]).combined.match(
-    /june-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
+    /clovy-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
   );
   if (version?.[1] !== pin.version || version?.[2] !== pin.sourceCommit) {
     throw new Error(
@@ -145,7 +145,7 @@ function validateBundle() {
   }
 
   const stamp = readJson(stampPath);
-  const profile = stamp.juneBuild?.profile;
+  const profile = stamp.clovyBuild?.profile;
   const expectedBundleIdentifier = computerUseBundleIdentifier({
     baseIdentifier: pin.bundleIdentifier,
     profile,
@@ -161,7 +161,7 @@ function validateBundle() {
   for (const [key, expected] of [
     ["CFBundleIdentifier", expectedBundleIdentifier],
     ["CFBundleDisplayName", "Clovy Computer Use Driver"],
-    ["CFBundleIconFile", "June.icns"],
+    ["CFBundleIconFile", "Clovy.icns"],
     ["CFBundleName", "Clovy Computer Use Driver"],
     ["LSMinimumSystemVersion", pin.minimumMacOSVersion],
   ]) {
@@ -170,7 +170,7 @@ function validateBundle() {
       throw new Error(`Computer use helper ${key} is ${actual}; expected ${expected}.`);
     }
   }
-  const bundledIcon = path.join(bundleDir, "Contents", "Resources", "June.icns");
+  const bundledIcon = path.join(bundleDir, "Contents", "Resources", "Clovy.icns");
   if (
     readFileSync(bundledIcon).compare(
       readFileSync(path.join(rootDir, "src-tauri", "icons", "icon.icns")),
@@ -193,14 +193,16 @@ function validateBundle() {
   if (
     stamp.version !== pin.version ||
     stamp.sourceCommit !== pin.sourceCommit ||
-    stamp.juneBuild?.sourceSha256 !== helperSourceSha256()
+    stamp.clovyBuild?.sourceSha256 !== helperSourceSha256()
   ) {
     throw new Error("Computer use helper stamp does not match Clovy's pinned source build.");
   }
-  if (options.requireDeveloperId && stamp.juneBuild?.profile !== "release") {
+  if (options.requireDeveloperId && stamp.clovyBuild?.profile !== "release") {
     throw new Error("A signed Computer use release must contain a release-profile helper.");
   }
-  const sbom = readJson(path.join(bundleDir, "Contents", "Resources", "june-cua-driver.spdx.json"));
+  const sbom = readJson(
+    path.join(bundleDir, "Contents", "Resources", "clovy-cua-driver.spdx.json"),
+  );
   const sbomPackage = sbom.packages?.find((entry) => entry.name === "cua-driver-rs");
   const sbomSource = sbomPackage?.externalRefs?.find(
     (reference) => reference.referenceType === "purl",
@@ -223,7 +225,7 @@ function validateBundle() {
   const architectures = new Set(
     run("/usr/bin/lipo", ["-archs", executable]).stdout.trim().split(/\s+/),
   );
-  const declaredArchitectures = stamp.juneBuild?.architectures || [];
+  const declaredArchitectures = stamp.clovyBuild?.architectures || [];
   if (declaredArchitectures.length === 0 || architectures.size !== declaredArchitectures.length) {
     throw new Error("Computer use helper architecture declarations do not match its binary.");
   }
@@ -252,7 +254,7 @@ function validateDirectLaunchRefusal() {
     timeout: 10_000,
     env: {
       ...driverEnvironment(),
-      JUNE_COMPUTER_USE_HELPER_CAPABILITY: "a".repeat(64),
+      CLOVY_COMPUTER_USE_HELPER_CAPABILITY: "a".repeat(64),
     },
   });
   const output = `${direct.stdout || ""}\n${direct.stderr || ""}`;
@@ -268,7 +270,7 @@ function resolveSelfTestHost() {
     return host;
   }
   const stamp = readJson(stampPath);
-  const profile = stamp.juneBuild?.profile === "release" ? "release" : "debug";
+  const profile = stamp.clovyBuild?.profile === "release" ? "release" : "debug";
   const host = path.join(rootDir, "src-tauri", "target", profile, "os-june");
   if (!existsSync(host)) {
     throw new Error(
@@ -342,7 +344,7 @@ async function runLiveSelfTest(client, promptPermissions) {
     );
   }
 
-  const tempDir = mkdtempSync(path.join(tmpdir(), "june-computer-use-self-test-"));
+  const tempDir = mkdtempSync(path.join(tmpdir(), "clovy-computer-use-self-test-"));
   let targetPid = 0;
   let observerPid = 0;
   let targetChild;
@@ -555,7 +557,7 @@ function makeFixtureApp(tempDir, fixtureExecutable, role) {
 <plist version="1.0"><dict>
 <key>CFBundleDisplayName</key><string>${displayName}</string>
 <key>CFBundleExecutable</key><string>${executableName}</string>
-<key>CFBundleIdentifier</key><string>co.opensoftware.june.computer-use-self-test.${role}</string>
+<key>CFBundleIdentifier</key><string>co.opensoftware.clovy.computer-use-self-test.${role}</string>
 <key>CFBundleName</key><string>${displayName}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -689,8 +691,9 @@ function driverEnvironment() {
   for (const name of Object.keys(env)) {
     if (
       name.startsWith("CUA_DRIVER_RS_") ||
+      name.startsWith("CLOVY_CUA_DRIVER") ||
       name.startsWith("JUNE_CUA_DRIVER") ||
-      name === "JUNE_COMPUTER_USE_BACKEND" ||
+      name === "CLOVY_COMPUTER_USE_BACKEND" ||
       ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].includes(
         name,
       )

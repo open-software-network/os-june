@@ -6,15 +6,15 @@ use tauri::{
 
 const AGENT_HUD_WINDOW_LABEL: &str = "agent-hud";
 const MAIN_WINDOW_LABEL: &str = "main";
-const AGENT_OPEN_EVENT: &str = "june:agent:open";
+const AGENT_OPEN_EVENT: &str = "clovy:agent:open";
 // Fired at the webview when the panel swallows a right- or ctrl-click so the
 // in-DOM menu can open. Mirrored by the listener in src/agent-hud.ts.
-const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "june:agent-hud:context-menu";
+const AGENT_HUD_CONTEXT_MENU_EVENT: &str = "clovy:agent-hud:context-menu";
 // Fired at the webview whenever the main window gains or loses focus. The
-// webview suppresses the HUD while the user is in June itself — the sidebar
+// webview suppresses the HUD while the user is in Clovy itself — the sidebar
 // and inline prompts already show session state there. Mirrored in
 // src/agent-hud.ts.
-const AGENT_HUD_MAIN_FOCUS_EVENT: &str = "june:agent-hud:main-focus";
+const AGENT_HUD_MAIN_FOCUS_EVENT: &str = "clovy:agent-hud:main-focus";
 const AGENT_HUD_WINDOW_WIDTH: f64 = 304.0;
 const AGENT_HUD_COLLAPSED_WINDOW_HEIGHT: f64 = 58.0;
 
@@ -415,11 +415,11 @@ fn agent_hud_panel_class() -> Option<&'static objc2::runtime::AnyClass> {
         }
     }
 
-    if let Some(class) = AnyClass::get(c"JuneAgentHudPanel") {
+    if let Some(class) = AnyClass::get(c"ClovyAgentHudPanel") {
         return Some(class);
     }
     let superclass = AnyClass::get(c"NSPanel")?;
-    let mut builder = ClassBuilder::new(c"JuneAgentHudPanel", superclass)?;
+    let mut builder = ClassBuilder::new(c"ClovyAgentHudPanel", superclass)?;
     unsafe {
         builder.add_method(
             sel!(canBecomeKeyWindow),

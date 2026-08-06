@@ -55,7 +55,7 @@ export const THINKING_LEVELS: readonly ThinkingLevelOption[] = Object.freeze([
 /** The control lands here when the user has never picked a level. */
 export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
 
-const STORAGE_KEY = "june.agent.thinkingLevel";
+const STORAGE_KEY = "clovy.agent.thinkingLevel";
 
 export function isThinkingLevel(value: unknown): value is ThinkingLevel {
   return value === "instant" || value === "medium" || value === "hard";
@@ -121,7 +121,7 @@ export function saveThinkingLevel(level: ThinkingLevel) {
  * via runtime events, instead of guessing from the machine-wide draft.
  */
 
-const SESSION_LEVELS_STORAGE_KEY = "june.agent.sessionThinkingLevels";
+const SESSION_LEVELS_STORAGE_KEY = "clovy.agent.sessionThinkingLevels";
 
 function readSessionLevelsStore(): Record<string, ThinkingLevel> {
   try {

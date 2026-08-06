@@ -2,7 +2,7 @@
 
 Clovy is an on-device **identity** client of OS Accounts (Login with Open
 Software). Metering (authorize/charge) is server-side in Clovy API, not here —
-see [june-api-prd.md](june-api-prd.md). Implementation lives in
+see [clovy-api-prd.md](clovy-api-prd.md). Implementation lives in
 `src-tauri/src/os_accounts.rs`; env vars are in [configuration.md](configuration.md).
 
 ## Flow (production)
@@ -19,7 +19,7 @@ see [june-api-prd.md](june-api-prd.md). Implementation lives in
    for an access + refresh token pair.
 4. Tokens are stored in the macOS **Keychain** (service
    `co.opensoftware.june.accounts`), never in the webview. Debug builds may set
-   `OS_JUNE_DEV_PLAINTEXT_TOKEN_STORE=1` to use a file instead and skip Keychain
+   `OS_CLOVY_DEV_PLAINTEXT_TOKEN_STORE=1` to use a file instead and skip Keychain
    prompts.
 5. The app fetches an **account snapshot** — `/me` + `/billing/balance` +
    `/billing/subscription` — surfaced to the UI as `AccountStatus`. `/me`
@@ -51,10 +51,10 @@ Avatar sync.
 
 ## Local dev
 
-`OS_JUNE_LOCAL_DEV=1` (client) plus `JUNE__LOCAL_DEV__ENABLED=true` (Clovy API)
+`OS_CLOVY_LOCAL_DEV=1` (client) plus `CLOVY__LOCAL_DEV__ENABLED=true` (Clovy API)
 short-circuit login to a fake signed-in account backed by a shared bearer token
-(`OS_JUNE_LOCAL_DEV_BEARER_TOKEN`), so a clone runs with no OS Accounts or
-billing. `OS_JUNE_USE_PROD_ACCOUNTS_TOKENS=1` opts a dev build back into real
+(`OS_CLOVY_LOCAL_DEV_BEARER_TOKEN`), so a clone runs with no OS Accounts or
+billing. `OS_CLOVY_USE_PROD_ACCOUNTS_TOKENS=1` opts a dev build back into real
 tokens.
 
 ## Boundary

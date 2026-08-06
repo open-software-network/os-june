@@ -38,7 +38,7 @@ The ignored command-layer benchmark uses finalized 48 kHz stereo WAV fixtures wi
 
 Each case has one warm-up, sample `0`, followed by five measured runs, samples `1` to `5`. Every reported median sorts the five measured values for that field independently and selects index `len / 2`. The warm-up is preserved in the raw evidence but excluded from medians.
 
-A loopback June API records request arrival before draining the request body. It returns a deterministic transcript after 100 ms, a dictation-cleanup response after 25 ms, and a generation response without an added delay. A database observer reads checkpoints, the first succeeded transcript joined to its audio artifact, and note status in one transaction every 5 ms. Consequently, `handoffToFirstPersistedMs` is observer detection time, not the exact commit timestamp. It has one 5 ms polling interval of deliberate sampling quantization plus query and runtime scheduling, so it can be later than both the native commit and an independently observed generation request. Fields are observed and medianed independently, so their median columns do not establish within-run event ordering. The fake generation endpoint characterizes orchestration only and is not production model latency.
+A loopback Clovy API records request arrival before draining the request body. It returns a deterministic transcript after 100 ms, a dictation-cleanup response after 25 ms, and a generation response without an added delay. A database observer reads checkpoints, the first succeeded transcript joined to its audio artifact, and note status in one transaction every 5 ms. Consequently, `handoffToFirstPersistedMs` is observer detection time, not the exact commit timestamp. It has one 5 ms polling interval of deliberate sampling quantization plus query and runtime scheduling, so it can be later than both the native commit and an independently observed generation request. Fields are observed and medianed independently, so their median columns do not establish within-run event ordering. The fake generation endpoint characterizes orchestration only and is not production model latency.
 
 The feature checkpoint keeps the legacy `turnWavExtractionDurationMs`/`durationMs` field equal to active preparation time. `activePreparationDurationMs` sums time spent doing preparation work. `producerWallDurationMs` measures the producer's elapsed lifetime, including waiting to send into the capacity-two channel while provider work is active. Producer wall time is intentionally not substituted for active preparation and is not directly comparable with the baseline's eager extraction duration.
 
@@ -176,7 +176,7 @@ The synthetic fixtures make real audio DSP and SQLite work repeatable, while the
 
 The change does not reuse live preview text, increase provider concurrency, add batching, optimize generation, change the one-second UI poll, or persist Microphone-only chunks incrementally. It preserves finalized saved audio as the note transcription source.
 
-This is a desktop-only scheduling change and does not require a June API backend deploy.
+This is a desktop-only scheduling change and does not require a Clovy API deploy.
 
 ## Reproduction commands
 

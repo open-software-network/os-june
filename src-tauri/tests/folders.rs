@@ -1,4 +1,4 @@
-use os_june_lib::db::{migrations::run_migrations, repositories::Repositories};
+use clovy_lib::db::{migrations::run_migrations, repositories::Repositories};
 use sqlx::query::query;
 use sqlx_sqlite::SqlitePoolOptions;
 

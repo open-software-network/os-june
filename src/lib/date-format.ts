@@ -1,5 +1,5 @@
-export const DATE_FORMAT_STORAGE_KEY = "june:date-format";
-export const DATE_FORMAT_CHANGED_EVENT = "june:date-format-changed";
+export const DATE_FORMAT_STORAGE_KEY = "clovy:date-format";
+export const DATE_FORMAT_CHANGED_EVENT = "clovy:date-format-changed";
 
 export type DateFormatPreference = "system" | "month-first" | "day-first";
 

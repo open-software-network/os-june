@@ -1,12 +1,12 @@
 #[cfg(target_os = "windows")]
 use crate::audio::turns::normalize_wav_for_transcription;
+use crate::clovy_api::{
+    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
+    TranscriptionProviderResult,
+};
 use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
-};
-use crate::june_api::{
-    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
-    TranscriptionProviderResult,
 };
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use chrono::Utc;
@@ -41,11 +41,11 @@ const DICTATION_CLEANUP_BASE_TIMEOUT_MS: u64 = 15_000;
 /// conservative floor of ~50 tokens/s for the cleanup model.
 const DICTATION_CLEANUP_TIMEOUT_MS_PER_BYTE: u64 = 5;
 const DICTATION_CLEANUP_MAX_TIMEOUT_MS: u64 = 60_000;
-/// No single cleanup request may wait longer than June API's cleanup billing
+/// No single cleanup request may wait longer than Clovy API's cleanup billing
 /// hold (`cleanup_hold_ttl_seconds`, 30s): a response that arrives after its
 /// hold expired could paste text whose charge no longer settles. The overall
 /// budget above spans multiple sequential chunk requests; this cap bounds
-/// each one. Keep in sync with the june-api config default.
+/// each one. Keep in sync with the clovy-api config default.
 const DICTATION_CLEANUP_REQUEST_MAX_TIMEOUT_MS: u64 = 30_000;
 /// Above this size, cleanup runs chunked. Measured against the production
 /// prompt (JUN-212): the cleanup model punctuates ~800-byte passages of
@@ -72,7 +72,7 @@ const EMAIL_APP_BUNDLE_IDS: &[&str] = &[
 ];
 const DICTATION_AUDIO_ACTIVITY_THRESHOLD: f32 = 0.04;
 /// Sound Analysis reports a confidence for its trained `speech` class. When
-/// both this score and the helper's independent peak/RMS meter stay low, June
+/// both this score and the helper's independent peak/RMS meter stay low, Clovy
 /// withholds automatic paste but keeps the transcript recoverable. This is not
 /// a destructive silence test: quiet speech can also fall below both cutoffs.
 const DICTATION_SPEECH_CONFIDENCE_THRESHOLD: f32 = 0.4;
@@ -424,7 +424,7 @@ pub struct HotkeyStatus {
 
 /// Position the HUD remembers between dictation sessions in the same process.
 /// Intentionally process-scoped, not disk-persisted: every fresh launch of
-/// June should put the pill back at top-center, but within a single run
+/// Clovy should put the pill back at top-center, but within a single run
 /// the user's drag-to-corner choice should stick.
 pub struct HudPosition {
     inner: Mutex<Option<(i32, i32)>>,
@@ -1693,10 +1693,20 @@ pub fn dictation_helper_command(
         if command.get("composerRequestId").is_some() {
             if let Some(object) = command.as_object_mut() {
                 object.insert(
+                    "clovyProcessId".into(),
+                    serde_json::json!(std::process::id()),
+                );
+                object.insert(
+                    // Compatibility for released Windows helpers.
                     "juneProcessId".into(),
                     serde_json::json!(std::process::id()),
                 );
                 object.insert(
+                    "clovyWindowHandle".into(),
+                    serde_json::json!(webview_window_handle(&window)?),
+                );
+                object.insert(
+                    // Compatibility for released Windows helpers.
                     "juneWindowHandle".into(),
                     serde_json::json!(webview_window_handle(&window)?),
                 );
@@ -3346,10 +3356,20 @@ fn forward_dictation_command(
                     #[cfg(target_os = "windows")]
                     {
                         object.insert(
+                            "clovyProcessId".into(),
+                            serde_json::json!(std::process::id()),
+                        );
+                        object.insert(
+                            // Compatibility for released Windows helpers.
                             "juneProcessId".into(),
                             serde_json::json!(std::process::id()),
                         );
                         object.insert(
+                            "clovyWindowHandle".into(),
+                            serde_json::json!(registration.window_handle),
+                        );
+                        object.insert(
+                            // Compatibility for released Windows helpers.
                             "juneWindowHandle".into(),
                             serde_json::json!(registration.window_handle),
                         );
@@ -4313,7 +4333,7 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
 
 /// Whether a macOS `ps` state represents a process that can still own runtime
 /// resources. `E` (exiting) and `Z` (zombie) entries may remain in the process
-/// table and pass `kill -0`, but cannot own June's global event tap.
+/// table and pass `kill -0`, but cannot own Clovy's global event tap.
 #[cfg(target_os = "macos")]
 fn process_state_is_terminal(state: &str) -> bool {
     state.trim().chars().any(|flag| matches!(flag, 'E' | 'Z'))
@@ -4374,7 +4394,9 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
 
     let mut command = Command::new(&helper_path);
     #[cfg(target_os = "macos")]
-    command.env("JUNE_OWNER_PID", std::process::id().to_string());
+    command
+        .env("CLOVY_OWNER_PID", std::process::id().to_string())
+        .env("JUNE_OWNER_PID", std::process::id().to_string());
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -7293,7 +7315,7 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         || normalized_message.contains("no recorded audio")
         || normalized_message.contains("audio file is too short")
         || normalized_message.contains("did not return any transcript")
-        // June API collapses an empty dictation to a BadRequest whose message
+        // Clovy API collapses an empty dictation to a BadRequest whose message
         // is the service reason (e.g. "no_speech", "dictation_text_empty").
         // Treat those as "nothing captured", not a fault.
         || normalized_message.contains("no_speech")
@@ -7361,7 +7383,7 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
     // Restore the in-memory drag position if it's still on-screen. This
     // doesn't persist across app restarts — that's deliberate; quitting
-    // June resets the HUD to top-center so it can't end up lost on a
+    // Clovy resets the HUD to top-center so it can't end up lost on a
     // monitor that's no longer connected.
     if let Some(state) = app.try_state::<HudPosition>() {
         let saved = state.inner.lock().ok().and_then(|guard| *guard);
@@ -7700,7 +7722,7 @@ fn hide_dictation_tooltip(app: &AppHandle) {
 /// `NSWindowStyleMaskNonactivatingPanel` style bit, so clicking the drag
 /// handle or stop button doesn't steal focus from whichever app the user is
 /// dictating into. Without this, every interaction with the HUD activates
-/// June and yanks the text cursor out of the user's document.
+/// Clovy and yanks the text cursor out of the user's document.
 #[cfg(target_os = "macos")]
 fn make_hud_nonactivating(hud: &WebviewWindow) {
     use objc2::msg_send;
@@ -7951,7 +7973,7 @@ mod tests {
             OwnerLiveness::Alive
         );
         // Same pid, DIFFERENT start time -> the pid was recycled (e.g. a new
-        // June with a sequentially-reused pid); the original owner is dead, so
+        // Clovy with a sequentially-reused pid); the original owner is dead, so
         // its record is NOT treated as the new instance's own. This is the
         // JUN-338 reopening the round-3 review caught.
         assert_eq!(
@@ -8225,7 +8247,7 @@ mod tests {
     fn indicator_clears_on_every_way_a_take_can_end() {
         // Must match DICTATION_FINISHED_EVENTS in src/lib/dictation-events.ts.
         // Success, discard, and each failure/terminal path all clear the menu
-        // bar — a stuck indicator claims June is listening when it is not.
+        // bar — a stuck indicator claims Clovy is listening when it is not.
         for event in [
             "recording_discarded",
             "final_transcript",

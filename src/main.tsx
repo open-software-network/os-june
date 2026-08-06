@@ -1,3 +1,4 @@
+import "./lib/storage-compat-bootstrap";
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Agentation } from "agentation";
@@ -20,14 +21,18 @@ import "./styles/app.css";
 declare global {
   interface Window {
     /** Devtools-console testing hooks; not referenced by app code. */
+    clovy?: { replayOnboarding: typeof replayOnboarding };
+    /** June-era alias retained for existing development links and notes. */
     june?: { replayOnboarding: typeof replayOnboarding };
   }
 }
 
-// `june.replayOnboarding()` in the webview console re-runs the wizard;
+// `clovy.replayOnboarding()` in the webview console re-runs the wizard;
 // pass a step id ("permissions", "mood", ...) to land on that step.
 if (import.meta.env.DEV) {
-  window.june = { replayOnboarding };
+  const devtools = { replayOnboarding };
+  window.clovy = devtools;
+  window.june = devtools;
 }
 
 initTheme();

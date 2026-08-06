@@ -8,7 +8,7 @@ import {
 } from "../../lib/tauri";
 import { BrowserApprovalCard } from "./chat-turns/AgentActionCards";
 
-const BROWSER_APPROVALS_CHANGED_EVENT = "june://browser-approvals-changed";
+const BROWSER_APPROVALS_CHANGED_EVENT = "clovy://browser-approvals-changed";
 
 /** Shell-owned approval surface because a browser action can park while the
  * user navigates away from the originating session. */

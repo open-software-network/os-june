@@ -5,6 +5,6 @@
   "version": "0.5.0",
   "bundleName": "June Computer Use Driver.app",
   "bundleIdentifier": "co.opensoftware.june.computer-use-driver",
-  "executable": "june-computer-use-driver",
+  "executable": "clovy-computer-use-driver",
   "minimumMacOSVersion": "14.0"
 }

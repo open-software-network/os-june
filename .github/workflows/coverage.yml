@@ -62,7 +62,7 @@ jobs:
           path: src-tauri/target/llvm-cov/html
           if-no-files-found: error
 
-  june-api:
+  clovy-api:
     name: Clovy API coverage artifacts
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
@@ -73,13 +73,13 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@528e28158500e8adf409c61ac0eaa6bdd47f49ca # cargo-llvm-cov
       - name: cargo llvm-cov
-        working-directory: june-api
+        working-directory: clovy-api
         env:
           RUST_BACKTRACE: 1
         run: cargo llvm-cov --workspace --all-features --html --output-dir target/llvm-cov/html
       - name: Upload coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: june-api-rust-coverage
-          path: june-api/target/llvm-cov/html
+          name: clovy-api-rust-coverage
+          path: clovy-api/target/llvm-cov/html
           if-no-files-found: error

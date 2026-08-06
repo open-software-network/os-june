@@ -13,7 +13,7 @@ import {
   THINKING_LEVELS,
 } from "../lib/thinking-level";
 
-const STORAGE_KEY = "june.agent.thinkingLevel";
+const STORAGE_KEY = "clovy.agent.thinkingLevel";
 
 describe("thinking levels", () => {
   it("exposes exactly three stops in track order", () => {
@@ -88,7 +88,7 @@ describe("thinking level persistence", () => {
 });
 
 describe("per-session thinking levels", () => {
-  const SESSIONS_KEY = "june.agent.sessionThinkingLevels";
+  const SESSIONS_KEY = "clovy.agent.sessionThinkingLevels";
 
   beforeEach(() => {
     window.localStorage.clear();

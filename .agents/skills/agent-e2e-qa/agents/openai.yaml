@@ -1,7 +1,7 @@
 interface:
   display_name: "Agent E2E QA"
   short_description: "Record, compress, and attach live or background QA walkthroughs."
-  default_prompt: "Use $agent-e2e-qa with Browser, Chrome, Computer Use, and terminal context to run a recorded QA walkthrough for the changed June app flow."
+  default_prompt: "Use $agent-e2e-qa with Browser, Chrome, Computer Use, and terminal context to run a recorded QA walkthrough for the changed Clovy app flow."
 
 dependencies:
   tools:

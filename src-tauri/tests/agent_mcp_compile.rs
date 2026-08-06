@@ -1,4 +1,4 @@
-use os_june_lib::agent_mcp::{
+use clovy_lib::agent_mcp::{
     runtime_tool_name, AgentMcpRepository, AgentMcpSubsystem, KeychainMcpSecretStore,
     McpServerDefinition, McpTransport,
 };

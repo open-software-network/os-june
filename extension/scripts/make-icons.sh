@@ -25,7 +25,7 @@ CROP=412 # 512 * 0.805; measured opaque squircle bounds (alpha > 64)
 
 mkdir -p "$OUT"
 
-WORK="$(mktemp -d -t june-icon-crop)"
+WORK="$(mktemp -d -t clovy-icon-crop)"
 trap 'rm -rf "$WORK"' EXIT
 sips -c "$CROP" "$CROP" "$SRC" --out "$WORK/squircle.png" >/dev/null
 

@@ -165,7 +165,7 @@ pub async fn compact_agent_session(
         .filter_map(history_item)
         .collect::<Vec<_>>();
     let model = normalize_agent_model(&session.model);
-    let context_window = crate::providers::june_model_runtime_capabilities(&model)
+    let context_window = crate::providers::clovy_model_runtime_capabilities(&model)
         .await
         .context_tokens
         .unwrap_or(128_000)
@@ -1015,7 +1015,7 @@ pub(crate) async fn resolve_companion_computer_use_approval(
     app: &AppHandle,
     request_id: &str,
     stored_session_id: &str,
-    decision: june_companion_protocol::ComputerUseApprovalDecision,
+    decision: clovy_companion_protocol::ComputerUseApprovalDecision,
     origin: crate::companion::ComputerUseApprovalOrigin,
 ) -> Result<Value, AppError> {
     use sqlx::row::Row;
@@ -1046,8 +1046,8 @@ pub(crate) async fn resolve_companion_computer_use_approval(
         resolution: json!({
             "kind": "approval",
             "choice": match decision {
-                june_companion_protocol::ComputerUseApprovalDecision::Approve => "once",
-                june_companion_protocol::ComputerUseApprovalDecision::Deny => "deny",
+                clovy_companion_protocol::ComputerUseApprovalDecision::Approve => "once",
+                clovy_companion_protocol::ComputerUseApprovalDecision::Deny => "deny",
             },
             "storedSessionId": stored_session_id,
         }),
@@ -1189,7 +1189,7 @@ async fn resolve_agent_interruption_inner(
         )
     })?;
     let model = normalize_agent_model(&run.model);
-    let auto_run = crate::june_api::is_agent_auto_model(&model);
+    let auto_run = crate::clovy_api::is_agent_auto_model(&model);
     let resolved_model = resolved_model_from_usage(run.usage.as_ref());
     if auto_run && resolved_model.is_none() {
         return Err(AppError::new(
@@ -1470,7 +1470,7 @@ fn resolved_model_from_usage(usage: Option<&Value>) -> Option<&str> {
         .and_then(|usage| usage.get("resolvedModel"))
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|model| crate::june_api::is_canonical_agent_model(model))
+        .filter(|model| crate::clovy_api::is_canonical_agent_model(model))
 }
 
 fn runtime_dispatch_is_ambiguous(error: &AppError) -> bool {
@@ -1862,7 +1862,8 @@ async fn run_params(
     repository: &AgentRepository,
     request: RunParamsInput<'_>,
 ) -> Result<Value, AppError> {
-    let model_capabilities = crate::providers::june_model_runtime_capabilities(request.model).await;
+    let model_capabilities =
+        crate::providers::clovy_model_runtime_capabilities(request.model).await;
     let supports_vision = model_capabilities.supports_vision;
     let context_window = model_capabilities
         .context_tokens
@@ -2363,7 +2364,7 @@ fn message_with_attachment_context(
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "[June attachment manifest v1]\nThe following files are available locally. Use Clovy's file tools to inspect them when needed:\n{manifest}\n\n{message}"
+        "[Clovy attachment manifest v1]\nThe following files are available locally. Use Clovy's file tools to inspect them when needed:\n{manifest}\n\n{message}"
     )
 }
 
@@ -2818,9 +2819,9 @@ mod tests {
     fn resumable_configuration_excludes_replayed_input_but_keeps_policy() {
         let instructions = crate::agent_runtime::persona::append_persona_instructions(
             "Focused run policy.",
-            &crate::agent_runtime::persona::JunePersonaSettings {
-                schema_version: crate::agent_runtime::persona::JUNE_PERSONA_SCHEMA_VERSION,
-                area: crate::agent_runtime::persona::JunePersonaArea::Thinking,
+            &crate::agent_runtime::persona::ClovyPersonaSettings {
+                schema_version: crate::agent_runtime::persona::CLOVY_PERSONA_SCHEMA_VERSION,
+                area: crate::agent_runtime::persona::ClovyPersonaArea::Thinking,
                 voice: 45,
                 detail: 90,
                 initiative: 75,
@@ -2876,7 +2877,7 @@ mod tests {
             "# Brief"
         );
         let input = message_with_attachment_context("Summarize this.", &attachments);
-        assert!(input.starts_with("[June attachment manifest v1]"));
+        assert!(input.starts_with("[Clovy attachment manifest v1]"));
         assert!(input.contains("launch-brief.custom"));
         assert!(input.contains(&attachments[0].path));
         assert!(input.ends_with("Summarize this."));
@@ -2925,7 +2926,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_auto_alias_uses_the_priced_june_model_id() {
+    fn legacy_auto_alias_uses_the_priced_clovy_model_id() {
         assert_eq!(
             normalize_agent_model("auto"),
             crate::providers::AUTO_GENERATION_MODEL

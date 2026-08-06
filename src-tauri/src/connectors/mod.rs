@@ -51,7 +51,7 @@ pub(crate) const GITHUB_OAUTH_CLIENT_SECRET_ENV: &str = "GITHUB_OAUTH_CLIENT_SEC
 /// Tauri event emitted when a GitHub device code is obtained. The camelCase
 /// payload carries `userCode`, `verificationUri`, and `expiresInSeconds` so
 /// the frontend dialog can display the code and open the verification URL.
-const GITHUB_DEVICE_CODE_EVENT: &str = "june://connectors-github-device-code";
+const GITHUB_DEVICE_CODE_EVENT: &str = "clovy://connectors-github-device-code";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -171,13 +171,6 @@ fn env_or_build_trimmed(key: &str, build_value: Option<&'static str>) -> String 
     } else {
         runtime_value
     }
-}
-
-pub(crate) fn env_truthy(key: &str) -> bool {
-    matches!(
-        env_trimmed(key).to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
 }
 
 /// Cryptographically-random base64url string of `bytes` entropy. Mirrors
@@ -806,7 +799,7 @@ async fn refresh_github_access_token_with_freshness_gate(
 /// or a background `reconnect_required` transition) so an open settings page
 /// refreshes without a remount. The frontend `CONNECTORS_CHANGED_EVENT`
 /// subscribes to this.
-const CONNECTORS_CHANGED_EVENT: &str = "june://connectors-changed";
+const CONNECTORS_CHANGED_EVENT: &str = "clovy://connectors-changed";
 
 fn emit_connectors_changed(app: &tauri::AppHandle) {
     use tauri::Emitter;

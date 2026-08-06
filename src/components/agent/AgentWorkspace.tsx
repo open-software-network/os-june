@@ -53,7 +53,7 @@ import {
   assignSessionToProfile,
   downloadAgentArtifact,
   dictationHelperCommand,
-  juneHomeChat,
+  clovyHomeChat,
   type ClovyHomeChatResponse,
   listVeniceModels,
   providerModelSettings,
@@ -149,19 +149,19 @@ import {
 import type { AgentWorkspaceProps } from "./agent-workspace-types";
 import {
   forgetClovyHomeStoredSessionId,
-  juneHomeDailyCheckIn,
-  juneHomeDayKey,
-  juneHomeDayLabel,
-  juneHomeGreetingParts,
-  juneHomeNudgePrompts,
-  JUNE_HOME_THREAD_CHANGED_EVENT,
+  clovyHomeDailyCheckIn,
+  clovyHomeDayKey,
+  clovyHomeDayLabel,
+  clovyHomeGreetingParts,
+  clovyHomeNudgePrompts,
+  CLOVY_HOME_THREAD_CHANGED_EVENT,
   resolveClovyHomeThreadSessionId,
   stripClovyHomeContextFromPreview,
   withClovyHomeCurrentResearch,
   withClovyHomeLatestTaskIntent,
   type ClovyHomeConversationContext,
   type ClovyHomeTaskRequest,
-} from "../../lib/june-home";
+} from "../../lib/clovy-home";
 import type { AgentChatTurn } from "../../lib/agent-chat-runtime";
 import {
   clearHomeTaskHandoffActive,
@@ -197,7 +197,7 @@ export {
   type AgentSessionsChangedDetail,
 } from "./agent-workspace-config";
 
-export const AGENT_RUNTIME_EVENT = "june://agent-runtime-event";
+export const AGENT_RUNTIME_EVENT = "clovy://agent-runtime-event";
 const DEFAULT_MODEL = AUTO_MODEL_ID;
 const AGENT_SUGGESTED_MODEL_IDS = [AUTO_MODEL_ID] as const;
 const AGENT_AUTO_MODEL: VeniceModelDto = {
@@ -664,8 +664,8 @@ export function AgentWorkspace({
       setHomeDirectTurns(restoredTurns);
       setHomeTaskHandoffs(readHomeTaskHandoffs(storedSessionId));
     };
-    window.addEventListener(JUNE_HOME_THREAD_CHANGED_EVENT, refreshHomeThread);
-    return () => window.removeEventListener(JUNE_HOME_THREAD_CHANGED_EVENT, refreshHomeThread);
+    window.addEventListener(CLOVY_HOME_THREAD_CHANGED_EVENT, refreshHomeThread);
+    return () => window.removeEventListener(CLOVY_HOME_THREAD_CHANGED_EVENT, refreshHomeThread);
   }, [homeMode]);
 
   const publishSessions = useCallback((next: AgentSessionDto[]) => {
@@ -1749,7 +1749,7 @@ export function AgentWorkspace({
             {
               type: "tool",
               id: toolCallId,
-              name: "june_home_start_task",
+              name: "clovy_home_start_task",
               text: "",
               status: "complete",
             },
@@ -1796,7 +1796,7 @@ export function AgentWorkspace({
         try {
           response =
             (await homeDemoReply(profile, onDelta)) ??
-            (await juneHomeChat(conversation.recentMessages, {
+            (await clovyHomeChat(conversation.recentMessages, {
               profile,
               ...(conversation.earlierContext
                 ? { historyContext: conversation.earlierContext }
@@ -1829,7 +1829,7 @@ export function AgentWorkspace({
                   {
                     type: "tool",
                     id: toolCallId,
-                    name: "june_home_start_task",
+                    name: "clovy_home_start_task",
                     text: "",
                     status: "complete",
                   },
@@ -2152,16 +2152,16 @@ export function AgentWorkspace({
     return ids;
   }, [homeConversationTurns]);
   const homeCheckIn = homeMode
-    ? juneHomeDailyCheckIn(getCurrentDataPartitionName())
+    ? clovyHomeDailyCheckIn(getCurrentDataPartitionName())
     : { createdAt: "", text: "" };
   const lastHomeTurn = homeConversationTurns.at(-1);
   const homeGreetingVisible =
     homeMode && (!lastHomeTurn || lastHomeTurn.createdAt.localeCompare(homeCheckIn.createdAt) < 0);
-  const homeGreeting = juneHomeGreetingParts(new Date(), {
+  const homeGreeting = clovyHomeGreetingParts(new Date(), {
     displayName: homeUserDisplayName,
     returning: homeConversationTurns.length > 0,
   });
-  const homeNudgePrompts = juneHomeNudgePrompts(new Date());
+  const homeNudgePrompts = clovyHomeNudgePrompts(new Date());
   const renderedArtifacts = artifacts.filter((artifact) => artifact.available).map(artifactView);
   const openArtifact = (artifact: AgentArtifact) => setArtifactPanel({ view: "file", artifact });
   const downloadArtifact = async (artifact: AgentArtifact) => {
@@ -2357,10 +2357,10 @@ export function AgentWorkspace({
               <div className="agent-timeline" data-home="true">
                 {homeConversationTurns.map((turn, index) => {
                   const previous = index > 0 ? homeConversationTurns[index - 1] : undefined;
-                  const dayKey = juneHomeDayKey(turn.createdAt);
+                  const dayKey = clovyHomeDayKey(turn.createdAt);
                   const dayMarker =
-                    previous && dayKey && dayKey !== juneHomeDayKey(previous.createdAt) ? (
-                      <div className="agent-home-day">{juneHomeDayLabel(turn.createdAt)}</div>
+                    previous && dayKey && dayKey !== clovyHomeDayKey(previous.createdAt) ? (
+                      <div className="agent-home-day">{clovyHomeDayLabel(turn.createdAt)}</div>
                     ) : null;
                   return (
                     <Fragment key={turn.id}>
@@ -2396,10 +2396,10 @@ export function AgentWorkspace({
                 {homeGreetingVisible ? (
                   <>
                     {homeConversationTurns.length > 0 &&
-                    juneHomeDayKey(homeCheckIn.createdAt) !==
-                      juneHomeDayKey(homeConversationTurns.at(-1)?.createdAt ?? "") ? (
+                    clovyHomeDayKey(homeCheckIn.createdAt) !==
+                      clovyHomeDayKey(homeConversationTurns.at(-1)?.createdAt ?? "") ? (
                       <div className="agent-home-day">
-                        {juneHomeDayLabel(homeCheckIn.createdAt)}
+                        {clovyHomeDayLabel(homeCheckIn.createdAt)}
                       </div>
                     ) : null}
                     <div className="agent-home-greeting">

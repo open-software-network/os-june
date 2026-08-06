@@ -5,9 +5,10 @@ The RC workflow submits changed extension bytes for Chrome review with deferred
 publication. Stable desktop promotion is blocked until Chrome approves that
 exact package, then publishes it after the desktop release succeeds.
 
-The `June-extension.zip` artifact name and existing store item identity are
-retained June-era compatibility identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy-extension.zip` is the canonical artifact. The release also publishes a
+June-named alias, and the existing store item identity remains unchanged for
+installed-extension continuity under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md).
 
@@ -54,7 +55,7 @@ already out:
 
 - **RC**: `Submit extension release candidate` still builds and tests the
   extension, then skips every store step with a notice. It also removes any
-  stale `extension-build.json` / `June-extension.zip` from the fixed `rc`
+  stale `extension-build.json` / `Clovy-extension.zip` from the fixed `rc`
   release so the RC promotes desktop-only instead of correlating another
   RC's extension bytes.
 - **Stable**: the preflight promotes an RC that carries no extension
@@ -127,7 +128,7 @@ fields removed) with the latest stable `extension-build.json`:
   validation;
 - `reused-rc` - a later desktop RC has identical extension inputs and reuses the
   current package/submission;
-- `changed` - the workflow builds `June-extension.zip`, maps
+- `changed` - the workflow builds `Clovy-extension.zip`, maps
   `X.Y.Z-rc.N` to store version `(X+1).Y.Z.N`, uploads it, and requests
   `STAGED_PUBLISH` review.
 
@@ -136,7 +137,7 @@ The fixed public `rc` release then contains:
 - `rc-build.json` - desktop version and source commit;
 - `extension-build.json` - source fingerprint, pinned item ID, store version,
   package SHA-256, and current submission state;
-- `June-extension.zip` - present only when this RC has an extension package to
+- `Clovy-extension.zip` - present only when this RC has an extension package to
   promote.
 
 Chrome review is asynchronous. A successful RC workflow means the submission is
@@ -188,7 +189,7 @@ staged.
   and stable preflight fails the correlation check for the new RC. Rerun the
   failed job once the cause is fixed. If the break is persistent and the
   desktop must ship, delete both `extension-build.json` and
-  `June-extension.zip` from the `rc` release
+  `Clovy-extension.zip` from the `rc` release
   (`gh release delete-asset rc <asset> --yes`) to promote desktop-only.
 - **Submission succeeded but RC asset upload failed** - rerun the failed job.
   Live state for the current version is treated as non-reusable prior metadata;
@@ -217,8 +218,8 @@ stable promotion.
 The release workflow runs the same extension checks before packaging:
 
 ```sh
-pnpm --filter june-extension typecheck
-pnpm --filter june-extension test
+pnpm --filter clovy-extension typecheck
+pnpm --filter clovy-extension test
 pnpm extension:build
 ```
 

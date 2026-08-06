@@ -5,9 +5,10 @@ Clovy ships signed, notarized macOS builds with in-app auto-updates through
 signatures, the DMG, and `latest.json` are published to the public
 `open-software-network/os-june-releases` repo.
 
-The release repository, `June_*` artifact names, and documented `June.app`
-validation paths are retained June-era compatibility identities under
-[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+`Clovy_*` names are canonical release artifacts. The existing release
+repository, June-named artifact aliases, and installed `June.app` path remain
+compatibility identities under
+[ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ## macOS support
 
@@ -43,7 +44,7 @@ Create or confirm these before cutting the first updater release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_JUNE_API_URL`.
+  `PRODUCTION_CLOVY_API_URL`.
 - Slack incoming-webhook secret: `SLACK_WEBHOOK_URL`, configured for the release
   announcements channel. An absent or failing webhook warns but does not fail an
   otherwise successful RC build.
@@ -84,7 +85,8 @@ GitHub Actions -> rc-desktop-release -> Run workflow
 `rc-desktop-release` builds a signed + notarized `universal-apple-darwin` app at
 version `X.Y.Z-rc.N` (bundling both agent sidecar architectures), and publishes it to a fixed
 `rc` prerelease in `open-software-network/os-june-releases` with `latest-rc.json`.
-The fixed `June_universal.dmg` asset follows the current RC for the updater, while
+The fixed `Clovy_universal.dmg` asset follows the current RC, while
+`June_universal.dmg` remains an updater compatibility alias and
 an immutable versioned DMG remains available for each Slack announcement. The
 versioned asset is uploaded without replacement before the fixed RC release
 channel aliases; reuse a higher RC number if that append-only upload already
@@ -205,7 +207,7 @@ After the workflow publishes a release, download the DMG from
 
 ```sh
 APP="/Applications/June.app"
-DMG="$HOME/Downloads/June_universal.dmg"
+DMG="$HOME/Downloads/Clovy_universal.dmg"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose "$APP"
@@ -216,7 +218,7 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 lipo -archs "$APP/Contents/MacOS/os-june"
 lipo -archs "$APP/Contents/Resources/native/bin/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
 lipo -archs "$APP/Contents/Resources/native/bin/June.app/Contents/MacOS/june-system-audio-recorder"
-RUNTIME="$APP/Contents/Resources/native/bin/june-agent-runtime"
+RUNTIME="$APP/Contents/Resources/native/bin/clovy-agent-runtime"
 test "$(shasum -a 256 "$RUNTIME" | awk '{print $1}')" = "$(cat "$RUNTIME.sha256")"
 codesign --verify --strict --verbose=2 "$RUNTIME"
 /usr/bin/arch -arm64 "$RUNTIME"
@@ -244,7 +246,7 @@ Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
 still granted after relaunch. During the relaunch, confirm the app remains
 responsive after the command is accepted: the main event loop must return in
 under one second while bounded child cleanup continues off-thread. For the
-forced-child check, stop the tracked `june-agent-runtime` process with
+forced-child check, stop the tracked `clovy-agent-runtime` process with
 `kill -STOP <pid>` before accepting the update and confirm Clovy still
 relaunches after kill escalation or the five-second aggregate deadline instead
 of showing a permanent beachball.

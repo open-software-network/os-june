@@ -12,7 +12,7 @@ export type AgentNewSessionDetail = {
   noteRef?: NoteReferenceInput;
 };
 
-const AGENT_LAST_OPEN_SESSION_KEY = "june:agent:last-open-session";
+const AGENT_LAST_OPEN_SESSION_KEY = "clovy:agent:last-open-session";
 let inMemoryPendingNewSessionPayload: string | undefined;
 
 // How long a second startNewTask call with the same prompt counts as an echo

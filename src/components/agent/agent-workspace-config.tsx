@@ -31,7 +31,7 @@ export type AgentPanel = "chat" | "skills";
 // acknowledgment per app session, after which picking it arms directly.
 // sessionStorage scopes that to the running app (a relaunch asks again) and
 // survives the workspace remounting on view switches.
-export const UNRESTRICTED_ACK_KEY = "june.agent.unrestrictedAcknowledged";
+export const UNRESTRICTED_ACK_KEY = "clovy.agent.unrestrictedAcknowledged";
 
 export function unrestrictedAcknowledged(): boolean {
   try {
@@ -184,7 +184,7 @@ export const HERO_GREETINGS = [
   "What can Clovy take off your plate?",
 ] as const;
 
-export const HERO_GREETING_INDEX_KEY = "june:agent:hero-greeting";
+export const HERO_GREETING_INDEX_KEY = "clovy:agent:hero-greeting";
 
 export function advanceHeroGreeting(): string {
   try {

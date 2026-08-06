@@ -3,16 +3,26 @@ import type { AgentChatTurn } from "./agent-chat-runtime";
 export const UPSTREAM_PROVIDER_FAILURE_NOTICE_BODY =
   "The model service is temporarily unavailable. Your answer is saved.";
 
-const UPSTREAM_PROVIDER_RECOVERY_OPEN = "[June upstream provider recovery]";
+const UPSTREAM_PROVIDER_RECOVERY_OPEN = "[Clovy upstream provider recovery]";
+const LEGACY_UPSTREAM_PROVIDER_RECOVERY_OPEN = "[June upstream provider recovery]";
 
 export const UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT = [
   UPSTREAM_PROVIDER_RECOVERY_OPEN,
   "Continue from the last failed step using the clarification answer already recorded in this session. Do not repeat the clarification.",
+  "[/Clovy upstream provider recovery]",
+].join("\n");
+const LEGACY_UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT = [
+  LEGACY_UPSTREAM_PROVIDER_RECOVERY_OPEN,
+  "Continue from the last failed step using the clarification answer already recorded in this session. Do not repeat the clarification.",
   "[/June upstream provider recovery]",
 ].join("\n");
+const UPSTREAM_PROVIDER_RECOVERY_PROMPTS = [
+  UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+  LEGACY_UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT,
+];
 
 export function displayedUpstreamProviderRecoveryText(content: string) {
-  return content.trim() === UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT ? "Try again" : content;
+  return UPSTREAM_PROVIDER_RECOVERY_PROMPTS.includes(content.trim()) ? "Try again" : content;
 }
 
 /** A session preview can truncate mid-prompt, so the preview is replaced when
@@ -21,7 +31,8 @@ export function displayedUpstreamProviderRecoveryText(content: string) {
  * then diverges stays visible as the user's own text. */
 export function displayedUpstreamProviderRecoveryPreview(preview: string | undefined) {
   const trimmed = preview?.trimStart();
-  return trimmed && UPSTREAM_PROVIDER_FAILURE_RETRY_PROMPT.startsWith(trimmed.trimEnd())
+  return trimmed &&
+    UPSTREAM_PROVIDER_RECOVERY_PROMPTS.some((prompt) => prompt.startsWith(trimmed.trimEnd()))
     ? "Try again"
     : preview;
 }

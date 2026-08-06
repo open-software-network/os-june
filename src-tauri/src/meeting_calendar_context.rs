@@ -1,7 +1,7 @@
 //! Best-effort Google Calendar context for newly started meeting recordings.
 //!
 //! This never blocks capture startup and never sends calendar data through the
-//! June API. It reads each connected Google primary calendar directly, selects
+//! Clovy API. It reads each connected Google primary calendar directly, selects
 //! the timed event closest to the recording start, and stores only the small
 //! event identity shown on the local note.
 
@@ -21,7 +21,7 @@ const EVENT_WINDOW_HOURS: i64 = 6;
 const EVENT_GRACE_MINUTES: i64 = 10;
 const MAX_EVENT_PAGES: usize = 10;
 
-pub const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: &str = "june://note-calendar-context-updated";
+pub const NOTE_CALENDAR_CONTEXT_UPDATED_EVENT: &str = "clovy://note-calendar-context-updated";
 
 #[derive(Debug)]
 struct Candidate {

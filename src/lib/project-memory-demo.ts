@@ -12,7 +12,7 @@
 import { useSyncExternalStore } from "react";
 import type { MemoryDto } from "./tauri";
 
-const PROJECT_MEMORY_DEMO_EVENT = "june:project-memory-demo-changed";
+const PROJECT_MEMORY_DEMO_EVENT = "clovy:project-memory-demo-changed";
 
 const DEMO_MEMORIES: MemoryDto[] = [
   {

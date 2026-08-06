@@ -13,7 +13,7 @@
 import { useSyncExternalStore } from "react";
 import type { AccountStatus } from "./tauri";
 
-const BILLING_DEMO_EVENT = "june:billing-demo-changed";
+const BILLING_DEMO_EVENT = "clovy:billing-demo-changed";
 
 /** A single forced variant, or "all" for the stacked gallery. */
 export type BillingDemoPlan = BillingDemoKey | "all";

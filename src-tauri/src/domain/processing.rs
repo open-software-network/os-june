@@ -8,15 +8,15 @@ use crate::{
             DetectionSource, EchoRejectionReport,
         },
     },
+    clovy_api::{
+        generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
+        TranscriptionProviderResult, TranscriptionRequest,
+    },
     db::repositories::Repositories,
     domain::types::{
         AppError, DictionaryEntryDto, NoteDto, NoteProcessingProgressDto, NoteProcessingStage,
         NoteTranscriptionJobKind, NoteTranscriptionJobPlan, NoteTranscriptionJobRecord,
         NoteTranscriptionJobStatus, ProcessingStatus, RecordingSourceMode, TranscriptDto,
-    },
-    june_api::{
-        generate_note_from_transcript, transcribe_saved_audio, GenerationRequest,
-        TranscriptionProviderResult, TranscriptionRequest,
     },
 };
 use sha2::{Digest, Sha256};
@@ -2697,13 +2697,16 @@ async fn transcribe_with_transient_retries(
 fn is_retryable_transcription_error(error: &AppError) -> bool {
     let code = error.code.trim().to_ascii_lowercase();
     let message = error.message.trim().to_ascii_lowercase();
-    code == "june_api_response_invalid"
+    code == "clovy_api_response_invalid"
+        || code == "june_api_response_invalid"
         || code == "empty_response"
-        || (code == "june_request_failed"
-            && (message == "authorization_denied"
-                || message == "timeout"
-                || message.contains("connection")
-                || message.contains("error sending request")))
+        || (matches!(
+            code.as_str(),
+            "clovy_request_failed" | "june_request_failed"
+        ) && (message == "authorization_denied"
+            || message == "timeout"
+            || message.contains("connection")
+            || message.contains("error sending request")))
 }
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
@@ -3990,7 +3993,7 @@ async fn cleanup_note_transcript_text(
     let _ = NOTE_TRANSCRIPT_CLEANUP_INSTRUCTIONS;
     match tokio::time::timeout(
         Duration::from_millis(NOTE_TRANSCRIPT_CLEANUP_TIMEOUT_MS),
-        crate::june_api::cleanup_text(crate::june_api::DictateCleanupRequestParams {
+        crate::clovy_api::cleanup_text(crate::clovy_api::DictateCleanupRequestParams {
             text: text.to_string(),
             dictionary_context: context.map(str::to_string),
             app_context: None,
@@ -4033,7 +4036,7 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::june_api::TranscriptionProviderResult;
+    use crate::clovy_api::TranscriptionProviderResult;
     use sqlx::row::Row;
     use std::{
         collections::HashMap,
@@ -5372,14 +5375,15 @@ mod tests {
 
     #[tokio::test]
     async fn transient_invalid_turn_response_retries_before_failing() {
-        // Every transient class June API can surface without a provider result
+        // Every transient class Clovy API can surface without a provider result
         // must recover on retry rather than fail the whole note: an
         // invalid/empty envelope and explicit transient request failures.
         let transient_errors = [
             AppError::new(
-                "june_api_response_invalid",
+                "clovy_api_response_invalid",
                 "The processing service returned an invalid response.",
             ),
+            AppError::new("clovy_request_failed", "authorization_denied"),
             AppError::new("june_request_failed", "authorization_denied"),
         ];
 
@@ -5429,7 +5433,7 @@ mod tests {
         let cases = [
             (
                 AppError::new(
-                    "june_api_response_invalid",
+                    "clovy_api_response_invalid",
                     "The processing service returned an invalid response.",
                 ),
                 "The processing service returned an invalid response.",
@@ -5520,7 +5524,7 @@ mod tests {
             "operation timed out"
         )));
         // `upstream_provider_failed` is not precise enough for desktop retry:
-        // June API uses the same envelope for transient 5xxs and deterministic
+        // Clovy API uses the same envelope for transient 5xxs and deterministic
         // provider 4xxs after taking a Hold.
         assert!(!is_retryable_transcription_error(&AppError::new(
             "june_request_failed",
@@ -6176,7 +6180,7 @@ mod tests {
             "no_speech"
         )));
         assert!(!is_no_speech_error(&AppError::new(
-            "june_api_response_invalid",
+            "clovy_api_response_invalid",
             "The processing service returned an invalid response."
         )));
     }

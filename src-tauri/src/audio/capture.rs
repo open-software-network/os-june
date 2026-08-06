@@ -368,7 +368,7 @@ pub fn start_capture_with_cancel(
     // The user's Live transcription setting gates both preview lanes at the
     // source: when off, no preview audio leaves the device and nothing is
     // billed (JUN-375).
-    let live_preview_available = crate::june_api::configured()
+    let live_preview_available = crate::clovy_api::configured()
         && crate::os_accounts::cached_signed_in()
         && crate::providers::live_transcription();
     let live_preview = if live_preview_available {

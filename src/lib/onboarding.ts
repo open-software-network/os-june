@@ -7,16 +7,16 @@
  */
 
 const ONBOARDING_VERSION = 8;
-const COMPLETED_KEY = "june.onboarding.completedVersion";
-const RESUME_KEY = "june.onboarding.resumeStep";
-const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
-const AREA_KEY = "june.onboarding.area";
-const MOOD_KEY = "june.onboarding.mood";
-const USE_CASES_KEY = "june.onboarding.useCases";
-const CUSTOM_USE_CASE_KEY = "june.onboarding.customUseCase";
-const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
+const COMPLETED_KEY = "clovy.onboarding.completedVersion";
+const RESUME_KEY = "clovy.onboarding.resumeStep";
+const AGENT_ACK_KEY = "clovy.agent.riskAcknowledged";
+const AREA_KEY = "clovy.onboarding.area";
+const MOOD_KEY = "clovy.onboarding.mood";
+const USE_CASES_KEY = "clovy.onboarding.useCases";
+const CUSTOM_USE_CASE_KEY = "clovy.onboarding.customUseCase";
+const ONBOARDING_BROADCAST_CHANNEL = "clovy.onboarding";
 
-export const ONBOARDING_COMPLETED_EVENT = "june:onboarding-completed";
+export const ONBOARDING_COMPLETED_EVENT = "clovy:onboarding-completed";
 export const ONBOARDING_USE_CASES = [
   "work",
   "personal",
@@ -96,6 +96,7 @@ export function closestOnboardingMood(personality: OnboardingPersonality): Onboa
 
 type OnboardingReplayEnv = {
   readonly DEV?: boolean;
+  readonly VITE_CLOVY_REPLAY_ONBOARDING?: string;
   readonly VITE_JUNE_REPLAY_ONBOARDING?: string;
 };
 
@@ -106,7 +107,10 @@ export function applyOnboardingReplayFlag(env: OnboardingReplayEnv = import.meta
 }
 
 export function shouldReplayOnboarding(env: OnboardingReplayEnv = import.meta.env) {
-  return env.DEV === true && env.VITE_JUNE_REPLAY_ONBOARDING === "1";
+  return (
+    env.DEV === true &&
+    (env.VITE_CLOVY_REPLAY_ONBOARDING ?? env.VITE_JUNE_REPLAY_ONBOARDING) === "1"
+  );
 }
 
 export function isOnboardingComplete(): boolean {
@@ -341,7 +345,7 @@ export function setAgentRiskAcknowledged(acknowledged: boolean) {
 /**
  * Testing helper: forget that onboarding completed (optionally pinning the
  * step to land on, e.g. "permissions") and reload into the wizard. Exposed on the
- * devtools console as `june.replayOnboarding()` by main.tsx.
+ * devtools console as `clovy.replayOnboarding()` by main.tsx.
  */
 export function replayOnboarding(stepId?: string) {
   try {

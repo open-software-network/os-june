@@ -6,6 +6,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, vi } from "vitest";
 import { Toaster, toast } from "../components/ui/Toaster";
 import { markOnboardingComplete } from "../lib/onboarding";
+import { installStorageCompatibilityBridge } from "../lib/storage-compat";
+
+installStorageCompatibilityBridge();
 
 // Resolve framer-motion animations instantly. Without this the frameloop
 // stalls when tests swap fake/real timers, leaving AnimatePresence exits

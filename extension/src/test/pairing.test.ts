@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { initialPairingState, reducePairing, type PairingState } from "../pairing";
+import {
+  initialPairingState,
+  reducePairing,
+  shouldTryNextNativeHost,
+  type PairingState,
+} from "../pairing";
 import { PROTOCOL_VERSION } from "../protocol";
 
 const VERSION = "0.1.0";
@@ -107,6 +112,12 @@ describe("pairing handshake", () => {
       { kind: "disconnect" },
     ]);
     expect(state).toEqual({ status: "disconnected" });
+  });
+
+  it("falls back only when the canonical host disappears before its handshake", () => {
+    expect(shouldTryNextNativeHost({ status: "handshaking" }, 0, 2)).toBe(true);
+    expect(shouldTryNextNativeHost({ status: "paired" }, 0, 2)).toBe(false);
+    expect(shouldTryNextNativeHost({ status: "handshaking" }, 1, 2)).toBe(false);
   });
 
   it("ignores malformed and unknown messages without changing state", () => {

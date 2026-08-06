@@ -1,8 +1,11 @@
 # Computer use cua-driver sandbox spike (JUN-288)
 
-> **Historical — findings predate the runtime migration.** This spike was
+> **Historical — findings predate the runtime and product-name migrations.**
+> Unqualified "June" references below preserve the terminology used when the
+> evidence was collected; June-named bundle paths remain compatibility
+> identities under ADR-0055. This spike was
 > written against the embedded Hermes runtime architecture, which has been
-> replaced by the June-owned OpenAI Agents runtime
+> replaced by the Clovy-owned OpenAI Agents runtime
 > ([ADR-0038](adr/0038-june-owned-openai-agents-runtime.md)). The Seatbelt
 > findings and spawn-topology recommendation may still inform computer use,
 > but the broker/runtime integration points described below no longer exist
@@ -12,7 +15,7 @@
 
 A timeboxed spike answering one phase-2 question for **Computer use** (see
 [browser-computer-use-prd.md](browser-computer-use-prd.md) "Computer use (phase
-2)" and [ADR-0017](adr/0017-browser-use-via-june-extension.md)): when June
+2)" and [ADR-0017](adr/0017-browser-use-via-clovy-extension.md)): when June
 bundles a pinned, signed **cua-driver** as an app resource, do the driver's
 private-interface lookups work under the app's Seatbelt profile, or must the
 Rust broker run it outside the write jail, as the **dictation helper**

@@ -576,7 +576,7 @@ impl ManagedBrowserSession {
         self.touch();
         let epoch = self.epoch.load(Ordering::SeqCst);
         let expression =
-            format!("(() => {{ window.__juneSnapshotEpoch = {epoch}; return {SNAPSHOT_JS}; }})()");
+            format!("(() => {{ window.__clovySnapshotEpoch = {epoch}; return {SNAPSHOT_JS}; }})()");
         self.evaluate_string(&expression)
             .await
             .map(|snapshot| (epoch, snapshot))
@@ -1444,8 +1444,8 @@ fn reference_error(code: &str, operation: &str, session_id: &str, reference: &st
 const SNAPSHOT_JS: &str = r#"(() => {
   const MAX_REFS = 800;
   const MAX_TEXT = 150000;
-  const epoch = Number(window.__juneSnapshotEpoch || 0);
-  const mutationVersion = Number(window.__juneMutationVersion || 0);
+  const epoch = Number(window.__clovySnapshotEpoch || 0);
+  const mutationVersion = Number(window.__clovyMutationVersion || 0);
   const lines = [];
   lines.push("URL: " + location.href);
   lines.push("Title: " + document.title);
@@ -1604,7 +1604,7 @@ const SNAPSHOT_JS: &str = r#"(() => {
     refs.push(el);
     interactive.push(describe(el, refs.length));
   }
-  if (window.__juneSnapshotObserver) window.__juneSnapshotObserver.disconnect();
+  if (window.__clovySnapshotObserver) window.__clovySnapshotObserver.disconnect();
   const state = {
     epoch,
     mutationVersion,
@@ -1612,9 +1612,9 @@ const SNAPSHOT_JS: &str = r#"(() => {
     elements: refs.map(elementFacts),
     valid: true,
   };
-  window.__juneSnapshotState = state;
+  window.__clovySnapshotState = state;
   const observer = new MutationObserver(() => {
-    window.__juneMutationVersion = Number(window.__juneMutationVersion || 0) + 1;
+    window.__clovyMutationVersion = Number(window.__clovyMutationVersion || 0) + 1;
     state.valid = false;
     observer.disconnect();
   });
@@ -1626,7 +1626,7 @@ const SNAPSHOT_JS: &str = r#"(() => {
       characterData: true,
     });
   }
-  window.__juneSnapshotObserver = observer;
+  window.__clovySnapshotObserver = observer;
   lines.push("");
   lines.push("Interactive elements (" + interactive.length + "):");
   lines.push(...interactive);
@@ -1719,7 +1719,7 @@ mod tests {
 const INSPECT_REFERENCE_JS: &str = r#"function(reference) {
   const match = /^e(\d+):m(\d+):n(\d+)$/.exec(reference);
   if (!match) return {status: "invalid"};
-  const state = window.__juneSnapshotState;
+  const state = window.__clovySnapshotState;
   if (!state || !state.valid) return {status: "stale"};
   if (state.epoch !== Number(match[1]) || state.mutationVersion !== Number(match[2])) {
     return {status: "stale"};
@@ -1733,7 +1733,7 @@ const INSPECT_REFERENCE_JS: &str = r#"function(reference) {
 const ACT_ON_REFERENCE_JS: &str = r#"function(operation, reference, value, expected) {
   const match = /^e(\d+):m(\d+):n(\d+)$/.exec(reference);
   if (!match) return {status: "invalid"};
-  const state = window.__juneSnapshotState;
+  const state = window.__clovySnapshotState;
   if (!state || !state.valid) return {status: "stale"};
   if (state.epoch !== Number(match[1]) || state.mutationVersion !== Number(match[2])) {
     return {status: "stale"};

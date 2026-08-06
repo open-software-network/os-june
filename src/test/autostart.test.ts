@@ -15,7 +15,7 @@ import {
   setAutostartEnabled,
 } from "../lib/autostart";
 
-const DEFAULT_APPLIED_KEY = "june.autostart.defaultApplied";
+const DEFAULT_APPLIED_KEY = "clovy.autostart.defaultApplied";
 
 function markTauri() {
   (window as typeof window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};

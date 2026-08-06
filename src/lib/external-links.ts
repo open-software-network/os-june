@@ -4,7 +4,7 @@
 // are silently dropped in the native shell while working fine in browser dev.
 // Rather than teaching each component to call a command, this installs ONE
 // document-level click interceptor that routes external http(s) anchor clicks
-// through `june_open_external_url` (which opens the default browser).
+// through `clovy_open_external_url` (which opens the default browser).
 //
 // Only installed when running inside Tauri; in a plain browser the anchors'
 // native behavior already works. Handlers that preventDefault (e.g. a future
@@ -39,7 +39,7 @@ export function installExternalLinkOpener() {
     if (!external) return;
 
     event.preventDefault();
-    void invoke("june_open_external_url", { url: url.href }).catch(() => {
+    void invoke("clovy_open_external_url", { url: url.href }).catch(() => {
       // Best-effort: a failed open leaves the click a no-op, same as before.
     });
   });

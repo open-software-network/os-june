@@ -15,7 +15,7 @@
 - **Date:** 2026-07-13
 - **Status:** Accepted workstream; implementation active
 - **PRD:** [browser-use-prd.md](browser-use-prd.md)
-- **Decision:** [ADR-0017](../adr/0017-browser-use-via-june-extension.md)
+- **Decision:** [ADR-0017](../adr/0017-browser-use-via-clovy-extension.md)
 
 ## Technical objective
 
@@ -45,7 +45,7 @@ The broker is not merely where policy is written; it is the only place it can
 be *enforced*. The agent runtime can read its own loopback token out of its
 config and call the broker's routes directly, so gating at the runtime's tool
 layer gates nothing. See the 2026-07-13 addendum to
-[ADR-0017](../adr/0017-browser-use-via-june-extension.md). Concretely: the
+[ADR-0017](../adr/0017-browser-use-via-clovy-extension.md). Concretely: the
 Browser access grant, re-checked in the broker on every request, is the sole
 authorization gate, and every consequential-action approval (JUN-297) is
 enforced broker-side.

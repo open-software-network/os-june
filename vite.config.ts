@@ -22,7 +22,7 @@ export default defineConfig({
     // crashes Vite and tears down `tauri dev` mid-compile. macOS's FSEvents
     // watcher doesn't hit this, so the gap only shows on Windows.
     watch: {
-      ignored: ["**/src-tauri/target/**", "**/june-api/target/**"],
+      ignored: ["**/src-tauri/target/**", "**/clovy-api/target/**"],
     },
   },
   envPrefix: ["VITE_", "TAURI_"],

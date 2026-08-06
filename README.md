@@ -36,7 +36,7 @@
   <a href="https://x.com/OpenSoftwareCo">X</a>
 </p>
 
-![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/june-demo.gif)
+![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/clovy-demo.gif)
 
 
 ## Why Clovy
@@ -78,13 +78,13 @@ verifiable.
 <table>
   <tr>
     <td width="33%">
-      <img src=".github/assets/june-meeting-notes.jpg" alt="A meeting note in Clovy with a live transcription preview while recording">
+      <img src=".github/assets/clovy-meeting-notes.jpg" alt="A meeting note in Clovy with a live transcription preview while recording">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-agent-analysis.jpg" alt="A Clovy agent session in private mode, reporting its analysis of a spreadsheet">
+      <img src=".github/assets/clovy-agent-analysis.jpg" alt="A Clovy agent session in private mode, reporting its analysis of a spreadsheet">
     </td>
     <td width="33%">
-      <img src=".github/assets/june-model-picker.jpg" alt="The Clovy model picker, with each model labeled with pricing, context window, and its privacy tier">
+      <img src=".github/assets/clovy-model-picker.jpg" alt="The Clovy model picker, with each model labeled with pricing, context window, and its privacy tier">
     </td>
   </tr>
   <tr>
@@ -111,8 +111,8 @@ verifiable.
    confidential VM on Phala Cloud and publishes three useful anchors:
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
-   - **Image:** [`build-june-api.yml`](.github/workflows/build-june-api.yml)
-     publishes [`ghcr.io/open-software-network/june-api`](https://github.com/open-software-network/os-june/pkgs/container/june-api);
+   - **Image:** [`build-clovy-api.yml`](.github/workflows/build-clovy-api.yml)
+     publishes [`ghcr.io/open-software-network/clovy-api`](https://github.com/open-software-network/os-june/pkgs/container/clovy-api);
      deploys pin immutable per-commit tags recorded as signed `deploy/<env>/<sha>` git tags.
    - **Attestation:** the [Phala Trust Center report](https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54)
      reports evidence for the image running inside the TEE.
@@ -151,7 +151,7 @@ powers its metered AI calls.
 ```text
 src/         React and TypeScript frontend
 src-tauri/   Tauri v2 Rust desktop backend and native helpers
-june-api/    Clovy API: models, transcription, generation, and billing
+clovy-api/    Clovy API: models, transcription, generation, and billing
 docs/        Architecture notes, ADRs, subsystem guides, and runbooks
 spec/        Enforceable coding rules
 specs/       Feature specs, plans, and validation notes
@@ -171,15 +171,15 @@ pinned in `package.json`.
 git clone https://github.com/open-software-network/os-june
 cd os-june
 cp .env.example .env
-cp june-api/.env.example june-api/.env
-# Edit june-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+cp clovy-api/.env.example clovy-api/.env
+# Edit clovy-api/.env and set CLOVY__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
 
 The example env files default to open source local mode: no OS Accounts login,
 no billing, and a local Clovy API authenticated by a shared bearer token.
-Provider keys belong only in `june-api/.env`, never in the root desktop
+Provider keys belong only in `clovy-api/.env`, never in the root desktop
 `.env`. A Venice API key is enough for transcription, generation, and
 dictation cleanup.
 
@@ -193,16 +193,18 @@ against OS Accounts.
 
 Clovy ships near-daily releases and development happens in the open.
 
-The product is Clovy, but shipped June-era identifiers such as the `os-june`
-repository, bundle and package names, environment variables, and release URLs
-remain stable for compatibility. See [ADR-0054](docs/adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+Clovy is also the canonical technical name for repository-controlled packages,
+crates, environment variables, workflows, and release artifacts. Released
+June-era inputs and rollback outputs remain compatibility aliases, while the
+installed bundle, executable, updater, and permission identities stay stable.
+See [ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
 
 ```sh
 pnpm check         # lint and format (Biome)
 pnpm typecheck
 pnpm test          # frontend (Vitest)
 pnpm test:rust     # desktop Rust
-pnpm test:june-api # Clovy API
+pnpm test:clovy-api # Clovy API
 ```
 
 `make verify` mirrors CI. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # macOS beforeBundleCommand (tauri.macos.conf.json): copies the compiled
-# june-nm-shim [[bin]] into .tauri-helper/ so the bundle.resources mapping
+# clovy-nm-shim [[bin]] into .tauri-helper/ so the bundle.resources mapping
 # ships the real binary instead of the build.rs placeholder, then signs it the
 # way the Swift helpers are signed (Developer ID when APPLE_SIGNING_IDENTITY
 # is set, ad-hoc otherwise). Runs after cargo build and before bundling.
@@ -23,21 +23,21 @@ fi
 
 triple="${TAURI_ENV_TARGET_TRIPLE:-}"
 mkdir -p .tauri-helper
-out=".tauri-helper/june-nm-shim"
+out=".tauri-helper/clovy-nm-shim"
 
 if [[ "$triple" == "universal-apple-darwin" ]]; then
-  arm="src-tauri/target/aarch64-apple-darwin/$profile/june-nm-shim"
-  x86="src-tauri/target/x86_64-apple-darwin/$profile/june-nm-shim"
+  arm="src-tauri/target/aarch64-apple-darwin/$profile/clovy-nm-shim"
+  x86="src-tauri/target/x86_64-apple-darwin/$profile/clovy-nm-shim"
   for bin in "$arm" "$x86"; do
     if [[ ! -f "$bin" ]]; then
-      echo "june-nm-shim missing for universal bundle: $bin" >&2
+      echo "clovy-nm-shim missing for universal bundle: $bin" >&2
       exit 1
     fi
   done
   lipo -create "$arm" "$x86" -output "$out"
   archs="$(lipo -archs "$out")"
   if [[ "$archs" != *arm64* || "$archs" != *x86_64* ]]; then
-    echo "universal june-nm-shim has wrong architectures: $archs" >&2
+    echo "universal clovy-nm-shim has wrong architectures: $archs" >&2
     exit 1
   fi
   src="lipo($arm, $x86)"
@@ -45,8 +45,8 @@ else
   # Single real triple (or none, e.g. `tauri dev`, whose cargo build writes
   # to the bare target dir even though the env names the host triple).
   candidates=(
-    "src-tauri/target/${triple}/$profile/june-nm-shim"
-    "src-tauri/target/$profile/june-nm-shim"
+    "src-tauri/target/${triple}/$profile/clovy-nm-shim"
+    "src-tauri/target/$profile/clovy-nm-shim"
   )
 
   shim=""
@@ -58,7 +58,7 @@ else
   done
 
   if [[ -z "$shim" ]]; then
-    echo "june-nm-shim binary not found (looked in: ${candidates[*]})" >&2
+    echo "clovy-nm-shim binary not found (looked in: ${candidates[*]})" >&2
     exit 1
   fi
   cp -f "$shim" "$out"
@@ -76,4 +76,11 @@ else
     --sign - "$out"
 fi
 
-echo "bundled june-nm-shim from $src"
+# Existing native-host manifests installed by June point at this basename.
+# Ship a byte-identical signed alias so an in-place app update cannot strand
+# an extension before the manifests are refreshed.
+legacy_out=".tauri-helper/june-nm-shim"
+cp -f "$out" "$legacy_out"
+chmod +x "$legacy_out"
+
+echo "bundled clovy-nm-shim and june-nm-shim compatibility alias from $src"

@@ -1,6 +1,6 @@
 //! Model-picker state. The Tauri side persists which transcription /
 //! generation models the user selected. Remote provider keys and URLs live in
-//! June API; the opt-in "bring your own inference" local model stores an
+//! Clovy API; the opt-in "bring your own inference" local model stores an
 //! OpenAI-compatible endpoint (any http/https host) here. Advanced users may
 //! also store their own Venice API key locally; responses only expose whether
 //! one is present, never the key itself.
@@ -27,7 +27,7 @@ pub const DEFAULT_COST_QUALITY: u8 = 100;
 pub const DEFAULT_IMAGE_MODEL: &str = "venice-sd35";
 pub const DEFAULT_VIDEO_MODEL: &str = "wan-2.2-a14b-text-to-video";
 /// Currently curated text-to-video model ids (mirrors `VIDEO_MODELS` in
-/// `src/lib/video-models.ts` and the june-api `video_pricing` allowlist). A
+/// `src/lib/video-models.ts` and the clovy-api `video_pricing` allowlist). A
 /// persisted `video_model` outside this set — for example the delisted Seedance
 /// default that older installs saved before it was pulled from Venice — is
 /// migrated to `DEFAULT_VIDEO_MODEL` on load so generation keeps working after
@@ -85,13 +85,13 @@ pub struct ProviderModelSettings {
     #[serde(default)]
     pub local_generation: LocalGenerationSettings,
     /// When true, Venice `safe_mode` blurs adult content on generated/edited
-    /// images. June defaults it ON; the user opts out via Settings or the
+    /// images. Clovy defaults it ON; the user opts out via Settings or the
     /// generation-time consent dialog. Defaulted so settings files predating
     /// this field still deserialize to the current default.
     #[serde(default = "default_image_safe_mode")]
     pub image_safe_mode: bool,
     /// When true, the user chose "don't ask again" on the safe-mode consent
-    /// dialog: June stops offering to turn safe mode off before
+    /// dialog: Clovy stops offering to turn safe mode off before
     /// potentially-explicit generations. Reset to false whenever safe mode is
     /// explicitly re-enabled, so re-opting into safety re-arms the prompt.
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct ProviderModelSettings {
     /// carry an incidental `false` the user never picked.
     #[serde(default)]
     pub image_safe_mode_set_by_user: bool,
-    /// When true (the default), June streams a live transcript preview while
+    /// When true (the default), Clovy streams a live transcript preview while
     /// recording. On builds that carry this setting the preview is billed as
     /// extra usage (ADR-0002 addendum, JUN-375); turning it off stops the
     /// preview lanes entirely, so nothing is sent or billed.
@@ -313,8 +313,8 @@ pub struct VeniceModelDto {
     pub output_credits_per_million_tokens: Option<u64>,
 }
 
-impl From<crate::june_api::ModelDto> for VeniceModelDto {
-    fn from(value: crate::june_api::ModelDto) -> Self {
+impl From<crate::clovy_api::ModelDto> for VeniceModelDto {
+    fn from(value: crate::clovy_api::ModelDto) -> Self {
         let pricing = pricing_with_display(value.pricing, &value.price_description);
         Self {
             description: value.description,
@@ -358,7 +358,7 @@ pub fn configured_transcription_provider() -> String {
 }
 
 pub fn provider_configured() -> bool {
-    crate::june_api::configured()
+    crate::clovy_api::configured()
 }
 
 pub fn transcription_model() -> String {
@@ -371,7 +371,7 @@ pub fn generation_model() -> String {
 
 /// The saved service-managed generation model, independent of an explicitly
 /// enabled local provider. Unattended Routines use this accessor so they stay
-/// on June's metered remote route.
+/// on Clovy's metered remote route.
 pub fn remote_generation_model() -> String {
     current_settings().remote_generation_model
 }
@@ -403,7 +403,7 @@ pub fn venice_api_key() -> Option<String> {
 }
 
 /// Whether Venice safe mode is on for image generation/editing. The default is
-/// `true`, so June asks Venice to blur adult content unless the user opts out
+/// `true`, so Clovy asks Venice to blur adult content unless the user opts out
 /// via Settings or the generation-time consent dialog.
 pub fn image_safe_mode() -> bool {
     current_settings().image_safe_mode
@@ -430,30 +430,30 @@ pub async fn generation_model_context_tokens() -> Option<i64> {
         return None;
     }
     let model_id = generation_model();
-    june_model_runtime_capabilities(&model_id)
+    clovy_model_runtime_capabilities(&model_id)
         .await
         .context_tokens
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct JuneModelRuntimeCapabilities {
+pub struct ClovyModelRuntimeCapabilities {
     pub context_tokens: Option<i64>,
     pub supports_vision: bool,
 }
 
 /// Whether the configured generation model reports vision (image input) support
-/// in the June API catalog. The agent runtime uses this to decide whether an
+/// in the Clovy API catalog. The agent runtime uses this to decide whether an
 /// image can be attached directly to model context. Returns `false`
 /// when the catalog is unreachable (offline, signed out) or the model reports no
 /// vision capability. In local dev, a persisted Auto selection can use the same
-/// catalog-backed capability fallback as June API when Auto is absent. The
+/// catalog-backed capability fallback as Clovy API when Auto is absent. The
 /// conservative default keeps image attachment fail-closed.
 pub async fn generation_model_supports_vision() -> bool {
     if generation_provider() == PROVIDER_LOCAL {
         return false;
     }
     let model_id = generation_model();
-    june_model_runtime_capabilities(&model_id)
+    clovy_model_runtime_capabilities(&model_id)
         .await
         .supports_vision
 }
@@ -461,16 +461,16 @@ pub async fn generation_model_supports_vision() -> bool {
 /// Resolves the model-specific limits needed by an agent run. Agent sessions
 /// can select a model independently of the global generation setting, so this
 /// cache is keyed by the run model and shared across turns.
-pub async fn june_model_runtime_capabilities(model_id: &str) -> JuneModelRuntimeCapabilities {
+pub async fn clovy_model_runtime_capabilities(model_id: &str) -> ClovyModelRuntimeCapabilities {
     if let Ok(cache) = model_runtime_capabilities_cache().lock() {
         if let Some(capabilities) = cache.get(model_id) {
             return *capabilities;
         }
     }
-    let Ok(models) = crate::june_api::list_models(ModelMode::Generation.api_type()).await else {
-        return JuneModelRuntimeCapabilities::default();
+    let Ok(models) = crate::clovy_api::list_models(ModelMode::Generation.api_type()).await else {
+        return ClovyModelRuntimeCapabilities::default();
     };
-    let capabilities = JuneModelRuntimeCapabilities {
+    let capabilities = ClovyModelRuntimeCapabilities {
         context_tokens: models
             .iter()
             .find(|model| model.id == model_id)
@@ -490,8 +490,9 @@ pub async fn june_model_runtime_capabilities(model_id: &str) -> JuneModelRuntime
 }
 
 fn model_runtime_capabilities_cache(
-) -> &'static Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<String, JuneModelRuntimeCapabilities>>> = OnceLock::new();
+) -> &'static Mutex<BTreeMap<String, ClovyModelRuntimeCapabilities>> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, ClovyModelRuntimeCapabilities>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -764,7 +765,7 @@ pub struct GenerateImageRequest {
     #[serde(default)]
     pub request_id: Option<String>,
     /// Optional safe-mode override pinned at turn creation. A retry must replay
-    /// the exact request shape June API hashed into its replay-ledger key, so a
+    /// the exact request shape Clovy API hashed into its replay-ledger key, so a
     /// settings change between attempt and retry cannot mint a second charge.
     /// Absent falls back to the live saved setting.
     #[serde(default)]
@@ -805,18 +806,18 @@ pub struct EditImageRequest {
     pub request_id: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,
-    /// Optional edit-model override; absent uses June API's default edit model.
+    /// Optional edit-model override; absent uses Clovy API's default edit model.
     #[serde(default)]
     pub model: Option<String>,
 }
 
-/// Generates an image from a prompt via the June API, defaulting to the saved
-/// image model. Provider keys and the upstream call live in June API; this
+/// Generates an image from a prompt via Clovy API, defaulting to the saved
+/// image model. Provider keys and the upstream call live in Clovy API; this
 /// command only resolves the model and forwards the prompt.
 #[tauri::command]
 pub async fn generate_image(
     request: GenerateImageRequest,
-) -> Result<crate::june_api::GeneratedImageDto, AppError> {
+) -> Result<crate::clovy_api::GeneratedImageDto, AppError> {
     let prompt = request.prompt.trim().to_string();
     if prompt.is_empty() {
         return Err(AppError::new("image_prompt_required", "Enter a prompt."));
@@ -831,15 +832,15 @@ pub async fn generate_image(
         .map(|request_id| request_id.trim().to_string())
         .filter(|request_id| !request_id.is_empty());
     let safe_mode = request.safe_mode.unwrap_or_else(image_safe_mode);
-    crate::june_api::generate_image(prompt, model, Some(safe_mode), request_id).await
+    crate::clovy_api::generate_image(prompt, model, Some(safe_mode), request_id).await
 }
 
-/// Edits a source image through June API. Provider keys and the upstream call
-/// live in June API; this command only validates and forwards the image bytes.
+/// Edits a source image through Clovy API. Provider keys and the upstream call
+/// live in Clovy API; this command only validates and forwards the image bytes.
 #[tauri::command]
 pub async fn edit_image(
     request: EditImageRequest,
-) -> Result<crate::june_api::GeneratedImageDto, AppError> {
+) -> Result<crate::clovy_api::GeneratedImageDto, AppError> {
     let image = request.image.trim().to_string();
     if image.is_empty() {
         return Err(AppError::new(
@@ -866,7 +867,7 @@ pub async fn edit_image(
         .mime_type
         .map(|mime_type| mime_type.trim().to_string())
         .filter(|mime_type| !mime_type.is_empty());
-    crate::june_api::edit_image(
+    crate::clovy_api::edit_image(
         image,
         prompt,
         mime_type,
@@ -880,14 +881,14 @@ pub async fn edit_image(
 #[tauri::command]
 pub async fn video_generate(
     request: GenerateVideoRequest,
-) -> Result<crate::june_api::VideoJobDto, AppError> {
+) -> Result<crate::clovy_api::VideoJobDto, AppError> {
     video_generate_with_enabled(request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
 }
 
 async fn video_generate_with_enabled(
     request: GenerateVideoRequest,
     enabled: bool,
-) -> Result<crate::june_api::VideoJobDto, AppError> {
+) -> Result<crate::clovy_api::VideoJobDto, AppError> {
     ensure_video_generation_enabled(enabled)?;
     let prompt = request.prompt.trim().to_string();
     if prompt.is_empty() {
@@ -917,7 +918,7 @@ async fn video_generate_with_enabled(
         .map(|aspect_ratio| aspect_ratio.trim().to_string())
         .filter(|aspect_ratio| !aspect_ratio.is_empty())
         .or_else(|| Some(DEFAULT_VIDEO_ASPECT_RATIO.to_string()));
-    crate::june_api::video_generate(crate::june_api::VideoGenerateParams {
+    crate::clovy_api::video_generate(crate::clovy_api::VideoGenerateParams {
         prompt,
         model,
         request_id,
@@ -933,14 +934,14 @@ async fn video_generate_with_enabled(
 pub async fn video_status(
     app: AppHandle,
     request: VideoStatusRequest,
-) -> Result<crate::june_api::VideoStatusDto, AppError> {
+) -> Result<crate::clovy_api::VideoStatusDto, AppError> {
     video_status_with_enabled(app, request, crate::feature_flags::VIDEO_GENERATION_ENABLED).await
 }
 
 /// Absolute path of the generated-videos directory. Lets the frontend resolve a
 /// bare `generated-video-*.mp4` filename (the agent frequently names a finished
 /// video by filename only when asked to show it again) to an asset-scoped path
-/// the webview can load. Mirrors the directory `june_api::write_video_bytes`
+/// the webview can load. Mirrors the directory `clovy_api::write_video_bytes`
 /// and the agent video tool write into.
 #[tauri::command]
 pub fn generated_video_dir(app: AppHandle) -> Result<String, AppError> {
@@ -956,9 +957,9 @@ async fn video_status_with_enabled(
     app: AppHandle,
     request: VideoStatusRequest,
     enabled: bool,
-) -> Result<crate::june_api::VideoStatusDto, AppError> {
+) -> Result<crate::clovy_api::VideoStatusDto, AppError> {
     let job_id = video_status_job_id_with_enabled(request, enabled)?;
-    crate::june_api::video_status(&app, job_id).await
+    crate::clovy_api::video_status(&app, job_id).await
 }
 
 fn video_status_job_id_with_enabled(
@@ -1195,7 +1196,7 @@ pub async fn list_venice_models(
             models: Vec::new(),
         });
     }
-    let mut models = crate::june_api::list_models(model_type)
+    let mut models = crate::clovy_api::list_models(model_type)
         .await?
         .into_iter()
         .map(VeniceModelDto::from)
@@ -1253,7 +1254,7 @@ fn replace_current_settings(settings: ProviderModelSettings) {
 
 /// Test-only hook: installs settings into the process-wide store that
 /// `current_settings()` reads, so live integration tests (see
-/// `june_api::live_local_tests`) can activate the local provider without a
+/// `clovy_api::live_local_tests`) can activate the local provider without a
 /// running Tauri app.
 #[cfg(test)]
 pub(crate) fn replace_current_settings_for_tests(settings: ProviderModelSettings) {
@@ -1312,7 +1313,8 @@ fn default_cost_quality() -> u8 {
 }
 
 fn default_generation_model_for_release() -> String {
-    let enabled = option_env!("OS_JUNE_AUTO_MODE_DEFAULT")
+    let enabled = option_env!("OS_CLOVY_AUTO_MODE_DEFAULT")
+        .or(option_env!("OS_JUNE_AUTO_MODE_DEFAULT"))
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"));
     if enabled {
         AUTO_GENERATION_MODEL.to_string()
@@ -1437,7 +1439,7 @@ fn sanitize_profile_overrides(
 
 /// Migrates a persisted video model that is no longer curated (for example the
 /// delisted Seedance default older installs saved) to the current default, so an
-/// updated install never carries a stale id that June API rejects as
+/// updated install never carries a stale id that Clovy API rejects as
 /// `model_not_priced`. A recognized selection is kept; empty falls back to the
 /// default like the other model fields.
 fn sanitize_video_model(persisted: String, default: &str) -> String {
@@ -2676,7 +2678,7 @@ mod tests {
 
     #[test]
     fn api_model_conversion_prefers_retail_price_description_display() {
-        let model = VeniceModelDto::from(crate::june_api::ModelDto {
+        let model = VeniceModelDto::from(crate::clovy_api::ModelDto {
             provider: "openai".to_string(),
             id: "asr-model".to_string(),
             name: "ASR model".to_string(),

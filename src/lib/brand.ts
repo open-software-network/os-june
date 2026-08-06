@@ -37,7 +37,7 @@ export const BRAND_PRESETS: {
   { id: "plum", label: "Plum", value: "#965d84", wash: "#8f6380" },
 ];
 
-const STORAGE_KEY = "os-june:brand";
+const STORAGE_KEY = "os-clovy:brand";
 export const DEFAULT_BRAND: BrandId = "sage";
 
 // Stored ids that have since been renamed or dropped. "blue" became "ocean"
@@ -65,7 +65,7 @@ export function getStoredBrand(): BrandId {
   }
 }
 
-const ACCENT_EVENT = "june://accent";
+const ACCENT_EVENT = "clovy://accent";
 const BRAND_TRANSITION_MS = 220;
 const BRAND_TRANSITION_BUFFER_MS = 80;
 let brandTransitionTimer: number | undefined;

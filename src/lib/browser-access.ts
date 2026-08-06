@@ -27,4 +27,4 @@ export function stripBrowserAccessRequest(text: string) {
 /** Sent into the session after the user approves the request, so Clovy knows
  * the grant is live and retries on the freshly restarted runtime. */
 export const BROWSER_ACCESS_ENABLED_MESSAGE =
-  "I enabled Browser use. The session can now drive the browser through the june_browser tools; try the browser task again.";
+  "I enabled Browser use. The session can now drive the browser; try the browser task again.";

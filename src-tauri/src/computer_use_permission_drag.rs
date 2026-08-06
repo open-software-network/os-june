@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn helper_executable_resolves_to_the_app_bundle() {
         let executable =
-            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/june-computer-use-driver");
+            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/clovy-computer-use-driver");
         assert_eq!(
             app_bundle_path(executable),
             Some(PathBuf::from("/tmp/June Computer Use Driver.app").as_path())

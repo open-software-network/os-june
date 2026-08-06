@@ -18,7 +18,7 @@ export type { ReferralNudgeMoment };
  */
 
 /** Fired on click-through; the sidebar owns the referral dialog and listens. */
-export const OPEN_REFERRAL_DIALOG_EVENT = "june:open-referral-dialog";
+export const OPEN_REFERRAL_DIALOG_EVENT = "clovy:open-referral-dialog";
 
 const MOMENT_COPY: Record<ReferralNudgeMoment, { title: string; body: string }> = {
   meetings: {

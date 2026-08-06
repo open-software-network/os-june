@@ -3,7 +3,7 @@
 //! App side of Browser use extension pairing (JUN-287, ADR 0017).
 //!
 //! The Clovy extension talks Chrome native messaging to a small shim binary
-//! (`june-nm-shim`, see `shim` below); the shim relays every frame to the
+//! (`clovy-nm-shim`, see `shim` below); the shim relays every frame to the
 //! authenticated loopback listener this module runs. Chrome spawns the shim,
 //! so credentials cannot ride in its environment: the listener writes a
 //! connection descriptor (port + per-run token) to the selected app data dir.
@@ -92,7 +92,8 @@ fn extension_id_from_manifest_key(key: &str) -> Result<String, AppError> {
 /// Native messaging host name: the extension connects to this name, and the
 /// host manifest file carries it (Chrome requires the file be named
 /// `<host name>.json`).
-pub const NATIVE_HOST_NAME: &str = "co.opensoftware.june.extension";
+pub const NATIVE_HOST_NAME: &str = "co.opensoftware.clovy.extension";
+pub const LEGACY_NATIVE_HOST_NAME: &str = "co.opensoftware.june.extension";
 
 /// Must match the bundle identifier in `tauri.conf.json`; the shim has no
 /// AppHandle, so it rebuilds the app data dir path from this constant.
@@ -194,7 +195,7 @@ const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
 
-pub const PAIRING_CHANGED_EVENT: &str = "june://extension-pairing-changed";
+pub const PAIRING_CHANGED_EVENT: &str = "clovy://extension-pairing-changed";
 
 // --- framing ---------------------------------------------------------------
 
@@ -347,7 +348,8 @@ pub fn shim_data_dir() -> Option<PathBuf> {
         Some(crate::app_paths::app_data_dir_for_build(
             base,
             cfg!(debug_assertions),
-            std::env::var_os("OS_JUNE_USE_PROD_DATA_DIR").is_some(),
+            crate::env_compat::var_os("OS_CLOVY_USE_PROD_DATA_DIR", "OS_JUNE_USE_PROD_DATA_DIR")
+                .is_some(),
         ))
     }
     #[cfg(not(target_os = "macos"))]
@@ -358,7 +360,8 @@ pub fn shim_data_dir() -> Option<PathBuf> {
 
 /// Resolve the descriptor selected when the native host was registered.
 /// Chrome does not inherit Clovy's environment, so the shim must not recompute
-/// an `OS_JUNE_USE_PROD_DATA_DIR` choice from its own process environment.
+/// an `OS_CLOVY_USE_PROD_DATA_DIR` choice from its own process environment.
+/// The June-era variable remains a compatibility fallback.
 pub fn shim_descriptor_path() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -855,9 +858,9 @@ fn random_token() -> String {
 /// extension id. `allowed_origins` is the boundary that keeps any other
 /// extension from connecting - Chrome refuses `connectNative` from ids not
 /// listed here.
-pub fn host_manifest_json(shim_path: &std::path::Path) -> Value {
+pub fn host_manifest_json(host_name: &str, shim_path: &std::path::Path) -> Value {
     json!({
-        "name": NATIVE_HOST_NAME,
+        "name": host_name,
         "description": "Clovy browser extension connector",
         "path": shim_path.to_string_lossy(),
         "type": "stdio",
@@ -867,7 +870,7 @@ pub fn host_manifest_json(shim_path: &std::path::Path) -> Value {
 
 /// Where the running app expects the shim binary, dev paths first (the
 /// dictation helper probing shape). Dev builds compile the shim next to the
-/// app executable (`target/<profile>/june-nm-shim`); bundled builds carry it
+/// app executable (`target/<profile>/clovy-nm-shim`); bundled builds carry it
 /// under `Resources/native/bin/`.
 fn shim_candidates_for_build(
     exe_path: Option<&std::path::Path>,
@@ -877,15 +880,20 @@ fn shim_candidates_for_build(
     let mut paths = Vec::new();
     if let Some(exe_path) = exe_path {
         if let Some(exe_dir) = exe_path.parent() {
-            paths.push(exe_dir.join("june-nm-shim"));
+            paths.push(exe_dir.join("clovy-nm-shim"));
             if !debug_build {
-                paths.push(exe_dir.join("../Resources/native/bin/june-nm-shim"));
+                paths.push(exe_dir.join("../Resources/native/bin/clovy-nm-shim"));
             }
         }
     }
     if !debug_build {
         if let Some(resource_dir) = resource_dir {
-            paths.push(resource_dir.join("native").join("bin").join("june-nm-shim"));
+            paths.push(
+                resource_dir
+                    .join("native")
+                    .join("bin")
+                    .join("clovy-nm-shim"),
+            );
         }
     }
     paths
@@ -973,7 +981,7 @@ pub fn register_browser_extension_host(
         .ok_or_else(|| {
             AppError::new(
                 "extension_shim_missing",
-                "Could not find the june-nm-shim binary. Run a full build first.",
+                "Could not find the clovy-nm-shim binary. Run a full build first.",
             )
         })?;
     let shim_path = shim_path
@@ -985,9 +993,14 @@ pub fn register_browser_extension_host(
             "Browser extension pairing is only supported on macOS for now.",
         )
     })?;
-    let manifest = host_manifest_json(&shim_path);
-    let body = serde_json::to_vec_pretty(&manifest)
-        .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
+    let manifests = [NATIVE_HOST_NAME, LEGACY_NATIVE_HOST_NAME].map(|host_name| {
+        serde_json::to_vec_pretty(&host_manifest_json(host_name, &shim_path))
+            .map(|body| (host_name, body))
+            .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))
+    });
+    let [manifest, legacy_manifest] = manifests;
+    let (manifest_name, manifest_body) = manifest?;
+    let (legacy_manifest_name, legacy_manifest_body) = legacy_manifest?;
     let data_dir = crate::app_paths::app_data_dir(&app)
         .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
     let home = PathBuf::from(std::env::var_os("HOME").ok_or_else(|| {
@@ -1002,8 +1015,11 @@ pub fn register_browser_extension_host(
     for hosts_dir in hosts_dirs {
         std::fs::create_dir_all(&hosts_dir)
             .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
-        let manifest_path = hosts_dir.join(format!("{NATIVE_HOST_NAME}.json"));
-        std::fs::write(&manifest_path, &body)
+        let manifest_path = hosts_dir.join(format!("{manifest_name}.json"));
+        std::fs::write(&manifest_path, &manifest_body)
+            .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
+        let legacy_manifest_path = hosts_dir.join(format!("{legacy_manifest_name}.json"));
+        std::fs::write(&legacy_manifest_path, &legacy_manifest_body)
             .map_err(|error| AppError::new("extension_host_register_failed", error.to_string()))?;
         manifest_paths.push(manifest_path);
     }
@@ -1045,7 +1061,7 @@ pub mod shim {
         json!({ "v": PROTOCOL_VERSION, "type": "error", "code": code })
     }
 
-    /// Entry point for the `june-nm-shim` binary: wires real stdio and exits
+    /// Entry point for the `clovy-nm-shim` binary: wires real stdio and exits
     /// nonzero when the app side is unreachable (after telling the extension
     /// why, so the popup can say "Clovy is not running").
     pub fn run() -> i32 {
@@ -1235,15 +1251,24 @@ mod tests {
 
     #[test]
     fn host_manifest_pins_the_extension_id_and_shim_path() {
-        let manifest = host_manifest_json(std::path::Path::new("/tmp/june-nm-shim"));
+        let manifest =
+            host_manifest_json(NATIVE_HOST_NAME, std::path::Path::new("/tmp/clovy-nm-shim"));
         assert_eq!(manifest["name"], NATIVE_HOST_NAME);
         assert_eq!(manifest["type"], "stdio");
-        assert_eq!(manifest["path"], "/tmp/june-nm-shim");
+        assert_eq!(manifest["path"], "/tmp/clovy-nm-shim");
         let origins = manifest["allowed_origins"].as_array().expect("origins");
         assert_eq!(
             origins,
             &[Value::String(format!("chrome-extension://{EXTENSION_ID}/"))]
         );
+
+        let legacy = host_manifest_json(
+            LEGACY_NATIVE_HOST_NAME,
+            std::path::Path::new("/tmp/clovy-nm-shim"),
+        );
+        assert_eq!(legacy["name"], LEGACY_NATIVE_HOST_NAME);
+        assert_eq!(legacy["path"], manifest["path"]);
+        assert_eq!(legacy["allowed_origins"], manifest["allowed_origins"]);
     }
 
     #[test]
@@ -1333,7 +1358,7 @@ mod tests {
 
         assert_eq!(
             shim_candidates_for_build(Some(executable), Some(resources), true),
-            vec![PathBuf::from("/repo/src-tauri/target/debug/june-nm-shim")]
+            vec![PathBuf::from("/repo/src-tauri/target/debug/clovy-nm-shim")]
         );
     }
 

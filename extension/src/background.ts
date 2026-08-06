@@ -6,13 +6,15 @@
 import {
   initialPairingState,
   reducePairing,
+  shouldTryNextNativeHost,
   type PairingEvent,
   type PairingState,
 } from "./pairing";
-import { NATIVE_HOST_NAME, parseBrowserRequest, PROTOCOL_VERSION } from "./protocol";
+import { NATIVE_HOST_NAMES, parseBrowserRequest, PROTOCOL_VERSION } from "./protocol";
 import { BrowserController, withRequestId } from "./browser";
 
 let port: chrome.runtime.Port | null = null;
+let nativeHostIndex = 0;
 let state: PairingState = initialPairingState;
 const browser = new BrowserController((tabId) => {
   if (state.status !== "paired" || !port) return;
@@ -44,8 +46,13 @@ function connect() {
   if (port) return;
   state = { status: "connecting" };
   try {
-    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAMES[nativeHostIndex]);
   } catch {
+    if (nativeHostIndex + 1 < NATIVE_HOST_NAMES.length) {
+      nativeHostIndex += 1;
+      connect();
+      return;
+    }
     // No host manifest registered yet (Clovy has not set up the extension).
     port = null;
     state = { status: "unreachable" };
@@ -68,7 +75,17 @@ function connect() {
     apply({ kind: "message", message });
   });
   port.onDisconnect.addListener(() => {
+    const shouldTryLegacy = shouldTryNextNativeHost(
+      state,
+      nativeHostIndex,
+      NATIVE_HOST_NAMES.length,
+    );
     port = null;
+    if (shouldTryLegacy) {
+      nativeHostIndex += 1;
+      connect();
+      return;
+    }
     apply({ kind: "disconnect" });
     void browser.disconnect();
   });
@@ -85,6 +102,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
   if (message?.type === "reconnect") {
+    nativeHostIndex = 0;
     connect();
     sendResponse(state);
     return;

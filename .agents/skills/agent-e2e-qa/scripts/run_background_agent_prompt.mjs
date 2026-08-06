@@ -543,7 +543,7 @@ async function main() {
   const token = randomToken();
   // Hermes syncs bundled skills into its home. Keep that churn outside Vite's
   // watched workspace so a QA turn cannot trigger a full-page reload.
-  const hermesHome = mkdtempSync(join(tmpdir(), "june-qa-hermes-"));
+  const hermesHome = mkdtempSync(join(tmpdir(), "clovy-qa-hermes-"));
   const childRef = { current: null };
   const unregisterCleanup = registerHermesCleanup({
     hermesHome,
@@ -611,7 +611,7 @@ async function main() {
     });
 
     await page.goto(args.url, { waitUntil: "domcontentloaded" });
-    const editor = page.getByRole("textbox", { name: "Message June" });
+    const editor = page.getByRole("textbox", { name: "Message Clovy" });
     await editor.waitFor({ timeout: 30_000 });
     await editor.fill(args.prompt);
     const startButton = page.getByRole("button", { name: "Start session" });

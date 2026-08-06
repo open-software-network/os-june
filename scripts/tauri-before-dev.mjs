@@ -7,10 +7,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const apiDir = path.join(rootDir, "june-api");
+const apiDir = path.join(rootDir, "clovy-api");
 const frontendPort = Number.parseInt(process.env.VITE_PORT ?? "1421", 10);
-const apiPort = Number.parseInt(process.env.JUNE_API_PORT ?? "8080", 10);
-const skipLocalApi = process.env.JUNE_DEV_SKIP_LOCAL_API === "1";
+const apiPort = Number.parseInt(
+  process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT ?? "8080",
+  10,
+);
+const skipLocalApi =
+  (process.env.CLOVY_DEV_SKIP_LOCAL_API ?? process.env.JUNE_DEV_SKIP_LOCAL_API) === "1";
 const shell = process.platform === "win32";
 
 let apiChild = null;
@@ -91,15 +95,15 @@ try {
   console.error(`Agent runtime build failed: ${error instanceof Error ? error.message : error}`);
   process.exit(1);
 }
-if (process.env.JUNE_DEV_PREPARE_ONLY === "1") {
+if ((process.env.CLOVY_DEV_PREPARE_ONLY ?? process.env.JUNE_DEV_PREPARE_ONLY) === "1") {
   process.exit(0);
 }
 
 if (skipLocalApi) {
-  console.error("Skipping local Clovy API because JUNE_DEV_SKIP_LOCAL_API=1.");
+  console.error("Skipping local Clovy API because CLOVY_DEV_SKIP_LOCAL_API=1.");
 } else {
   if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
-    console.error(`Could not find june-api/Cargo.toml under ${rootDir}`);
+    console.error(`Could not find clovy-api/Cargo.toml under ${rootDir}`);
     process.exit(1);
   }
 
@@ -109,10 +113,15 @@ if (skipLocalApi) {
     );
     process.exit(1);
   } else {
-    apiChild = spawnManaged("june-api", "cargo", ["run", "-p", "june", "--", "serve"], apiDir);
+    apiChild = spawnManaged(
+      "clovy-api",
+      "cargo",
+      ["run", "-p", "clovy-api-server", "--", "serve"],
+      apiDir,
+    );
     apiChild.on("exit", (code, signal) => {
       if (shuttingDown) return;
-      console.error(`june-api exited with ${signal ?? code}`);
+      console.error(`clovy-api exited with ${signal ?? code}`);
       exitFromChild(code, signal);
     });
   }

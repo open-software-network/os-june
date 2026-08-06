@@ -11,15 +11,15 @@ import { IconTelevision } from "central-icons/IconTelevision";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
 import {
-  JUNE_COMMUNITY_URL,
+  CLOVY_COMMUNITY_URL,
   dictationHotkeyStatus,
   dictationHelperCommand,
   dictationSettings,
   listVeniceModels,
   localAudioFileSrc,
   providerModelSettings,
-  juneOpenCommunityPage,
-  juneOpenVerifyPage,
+  clovyOpenCommunityPage,
+  clovyOpenVerifyPage,
   clearVeniceApiKey,
   saveLocalGenerationSettings,
   setLocalGenerationEnabled,
@@ -2741,14 +2741,14 @@ export function AppSettings({
                     <h3 className="settings-row-title">Community</h3>
                     <p className="settings-row-description">
                       Join us in the Clovy community on Telegram at{" "}
-                      {JUNE_COMMUNITY_URL.replace("https://", "")}.
+                      {CLOVY_COMMUNITY_URL.replace("https://", "")}.
                     </p>
                   </div>
                   <div className="settings-row-control">
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
+                      onClick={() => void clovyOpenCommunityPage().catch(() => undefined)}
                     >
                       Join community
                     </button>
@@ -2767,7 +2767,7 @@ export function AppSettings({
                     <button
                       type="button"
                       className="btn btn-secondary"
-                      onClick={() => void juneOpenVerifyPage().catch(() => undefined)}
+                      onClick={() => void clovyOpenVerifyPage().catch(() => undefined)}
                     >
                       Verify server
                     </button>
@@ -2797,7 +2797,7 @@ export function AppSettings({
 
                 {import.meta.env.DEV ? (
                   // Dev builds only: same helper the devtools console exposes
-                  // as june.replayOnboarding() — clears completion and
+                  // as clovy.replayOnboarding() — clears completion and
                   // reloads into the wizard.
                   <div className="settings-row">
                     <div className="settings-row-info">

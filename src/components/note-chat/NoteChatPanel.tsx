@@ -74,7 +74,7 @@ const NOTE_PRESETS: NotePreset[] = [
   },
 ];
 
-const NOTE_CHAT_WIDTH_KEY = "june:note-chat:panel-width";
+const NOTE_CHAT_WIDTH_KEY = "clovy:note-chat:panel-width";
 const NOTE_CHAT_MIN_W = 300;
 const NOTE_CHAT_MAX_W = 600;
 

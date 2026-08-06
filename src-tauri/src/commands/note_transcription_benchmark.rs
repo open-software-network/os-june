@@ -313,7 +313,7 @@ async fn handle_fake_request(mut stream: TcpStream, events: RequestEvents) {
     stream.shutdown().await.expect("close response");
 }
 
-pub(super) async fn spawn_fake_june_api(
+pub(super) async fn spawn_fake_clovy_api(
     events: RequestEvents,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -519,8 +519,8 @@ async fn run_benchmark_iteration(
 
     let clock = BenchmarkClock::default();
     let request_events = RequestEvents::new(clock.clone());
-    let (address, api_handle) = spawn_fake_june_api(request_events.clone()).await;
-    std::env::set_var("JUNE_API_URL", format!("http://{address}"));
+    let (address, api_handle) = spawn_fake_clovy_api(request_events.clone()).await;
+    std::env::set_var("CLOVY_API_URL", format!("http://{address}"));
     let dequeued_ms = Arc::new(Mutex::new(None));
     register_benchmark_observer(
         &recording_session_id,
@@ -745,13 +745,13 @@ async fn benchmark_post_finalization_note_transcription_latency() {
     // supported entry point and isolates the exact ignored test with one test-harness thread,
     // so these process-global values cannot race unrelated tests.
     let previous = [
-        "JUNE_API_URL",
-        "OS_JUNE_LOCAL_DEV",
-        "OS_JUNE_LOCAL_DEV_BEARER_TOKEN",
+        "CLOVY_API_URL",
+        "OS_CLOVY_LOCAL_DEV",
+        "OS_CLOVY_LOCAL_DEV_BEARER_TOKEN",
     ]
     .map(|name| (name, std::env::var_os(name)));
-    std::env::set_var("OS_JUNE_LOCAL_DEV", "1");
-    std::env::set_var("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "benchmark-token");
+    std::env::set_var("OS_CLOVY_LOCAL_DEV", "1");
+    std::env::set_var("OS_CLOVY_LOCAL_DEV_BEARER_TOKEN", "benchmark-token");
 
     for (case, case_fixtures) in fixtures {
         let mut measured = Vec::new();

@@ -99,7 +99,7 @@ async function resolveFrontendPort() {
 async function resolveApiPort() {
   return chooseDevPort({
     name: "Clovy API",
-    explicitValue: process.env.JUNE_API_PORT,
+    explicitValue: process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT,
     base: 8080,
     portIsFree,
   });
@@ -133,7 +133,8 @@ if (config && !hasConfigOverride) {
 }
 
 const frontendPort = await resolveFrontendPort();
-const startsLocalApi = process.env.JUNE_DEV_SKIP_LOCAL_API !== "1";
+const startsLocalApi =
+  (process.env.CLOVY_DEV_SKIP_LOCAL_API ?? process.env.JUNE_DEV_SKIP_LOCAL_API) !== "1";
 const apiPort = startsLocalApi ? await resolveApiPort() : undefined;
 if (apiPort !== undefined) {
   console.error(`Using an isolated Clovy API on http://127.0.0.1:${apiPort}.`);
@@ -166,13 +167,13 @@ const child = spawn(tauri.command, [...tauri.args, "dev", ...tauriArgs], {
     ...(apiPort === undefined
       ? {}
       : {
-          JUNE_API_PORT: String(apiPort),
-          JUNE_API_URL: `http://127.0.0.1:${apiPort}`,
-          JUNE__SERVER__PORT: String(apiPort),
+          CLOVY_API_PORT: String(apiPort),
+          CLOVY_API_URL: `http://127.0.0.1:${apiPort}`,
+          CLOVY__SERVER__PORT: String(apiPort),
         }),
     ...(developerDir ? { DEVELOPER_DIR: developerDir } : {}),
-    OS_JUNE_DEV_APP_NAME: devAppIdentity.productName,
-    ...(replayOnboarding ? { VITE_JUNE_REPLAY_ONBOARDING: "1" } : {}),
+    OS_CLOVY_DEV_APP_NAME: devAppIdentity.productName,
+    ...(replayOnboarding ? { VITE_CLOVY_REPLAY_ONBOARDING: "1" } : {}),
   },
   shell: false,
   stdio: "inherit",

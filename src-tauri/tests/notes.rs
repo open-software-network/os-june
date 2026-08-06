@@ -1,4 +1,4 @@
-use os_june_lib::{
+use clovy_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };

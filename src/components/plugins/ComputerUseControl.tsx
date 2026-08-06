@@ -357,12 +357,12 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
             {permissionsMissing ? (
               <section
                 className="computer-use-permission-assistant"
-                aria-labelledby="add-june-macos"
+                aria-labelledby="add-clovy-macos"
               >
                 <div className="computer-use-permission-assistant-header">
                   <div className="computer-use-permission-assistant-copy">
                     <span className="computer-use-permission-step">Step {permissionStep} of 2</span>
-                    <h4 id="add-june-macos">Allow {permissionLabel(nextPermission)}</h4>
+                    <h4 id="add-clovy-macos">Allow {permissionLabel(nextPermission)}</h4>
                     {nextPermission === "accessibility" ? (
                       <p>
                         Open System Settings, find <strong>Clovy Computer Use Driver</strong>, and

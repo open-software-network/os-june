@@ -163,7 +163,7 @@ export function ReportDialog({
                 onChange={(event) => setIncludeFailureDetails(event.currentTarget.checked)}
               />
               <span>
-                Include recent failure details (june-agent-diagnostics.txt). This contains a stable
+                Include recent failure details (clovy-agent-diagnostics.txt). This contains a stable
                 error code and technical stored session and run IDs, not conversation content or
                 tool output.
               </span>

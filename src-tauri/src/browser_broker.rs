@@ -22,7 +22,7 @@ use crate::{
     extension_host::{ExtensionHost, ExtensionResponse},
 };
 
-pub const BROWSER_APPROVALS_CHANGED_EVENT: &str = "june://browser-approvals-changed";
+pub const BROWSER_APPROVALS_CHANGED_EVENT: &str = "clovy://browser-approvals-changed";
 const BROWSER_APPROVAL_TIMEOUT_MS: u64 = 600_000;
 
 fn constant_time_eq(left: &str, right: &str) -> bool {

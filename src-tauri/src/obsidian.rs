@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Preserved June-owned Obsidian discovery for a neutral tool follow-up.
+#![allow(dead_code)] // Preserved Clovy-owned Obsidian discovery for a neutral tool follow-up.
 
 use crate::domain::types::AppError;
 use serde::{Deserialize, Serialize};
@@ -89,7 +89,7 @@ pub fn obsidian_disconnect(app: AppHandle) -> Result<ObsidianStatus, AppError> {
 
 /// Resolves the selected vault at the point the MCP request is handled. The
 /// MCP adapter deliberately does not interpret `obsidian.json` itself, so all
-/// validation and unavailable-vault privacy behavior remain June-owned.
+/// validation and unavailable-vault privacy behavior remain Clovy-owned.
 pub(crate) fn discovery_for_app(app: &AppHandle) -> Result<ObsidianDiscovery, AppError> {
     let Some(config) = read_config_optional(app)? else {
         return Ok(ObsidianDiscovery {

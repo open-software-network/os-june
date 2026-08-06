@@ -8,7 +8,7 @@ import { DotSpinner } from "../DotSpinner";
 
 // The Clovy-styled wrapper around sonner's toaster. Sonner ships as an unstyled
 // primitive here (toastOptions.unstyled) — every visual comes from the
-// `.june-toast*` rules in styles/app.css, so toasts inherit the design tokens
+// `.clovy-toast*` rules in styles/app.css, so toasts inherit the design tokens
 // and follow all five theme presets plus dark mode automatically. The tone
 // icons are the filled central-icons-filled set (never sonner's bundled
 // Lucide-style set); the close glyph stays outline and the loading glyph is
@@ -56,21 +56,21 @@ export function Toaster() {
       toastOptions={{
         unstyled: true,
         classNames: {
-          toast: "june-toast",
-          content: "june-toast-content",
-          title: "june-toast-title",
-          description: "june-toast-description",
-          icon: "june-toast-icon",
-          loader: "june-toast-loader",
-          actionButton: "btn btn-secondary june-toast-action",
-          cancelButton: "btn btn-secondary june-toast-cancel",
-          closeButton: "icon-button june-toast-close",
-          default: "june-toast--default",
-          success: "june-toast--success",
-          error: "june-toast--error",
-          info: "june-toast--info",
-          warning: "june-toast--warning",
-          loading: "june-toast--loading",
+          toast: "clovy-toast",
+          content: "clovy-toast-content",
+          title: "clovy-toast-title",
+          description: "clovy-toast-description",
+          icon: "clovy-toast-icon",
+          loader: "clovy-toast-loader",
+          actionButton: "btn btn-secondary clovy-toast-action",
+          cancelButton: "btn btn-secondary clovy-toast-cancel",
+          closeButton: "icon-button clovy-toast-close",
+          default: "clovy-toast--default",
+          success: "clovy-toast--success",
+          error: "clovy-toast--error",
+          info: "clovy-toast--info",
+          warning: "clovy-toast--warning",
+          loading: "clovy-toast--loading",
         },
       }}
     />

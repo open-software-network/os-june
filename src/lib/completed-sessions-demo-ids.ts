@@ -8,7 +8,7 @@ import type { AgentSessionDto } from "./agent-runtime-contract";
 
 export const COMPLETED_DEMO_SESSION_PREFIX = "completed-demo-";
 
-export const SIDEBAR_DEMO_SESSIONS_EVENT = "june:sidebar:demo-sessions";
+export const SIDEBAR_DEMO_SESSIONS_EVENT = "clovy:sidebar:demo-sessions";
 
 export type SidebarDemoSessionsDetail = {
   /** Sessions with this id prefix are removed before any new ones merge in. */
