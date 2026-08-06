@@ -420,6 +420,23 @@ describe("Clovy technical identity", () => {
     }
   });
 
+  it("passes legacy API URL fallbacks through distributable build steps", async () => {
+    const workflows = await Promise.all(
+      [
+        [".github/workflows/staging-desktop-dmg.yml", "STAGING"],
+        [".github/workflows/rc-desktop-dmg.yml", "PRODUCTION"],
+        [".github/workflows/promote-desktop.yml", "PRODUCTION"],
+        [".github/workflows/production-desktop-windows.yml", "PRODUCTION"],
+      ].map(async ([path, environment]) => [await read(path), environment]),
+    );
+
+    for (const [workflow, environment] of workflows) {
+      const fallback = `\${{ secrets.${environment}_CLOVY_API_URL || secrets.${environment}_JUNE_API_URL }}`;
+      expect(workflow).toContain(`${environment}_CLOVY_API_URL: ${fallback}`);
+      expect(workflow).toContain(`CLOVY_API_URL: ${fallback}`);
+    }
+  });
+
   it("preserves released API and C ABI contracts while publishing canonical aliases", async () => {
     const [desktopApi, canonicalHeader, legacyHeader, cryptoSource, apiBuild, apiPromotion] =
       await Promise.all([

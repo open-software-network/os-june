@@ -501,7 +501,7 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.PRODUCTION_OS_ACCOUNTS_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.PRODUCTION_GOOGLE_OAUTH_CLIENT_SECRET }}
-          CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL }}
+          CLOVY_API_URL: ${{ secrets.PRODUCTION_CLOVY_API_URL || secrets.PRODUCTION_JUNE_API_URL }}
           LINEAR_OAUTH_CLIENT_ID: ${{ secrets.PRODUCTION_LINEAR_OAUTH_CLIENT_ID }}
           # Preserve the RC's first-run Auto behavior when it is promoted.
           OS_CLOVY_AUTO_MODE_DEFAULT: "true"

@@ -108,7 +108,7 @@ jobs:
           OS_ACCOUNTS_CLIENT_ID: ${{ secrets.STAGING_OS_ACCOUNTS_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_ID }}
           GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_GOOGLE_OAUTH_CLIENT_SECRET }}
-          CLOVY_API_URL: ${{ secrets.STAGING_CLOVY_API_URL }}
+          CLOVY_API_URL: ${{ secrets.STAGING_CLOVY_API_URL || secrets.STAGING_JUNE_API_URL }}
         run: pnpm tauri:build:signed-dmg --target universal-apple-darwin
 
       - name: Upload DMG
