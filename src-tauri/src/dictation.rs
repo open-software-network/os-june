@@ -1644,7 +1644,7 @@ pub fn dictation_helper_command(
         if window.label() != "main" {
             return Err(AppError::new(
                 "dictation_composer_registration_forbidden",
-                "Only June's main window can register composer delivery.",
+                "Only Clovy's main window can register composer delivery.",
             ));
         }
         let request_id = command
@@ -1684,7 +1684,7 @@ pub fn dictation_helper_command(
     {
         return Err(AppError::new(
             "dictation_composer_registration_forbidden",
-            "Only June's main window can start composer delivery.",
+            "Only Clovy's main window can start composer delivery.",
         ));
     }
     #[cfg(target_os = "windows")]
@@ -1776,7 +1776,7 @@ fn webview_window_handle(window: &WebviewWindow) -> Result<isize, AppError> {
         .map_err(|error| {
             AppError::new(
                 "dictation_composer_window_unavailable",
-                format!("June could not identify the composer window: {error}"),
+                format!("Clovy could not identify the composer window: {error}"),
             )
         })
 }
@@ -4594,9 +4594,9 @@ fn retry_helper_spawn(app: &AppHandle, mut survived: Duration, initial_start: bo
                     "dictation helper recovery exhausted; giving up until relaunch"
                 );
                 let message = if initial_start {
-                    "Dictation could not start. Relaunch June to try again."
+                    "Dictation could not start. Relaunch Clovy to try again."
                 } else {
-                    "Dictation stopped and could not restart. Relaunch June to restore it."
+                    "Dictation stopped and could not restart. Relaunch Clovy to restore it."
                 };
                 emit_helper_unavailable(app, "exhausted", message);
                 return;
@@ -5527,7 +5527,7 @@ fn retain_low_speech_evidence_recording(
                 &claim.take,
                 app_error_event(AppError::new(
                     "dictation_recovery_unavailable",
-                    "June couldn't save this dictation. The recording was kept for recovery.",
+                    "Clovy couldn't save this dictation. The recording was kept for recovery.",
                 )),
             );
             tracing::error!(
@@ -5576,7 +5576,7 @@ fn dictation_transcription_provider(provider: String) -> Result<String, AppError
     if provider != OPENAI_PROVIDER && provider != VENICE_PROVIDER {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires an OpenAI or Venice transcription model through June API.",
+            "Dictation requires an OpenAI or Venice transcription model through Clovy's model service.",
         ));
     }
     Ok(provider)
@@ -6901,7 +6901,7 @@ fn agent_session_prompt_from_dictation(text: &str) -> Option<String> {
 }
 
 fn is_agent_session_wake_name(word: &str) -> bool {
-    ["june", "jun", "joon"]
+    ["clovy", "clovie", "clovi", "june", "jun", "joon"]
         .iter()
         .any(|variant| word.eq_ignore_ascii_case(variant))
 }
@@ -9868,10 +9868,10 @@ mod tests {
     }
 
     #[test]
-    fn hey_june_transcription_maps_to_agent_session_event() {
+    fn hey_clovy_transcription_maps_to_agent_session_event() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
-                text: "Hey, June, summarize the open document.".to_string(),
+                text: "Hey, Clovy, summarize the open document.".to_string(),
                 language: Some("en".to_string()),
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
@@ -9892,7 +9892,7 @@ mod tests {
         );
         assert_eq!(
             outcome.transcript.as_ref().map(|item| item.text.as_str()),
-            Some("Hey, June, summarize the open document.")
+            Some("Hey, Clovy, summarize the open document.")
         );
     }
 
@@ -9921,21 +9921,21 @@ mod tests {
     }
 
     #[test]
-    fn hey_june_detection_requires_first_two_words() {
+    fn hey_clovy_detection_requires_first_two_words_and_keeps_june_aliases() {
+        assert_eq!(
+            agent_session_prompt_from_dictation("Hey Clovy open settings").as_deref(),
+            Some("open settings")
+        );
+        assert_eq!(
+            agent_session_prompt_from_dictation("Hey Clovie open settings").as_deref(),
+            Some("open settings")
+        );
         assert_eq!(
             agent_session_prompt_from_dictation("Hey June open settings").as_deref(),
             Some("open settings")
         );
         assert_eq!(
-            agent_session_prompt_from_dictation("Hey Jun open settings").as_deref(),
-            Some("open settings")
-        );
-        assert_eq!(
-            agent_session_prompt_from_dictation("Hey Joon open settings").as_deref(),
-            Some("open settings")
-        );
-        assert_eq!(
-            agent_session_prompt_from_dictation("well hey june open"),
+            agent_session_prompt_from_dictation("well hey clovy open"),
             None
         );
         assert_eq!(
@@ -10613,7 +10613,7 @@ mod tests {
     fn low_speech_evidence_cannot_emit_an_agent_session_prompt() {
         let outcome = outcome_from_transcription_result(
             Ok(TranscriptionProviderResult {
-                text: "Hey June delete this note.".to_string(),
+                text: "Hey Clovy delete this note.".to_string(),
                 language: Some("en".to_string()),
                 provider: crate::providers::VENICE_PROVIDER.to_string(),
             }),
@@ -10710,7 +10710,7 @@ mod tests {
             "type": "error",
             "payload": {
                 "code": "accessibility_permission_missing",
-                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+                "message": "Clovy couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
             }
         });
         assert!(!is_silent_transcription_error(&event));
@@ -10742,7 +10742,7 @@ mod tests {
             "type": "error",
             "payload": {
                 "code": "paste_target_unavailable",
-                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+                "message": "Clovy couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
             }
         });
         assert!(!is_silent_transcription_error(&event));

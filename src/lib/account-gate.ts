@@ -96,8 +96,8 @@ export type TextFundingModelContext = {
   veniceApiKeyConfigured: boolean;
 };
 
-/** Split text generation from the general June-credit gate. Explicit Venice
- * BYOK text can continue while June funding is unavailable, but only when the
+/** Split text generation from the general Clovy-credit gate. Explicit Venice
+ * BYOK text can continue while Clovy funding is unavailable, but only when the
  * configured key and the active concrete catalog entry prove that route. */
 export function shouldBlockTextOnFunding(
   fundingRequired: boolean,

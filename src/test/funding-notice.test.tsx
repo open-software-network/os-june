@@ -69,7 +69,7 @@ describe("FundingNotice", () => {
     renderFundingNotice();
 
     expect(
-      screen.getByText("Your starter credits are used up. Upgrade to keep using June."),
+      screen.getByText("Your starter credits are used up. Upgrade to keep using Clovy."),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
@@ -101,7 +101,7 @@ describe("FundingNotice", () => {
 
     expect(
       screen.getByText(
-        "Auto can route beyond Venice, so it uses June credits. Your Venice API key applies only when you select a Venice model.",
+        "Auto can route beyond Venice, so it uses Clovy credits. Your Venice API key applies only when you select a Venice model.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Or go Max" })).not.toBeInTheDocument();
@@ -132,7 +132,7 @@ describe("FundingNotice", () => {
     );
 
     expect(
-      screen.getByText("Your starter credits are used up. Upgrade to keep using June."),
+      screen.getByText("Your starter credits are used up. Upgrade to keep using Clovy."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Select a Venice model" })).toBeNull();
   });
@@ -158,7 +158,7 @@ describe("FundingNotice", () => {
     });
 
     expect(
-      screen.getByText("Your payment needs attention. Update billing to keep using June."),
+      screen.getByText("Your payment needs attention. Update billing to keep using Clovy."),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
@@ -189,7 +189,7 @@ describe("FundingNotice", () => {
     });
 
     expect(
-      screen.getByText("Your credit balance is below zero. Top up to keep using June."),
+      screen.getByText("Your credit balance is below zero. Top up to keep using Clovy."),
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Top up credits" }));

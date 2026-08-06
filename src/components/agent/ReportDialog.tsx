@@ -129,7 +129,7 @@ export function ReportDialog({
     >
       {sent ? (
         <p className="report-dialog-sent" role="status">
-          Your report was sent to the June team. Thank you for helping improve June.
+          Your report was sent to the Clovy team. Thank you for helping improve Clovy.
         </p>
       ) : (
         <div className="dialog-body report-dialog-drop">

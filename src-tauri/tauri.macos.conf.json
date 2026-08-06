@@ -16,7 +16,7 @@
       "resources/agent-skills": "native/agent-skills"
     },
     "macOS": {
-      "bundleName": "June",
+      "bundleName": "Clovy",
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],

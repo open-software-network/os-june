@@ -28,7 +28,7 @@ type ProjectSettingsDialogProps = {
 
 /**
  * Everything about a project that's *bounded*: its name, description, the
- * instructions June follows in its sessions, whether it keeps memory, and the
+ * instructions Clovy follows in its sessions, whether it keeps memory, and the
  * delete action. Memory itself is an unbounded, growing dataset, so it doesn't
  * live inline here — the section is a toggle plus a count that links out to the
  * full Memory manager (Settings > Memory), which is built to scale. Name /
@@ -200,7 +200,7 @@ export function ProjectSettingsDialog({
         <DialogField
           label="Instructions"
           htmlFor="project-instructions"
-          hint="June follows these in every session started in this project."
+          hint="Clovy follows these in every session started in this project."
         >
           <textarea
             id="project-instructions"
@@ -237,7 +237,7 @@ export function ProjectSettingsDialog({
               </h3>
               <p className="settings-row-description">
                 {memoryEnabled
-                  ? "June can save and use memories in this project."
+                  ? "Clovy can save and use memories in this project."
                   : "Memory is turned off in Settings > Memory."}
               </p>
             </div>

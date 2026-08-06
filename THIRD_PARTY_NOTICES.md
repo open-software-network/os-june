@@ -1,6 +1,6 @@
 # Third-party Notices
 
-June release artifacts may bundle third-party software. Keep upstream license
+Clovy release artifacts may bundle third-party software. Keep upstream license
 and notice files with redistributed source or binary builds.
 
 ## Hermes Agent

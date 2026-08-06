@@ -8,7 +8,7 @@
 
 ## Thesis
 
-Box gives June live access to governed enterprise content without moving that
+Box gives Clovy live access to governed enterprise content without moving that
 content into OpenSoftware infrastructure. The plugin should prepare meetings
 from explicitly selected folders and attach reviewed outputs to the right Box
 location.
@@ -25,7 +25,7 @@ another sensitive corpus and can bypass expected folder context.
 
 ## Product promise
 
-Choose the Box folders June may use. June reads a file only when the task needs
+Choose the Box folders Clovy may use. Clovy reads a file only when the task needs
 it and uploads an approved local artifact only to an explicit selected folder.
 
 ## V1 experience
@@ -33,7 +33,7 @@ it and uploads an approved local artifact only to an explicit selected folder.
 - Connect one Box account and choose folders.
 - Search selected folders by metadata and read a supported file on demand.
 - Show owner, collaborators, classification signals, version, and canonical URL.
-- Export a June document or spreadsheet artifact, then approve its upload.
+- Export a Clovy document or spreadsheet artifact, then approve its upload.
 - Disconnect and remove access, cursors, and runtime tools.
 
 ## Scope
@@ -45,7 +45,7 @@ it and uploads an approved local artifact only to an explicit selected folder.
   formats through the existing artifact inspection pipeline.
 - File version and collaboration metadata.
 - Approved upload of a new file or new version.
-- On-device polling for selected-folder changes while June is awake.
+- On-device polling for selected-folder changes while Clovy is awake.
 
 ### Later
 
@@ -57,19 +57,19 @@ it and uploads an approved local artifact only to an explicit selected folder.
 - Full-account indexing or content cache.
 - Sharing, collaborator changes, deletion, moves, or retention-policy changes.
 - Admin impersonation or enterprise-wide search.
-- Claiming June can bypass Box policy or classification controls.
+- Claiming Clovy can bypass Box policy or classification controls.
 
 ## Privacy and trust
 
 Box OAuth grants access only to content available to the associated user and
 can be further constrained by app scopes and token downscoping. The desktop
 auth spike must confirm public-client feasibility, refresh rotation, and
-enterprise authorization. June's selected folders are a stricter Rust-enforced
+enterprise authorization. Clovy's selected folders are a stricter Rust-enforced
 boundary.
 
 File names, content, comments, classifications, and collaborator labels are
 untrusted. Uploads are approval-only and display destination, file name, size,
-format, and the June content being disclosed.
+format, and the Clovy content being disclosed.
 
 ## Business model
 

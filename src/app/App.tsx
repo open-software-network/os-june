@@ -81,7 +81,7 @@ import {
   loadSessionModels,
   rememberSessionModel,
 } from "../lib/agent-session-models";
-import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
+import { readClovyHomeStoredSessionId, writeClovyHomeStoredSessionId } from "../lib/june-home";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
   COMPLETED_DEMO_SESSION_PREFIX,
@@ -134,10 +134,10 @@ import {
 } from "../lib/account-gate";
 import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
-import { reconcileToStable, relaunchJune, type JuneUpdate } from "../lib/updater";
+import { reconcileToStable, relaunchClovy, type ClovyUpdate } from "../lib/updater";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import {
-  startPeriodicJuneUpdateChecks,
+  startPeriodicClovyUpdateChecks,
   UP_TO_DATE_STATUS,
   type UpdatePromptPayload,
 } from "./update-decision";
@@ -355,10 +355,10 @@ export function App() {
     async () => false,
   );
   const [homeStoredSessionId, setHomeStoredSessionId] = useState(() =>
-    readJuneHomeStoredSessionId(currentDataPartitionName),
+    readClovyHomeStoredSessionId(currentDataPartitionName),
   );
   useEffect(() => {
-    setHomeStoredSessionId(readJuneHomeStoredSessionId(currentDataPartitionName));
+    setHomeStoredSessionId(readClovyHomeStoredSessionId(currentDataPartitionName));
   }, [currentDataPartitionName]);
   const homeStoredSessionIdRef = useRef(homeStoredSessionId);
   homeStoredSessionIdRef.current = homeStoredSessionId;
@@ -368,7 +368,7 @@ export function App() {
   );
   const rememberHomeSession = useCallback(
     (sessionId: string) => {
-      writeJuneHomeStoredSessionId(currentDataPartitionName, sessionId);
+      writeClovyHomeStoredSessionId(currentDataPartitionName, sessionId);
       setHomeStoredSessionId(sessionId);
     },
     [currentDataPartitionName],
@@ -640,7 +640,7 @@ export function App() {
   const selectedNoteTranscriptCoverageKey = authoritativeTranscriptCoverageKey(
     selectedNote?.sourceTranscripts ?? [],
   );
-  // The contextual Ask June panel next to the open note. Scoped to one note:
+  // The contextual Ask Clovy panel next to the open note. Scoped to one note:
   // it only renders while a note is the active view, and closes whenever the
   // open note changes (below) so it never flies out onto a different or
   // brand-new note the user didn't open it on.
@@ -656,9 +656,9 @@ export function App() {
     setConfirmDeleteNote(false);
     setShareNoteOpen(false);
   }, [selectedNoteId]);
-  // The note's Ask June chat is owned here, not inside the panel, so its
+  // The note's Ask Clovy chat is owned here, not inside the panel, so its
   // session and working state survive the panel closing: a fired-off question
-  // keeps running in the background and the toolbar's Ask June button shows a
+  // keeps running in the background and the toolbar's Ask Clovy button shows a
   // working dot until the reply lands.
   const noteChat = useNoteChat(
     selectedNote ? { id: selectedNote.id, title: selectedNote.title } : null,
@@ -698,9 +698,9 @@ export function App() {
     <NoteHeaderActions
       noteId={selectedNote.id}
       noteTitle={selectedNote.title}
-      askJuneOpen={noteChatOpen}
-      askJuneWorking={noteChat.working}
-      onAskJune={() => setNoteChatOpen((open) => !open)}
+      askClovyOpen={noteChatOpen}
+      askClovyWorking={noteChat.working}
+      onAskClovy={() => setNoteChatOpen((open) => !open)}
       onShare={
         noteReadyToShare(selectedNote.processingStatus) ? () => setShareNoteOpen(true) : undefined
       }
@@ -945,7 +945,7 @@ export function App() {
   // down and re-fire every time a download or relaunch toggles state.
   const preparingUpdateRef = useRef(false);
   const checkingUpdateRef = useRef(false);
-  const readyUpdateRef = useRef<UpdatePromptPayload<JuneUpdate> | null>(null);
+  const readyUpdateRef = useRef<UpdatePromptPayload<ClovyUpdate> | null>(null);
   const relaunchingUpdateRef = useRef(false);
   const updateProgressHiddenRef = useRef(false);
   useEffect(() => {
@@ -1004,7 +1004,7 @@ export function App() {
     setUpdateStatus(null);
     void noteSaveController
       .flushAll()
-      .then(relaunchJune)
+      .then(relaunchClovy)
       .catch((error) => {
         relaunchingUpdateRef.current = false;
         setRelaunchingUpdate(false);
@@ -1026,7 +1026,7 @@ export function App() {
   useEffect(() => {
     if (import.meta.env.DEV) return;
     if (appBlocked) return;
-    return startPeriodicJuneUpdateChecks(runUpdateCheck);
+    return startPeriodicClovyUpdateChecks(runUpdateCheck);
   }, [appBlocked, runUpdateCheck]);
 
   useEffect(() => {
@@ -1286,7 +1286,7 @@ export function App() {
                 type: "error",
                 data: {
                   code: "unsupported",
-                  message: "That model is not available in June's recommended model set.",
+                  message: "That model is not available in Clovy's recommended model set.",
                   retryable: false,
                 },
               });
@@ -1573,7 +1573,7 @@ export function App() {
     setMicrophoneStatus,
   });
 
-  // The detached meeting HUD (shown when June is backgrounded, minimized, or
+  // The detached meeting HUD (shown when Clovy is backgrounded, minimized, or
   // hidden mid-recording) is a presence indicator, not a control surface:
   // clicking it emits "reopen", and we bring the window forward and land back
   // on the meeting being recorded. All recording controls stay in-app.
@@ -1713,7 +1713,7 @@ export function App() {
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
-  // returns to June. The helper poll is what surfaces fresh mic /
+  // returns to Clovy. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
@@ -2024,7 +2024,7 @@ export function App() {
     handleRemoveSessionFromFolder,
     handleReportIssue,
     handleOpenNoteChatInAgent,
-    handleAskJuneAboutNote,
+    handleAskClovyAboutNote,
     handleStartBundleChat,
     handleNewAgentSessionInProject,
   } = createAppDomainActions({

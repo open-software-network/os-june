@@ -57,7 +57,7 @@ describe("agent HUD", () => {
     emitStatus({
       status: "running",
       title: "Let's start a session.",
-      summary: "Starting June.",
+      summary: "Starting Clovy.",
     });
     await flushPromises();
 
@@ -422,18 +422,18 @@ describe("agent HUD", () => {
       sessionId: "session-1",
       status: "running",
       prompt,
-      summary: "June is working.",
+      summary: "Clovy is working.",
     });
     emitStatus({
       sessionId: "session-1",
       status: "waitingForUser",
       title: refusal,
-      summary: "June has a question.",
+      summary: "Clovy has a question.",
     });
     await flushPromises();
 
     expect(stackElement()).toHaveTextContent(prompt);
-    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).toHaveTextContent("Clovy has a question.");
     expect(stackElement()).not.toHaveTextContent(refusal);
   });
 
@@ -452,7 +452,7 @@ describe("agent HUD", () => {
       sessionId: "session-1",
       status: "running",
       prompt,
-      summary: "June is working.",
+      summary: "Clovy is working.",
     });
     emitSessionsChanged({
       sessions: [session],
@@ -463,12 +463,12 @@ describe("agent HUD", () => {
       sessionId: "session-1",
       status: "waitingForUser",
       title: refusal,
-      summary: "June has a question.",
+      summary: "Clovy has a question.",
     });
     await flushPromises();
 
     expect(stackElement()).toHaveTextContent(prompt);
-    expect(stackElement()).toHaveTextContent("June has a question.");
+    expect(stackElement()).toHaveTextContent("Clovy has a question.");
     expect(stackElement()).not.toHaveTextContent(refusal);
   });
 
@@ -486,7 +486,7 @@ describe("agent HUD", () => {
       status: "waitingForUser",
       title: refusal,
       prompt: "Review the session naming behavior",
-      summary: "June has a question.",
+      summary: "Clovy has a question.",
     });
     await flushPromises();
 
@@ -513,7 +513,7 @@ describe("agent HUD", () => {
       status: "waitingForUser",
       title: clarification,
       prompt: "Review the session naming behavior",
-      summary: "June has a question.",
+      summary: "Clovy has a question.",
     });
     await flushPromises();
 
@@ -755,7 +755,7 @@ describe("agent HUD", () => {
     emitStatus({
       status: "running",
       title: "Review the branch",
-      summary: "June is working.",
+      summary: "Clovy is working.",
     });
     await flushPromises();
 
@@ -764,7 +764,7 @@ describe("agent HUD", () => {
 
     expect(pillLabelElement()).toHaveTextContent("1 running");
     expect(stackElement()).toHaveTextContent("Review the branch");
-    expect(stackElement()).not.toHaveTextContent("June is working.");
+    expect(stackElement()).not.toHaveTextContent("Clovy is working.");
   });
 
   it("keeps the panel open under the pointer after the work resolves", async () => {
@@ -868,7 +868,7 @@ describe("agent HUD", () => {
       payload: {
         sessionId: "session-settled",
         title: "Summarize this",
-        summary: "June finished.",
+        summary: "Clovy finished.",
         activeCount: 0,
       },
     });
@@ -894,7 +894,7 @@ describe("agent HUD", () => {
       payload: {
         sessionId: "session-settled",
         title: "Generated session title",
-        summary: "June finished.",
+        summary: "Clovy finished.",
         activeCount: 0,
       },
     });
@@ -920,7 +920,7 @@ describe("agent HUD", () => {
       payload: {
         sessionId: "session-settled",
         title: "Review launch notes",
-        summary: "June finished.",
+        summary: "Clovy finished.",
         activeCount: 0,
       },
     });
@@ -950,7 +950,7 @@ describe("agent HUD", () => {
       sessionId: "session-1",
       status: "completed",
       title: "Generated session title",
-      summary: "June finished.",
+      summary: "Clovy finished.",
     });
     await flushPromises();
 
@@ -1068,6 +1068,7 @@ describe("agent HUD", () => {
     expect(hideHudButton()).toHaveTextContent("Hide sessions HUD");
 
     hideHudButton().click();
+    await vi.dynamicImportSettled();
     await flushPromises();
 
     expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
@@ -1274,7 +1275,7 @@ describe("agent HUD", () => {
     expect(hudElement().dataset.visible).toBe("false");
   });
 
-  it("stays down while the June main window is focused", async () => {
+  it("stays down while the Clovy main window is focused", async () => {
     await loadAgentHud();
 
     mocks.listeners.get("june:agent-hud:main-focus")?.({ payload: true });

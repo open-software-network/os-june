@@ -45,7 +45,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
   }
 
   getModel(modelName?: string): Model {
-    if (!modelName) throw new Error("A model name is required for June model routing");
+    if (!modelName) throw new Error("A model name is required for Clovy model routing");
     const client = {
       baseURL: "stdio://june-host",
       chat: {
@@ -104,7 +104,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
         if (autoRequested) {
           const chunkModel = autoResponseModel(chunk.model);
           if (chunkModel && this.resolvedModel && chunkModel !== this.resolvedModel) {
-            throw new Error("June's Auto model response identified conflicting selected models");
+            throw new Error("Clovy's Auto model response identified conflicting selected models");
           }
           if (chunkModel) this.resolvedModel = chunkModel;
         }
@@ -118,7 +118,7 @@ export class RpcChatCompletionsModelProvider implements ModelProvider {
       }
       if (page.done) {
         if (autoRequested && !this.resolvedModel) {
-          throw new Error("June's Auto model response did not identify its selected model");
+          throw new Error("Clovy's Auto model response did not identify its selected model");
         }
         return;
       }
@@ -242,12 +242,12 @@ function concreteModel(model: string | undefined): string | undefined {
 function autoResponseModel(model: JsonValue | undefined): string | undefined {
   if (model === undefined) return undefined;
   if (typeof model !== "string") {
-    throw new Error("June's Auto model response identified an invalid selected model");
+    throw new Error("Clovy's Auto model response identified an invalid selected model");
   }
   const normalized = model.trim();
   if (normalized === "auto" || isAutoModel(normalized)) return undefined;
   const concrete = concreteModel(normalized);
-  if (!concrete) throw new Error("June's Auto model response identified an invalid selected model");
+  if (!concrete) throw new Error("Clovy's Auto model response identified an invalid selected model");
   return concrete;
 }
 
@@ -274,10 +274,10 @@ type StreamPage = { streamId: string; chunks: JsonObject[]; done: boolean; route
 
 function requireStreamPage(value: JsonValue): StreamPage {
   if (!isRecord(value) || typeof value.streamId !== "string" || !Array.isArray(value.chunks) || typeof value.done !== "boolean") {
-    throw new Error("June model host returned an invalid Chat Completions stream page");
+    throw new Error("Clovy model host returned an invalid Chat Completions stream page");
   }
   const chunks = value.chunks.map((chunk) => {
-    if (!isRecord(chunk)) throw new Error("June model host returned a non-object stream chunk");
+    if (!isRecord(chunk)) throw new Error("Clovy model host returned a non-object stream chunk");
     return chunk;
   });
   const routeValue = isRecord(value.route) ? value.route : undefined;

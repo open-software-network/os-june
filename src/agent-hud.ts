@@ -32,7 +32,7 @@ import {
 import { isAgentSessionTitleCandidate, sessionSettledTitleKind } from "./lib/agent-session-titles";
 import type { AgentSessionDto } from "./lib/agent-runtime-contract";
 import { subscribeBrand } from "./lib/brand";
-import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
+import { SPINNER_GRID_COLS, spinnerGrid } from "./lib/spinner-grid";
 import { createHudLifecycle } from "./lib/hud-lifecycle";
 import { titleFromPrompt } from "./lib/session-title";
 import {
@@ -65,7 +65,7 @@ type HudEntry = {
   session?: AgentSessionDto;
   // Deep-link target for rows without a full session object (a status that
   // reported before, or without, a sessions-changed listing). The main
-  // window resolves it against June's stored session history.
+  // window resolves it against Clovy's stored session history.
   storedSessionId?: string;
 };
 
@@ -106,7 +106,7 @@ const state = {
   enabled: getAgentHudEnabled(),
   expanded: localStorage.getItem(EXPANDED_KEY) === "true",
   placement: getAgentHudPlacement(),
-  // While the user is in June itself the HUD stays down — the sidebar and
+  // While the user is in Clovy itself the HUD stays down — the sidebar and
   // inline prompts already carry session state there. Rust streams focus
   // changes; the initial value is fetched below and defaults to "away" so
   // the standalone demo page still renders.
@@ -279,7 +279,7 @@ function applyMainFocus(focused: boolean) {
   render();
 }
 
-/* The HUD has something to say AND the user is not already in June looking
+/* The HUD has something to say AND the user is not already in Clovy looking
  * at the same state in richer form. Used by render() and syncWindowLayout(),
  * which must agree on what "visible" means. */
 function hudVisible(hasEntries: boolean) {
@@ -691,8 +691,11 @@ function rowSummary(entry: HudEntry) {
     normalizedSummary === normalizeText(entry.title) ||
     normalizedSummary === normalizeText(statusLabel(entry.status)) ||
     normalizedSummary === "june is working" ||
+    normalizedSummary === "clovy is working" ||
     normalizedSummary === "starting june" ||
-    normalizedSummary === "june finished"
+    normalizedSummary === "starting clovy" ||
+    normalizedSummary === "june finished" ||
+    normalizedSummary === "clovy finished"
   ) {
     return undefined;
   }
@@ -1098,8 +1101,8 @@ function appendStatusIcon(parent: HTMLElement, status: HudSessionStatus) {
   }
 }
 
-// The app-wide dot spinner that draws June's mark (see components/DotSpinner.tsx
-// and lib/june-spinner-grid); this page has no React tree, so the same markup is
+// The app-wide neutral dot spinner (see components/DotSpinner.tsx
+// and lib/spinner-grid); this page has no React tree, so the same markup is
 // built by hand against the shared dot-spinner.css. Uses the sm (3×3) variant,
 // matching every inline usage.
 function appendDotSpinner(parent: HTMLElement) {
@@ -1107,10 +1110,10 @@ function appendDotSpinner(parent: HTMLElement) {
   spinner.className = "dot-spinner";
   spinner.dataset.size = "sm";
   spinner.setAttribute("aria-hidden", "true");
-  spinner.style.setProperty("--june-cols", String(JUNE_SPINNER_COLS.sm));
-  for (const cell of juneSpinnerGrid("sm")) {
+  spinner.style.setProperty("--spinner-cols", String(SPINNER_GRID_COLS.sm));
+  for (const cell of spinnerGrid("sm")) {
     const dot = document.createElement("span");
-    dot.style.setProperty("--june-order", String(cell.order));
+    dot.style.setProperty("--spinner-order", String(cell.order));
     if (cell.mark) {
       dot.dataset.mark = "";
     }

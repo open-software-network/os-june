@@ -149,7 +149,7 @@ export const REQUEST_CLARIFICATION_TOOL: RuntimeToolDescriptor = {
 export const REQUEST_SECRET_TOOL: RuntimeToolDescriptor = {
   name: "request_secret",
   description:
-    "Securely ask the user for a secret required by a tool. The value is delivered through June's keychain boundary and is never added to model context.",
+    "Securely ask the user for a secret required by a tool. The value is delivered through Clovy's keychain boundary and is never added to model context.",
   parameters: {
     type: "object",
     properties: {

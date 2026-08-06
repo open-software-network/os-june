@@ -3,7 +3,7 @@
 //! This is the ONLY place Google APIs are called: the provider proxy and the
 //! trigger daemon call these functions with an access token resolved through
 //! `connectors::google_access_token`. Calls go straight from the device to
-//! Google; June API is never in the connector data path.
+//! Google; Clovy API is never in the connector data path.
 //!
 //! Responses are parsed into compact summary structs (unknown fields
 //! tolerated) so agent context stays small. On a 401 this module returns the

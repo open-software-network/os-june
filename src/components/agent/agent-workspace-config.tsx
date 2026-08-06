@@ -24,7 +24,7 @@ export type AgentPanel = "chat" | "skills";
 /**
  * The two write-access modes a new session can start the runtime in. The
  * sandbox is a kernel write-jail (reads are unrestricted either way), chosen
- * per new session — switching restarts June's runtime, so the picker only
+ * per new session — switching restarts Clovy's runtime, so the picker only
  * appears in the hero composer.
  */
 // The Unrestricted confirm is a speed bump, not a recurring gate: one
@@ -54,13 +54,13 @@ export const SANDBOX_OPTIONS = [
     unrestricted: false,
     icon: <IconShieldCheck size={16} aria-hidden />,
     title: "Sandboxed",
-    description: "June can read your files but only change its own workspace.",
+    description: "Clovy can read your files but only change its own workspace.",
   },
   {
     unrestricted: true,
     icon: <IconShieldCrossed size={16} aria-hidden />,
     title: "Unrestricted",
-    description: "June can change any file your account can.",
+    description: "Clovy can change any file your account can.",
   },
 ] as const;
 
@@ -89,13 +89,13 @@ export type AgentShortcut = {
  * window is the curated first-impression mix (a note-native ready-to-send
  * prompt, a placeholder prefill, an attach flow) that shows when the shuffle
  * is identity (e.g. in tests with Math.random mocked to 0). At least one
- * chip in that window should be something only June can do — recapping your
+ * chip in that window should be something only Clovy can do — recapping your
  * own notes — not a generic computer chore.
  *
  * Every suggestion must succeed inside the default write-jail: reads are
  * broad, but writes land only in the agent workspace. Don't add shortcuts
  * that rename, move, or delete the user's files (tidy a folder, free up
- * disk space, dedupe) — the sandbox denies the write mid-task and June's
+ * disk space, dedupe) — the sandbox denies the write mid-task and Clovy's
  * own suggestion reads as broken.
  */
 export const AGENT_SHORTCUTS: AgentShortcut[] = [
@@ -147,7 +147,7 @@ export const AGENT_SHORTCUTS: AgentShortcut[] = [
     key: "find-file",
     icon: <IconMagnifyingGlass size={18} />,
     title: "Find a file",
-    description: "Describe what you remember; June tracks it down.",
+    description: "Describe what you remember; Clovy tracks it down.",
     prompt:
       "Find <a file I half-remember> on my computer and tell me where it is. If several candidates match, list them with paths and dates.",
     action: "prefill",
@@ -178,10 +178,10 @@ export const AGENT_SHORTCUTS: AgentShortcut[] = [
  * across launches. Exported so tests can match "any greeting".
  */
 export const HERO_GREETINGS = [
-  "What can June do for you?",
+  "What can Clovy do for you?",
   "What should we work on?",
-  "Where should June start?",
-  "What can June take off your plate?",
+  "Where should Clovy start?",
+  "What can Clovy take off your plate?",
 ] as const;
 
 export const HERO_GREETING_INDEX_KEY = "june:agent:hero-greeting";

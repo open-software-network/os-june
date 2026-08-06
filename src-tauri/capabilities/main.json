@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Main window access to scoped June commands.",
+  "description": "Main window access to scoped Clovy commands.",
   "windows": ["main"],
   "permissions": [
     "core:default",

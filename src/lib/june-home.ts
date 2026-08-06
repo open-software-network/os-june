@@ -11,21 +11,21 @@ const homeThreadRetargets = new Map<string, string | null>();
 export const JUNE_HOME_CONTEXT_OPEN = "[June home context]";
 export const JUNE_HOME_CONTEXT_CLOSE = "[/June home context]";
 
-export type JuneHomeTaskRequest = {
+export type ClovyHomeTaskRequest = {
   title: string;
   prompt: string;
   summary?: string;
   requiresCurrentResearch?: boolean;
 };
 
-export type JuneHomeConversationMessage = {
+export type ClovyHomeConversationMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt?: string;
 };
 
-export type JuneHomeConversationContext = {
-  recentMessages: Array<Pick<JuneHomeConversationMessage, "role" | "content">>;
+export type ClovyHomeConversationContext = {
+  recentMessages: Array<Pick<ClovyHomeConversationMessage, "role" | "content">>;
   earlierContext?: string;
 };
 
@@ -76,7 +76,7 @@ function homeContextTerms(content: string): Set<string> {
   );
 }
 
-function homeExcerptLine(message: JuneHomeConversationMessage): string {
+function homeExcerptLine(message: ClovyHomeConversationMessage): string {
   const characters = Array.from(message.content);
   const excerpt = characters.slice(0, HOME_EARLIER_MESSAGE_CHARACTER_LIMIT).join("");
   const truncated =
@@ -84,11 +84,11 @@ function homeExcerptLine(message: JuneHomeConversationMessage): string {
       ? `${excerpt.trimEnd()}...`
       : excerpt.trimEnd();
   const date = /^\d{4}-\d{2}-\d{2}/.exec(message.createdAt ?? "")?.[0];
-  return `${date ? `${date} ` : ""}${message.role === "user" ? "User" : "June"}: ${truncated}`;
+  return `${date ? `${date} ` : ""}${message.role === "user" ? "User" : "Clovy"}: ${truncated}`;
 }
 
 function earlierHomeExcerpt(
-  messages: JuneHomeConversationMessage[],
+  messages: ClovyHomeConversationMessage[],
   latestUserMessage: string,
 ): string | undefined {
   if (!messages.length) return undefined;
@@ -154,9 +154,9 @@ function earlierHomeExcerpt(
   return lines.length ? lines.join("\n") : undefined;
 }
 
-export function buildJuneHomeConversationContext(
-  messages: ReadonlyArray<JuneHomeConversationMessage>,
-): JuneHomeConversationContext {
+export function buildClovyHomeConversationContext(
+  messages: ReadonlyArray<ClovyHomeConversationMessage>,
+): ClovyHomeConversationContext {
   const normalized = messages
     .map((message, sourceIndex) => ({
       ...message,
@@ -202,7 +202,7 @@ export function buildJuneHomeConversationContext(
   };
 }
 
-export type JuneHomeCheckIn = {
+export type ClovyHomeCheckIn = {
   createdAt: string;
   text: string;
 };
@@ -248,12 +248,12 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
-export function readJuneHomeStoredSessionId(profile: string): string | undefined {
+export function readClovyHomeStoredSessionId(profile: string): string | undefined {
   const storedSessionId = readStringMap(JUNE_HOME_SESSION_IDS_STORAGE_KEY)[profile]?.trim();
   return storedSessionId || undefined;
 }
 
-export function writeJuneHomeStoredSessionId(profile: string, storedSessionId: string): void {
+export function writeClovyHomeStoredSessionId(profile: string, storedSessionId: string): void {
   const normalizedProfile = profile.trim() || "default";
   const normalizedSessionId = storedSessionId.trim();
   if (!normalizedSessionId) return;
@@ -270,7 +270,7 @@ export function writeJuneHomeStoredSessionId(profile: string, storedSessionId: s
 /** Resolve writes owned by an in-flight Home request after its profile was
  * moved or deleted. Moving redirects the late assistant reply into the merged
  * thread; permanent deletion drops it instead of recreating private data. */
-export function resolveJuneHomeThreadSessionId(storedSessionId: string): string | undefined {
+export function resolveClovyHomeThreadSessionId(storedSessionId: string): string | undefined {
   let current = storedSessionId;
   const visited = new Set<string>();
   while (!visited.has(current) && homeThreadRetargets.has(current)) {
@@ -282,14 +282,14 @@ export function resolveJuneHomeThreadSessionId(storedSessionId: string): string 
   return current;
 }
 
-export function retargetJuneHomeThread(sourceSessionId: string, targetSessionId?: string): void {
+export function retargetClovyHomeThread(sourceSessionId: string, targetSessionId?: string): void {
   const source = sourceSessionId.trim();
   const target = targetSessionId?.trim();
   if (!source || source === target) return;
   homeThreadRetargets.set(source, target || null);
 }
 
-export function forgetJuneHomeStoredSessionId(
+export function forgetClovyHomeStoredSessionId(
   profile: string,
   expectedStoredSessionId?: string,
 ): void {
@@ -300,7 +300,7 @@ export function forgetJuneHomeStoredSessionId(
   writeJson(JUNE_HOME_SESSION_IDS_STORAGE_KEY, records);
 }
 
-export function dispatchJuneHomeThreadChanged(storedSessionId: string): void {
+export function dispatchClovyHomeThreadChanged(storedSessionId: string): void {
   window.dispatchEvent(
     new CustomEvent<{ storedSessionId: string }>(JUNE_HOME_THREAD_CHANGED_EVENT, {
       detail: { storedSessionId },
@@ -345,7 +345,7 @@ function reconcileHomeThreadStore(
   writeJson(storageKey, records);
 }
 
-export type JuneHomeProfileRemovalPlan = {
+export type ClovyHomeProfileRemovalPlan = {
   sourceSessionId?: string;
   targetSessionId?: string;
   redundantSessionId?: string;
@@ -354,7 +354,7 @@ export type JuneHomeProfileRemovalPlan = {
 export function juneHomeProfileRemovalPlan(
   profile: string,
   disposition: "move" | "delete",
-): JuneHomeProfileRemovalPlan {
+): ClovyHomeProfileRemovalPlan {
   const normalizedProfile = profile.trim();
   if (!normalizedProfile || normalizedProfile === "default") return {};
   const sessionIds = readStringMap(JUNE_HOME_SESSION_IDS_STORAGE_KEY);
@@ -370,10 +370,10 @@ export function juneHomeProfileRemovalPlan(
   };
 }
 
-export function reconcileJuneHomeProfileRemoval(
+export function reconcileClovyHomeProfileRemoval(
   profile: string,
   disposition: "move" | "delete",
-): JuneHomeProfileRemovalPlan {
+): ClovyHomeProfileRemovalPlan {
   const normalizedProfile = profile.trim();
   if (!normalizedProfile || normalizedProfile === "default") return {};
 
@@ -382,7 +382,7 @@ export function reconcileJuneHomeProfileRemoval(
   const { sourceSessionId, targetSessionId } = plan;
 
   if (sourceSessionId) {
-    retargetJuneHomeThread(sourceSessionId, targetSessionId);
+    retargetClovyHomeThread(sourceSessionId, targetSessionId);
     for (const storageKey of [
       JUNE_HOME_DIRECT_TURNS_STORAGE_KEY,
       JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY,
@@ -391,7 +391,7 @@ export function reconcileJuneHomeProfileRemoval(
     ]) {
       reconcileHomeThreadStore(storageKey, sourceSessionId, targetSessionId);
     }
-    if (targetSessionId) dispatchJuneHomeThreadChanged(targetSessionId);
+    if (targetSessionId) dispatchClovyHomeThreadChanged(targetSessionId);
   }
 
   delete sessionIds[normalizedProfile];
@@ -408,11 +408,11 @@ export function reconcileJuneHomeProfileRemoval(
   return plan;
 }
 
-export function withJuneHomeContext(prompt: string): string {
-  const visiblePrompt = stripJuneHomeContext(prompt).trim();
+export function withClovyHomeContext(prompt: string): string {
+  const visiblePrompt = stripClovyHomeContext(prompt).trim();
   return [
     JUNE_HOME_CONTEXT_OPEN,
-    "This is June's persistent Home conversation with the user.",
+    "This is Clovy's persistent Home conversation with the user.",
     "Keep quick answers, conversation, clarifying questions, and preference updates in Home.",
     "When a concrete request benefits from focused work or background execution, call the june_home start_task tool exactly once with a short title and a complete standalone prompt. Do not perform that focused task in Home after handing it off.",
     "After start_task returns, stop working on that task in Home. Reply with one short handoff acknowledgement only; the Home UI adds the session button. Never include findings, progress, or a second answer from the focused task in Home.",
@@ -431,7 +431,7 @@ function normalizedHomeTaskPrompt(value: string): string {
     .trim();
 }
 
-export function withJuneHomeLatestTaskIntent(
+export function withClovyHomeLatestTaskIntent(
   standalonePrompt: string,
   latestMessage: string,
 ): string {
@@ -454,9 +454,9 @@ export function withJuneHomeLatestTaskIntent(
   ].join("\n");
 }
 
-export function withJuneHomeCurrentResearch(
+export function withClovyHomeCurrentResearch(
   prompt: string,
-  conversation: JuneHomeConversationContext = { recentMessages: [] },
+  conversation: ClovyHomeConversationContext = { recentMessages: [] },
 ): string {
   const visiblePrompt = prompt.trim();
   const context = conversation.recentMessages
@@ -473,7 +473,7 @@ export function withJuneHomeCurrentResearch(
     .slice(-12)
     .map(
       (message) =>
-        `${message.role === "user" ? "User" : "June"}: ${Array.from(message.content)
+        `${message.role === "user" ? "User" : "Clovy"}: ${Array.from(message.content)
           .slice(0, 600)
           .join("")}`,
     );
@@ -482,7 +482,7 @@ export function withJuneHomeCurrentResearch(
     "",
     "--- Attached Context ---",
     "This request depends on current external information.",
-    "Before answering, use June's web_search and web_fetch tools to retrieve current sources.",
+    "Before answering, use Clovy's web_search and web_fetch tools to retrieve current sources.",
     "Prefer authoritative sources, verify time-sensitive claims, and include links to the sources that support the answer.",
     "If current sources cannot be retrieved, say so instead of answering from model memory.",
     ...(context.length
@@ -504,7 +504,7 @@ export function withJuneHomeCurrentResearch(
   ].join("\n");
 }
 
-export function stripJuneHomeContext(prompt: string): string {
+export function stripClovyHomeContext(prompt: string): string {
   const trimmed = prompt.trimStart();
   if (!trimmed.startsWith(JUNE_HOME_CONTEXT_OPEN)) return prompt;
   const closeIndex = trimmed.indexOf(JUNE_HOME_CONTEXT_CLOSE);
@@ -512,9 +512,9 @@ export function stripJuneHomeContext(prompt: string): string {
   return trimmed.slice(closeIndex + JUNE_HOME_CONTEXT_CLOSE.length).trimStart();
 }
 
-export function stripJuneHomeContextFromPreview(preview: string | undefined): string | undefined {
+export function stripClovyHomeContextFromPreview(preview: string | undefined): string | undefined {
   if (preview === undefined) return undefined;
-  const stripped = stripJuneHomeContext(preview);
+  const stripped = stripClovyHomeContext(preview);
   if (stripped !== preview) return stripped;
   // A retired runtime may have truncated the preview before the closing marker. Never expose
   // a partial hidden block in lists while the full message remains intact.
@@ -522,7 +522,7 @@ export function stripJuneHomeContextFromPreview(preview: string | undefined): st
   return preview;
 }
 
-export function isJuneHomeStartTaskTool(name: string | undefined): boolean {
+export function isClovyHomeStartTaskTool(name: string | undefined): boolean {
   if (!name) return false;
   const normalized = name
     .trim()
@@ -547,7 +547,7 @@ function parsedObjectValue(value: unknown): Record<string, unknown> | undefined 
   }
 }
 
-export function juneHomeTaskRequestFromPayload(payload: unknown): JuneHomeTaskRequest | undefined {
+export function juneHomeTaskRequestFromPayload(payload: unknown): ClovyHomeTaskRequest | undefined {
   const queue: unknown[] = [payload];
   const visited = new Set<unknown>();
   while (queue.length > 0) {
@@ -623,7 +623,7 @@ export function juneHomeDayLabel(iso: string, now = new Date()): string {
 /** The live greeting for the Home surface, derived from the CURRENT clock
  * (unlike the stored check-in, whose text is pinned to its creation time).
  * Early hours read as evening: "Good morning" at 00:37 feels wrong. */
-export type JuneHomeGreetingContext = {
+export type ClovyHomeGreetingContext = {
   displayName?: string;
   returning?: boolean;
 };
@@ -634,7 +634,7 @@ function firstNameFromDisplayName(displayName: string | undefined): string | und
 
 export function juneHomeGreetingParts(
   now = new Date(),
-  context: JuneHomeGreetingContext = {},
+  context: ClovyHomeGreetingContext = {},
 ): {
   salutation: string;
   question: string;
@@ -668,7 +668,7 @@ export function juneHomeGreetingParts(
 }
 
 /** Quiet first-step prompts that follow the user's local day without claiming
- * access to context June has not actually loaded. */
+ * access to context Clovy has not actually loaded. */
 export function juneHomeNudgePrompts(now = new Date()): readonly string[] {
   const hour = now.getHours();
   if (hour >= 5 && hour < 12) {
@@ -685,7 +685,7 @@ function checkInText(now: Date): string {
   return `${greeting.salutation}. ${greeting.question}`;
 }
 
-export function juneHomeDailyCheckIn(profile: string, now = new Date()): JuneHomeCheckIn {
+export function juneHomeDailyCheckIn(profile: string, now = new Date()): ClovyHomeCheckIn {
   let records: Record<string, HomeCheckInRecord> = {};
   try {
     const raw = storageOrUndefined()?.getItem(JUNE_HOME_CHECK_INS_STORAGE_KEY);

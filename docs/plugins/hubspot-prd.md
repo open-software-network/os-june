@@ -11,7 +11,7 @@
 HubSpot is the strongest next integration because customer meetings naturally
 produce CRM work: associate the meeting with the right company and deal,
 record the outcome, create the follow-up task, and prepare a reviewed note.
-June can do that work from the local meeting record without becoming another
+Clovy can do that work from the local meeting record without becoming another
 cloud copy of the customer's CRM.
 
 HubSpot leads the follow-on set because it has high action leverage and a more
@@ -22,13 +22,13 @@ secret and some CRM read scopes can exceed the authorizing user's UI access.
 ## Customer and problem
 
 Founders, consultants, and customer-facing teams finish a call with the best
-context in their heads and in June, but the CRM stays stale. Manual entry loses
+context in their heads and in Clovy, but the CRM stays stale. Manual entry loses
 details and delays follow-up. Broad automation can silently write to the wrong
 deal or disclose private notes.
 
 ## Product promise
 
-Connect one HubSpot account, select the pipelines June may use, and turn a June
+Connect one HubSpot account, select the pipelines Clovy may use, and turn a Clovy
 meeting into a reviewed CRM update with the exact records and disclosed note
 content visible before commit.
 
@@ -36,7 +36,7 @@ content visible before commit.
 
 - Search allowed deals and the contacts, companies, owners, and recent
   engagements currently associated with them.
-- Link a June note to one contact, company, and deal without copying the full
+- Link a Clovy note to one contact, company, and deal without copying the full
   transcript.
 - Draft a meeting note, deal-stage update, next step, or follow-up task.
 - Preview property changes and associations against fresh provider state.
@@ -52,8 +52,8 @@ content visible before commit.
   reachable only through a current association to an allowed deal.
 - Read contact, company, deal, owner, pipeline, and engagement context.
 - Create an engagement note or task and update selected deal properties.
-- Stable HubSpot links in June responses.
-- Live fetch plus bounded on-device polling while June is awake.
+- Stable HubSpot links in Clovy responses.
+- Live fetch plus bounded on-device polling while Clovy is awake.
 
 ### Later
 
@@ -62,7 +62,7 @@ content visible before commit.
 
 ## Non-goals
 
-- Mirroring the CRM into June or OpenSoftware infrastructure.
+- Mirroring the CRM into Clovy or OpenSoftware infrastructure.
 - Bulk enrichment, marketing automation, or lead scoring.
 - Editing unrestricted custom properties.
 - Advancing deal stages autonomously at launch.
@@ -73,22 +73,22 @@ content visible before commit.
 - Required connector: HubSpot.
 - Skills: meeting-to-CRM, deal review, customer follow-up, pipeline brief.
 - Templates: post-call update, stale-next-step check, meeting prep.
-- Composition: calendar identifies attendees; email drafts follow-up; June
+- Composition: calendar identifies attendees; email drafts follow-up; Clovy
   notes provide the user-selected source context.
 
 ## Privacy and trust
 
 HubSpot's OAuth token and provider calls should remain on-device, but its
 documented authorization and refresh exchanges require a client secret. The
-auth spike must resolve that boundary before June promises local-mode token
+auth spike must resolve that boundary before Clovy promises local-mode token
 custody. HubSpot also documents that an app's CRM scopes can provide access
-beyond the authorizing user's ordinary owned-record view, so June must enforce
+beyond the authorizing user's ordinary owned-record view, so Clovy must enforce
 selected pipelines independently. Contacts, companies, and engagements are not
-pipeline records; June returns them only when a live provider association
+pipeline records; Clovy returns them only when a live provider association
 connects them to a deal currently in an allowed pipeline.
 
 CRM text and properties are untrusted input. Every write is approval-only in
-v1, with portal, object, record, changed fields, and June-originated content in
+v1, with portal, object, record, changed fields, and Clovy-originated content in
 the preview.
 
 ## Business model

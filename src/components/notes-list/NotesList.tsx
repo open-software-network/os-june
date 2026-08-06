@@ -245,7 +245,7 @@ export const NotesList = forwardRef<NotesListHandle, NotesListProps>(function No
           label="Create your first note"
           icon={<IconNoteText size={28} />}
           title="Capture your first meeting"
-          description="Record a meeting, a phone call, or a half-formed thought. June transcribes it and writes the note for you."
+          description="Record a meeting, a phone call, or a half-formed thought. Clovy transcribes it and writes the note for you."
           action={
             <button type="button" className="primary-action primary-solid" onClick={onCreateNote}>
               <IconPlusMedium size={13} />

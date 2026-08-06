@@ -19,11 +19,11 @@ export type CapturedShortcut = Pick<
  * the Input Monitoring permission:
  *
  * - Key chords are read from DOM keydown right here: the rebind UI only
- *   runs while June's window is focused, so ordinary keystrokes reach the
+ *   runs while Clovy's window is focused, so ordinary keystrokes reach the
  *   webview without any global monitoring.
  * - fn and bare-modifier chords never reach the DOM, so `start()` also puts
  *   the dictation helper into capture mode; its flagsChanged-only monitor
- *   (covered by the Accessibility permission June already holds) reports
+ *   (covered by the Accessibility permission Clovy already holds) reports
  *   them back as a `shortcut_captured` event.
  *
  * Both paths persist through `setDictationShortcut`, whose backend rejects

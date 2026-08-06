@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -66,11 +66,11 @@ workspace file references rather than native-messaging payloads.
 ## Attended transport
 
 - TypeScript MV3 extension with a pinned id and protocol version.
-- Per-tab debugger control only for June-created task tabs and explicitly
+- Per-tab debugger control only for Clovy-created task tabs and explicitly
   shared tabs.
 - Signed native-messaging shim inside the app bundle; authenticated local
   socket to the broker.
-- Browser-owned debugging banner plus June tab grouping as visible indicators.
+- Browser-owned debugging banner plus Clovy tab grouping as visible indicators.
 - Extension detaches and clears state on broker/native-host loss.
 - Transport loss (extension reload or store update, browser exit, shim or
   broker death) ends every attended session; a reconnect is a fresh pairing,
@@ -127,7 +127,7 @@ workspace file references rather than native-messaging payloads.
 - Live macOS walkthrough: install, pair, create task tab, share one tab, approve
   an action, deny an action, human takeover, stop, disconnect, crash the broker
   while attached, close a task tab mid-action, detach the debugger from the
-  banner, rename or ungroup the June tab group, restart the browser mid-task,
+  banner, rename or ungroup the Clovy tab group, restart the browser mid-task,
   and update the extension mid-task.
 - Security test that unrelated tabs, local network targets, and sensitive
   fields stay unreachable.

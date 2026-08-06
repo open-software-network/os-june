@@ -11,7 +11,7 @@ import {
   recoverRecording,
   retryProcessing,
   startRecording,
-  setJunePersona,
+  setClovyPersona,
   updateNote,
 } from "../lib/tauri";
 
@@ -125,15 +125,15 @@ describe("Tauri command contracts", () => {
     });
   });
 
-  it("opens the June community through a dedicated command", async () => {
+  it("opens the Clovy community through a dedicated command", async () => {
     await juneOpenCommunityPage();
 
     expect(mocks.invoke).toHaveBeenCalledWith("june_open_community_page");
   });
 
-  it("loads and saves June's persona through stable native commands", async () => {
+  it("loads and saves Clovy's persona through stable native commands", async () => {
     await junePersona();
-    await setJunePersona({
+    await setClovyPersona({
       area: "thinking",
       voice: 45,
       detail: 90,

@@ -99,7 +99,7 @@ describe("buildAgentMenuBarState", () => {
       lastStatus: {
         prompt: "Make a launch checklist",
         status: "starting",
-        summary: "Starting June.",
+        summary: "Starting Clovy.",
       },
       now: new Date("2026-06-04T14:00:00Z"),
     });
@@ -109,7 +109,7 @@ describe("buildAgentMenuBarState", () => {
     expect(state.lastStatus).toMatchObject({
       title: "Make a launch checklist",
       status: "starting",
-      summary: "Starting June.",
+      summary: "Starting Clovy.",
     });
   });
 

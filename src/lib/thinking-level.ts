@@ -1,18 +1,18 @@
 /**
- * The composer's thinking level control: how much June reasons before
+ * The composer's thinking level control: how much Clovy reasons before
  * answering. It lives in the model menu as an "Effort" row with a submenu of
  * three levels, mirroring the upstream desktop's model menu.
  *
  * Three user-facing stops map onto the model's reasoning-effort levels
- * (none, minimal, low, medium, high, xhigh). June deliberately exposes only three so the
+ * (none, minimal, low, medium, high, xhigh). Clovy deliberately exposes only three so the
  * choice stays a simple speed/depth tradeoff:
  *
  * - Low -> "minimal": the model uses the lightest supported reasoning pass.
  * - Medium -> "medium": the default, balancing speed and depth.
  * - High -> "high": substantially more reasoning for harder problems.
  *
- * The choice is included in each June-owned run as a per-session override, so
- * June never has to rely on a provider-wide default. The user's last pick
+ * The choice is included in each Clovy-owned run as a per-session override, so
+ * Clovy never has to rely on a provider-wide default. The user's last pick
  * is kept in localStorage as the draft for the next new session, mirroring
  * how agent-session-modes.ts records the Unrestricted opt-in (machine-local
  * state, readable synchronously on render).

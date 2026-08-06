@@ -74,7 +74,7 @@ export const ROUTINE_TEMPLATES: RoutineTemplate[] = [
   {
     id: "memory-tidy",
     name: "Memory tidy",
-    description: "A weekly pass over June's memory to merge duplicates and drop stale facts.",
+    description: "A weekly pass over Clovy's memory to merge duplicates and drop stale facts.",
     prompt:
       "Review your memories from the past week. Consolidate duplicates, flag anything stale or contradictory, and summarize what you changed.",
     schedule: "0 18 * * 0",

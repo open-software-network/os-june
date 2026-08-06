@@ -1,4 +1,4 @@
-# Ephemeral June API CVM: a throwaway Phala TEE running the CURRENT june-api
+# Ephemeral Clovy API CVM: a throwaway Phala TEE running the CURRENT june-api
 # working tree, so a developer can exercise a real confidential VM without
 # touching staging. Created by `make ephemeral-api`, deleted by
 # `make ephemeral-api-down` (see scripts/ephemeral-june-api.sh).

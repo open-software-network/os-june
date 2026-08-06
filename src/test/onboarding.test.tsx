@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CLOVY_EYES_PATH } from "../components/brand/ClovyLogo";
 import { OnboardingFlow } from "../components/onboarding/OnboardingFlow";
 import {
   applyOnboardingReplayFlag,
@@ -27,7 +28,7 @@ const mocks = vi.hoisted(() => ({
   setDictationShortcut: vi.fn(),
   setP3aEnabled: vi.fn(),
   p3aRecord: vi.fn(),
-  setJunePersona: vi.fn(),
+  setClovyPersona: vi.fn(),
   osAccountsLogin: vi.fn(),
   juneOpenCommunityPage: vi.fn(),
   juneOpenVerifyPage: vi.fn(),
@@ -56,7 +57,7 @@ vi.mock("../lib/tauri", () => ({
   setDictationShortcut: mocks.setDictationShortcut,
   setP3aEnabled: mocks.setP3aEnabled,
   p3aRecord: mocks.p3aRecord,
-  setJunePersona: mocks.setJunePersona,
+  setClovyPersona: mocks.setClovyPersona,
   osAccountsLogin: mocks.osAccountsLogin,
   juneOpenCommunityPage: mocks.juneOpenCommunityPage,
   juneOpenVerifyPage: mocks.juneOpenVerifyPage,
@@ -174,7 +175,7 @@ describe("OnboardingFlow", () => {
       }),
     );
     mocks.p3aRecord.mockResolvedValue(undefined);
-    mocks.setJunePersona.mockResolvedValue(undefined);
+    mocks.setClovyPersona.mockResolvedValue(undefined);
     mocks.dictationSettings.mockResolvedValue({
       settings: {
         pushToTalkShortcut: shortcut("fn"),
@@ -197,7 +198,7 @@ describe("OnboardingFlow", () => {
 
   async function renderFlow(onComplete = vi.fn()) {
     render(<OnboardingFlow {...flowProps({ onComplete })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Where could I help most?" });
     await userEvent.click(screen.getByRole("radio", { name: /Work/ }));
@@ -205,7 +206,7 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Choose my personality" });
     await userEvent.click(screen.getByRole("radio", { name: /Strategic/ }));
     await userEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "Let Clovy listen and type" });
     return onComplete;
   }
 
@@ -264,7 +265,7 @@ describe("OnboardingFlow", () => {
     expect(
       mocks.p3aRecord.mock.calls.filter(([question]) => question.startsWith("onboarding.area.")),
     ).toEqual([["onboarding.area.work"]]);
-    expect(mocks.setJunePersona).toHaveBeenCalledWith({
+    expect(mocks.setClovyPersona).toHaveBeenCalledWith({
       area: "work",
       voice: 45,
       detail: 90,
@@ -278,7 +279,7 @@ describe("OnboardingFlow", () => {
   it("keeps anonymous usage statistics off by default", async () => {
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
     expect(screen.queryByText("See exactly what is shared")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Learn how it works" })).toHaveAttribute(
       "href",
@@ -298,7 +299,7 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     render(<OnboardingFlow {...flowProps()} />);
 
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
     await user.click(screen.getByRole("switch", { name: "Share anonymous usage statistics" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
@@ -306,7 +307,7 @@ describe("OnboardingFlow", () => {
     await screen.findByRole("heading", { name: "Where could I help most?" });
   });
 
-  it("asks where June should help before choosing a personality", async () => {
+  it("asks where Clovy should help before choosing a personality", async () => {
     const user = userEvent.setup();
     setOnboardingResumeStep("area");
     render(<OnboardingFlow {...flowProps()} />);
@@ -342,7 +343,7 @@ describe("OnboardingFlow", () => {
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Choose my personality" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "Let Clovy listen and type" });
 
     grantPermissions();
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
@@ -358,26 +359,68 @@ describe("OnboardingFlow", () => {
   it("saves the selected mood before continuing to permissions", async () => {
     const user = userEvent.setup();
     setOnboardingResumeStep("mood");
-    render(<OnboardingFlow {...flowProps()} />);
+    const { container } = render(<OnboardingFlow {...flowProps()} />);
 
     await screen.findByRole("heading", { name: "Choose my personality" });
     const continueButton = screen.getByRole("button", { name: "Continue" });
     expect(continueButton).toBeEnabled();
+    expect(continueButton).toHaveClass("primary-action", "primary-solid", "onboarding-continue");
     expect(screen.getByRole("radio", { name: /Clearheaded/ })).toBeChecked();
     expect(screen.getByRole("status")).toHaveTextContent(
       "Clearheaded tone. What should we make clearer first?",
     );
-    expect(screen.getByText("What should we make clearer first?")).toHaveClass("shimmer");
 
+    // One canonical character on the stage; the options stay text-only.
+    const stage = container.querySelector(".onboarding-personality-stage");
+    expect(container.querySelectorAll(".onboarding-character")).toHaveLength(1);
+    expect(stage).toContainElement(
+      screen.getByRole("group", { name: "Choose Clovy's greeting mood" }),
+    );
+    expect(container.querySelector(".onboarding-personality-check")).toBeNull();
+    expect(stage).toHaveAttribute("data-mood", "clearheaded");
+    expect(stage).toHaveTextContent("What should we make clearer first?");
+    expect(stage?.querySelector(".onboarding-character-eyes-clearheaded path")).toHaveAttribute(
+      "d",
+      CLOVY_EYES_PATH,
+    );
+
+    // Rapid changes retarget the same single stage character.
+    await user.click(screen.getByRole("radio", { name: /Calm/ }));
+    expect(stage?.querySelector(".onboarding-character-eyes-calm path")).toHaveAttribute(
+      "transform",
+      "translate(91.9873 126)",
+    );
+    expect(stage?.querySelector(".onboarding-character-eyes-calm path")?.getAttribute("d")).toMatch(
+      /^M15\.6397 0/,
+    );
     await user.click(screen.getByRole("radio", { name: /Quick-witted/ }));
+    expect(container.querySelectorAll(".onboarding-character")).toHaveLength(1);
+    expect(stage).toHaveAttribute("data-mood", "quick-witted");
+    expect(stage?.querySelector(".onboarding-character-eyes-quick > g")).toHaveAttribute(
+      "transform",
+      "translate(94 109)",
+    );
+    expect(stage?.querySelectorAll(".onboarding-character-eyes-quick path")).toHaveLength(2);
     expect(screen.getByRole("status")).toHaveTextContent(
       "Quick-witted tone. All right, what's first?",
     );
-    expect(screen.getByText("All right, what's first?")).toHaveClass("shimmer");
+    expect(stage).toHaveTextContent("All right, what's first?");
+
+    await user.click(screen.getByRole("radio", { name: /Strategic/ }));
+    expect(stage?.querySelector(".onboarding-character-eyes-strategic > g")).toHaveAttribute(
+      "transform",
+      "translate(80.14 96.37) scale(0.78)",
+    );
+    expect(stage?.querySelectorAll(".onboarding-character-eyes-strategic path")).toHaveLength(4);
+    expect(stage?.querySelector(".onboarding-character-eyes-strategic > g > g")).toHaveAttribute(
+      "transform",
+      "translate(62 0) scale(0.86 1) translate(-62 0)",
+    );
+    await user.click(screen.getByRole("radio", { name: /Quick-witted/ }));
     await user.click(continueButton);
 
     expect(onboardingMood()).toBe("quick-witted");
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "Let Clovy listen and type" });
   });
 
   it("normalizes the factory-default shortcut to fn", async () => {
@@ -405,7 +448,7 @@ describe("OnboardingFlow", () => {
       },
     });
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
 
     await waitFor(() =>
       expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
@@ -440,7 +483,7 @@ describe("OnboardingFlow", () => {
       },
     });
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
 
     await waitFor(() => expect(mocks.dictationSettings).toHaveBeenCalledOnce());
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
@@ -454,23 +497,23 @@ describe("OnboardingFlow", () => {
       <OnboardingFlow {...flowProps({ account: signedOutAccount, onAccountChanged })} />,
     );
 
-    await screen.findByRole("heading", { name: "Welcome to June" });
+    await screen.findByRole("heading", { name: "Welcome to Clovy" });
     await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     expect(mocks.osAccountsLogin).toHaveBeenCalledOnce();
     await waitFor(() => expect(onAccountChanged).toHaveBeenCalledWith(account));
     rerender(<OnboardingFlow {...flowProps({ account, onAccountChanged })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
   });
 
-  it("opens the June community from the welcome step", async () => {
+  it("opens the Clovy community from the welcome step", async () => {
     const user = userEvent.setup();
     render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
 
-    await screen.findByRole("heading", { name: "Welcome to June" });
+    await screen.findByRole("heading", { name: "Welcome to Clovy" });
     await user.click(
       screen.getByRole("button", {
-        name: "Join the June community on Telegram",
+        name: "Join the Clovy community on Telegram",
       }),
     );
 
@@ -485,7 +528,7 @@ describe("OnboardingFlow", () => {
     try {
       render(<OnboardingFlow {...flowProps({ account: signedOutAccount })} />);
 
-      await screen.findByRole("heading", { name: "Welcome to June" });
+      await screen.findByRole("heading", { name: "Welcome to Clovy" });
       expect(screen.getByText("Write with your voice")).toBeInTheDocument();
       expect(screen.getByText("Turn speech into polished text in any app.")).toBeInTheDocument();
       expect(screen.getByText("Capture meetings")).toBeInTheDocument();
@@ -499,14 +542,14 @@ describe("OnboardingFlow", () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();
     render(<OnboardingFlow {...flowProps({ account: unsubscribedAccount, onComplete })} />);
-    await screen.findByRole("heading", { name: "Help improve June" });
+    await screen.findByRole("heading", { name: "Help improve Clovy" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Where could I help most?" });
     await user.click(screen.getByRole("radio", { name: /Work/ }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await screen.findByRole("heading", { name: "Choose my personality" });
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "Let Clovy listen and type" });
 
     grantPermissions();
     await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
@@ -515,14 +558,14 @@ describe("OnboardingFlow", () => {
 
     expect(screen.queryByRole("heading", { name: /free trial/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Start free trial/i })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Talk to June" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Talk to Clovy" })).toBeNull();
     expect(mocks.osAccountsOpenPortal).not.toHaveBeenCalled();
   });
 
   it("resumes a legacy practice step at permissions", async () => {
     setOnboardingResumeStep("dictation-practice");
     render(<OnboardingFlow {...flowProps()} />);
-    await screen.findByRole("heading", { name: "Let June listen and type" });
+    await screen.findByRole("heading", { name: "Let Clovy listen and type" });
     expect(onboardingResumeStep()).toBe("permissions");
   });
 
@@ -631,7 +674,7 @@ describe("OnboardingFlow", () => {
       await userEvent.click(screen.getByRole("button", { name: "Continue" }));
 
       await waitFor(() => expect(onComplete).toHaveBeenCalledOnce());
-      expect(screen.queryByRole("heading", { name: "Talk to June" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("heading", { name: "Talk to Clovy" })).not.toBeInTheDocument();
     } finally {
       restoreNavigator();
     }
@@ -660,7 +703,7 @@ describe("OnboardingFlow", () => {
       grantPermissions();
 
       await screen.findByText(
-        "Turned off in System Settings. Flip the toggle and June will notice.",
+        "Turned off in System Settings. Flip the toggle and Clovy will notice.",
       );
       expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
 
@@ -705,7 +748,7 @@ describe("OnboardingFlow", () => {
       grantPermissions();
 
       expect(
-        screen.queryByText("Turned off in System Settings. Flip the toggle and June will notice."),
+        screen.queryByText("Turned off in System Settings. Flip the toggle and Clovy will notice."),
       ).not.toBeInTheDocument();
       await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     } finally {
@@ -722,7 +765,7 @@ describe("OnboardingFlow", () => {
 
       // The grant exists, so there is nothing left to allow, but the source
       // does not work yet and the row must not claim otherwise.
-      await screen.findByText("Allowed. Restart June to finish turning it on.");
+      await screen.findByText("Allowed. Restart Clovy to finish turning it on.");
       expect(
         screen.queryByText("Hears your calls and meetings, only while you record."),
       ).not.toBeInTheDocument();

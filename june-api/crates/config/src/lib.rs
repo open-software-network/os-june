@@ -2299,7 +2299,7 @@ mod tests {
 
         assert!(
             configured_bytes >= DEFAULT_MAX_ISSUE_REPORT_BYTES,
-            "production ingress body limit ({configured_bytes}) is below June API's issue-report limit ({DEFAULT_MAX_ISSUE_REPORT_BYTES})"
+            "production ingress body limit ({configured_bytes}) is below Clovy API's issue-report limit ({DEFAULT_MAX_ISSUE_REPORT_BYTES})"
         );
         Ok(())
     }

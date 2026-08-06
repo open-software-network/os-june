@@ -1,8 +1,8 @@
 import { useCallback } from "react";
-import { checkJuneUpdate, type JuneUpdate } from "../lib/updater";
+import { checkClovyUpdate, type ClovyUpdate } from "../lib/updater";
 import {
-  checkForJuneUpdate,
-  prepareJuneUpdate,
+  checkForClovyUpdate,
+  prepareClovyUpdate,
   UP_TO_DATE_STATUS,
   updateCheckShowsStatus,
   type UpdateCheckMode,
@@ -25,7 +25,7 @@ export function useAppUpdateActions(dependencies: UseAppUpdateActionsDependencie
   } = dependencies;
 
   const prepareUpdate = useCallback(
-    (payload: UpdatePromptPayload<JuneUpdate>, mode: UpdateCheckMode) => {
+    (payload: UpdatePromptPayload<ClovyUpdate>, mode: UpdateCheckMode) => {
       if (preparingUpdateRef.current || readyUpdateRef.current || relaunchingUpdateRef.current) {
         return;
       }
@@ -37,7 +37,7 @@ export function useAppUpdateActions(dependencies: UseAppUpdateActionsDependencie
       setUpdateProgress(null);
       setUpdateStatus(mode === "manual" ? "Downloading update..." : null);
 
-      void prepareJuneUpdate({
+      void prepareClovyUpdate({
         update: payload.update,
         reportProgress: (progress) => {
           setUpdateProgress(progress);
@@ -71,7 +71,7 @@ export function useAppUpdateActions(dependencies: UseAppUpdateActionsDependencie
   const runUpdateCheck = useCallback(
     // `check` defaults to the routine, forward-only check; the leave-rc reconcile
     // passes reconcileToStable so it can pull an older stable (see below).
-    (mode: UpdateCheckMode, check: () => Promise<JuneUpdate | null> = checkJuneUpdate) => {
+    (mode: UpdateCheckMode, check: () => Promise<ClovyUpdate | null> = checkClovyUpdate) => {
       if (readyUpdateRef.current || relaunchingUpdateRef.current) return;
       if (checkingUpdateRef.current) return;
       if (preparingUpdateRef.current) {
@@ -87,7 +87,7 @@ export function useAppUpdateActions(dependencies: UseAppUpdateActionsDependencie
         setCheckingUpdate(true);
         setUpdateStatus("Checking for updates...");
       } else if (mode === "launch") setUpdateStatus(null);
-      void checkForJuneUpdate(
+      void checkForClovyUpdate(
         {
           check,
           prompt: (payload) => {

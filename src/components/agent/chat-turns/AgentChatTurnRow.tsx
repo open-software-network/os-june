@@ -93,10 +93,10 @@ export function AgentChatTurnRow({
   clarifySubmitting: Record<string, string>;
   sudoSubmitting: Record<string, "approve" | "deny">;
   secretSubmitting: Record<string, true>;
-  /** State + handler for June's in-chat Agent CLI access request card.
+  /** State + handler for Clovy's in-chat Agent CLI access request card.
    * Optional so the dev gallery can render rows without the live setting. */
   cliAccess?: AgentCliAccessCardProps;
-  /** State + handler for June's in-chat Browser use request card. Optional
+  /** State + handler for Clovy's in-chat Browser use request card. Optional
    * for the same reason. */
   browserAccess?: AgentBrowserAccessCardProps;
   thinkingOpen: (key: string) => boolean;
@@ -161,7 +161,7 @@ export function AgentChatTurnRow({
     return part.media === "image" ? !hasGeneratedImage : !hasGeneratedVideo;
   });
   // The disclosure owns internal reasoning only. Tool/action rows stay visible
-  // outside it so users can see what June is doing without expanding Thought;
+  // outside it so users can see what Clovy is doing without expanding Thought;
   // a running media tool is represented by its canvas instead, just above.
   const thinkingRunning = reasoningParts.some((part) => part.status === "running");
   const completedThinkingKey = `turn:${turn.id}:thinking`;
@@ -459,7 +459,7 @@ export function AgentChatTurnRow({
         {turn.parts.map((part, index) =>
           part.type === "text" ? (
             hasAgentCliAccessRequest(part.text) || hasBrowserAccessRequest(part.text) ? (
-              // June's soul emits a literal token to request the Agent CLI
+              // Clovy's soul emits a literal token to request the Agent CLI
               // access or Browser use setting; each token renders as an
               // approval card, never as text. A reply carrying both tokens
               // gets both cards.

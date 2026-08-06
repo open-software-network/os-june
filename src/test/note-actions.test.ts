@@ -27,7 +27,7 @@ function persistedPatch(noteId: string, patch: NoteEditablePatch): NotePatchDto 
 
 function dependencies(
   noteSaveController: NoteSaveController,
-  setError: ReturnType<typeof vi.fn>,
+  setError: CreateNoteActionsDependencies["setError"],
 ): CreateNoteActionsDependencies {
   return {
     dispatch: vi.fn(),
@@ -58,7 +58,7 @@ describe("note deletion actions", () => {
       persist: vi.fn().mockRejectedValue(new Error("database busy")),
     });
     const discard = vi.spyOn(controller, "discard");
-    const setError = vi.fn();
+    const setError = vi.fn<CreateNoteActionsDependencies["setError"]>();
     const actions = createNoteActions(dependencies(controller, setError));
     controller.queue("note-1", { title: "Unsaved title" });
 
@@ -79,7 +79,7 @@ describe("note deletion actions", () => {
         return persistedPatch(noteId, patch);
       },
     });
-    const setError = vi.fn();
+    const setError = vi.fn<CreateNoteActionsDependencies["setError"]>();
     const actions = createNoteActions(dependencies(controller, setError));
     controller.queue("note-1", { title: "Unsaved first note" });
     controller.queue("note-2", { title: "Saved second note" });

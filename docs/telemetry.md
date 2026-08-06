@@ -1,7 +1,7 @@
-# June telemetry
+# Clovy telemetry
 
-June telemetry is optional product telemetry. It helps Open Software understand
-which parts of June are used, without collecting recordings, notes, transcripts,
+Clovy telemetry is optional product telemetry. It helps Open Software understand
+which parts of Clovy are used, without collecting recordings, notes, transcripts,
 prompts, responses, or user identifiers.
 
 Telemetry is off by default. You can turn it on during onboarding or later in
@@ -9,24 +9,24 @@ Settings > General. You can turn it off at any time.
 
 ## Current status
 
-When telemetry is enabled, June increments counters on your device for the
-public questions in [`telemetry-questions.md`](./telemetry-questions.md). June
+When telemetry is enabled, Clovy increments counters on your device for the
+public questions in [`telemetry-questions.md`](./telemetry-questions.md). Clovy
 uploads anonymous event increments as those actions happen. Reports are grouped
 by ISO reporting week, but the report does not include a precise event
 timestamp. Turning telemetry off deletes the local counters and reporting
 state.
 
 The team can see aggregate counts only. Raw device counters stay local, and OS
-Accounts stores only aggregate cells after June API validates and forwards a
+Accounts stores only aggregate cells after Clovy API validates and forwards a
 report. The local counter includes a retry cursor so failed uploads can be
 retried without sending successful increments again.
 
-## What June never collects through telemetry
+## What Clovy never collects through telemetry
 
-June telemetry must never collect:
+Clovy telemetry must never collect:
 
 - Recordings, audio, transcripts, notes, note titles, or generated note text.
-- Prompts, model responses, chat messages, or anything you or June writes.
+- Prompts, model responses, chat messages, or anything you or Clovy writes.
 - File names, file paths, URLs, web searches, or visited pages.
 - Email address, OS Accounts user id, account balance, subscription state, or
   billing activity.
@@ -36,7 +36,7 @@ June telemetry must never collect:
   derived content.
 - Fine-grained timestamps. Reports are grouped by reporting week.
 
-## What June can count
+## What Clovy can count
 
 Telemetry answers only a small public catalog of product questions. The current
 shipping questions count events such as onboarding completion, dictation
@@ -60,15 +60,15 @@ Each report contains one question answer:
 - `version_series`: app version series, such as `0.0.x`.
 - `epoch`: ISO reporting week, such as `2026-W28`.
 
-The desktop request to June API uses the existing OS Accounts user token so the
-public June API route can reject unauthenticated writes. That token is not part
+The desktop request to Clovy API uses the existing OS Accounts user token so the
+public Clovy API route can reject unauthenticated writes. That token is not part
 of the telemetry report, is not forwarded to OS Accounts, and is not stored as
 telemetry data. Reports do not include cookies, user ids, device ids, install
 ids, account balance, subscription state, or billing activity.
 
-June API on Phala does not own telemetry storage. It validates each report
+Clovy API on Phala does not own telemetry storage. It validates each report
 against the public catalog, discards the authenticated user identity, and
-forwards valid aggregate reports to OS Accounts using a June API service token.
+forwards valid aggregate reports to OS Accounts using a Clovy API service token.
 OS Accounts increments aggregate counters in its database and does not attach
 reports to OS Accounts users, emails, wallets, balances, subscriptions, OAuth
 clients, or app records. Published or shared aggregate views must suppress small

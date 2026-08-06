@@ -34,7 +34,7 @@ Shares are immutable snapshots; later source edits do not update a link.
 - **Link key, passcode:** the viewer derives LK from the passcode and a random
   128-bit salt using PBKDF2-HMAC-SHA-256 with 600,000 iterations. The salt,
   never the passcode or LK, travels in the URL fragment.
-- June API stores ciphertext, IVs, and the wrapped CK. URL fragments are not
+- Clovy API stores ciphertext, IVs, and the wrapped CK. URL fragments are not
   sent in HTTP requests, so the server never receives LK, the salt, or the
   passcode.
 
@@ -116,7 +116,7 @@ copy or revoke the link after restart. Existing key storage is reused:
 - a 32-byte link record is an unprotected LK;
 - a 16-byte link record is a passcode salt.
 
-The passcode itself is never stored. After reopening the app, June can copy the
+The passcode itself is never stored. After reopening the app, Clovy can copy the
 protected link again but cannot recover or display its passcode. Changing or
 removing a passcode requires stopping the share and creating a new link.
 
@@ -129,7 +129,7 @@ cannot make local content permanently undeletable; other errors fail closed.
 
 The static `/s/{share_id}` shell has a strict self-only CSP and no analytics.
 Production links use `https://june.link/s/{share_id}#…`. That hostname is served
-by an isolated viewer-only June API CVM with its own ingress and certificate;
+by an isolated viewer-only Clovy API CVM with its own ingress and certificate;
 it reads the same encrypted-share database but cannot create or mutate shares
 or invoke product APIs. `https://june-api.opensoftware.co` remains on its own
 CVM and ingress. Staging and local builds keep the viewer on their configured
@@ -145,7 +145,7 @@ For a new link it:
 4. unwraps CK and decrypts the canonical payload in WebCrypto;
 5. renders a small escaped Markdown subset or session transcript.
 
-No plaintext, content key, link key, or passcode is sent to June API.
+No plaintext, content key, link key, or passcode is sent to Clovy API.
 
 ## Required validation
 

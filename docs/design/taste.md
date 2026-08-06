@@ -35,7 +35,8 @@ for free.
   through the token pipeline, so a single deliberate touch goes a long way.
   Hovers, rows, nav, and menus stay neutral grey; the brand tint appears only
   on surfaces that already carry the accent (the chat send affordances, the
-  record controls, onboarding heroes).
+  record controls, onboarding heroes, the living Home character, and
+  Appearance-selected app icons).
 - **Neutrals stay neutral.** Surfaces take a chroma-capped wash of the accent
   so a vivid preset tints the greys exactly as much as a dusty one. Text never
   takes the wash.

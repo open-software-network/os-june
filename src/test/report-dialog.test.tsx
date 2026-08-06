@@ -25,19 +25,19 @@ describe("ReportDialog", () => {
       />,
     );
 
-    await user.type(screen.getByRole("textbox", { name: "Description" }), "June stopped");
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "Clovy stopped");
     await user.click(screen.getByRole("button", { name: "Send report" }));
 
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
         category: "bug",
-        description: "June stopped",
+        description: "Clovy stopped",
         attachmentNames: [],
         attachmentPaths: [],
         storedSessionId: "session-failed",
       }),
     );
-    expect(await screen.findByText(/Your report was sent to the June team/)).toBeVisible();
+    expect(await screen.findByText(/Your report was sent to the Clovy team/)).toBeVisible();
   });
 
   it("lets the user omit generated failure diagnostics", async () => {
@@ -52,13 +52,13 @@ describe("ReportDialog", () => {
     );
 
     await user.click(screen.getByRole("checkbox", { name: /Include recent failure details/ }));
-    await user.type(screen.getByRole("textbox", { name: "Description" }), "June stopped");
+    await user.type(screen.getByRole("textbox", { name: "Description" }), "Clovy stopped");
     await user.click(screen.getByRole("button", { name: "Send report" }));
 
     await waitFor(() =>
       expect(mocks.submitIssueReport).toHaveBeenCalledWith({
         category: "bug",
-        description: "June stopped",
+        description: "Clovy stopped",
         attachmentNames: [],
         attachmentPaths: [],
       }),

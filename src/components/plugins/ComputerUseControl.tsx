@@ -87,7 +87,7 @@ function permissionLabel(permission: MacOSPermission) {
 /**
  * Canonical front for the single native Computer use grant. Keeping management
  * in the Plugins provider list avoids a second preference surface and never implies that macOS
- * TCC access was granted by June's switch.
+ * TCC access was granted by Clovy's switch.
  */
 export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseControlProps) {
   const [status, setStatus] = useState<ComputerUseStatusDto>();
@@ -272,9 +272,10 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
           <HoverTip
             tip={
               <>
-                macOS will ask for Accessibility so June can inspect and operate the target app, and
-                Screen Recording so June can understand what is visible. June sends only captures
-                needed for the current task to your selected model. Captures are never analytics.
+                macOS will ask for Accessibility so Clovy can inspect and operate the target app,
+                and Screen Recording so Clovy can understand what is visible. Clovy sends only
+                captures needed for the current task to your selected model. Captures are never
+                analytics.
               </>
             }
             width={360}
@@ -335,7 +336,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
             tone="info"
             icon={<IconExclamationCircle size={16} />}
             eyebrow="Temporarily unavailable"
-            body={status.error || "Computer use is paused for this June or macOS version."}
+            body={status.error || "Computer use is paused for this Clovy or macOS version."}
           />
         ) : null}
 
@@ -346,7 +347,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
             eyebrow="Bundled driver unavailable"
             body={
               status.error ||
-              "This build does not contain the pinned Computer use driver. Reinstall or update June."
+              "This build does not contain the pinned Computer use driver. Reinstall or update Clovy."
             }
           />
         ) : null}
@@ -364,14 +365,14 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
                     <h4 id="add-june-macos">Allow {permissionLabel(nextPermission)}</h4>
                     {nextPermission === "accessibility" ? (
                       <p>
-                        Open System Settings, find <strong>June Computer Use Driver</strong>, and
-                        turn it on. Then return to June. This page updates automatically.
+                        Open System Settings, find <strong>Clovy Computer Use Driver</strong>, and
+                        turn it on. Then return to Clovy. This page updates automatically.
                       </p>
                     ) : (
                       <p>
-                        Open System Settings, find <strong>June</strong>, and turn it on. macOS
-                        assigns Screen recording to June itself. Then return here. This page updates
-                        automatically.
+                        Open System Settings, find <strong>Clovy</strong>, and turn it on. macOS
+                        assigns Screen recording to Clovy itself. Then return here. This page
+                        updates automatically.
                       </p>
                     )}
                   </div>
@@ -387,10 +388,10 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
                 <div className="computer-use-permission-helper">
                   <div className="computer-use-permission-helper-copy">
                     <strong>
-                      {nextPermission === "accessibility" ? "Driver" : "June"} is not in the list?
+                      {nextPermission === "accessibility" ? "Driver" : "Clovy"} is not in the list?
                     </strong>
                     <p>
-                      Drag {nextPermission === "accessibility" ? "the helper" : "June"} below into
+                      Drag {nextPermission === "accessibility" ? "the helper" : "Clovy"} below into
                       the open System Settings list, then turn it on.
                     </p>
                   </div>
@@ -399,7 +400,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
                     type="button"
                     className="computer-use-permission-drag-card"
                     aria-label={`Drag ${
-                      nextPermission === "accessibility" ? "June Computer Use Driver" : "June"
+                      nextPermission === "accessibility" ? "Clovy Computer Use Driver" : "Clovy"
                     } to the open System Settings list`}
                     onClick={() => void openPermissionSettings(nextPermission)}
                   >
@@ -408,7 +409,7 @@ export function ComputerUseControl({ onOpenModels, onOpenBilling }: ComputerUseC
                     </span>
                     <span className="computer-use-permission-drag-copy">
                       <strong>
-                        {nextPermission === "accessibility" ? "June Computer Use Driver" : "June"}
+                        {nextPermission === "accessibility" ? "Clovy Computer Use Driver" : "Clovy"}
                       </strong>
                       <span>Drag into System Settings</span>
                     </span>

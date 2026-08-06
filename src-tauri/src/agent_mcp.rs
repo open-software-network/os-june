@@ -1,4 +1,4 @@
-//! Host-owned MCP server registry for the June agent harness.
+//! Host-owned MCP server registry for the Clovy agent harness.
 //!
 //! This module deliberately keeps server configuration and MCP transport out
 //! of the TypeScript sidecar. SQLite stores only non-secret connection data;
@@ -125,7 +125,7 @@ pub enum AgentMcpError {
     NotFound,
     #[error("MCP tool is not available for this server")]
     ToolUnavailable,
-    #[error("MCP response exceeded June's safety limit")]
+    #[error("MCP response exceeded Clovy's safety limit")]
     OutputTooLarge,
     #[error("MCP operation timed out")]
     TimedOut,
@@ -358,7 +358,7 @@ pub struct McpSecretBundle {
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// Legacy OAuth client configuration is retained only for recovery.
-    /// The June-owned runtime does not consume it until a first-party OAuth
+    /// The Clovy-owned runtime does not consume it until a first-party OAuth
     /// flow can replace the retired Hermes token cache safely.
     #[serde(default)]
     pub oauth: BTreeMap<String, String>,
@@ -688,7 +688,7 @@ async fn register_oauth_client(
         .post(endpoint)
         .timeout(OAUTH_HTTP_TIMEOUT)
         .json(&OAuthRegistrationRequest {
-            client_name: "June",
+            client_name: "Clovy",
             redirect_uris: vec![redirect_uri],
             grant_types: vec!["authorization_code", "refresh_token"],
             response_types: vec!["code"],
@@ -2798,7 +2798,7 @@ fn initialize_params() -> Value {
     json!({
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "capabilities": {},
-        "clientInfo": {"name": "June", "version": "1"}
+        "clientInfo": {"name": "Clovy", "version": "1"}
     })
 }
 

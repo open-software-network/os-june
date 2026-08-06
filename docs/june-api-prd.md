@@ -1,7 +1,7 @@
-# June API — proxy all upstream AI traffic and fully integrate OS Accounts authorize/charge
+# Clovy API — proxy all upstream AI traffic and fully integrate OS Accounts authorize/charge
 
 > Read [`/CONTEXT.md`](../CONTEXT.md) first for the glossary. Terms in **bold**
-> below (June, June API, OS Accounts, upstream provider, dictation, note
+> below (Clovy, Clovy API, OS Accounts, upstream provider, dictation, note
 > transcription, note generation, credit price) are defined there.
 >
 > Read [`/docs/os-accounts-backend.md`](./os-accounts-backend.md) for the
@@ -9,9 +9,9 @@
 
 ## Problem Statement
 
-A user installing June today can record meetings, get transcripts, and
+A user installing Clovy today can record meetings, get transcripts, and
 generate notes — but only if **they** supply their own OpenAI and Venice API
-keys in a local `.env`. The moment June is distributed as a `.app` to anyone
+keys in a local `.env`. The moment Clovy is distributed as a `.app` to anyone
 who isn't a developer:
 
 - The user has no way to acquire or configure provider keys.
@@ -22,17 +22,17 @@ who isn't a developer:
   (`os_accounts.rs`), but nothing actually charges the credits — the wallet
   reads correctly and never decrements.
 
-The result: June cannot be shipped publicly as a paid product because there
+The result: Clovy cannot be shipped publicly as a paid product because there
 is no safe way to bill metered AI usage from a public client. It also cannot
 be used by anyone without the technical knowledge to register their own
 upstream provider accounts.
 
 ## Solution
 
-Build **June API**, a confidential backend service that:
+Build **Clovy API**, a confidential backend service that:
 
-1. Holds the OpenAI and Venice API keys (which June no longer ships).
-2. Holds the OS Accounts App API key (`osk_…`) that authenticates June to OS
+1. Holds the OpenAI and Venice API keys (which Clovy no longer ships).
+2. Holds the OS Accounts App API key (`osk_…`) that authenticates Clovy to OS
    Accounts as a billing-capable app.
 3. Verifies every incoming request's OS Accounts access token locally
    (JWKS / ES256), extracting the **user ID** (`usr_…`).
@@ -40,132 +40,132 @@ Build **June API**, a confidential backend service that:
    call the upstream provider → `POST /charge`, deterministic
    `idempotency_key` per logical operation.
 5. Returns the work result (transcript, note, cleaned text, model list) to
-   June.
+   Clovy.
 
-After this lands, June ships with **zero upstream provider keys**, every AI
+After this lands, Clovy ships with **zero upstream provider keys**, every AI
 call is billed against the signed-in user's OS Accounts wallet at the
 configured **credit price** for the chosen **upstream model**, and the
 existing "Top up credits" affordance in the Account settings becomes the only
 way to fund usage. Users see "Insufficient credits → Top up" instead of a
 generic provider error when they run dry. Usage credit prices pass through
-upstream cost without an additional June markup.
+upstream cost without an additional Clovy markup.
 
 ## User Stories
 
 ### End user — first run and sign-in
 
-1. As a **first-time June user**, I want to install the app without
+1. As a **first-time Clovy user**, I want to install the app without
    configuring any third-party API keys, so that I can get to recording within
    one minute of double-clicking the `.app`.
-2. As a **first-time June user**, I want to **sign in with Open Software**
+2. As a **first-time Clovy user**, I want to **sign in with Open Software**
    directly from the Account settings, so that my identity and credit balance
    are tied to my OS Accounts wallet from the start.
-3. As a **signed-in June user**, I want to see my current credit balance in
+3. As a **signed-in Clovy user**, I want to see my current credit balance in
    the Account settings, so that I know what I can spend before recording.
-4. As a **signed-in June user**, I want a one-click "Top up" button that
+4. As a **signed-in Clovy user**, I want a one-click "Top up" button that
    opens the OS Accounts portal in my browser, so that I can buy more credits
-   without leaving June's flow.
-5. As a **signed-in June user**, I want my balance in the Account settings
+   without leaving Clovy's flow.
+5. As a **signed-in Clovy user**, I want my balance in the Account settings
    to refresh automatically after a successful top-up returns me to the app,
    so that I don't have to manually check whether the purchase went through.
 
 ### End user — note transcription and generation
 
-6. As a **June user with sufficient credits**, I want to record a meeting,
+6. As a **Clovy user with sufficient credits**, I want to record a meeting,
    stop, and have the **note transcription** appear without seeing any error
    about provider keys, so that the recording-to-note flow feels seamless.
-7. As a **June user with sufficient credits**, I want the cost of each
+7. As a **Clovy user with sufficient credits**, I want the cost of each
    transcription to be deducted from my OS Accounts balance after it
    completes, so that I pay for what I used and not for upload failures.
-8. As a **June user**, I want **note generation** (turning the transcript
+8. As a **Clovy user**, I want **note generation** (turning the transcript
    into structured markdown) to also debit the same OS Accounts wallet, so
    that there is one place to see all my AI spend.
-9. As a **June user with insufficient credits**, I want to see a clear
+9. As a **Clovy user with insufficient credits**, I want to see a clear
    "You're out of credits — top up to continue" message instead of a generic
    error when I try to transcribe or generate, so that I know exactly what to
    do.
-10. As a **June user with insufficient credits**, the "Top up" affordance
+10. As a **Clovy user with insufficient credits**, the "Top up" affordance
     from the error message should take me straight to the OS Accounts portal,
     so that I'm not hunting through settings.
-11. As a **June user retrying a failed network call**, I want my second
+11. As a **Clovy user retrying a failed network call**, I want my second
     attempt to bill me only once, so that flaky wifi doesn't double-charge me.
 
 ### End user — dictation
 
-12. As a **June user with sufficient credits**, I want **dictation**
+12. As a **Clovy user with sufficient credits**, I want **dictation**
     (push-to-talk → cleaned-up text) to work without me supplying any
     provider key, so that dictation is usable on a fresh install.
-13. As a **June user using dictation**, I want each dictation event to
+13. As a **Clovy user using dictation**, I want each dictation event to
     debit my OS Accounts balance, so that dictation is metered the same way
     as note transcription.
-14. As a **June user using dictation**, I want the latency of dictation to
+14. As a **Clovy user using dictation**, I want the latency of dictation to
     stay tight (text appears within a fraction of a second of release), so
     that the new billing pipeline doesn't make the feature feel sluggish.
-15. As a **June user**, I want to choose between OpenAI and Venice models
+15. As a **Clovy user**, I want to choose between OpenAI and Venice models
     for transcription in Settings exactly as today, so that the model picker
     UX is preserved.
-16. As a **June user**, I want models that June hasn't priced to NOT
+16. As a **Clovy user**, I want models that Clovy hasn't priced to NOT
     appear in the picker, so that I never select an option that will fail at
     request time.
 
-### Developer — running and contributing to June
+### Developer — running and contributing to Clovy
 
-17. As a **June developer running the app locally**, I want to point at
-    either a local June API or a staging deployment via a single env var,
+17. As a **Clovy developer running the app locally**, I want to point at
+    either a local Clovy API or a staging deployment via a single env var,
     so that I can test against production-shape infra without rebuilding.
-18. As a **June developer**, I want to clone the repo and build both the
-    Tauri client and June API from the same `git clone`, so that
+18. As a **Clovy developer**, I want to clone the repo and build both the
+    Tauri client and Clovy API from the same `git clone`, so that
     end-to-end changes are one PR.
-19. As a **June developer**, I want no upstream provider keys (`OPENAI_API_KEY`,
+19. As a **Clovy developer**, I want no upstream provider keys (`OPENAI_API_KEY`,
     `VENICE_API_KEY`) anywhere in the Tauri-side `.env` or codebase, so that
-    a leaked June build cannot drain our provider budgets.
+    a leaked Clovy build cannot drain our provider budgets.
 
-### Developer — June API backend
+### Developer — Clovy API backend
 
-20. As a **June API maintainer**, I want every paid request to atomically
+20. As a **Clovy API maintainer**, I want every paid request to atomically
     `authorize → upstream → charge` with a deterministic idempotency key, so
     that retries are safe and concurrent requests for the same user respect
     the wallet.
-21. As a **June API maintainer**, I want the JWKS for OS Accounts cached
+21. As a **Clovy API maintainer**, I want the JWKS for OS Accounts cached
     in-process and refreshed only on `kid` miss, so that every request
     doesn't hammer OS Accounts.
-22. As a **June API maintainer**, I want each upstream provider sitting
+22. As a **Clovy API maintainer**, I want each upstream provider sitting
     behind a `Transcriber` / `Generator` / `Cleaner` trait, so that I can
     swap or add a provider without changing the orchestration code.
-23. As a **June API maintainer**, I want a typed pricing table loaded from
+23. As a **Clovy API maintainer**, I want a typed pricing table loaded from
     config, so that adding or repricing an upstream model is a config diff
     not a code change. Usage prices pass through upstream cost without an
-    additional June markup.
-24. As a **June API maintainer**, I want unknown models (no credit price)
+    additional Clovy markup.
+24. As a **Clovy API maintainer**, I want unknown models (no credit price)
     to be rejected at the API boundary with a clear error code, so that we
     never silently charge $0 or absorb unpriced usage.
-25. As a **June API maintainer**, I want structured `tracing` logs with
+25. As a **Clovy API maintainer**, I want structured `tracing` logs with
     `usr_…`, action, model, and credits charged on every settled request, so
     that I can investigate billing disputes without re-deriving anything.
 
 ### Developer — CI and deployment
 
-26. As a **June API maintainer**, I want PRs that touch only the Tauri
+26. As a **Clovy API maintainer**, I want PRs that touch only the Tauri
     side to NOT trigger Rust CI, so that a UI tweak doesn't run a 5-minute
     cargo build.
-27. As a **June API maintainer**, I want pushes to `main` that touch
+27. As a **Clovy API maintainer**, I want pushes to `main` that touch
     `june-api/**` to build and publish a `:<short-sha>` image to GHCR plus
     update a `:staging` tag, so that staging always reflects what's on
     `main`.
-28. As a **June API maintainer**, I want a manual workflow to re-tag an
+28. As a **Clovy API maintainer**, I want a manual workflow to re-tag an
     existing image to `:production`, so that promotion never rebuilds and
     rollback is "promote a previous SHA".
-29. As an **on-call engineer**, I want June API's `/livez` to return 200
+29. As an **on-call engineer**, I want Clovy API's `/livez` to return 200
     when the process is alive and 5xx when it's not, so that Railway's
     health probe can restart a wedged container.
 
 ### OS Accounts perspective (for completeness)
 
-30. As an **OS Accounts admin**, I want each metered call from June to
+30. As an **OS Accounts admin**, I want each metered call from Clovy to
     include an action slug that distinguishes dictation from note flows
     (`dictate_transcribe`, `dictate_cleanup`, `note_transcribe`,
     `note_generate`), so that per-action billing analytics are legible.
-31. As an **OS Accounts platform**, I expect June API to never call
+31. As an **OS Accounts platform**, I expect Clovy API to never call
     `/charge` without a preceding `/authorize`, to use a deterministic
     `idempotency_key` per logical operation, and to send both the App API
     key (header) and the Action token (body) on every charge, so that the
@@ -175,12 +175,12 @@ upstream cost without an additional June markup.
 
 ### Repo layout and crate split
 
-- **June API lives in this repo**, not a separate repo. Cargo workspace
+- **Clovy API lives in this repo**, not a separate repo. Cargo workspace
   rooted at `june-api/` (sibling of `src-tauri/` and `src/`). One `git
   clone` for client + backend; CI workflows in the monorepo gate on
   `paths: june-api/**`.
 - **Six crates, not seven.** The `june-persistence` crate from the
-  `os-rust-backend` recipe is deliberately omitted — June API is
+  `os-rust-backend` recipe is deliberately omitted — Clovy API is
   stateless v1. If persistence is ever added, it goes in a new
   `june-persistence` crate at that time. Crates: `june-domain`,
   `june-services`, `june-providers`, `june-config`, `june-api`,
@@ -219,7 +219,7 @@ upstream cost without an additional June markup.
   Single source of truth for credit cost. Loaded from `june-config`.
 - **`WavDurationProbe` (`june-providers`)** — `probe(bytes) ->
   Result<Duration, ProbeError>`. Pure, uses the `hound` crate (already a
-  workspace dep in `src-tauri`; should be added to the June API
+  workspace dep in `src-tauri`; should be added to the Clovy API
   workspace too).
 - **`NoteTranscribeService`, `NoteGenerateService`, `DictateService`
   (`june-services`)** — orchestrators. Each takes a `UserId` (from the
@@ -282,21 +282,21 @@ Follow the standard `os-rust-backend` bands. Notable specifics:
 
 ### Idempotency key shape
 
-Deterministic, derived from a stable per-operation identifier in June:
+Deterministic, derived from a stable per-operation identifier in Clovy:
 
 - `/v1/transcribe`: `note_transcribe:<usr_>:<noteId>`
 - `/v1/generate`: `note_generate:<usr_>:<noteId>:<promptVersion>`
 - `/v1/dictate`: `dictate_transcribe:<usr_>:<sessionId>:<utteranceId>`
 - `/v1/dictate/cleanup`: `dictate_cleanup:<usr_>:<sessionId>:<utteranceId>`
 
-The June client passes the stable identifier in the request (`noteId` /
-`sessionId+utteranceId`); June API constructs the full key
+The Clovy client passes the stable identifier in the request (`noteId` /
+`sessionId+utteranceId`); Clovy API constructs the full key
 server-side from the verified `usr_` + the client-supplied operation id.
 Clients never compose the full key themselves.
 
 ### Configuration
 
-June API (typed `AppConfig` in `june-config`, figment-merged from
+Clovy API (typed `AppConfig` in `june-config`, figment-merged from
 defaults + `config.toml` + env, no `std::env::var` calls outside):
 
 - `[server]` — `port` (Railway injects `PORT`), `request_timeout_secs`.
@@ -306,11 +306,11 @@ defaults + `config.toml` + env, no `std::env::var` calls outside):
 - `[upstreams.venice]` — `api_key` (env-only), `base_url`.
 - `[pricing]` — table keyed by `model_id`, each entry `{ unit: "seconds" |
   "tokens", credits_per_unit: u64 }`. Values pass through upstream cost
-  without an additional June markup. Loaded from
+  without an additional Clovy markup. Loaded from
   `config.toml` baked into the image; `JUNE__PRICING__…` env overrides
   supported via figment for per-env tweaking.
 
-June (Tauri client):
+Clovy (Tauri client):
 
 - `JUNE_API_URL` — baked production default in a constant; `.env`
   override supported (same model recommended for `OS_ACCOUNTS_URL` /
@@ -352,7 +352,7 @@ get added under `.github/actions/`, with `setup-rust` pointed at
   cache if a separate cache is wanted).
 - Update callers in `commands.rs` and `dictation.rs` to import from
   `june_api` instead of `providers::*`.
-- Map June API `error_code: 4301` to whatever existing "insufficient
+- Map Clovy API `error_code: 4301` to whatever existing "insufficient
   credits" UI affordance the Account/Note flows already use (or add one
   if missing) — should open the system browser at OS Accounts via the
   existing `os_accounts_top_up` command.
@@ -361,11 +361,11 @@ get added under `.github/actions/`, with `setup-rust` pointed at
 
 These block all of the above:
 
-1. Register June in the OS Accounts admin console for staging and
+1. Register Clovy in the OS Accounts admin console for staging and
    production. Yields `app_id`, App API key `osk_…`, OAuth client ID
    `ocl_…` per env. Allowlist `http://127.0.0.1:8765/callback` (already
    matches `os_accounts.rs`).
-2. Create Railway projects for June API staging + production.
+2. Create Railway projects for Clovy API staging + production.
 3. Confirm GHCR `packages: write` on the GitHub Actions token for
    `ghcr.io/open-software-network/june-api`.
 
@@ -373,7 +373,7 @@ These block all of the above:
 
 ### What makes a good test for this work
 
-- **Test external behavior, not implementation details.** For June API,
+- **Test external behavior, not implementation details.** For Clovy API,
   that means HTTP request/response shape, envelope contents, error codes,
   the sequence of OS Accounts calls observed at a wiremock — never "this
   function called that function".
@@ -384,7 +384,7 @@ These block all of the above:
 - **Tests assert on the envelope, not just the HTTP status.** A
   successful response is `{ success: true, data: ... }`; a known failure
   is `{ success: false, error_code: 4301, message: "..." }`. Tests
-  should match the same `error_code` June will branch on.
+  should match the same `error_code` Clovy will branch on.
 
 ### Modules with tests in scope
 
@@ -422,8 +422,8 @@ be added incrementally as bugs surface.
 ## Out of Scope
 
 - **Streaming responses** (SSE / chunked) for `/v1/generate`. Current
-  June UX is non-streaming; add later as its own feature.
-- **Postgres / persistence in June API.** No DB v1; `june-persistence`
+  Clovy UX is non-streaming; add later as its own feature.
+- **Postgres / persistence in Clovy API.** No DB v1; `june-persistence`
   crate not created. Idempotency dedup is provided by OS Accounts; the
   rare network-retry-causes-duplicate-upstream-call cost is accepted.
 - **In-memory result cache.** Out of scope v1; consider only if observed
@@ -438,7 +438,7 @@ be added incrementally as bugs surface.
   OS Accounts round-trips per dictation is real but tolerable; an
   optimisation (return result first, charge in the background) is a
   separate enhancement once we have telemetry to justify it.
-- **Building any kind of top-up / checkout UI in June or June API.**
+- **Building any kind of top-up / checkout UI in Clovy or Clovy API.**
   Credits are granted only by OS Accounts after a verified Stripe
   webhook. Top-ups always hand off to the OS Accounts portal in the
   system browser.
@@ -452,7 +452,7 @@ be added incrementally as bugs surface.
 ## Further Notes
 
 - **Glossary alignment.** Throughout the implementation, prefer the
-  vocabulary from `CONTEXT.md`: **June** (the app), **June API**
+  vocabulary from `CONTEXT.md`: **Clovy** (the app), **Clovy API**
   (the backend), **OS Accounts** (the platform), **upstream provider**
   (OpenAI / Venice), **dictation** vs **note transcription** vs **note
   generation** (never "transcribe" or "generate" alone), **credit
@@ -469,12 +469,12 @@ be added incrementally as bugs surface.
   by `build-june-api.yml`; deployment (how Railway picks up the new
   image) is out of scope of `os-rust-backend-ci` and owned by whoever
   configures the Railway side.
-- **The June binary will bake `JUNE_API_URL` as a production
+- **The Clovy binary will bake `JUNE_API_URL` as a production
   default**, env-overridable for dev/staging. This is a small but real
   deviation from the current `os_accounts.rs` pattern (which requires
   env config and fails closed). The same change should eventually be
   made to `OS_ACCOUNTS_URL` / `OS_ACCOUNTS_API_URL` for the same reason
-  — the moment June is distributed to non-developers, env-only
+  — the moment Clovy is distributed to non-developers, env-only
   configuration breaks.
 - **`docs/os-accounts-backend.md` should be updated or removed** once
   this work lands; it predates this PRD and sketches what is now being

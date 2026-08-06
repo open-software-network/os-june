@@ -13,7 +13,7 @@
 //!
 //! Violation messages name the address class only. They never carry the URL,
 //! the hostname, or any resolved IP: a browsing session's destinations are
-//! exactly the material the user is trusting June with, and an error string is
+//! exactly the material the user is trusting Clovy with, and an error string is
 //! a copy of it outside that boundary.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

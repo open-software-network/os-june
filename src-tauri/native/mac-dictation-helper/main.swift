@@ -172,14 +172,14 @@ final class AccessibilityTrustMonitor {
     }
 }
 
-/// Makes the helper self-terminating if the June process that spawned it dies.
+/// Makes the helper self-terminating if the Clovy process that spawned it dies.
 ///
 /// The Rust shutdown coordinator normally sends an explicit shutdown command,
 /// but macOS can finalize an application through paths where only stdio closure
 /// reaches the helper. A pipe write descriptor inherited by another child can
-/// delay that EOF indefinitely, leaving the global event tap alive after June
+/// delay that EOF indefinitely, leaving the global event tap alive after Clovy
 /// has exited. Rust passes the owning pid explicitly so the helper still knows
-/// what to watch even if June dies before Swift finishes initializing.
+/// what to watch even if Clovy dies before Swift finishes initializing.
 final class ParentProcessMonitor {
     static let shared = ParentProcessMonitor()
 
@@ -838,7 +838,7 @@ final class ShortcutKeyMonitor {
     }
 
     /// flagsChanged ONLY, deliberately: modifier traffic is visible to a
-    /// global monitor under the Accessibility permission June already holds,
+    /// global monitor under the Accessibility permission Clovy already holds,
     /// while .keyDown/.keyUp in this mask is what made macOS demand Input
     /// Monitoring on first launch. Key chords are watched by Carbon hot keys
     /// instead (registerCarbonHotKeys), which need no permission at all.
@@ -926,7 +926,7 @@ final class ShortcutKeyMonitor {
         }
         if isCapturingShortcut {
             // Modifier-only chords (fn included) are captured here; key
-            // chords are captured by the focused June window's DOM, which
+            // chords are captured by the focused Clovy window's DOM, which
             // sees ordinary keystrokes without any permission.
             handleCapture(modifiers: shortcutModifiers(from: event.modifierFlags))
             return
@@ -1894,7 +1894,7 @@ final class DictationController {
                     self.startRecording(purpose: .dictation, durationSeconds: nil)
                 }
                 // The cue defines the start-speaking boundary and finishes
-                // before capture begins, keeping June's own sound out of the
+                // before capture begins, keeping Clovy's own sound out of the
                 // recording while providing feedback for every start mode.
                 RecordingCuePlayer.play(.start, completion: beginRecording)
             }
@@ -2545,7 +2545,7 @@ enum PasteboardInserter {
     private static func emitPasteTargetUnavailable(takeID: String?) {
         emit("error", takePayload([
             "code": "paste_target_unavailable",
-            "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+            "message": "Clovy couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
         ], takeID: takeID))
     }
 
@@ -2576,7 +2576,7 @@ enum PasteboardInserter {
             emit("permission_status", permissionPayload())
             emit("error", takePayload([
                 "code": "accessibility_permission_missing",
-                "message": "June couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
+                "message": "Clovy couldn't paste automatically. Your transcript is on the clipboard, so you can paste it with Cmd+V.",
             ], takeID: takeID))
             return
         }

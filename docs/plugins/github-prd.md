@@ -8,12 +8,12 @@
 
 ## Thesis
 
-GitHub turns June's meeting memory into software delivery follow-through. The
+GitHub turns Clovy's meeting memory into software delivery follow-through. The
 plugin should prepare engineering meetings from repositories and pull requests,
 connect decisions to code, draft issues or review comments, and summarize what
 changed since the conversation.
 
-It ranks seventh because it is extremely valuable for June's technical early
+It ranks seventh because it is extremely valuable for Clovy's technical early
 adopters but narrower than the cross-role plugins above it. It can ship with
 high confidence because GitHub Apps provide fine-grained repository permissions
 and short-lived tokens.
@@ -27,19 +27,19 @@ tokens are easy to create and hard to justify.
 
 ## Product promise
 
-Choose repositories during GitHub App installation. June can read and explain
+Choose repositories during GitHub App installation. Clovy can read and explain
 those repositories and draft bounded delivery actions, while GitHub and the
 user's own permissions remain the authority.
 
 ## V1 experience
 
-- Install the June GitHub App on selected repositories.
-- Ask June to prepare a standup/review from issues, pull requests, commits, and
+- Install the Clovy GitHub App on selected repositories.
+- Ask Clovy to prepare a standup/review from issues, pull requests, commits, and
   relevant code.
-- Link a June note to a repository, issue, or pull request.
+- Link a Clovy note to a repository, issue, or pull request.
 - Draft an issue, issue comment, pull-request review, or status summary.
 - Review and approve every GitHub write.
-- Repositories removed from the installation disappear from June immediately.
+- Repositories removed from the installation disappear from Clovy immediately.
 
 ## Scope
 

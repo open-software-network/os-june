@@ -18,38 +18,38 @@ let activeShareId: string | undefined;
 const copy: Record<Exclude<PairingState["status"], "incompatible">, PopupCopy> = {
   disconnected: {
     title: "Not connected",
-    detail: "June is not connected to this browser yet.",
+    detail: "Clovy is not connected to this browser yet.",
     retry: true,
   },
   connecting: {
     title: "Connecting",
-    detail: "Reaching the June app...",
+    detail: "Reaching the Clovy app...",
     retry: false,
   },
   handshaking: {
     title: "Connecting",
-    detail: "Confirming versions with the June app...",
+    detail: "Confirming versions with the Clovy app...",
     retry: false,
   },
   paired: {
-    title: "Connected to June",
-    detail: "June can open its own tabs in this browser when you ask it to.",
+    title: "Connected to Clovy",
+    detail: "Clovy can open its own tabs in this browser when you ask it to.",
     retry: false,
   },
   unreachable: {
-    title: "June is not running",
-    detail: "Open the June app, then try again.",
+    title: "Clovy is not running",
+    detail: "Open the Clovy app, then try again.",
     retry: true,
   },
 };
 
 function incompatibleCopy(state: Extract<PairingState, { status: "incompatible" }>): PopupCopy {
   const detail =
-    state.remedy === "updateJune"
-      ? "This extension is newer than the June app. Update June, then try again."
+    state.remedy === "updateApp"
+      ? "This extension is newer than the Clovy app. Update Clovy, then try again."
       : state.remedy === "updateExtension"
-        ? "The June app is newer than this extension. Update the June extension, then try again."
-        : "This extension and the June app speak different versions. Update both, then try again.";
+        ? "The Clovy app is newer than this extension. Update the Clovy extension, then try again."
+        : "This extension and the Clovy app speak different versions. Update both, then try again.";
   return { title: "Update required", detail, retry: true };
 }
 
@@ -85,12 +85,12 @@ function renderShare(state: ShareState, detail?: string) {
   shareDetail.textContent =
     detail ??
     (state === "shared"
-      ? "This tab is shared with the current June task."
+      ? "This tab is shared with the current Clovy task."
       : state === "unavailable"
-        ? "This tab already belongs to the current June task."
+        ? "This tab already belongs to the current Clovy task."
         : state === "pending"
-          ? `Share code: ${activeShareId ?? "Preparing..."}. Paste it into your June chat.`
-          : "Only the tab you choose becomes available to the current June task.");
+          ? `Share code: ${activeShareId ?? "Preparing..."}. Paste it into your Clovy chat.`
+          : "Only the tab you choose becomes available to the current Clovy task.");
   share.hidden = state === "shared" || state === "unavailable";
   share.textContent = state === "pending" ? "Copy share code" : "Share this tab";
   revoke.hidden = state === "available" || state === "unavailable";
@@ -165,8 +165,8 @@ document.getElementById("share")?.addEventListener("click", async () => {
   renderShare(
     "pending",
     copied
-      ? "Share code copied. Paste it into your June chat."
-      : `Share code: ${shareId}. Paste it into your June chat.`,
+      ? "Share code copied. Paste it into your Clovy chat."
+      : `Share code: ${shareId}. Paste it into your Clovy chat.`,
   );
 });
 

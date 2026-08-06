@@ -10,16 +10,16 @@ import { useEffect, useRef, useState } from "react";
 import { noteReferenceToken } from "../agent/composer/noteReference";
 import { toast } from "../ui/Toaster";
 
-/** The note's top-bar actions: Ask June (toggles the contextual chat panel),
+/** The note's top-bar actions: Ask Clovy (toggles the contextual chat panel),
  * share, and an overflow menu (copy reference, export, delete). Lives in the
  * note toolbar's actions slot so it sits in a consistent, predictable spot
  * across every note. */
 export function NoteHeaderActions({
   noteId,
   noteTitle,
-  askJuneOpen,
-  askJuneWorking,
-  onAskJune,
+  askClovyOpen,
+  askClovyWorking,
+  onAskClovy,
   onShare,
   onExportPdf,
   onDownloadAudio,
@@ -28,11 +28,11 @@ export function NoteHeaderActions({
   noteId: string;
   noteTitle: string;
   /** The panel is open, so the button reads as its pressed toggle. */
-  askJuneOpen?: boolean;
+  askClovyOpen?: boolean;
   /** This note's chat is generating a reply — show a working dot even while
    * the panel is closed, so a fired-off question is visibly still running. */
-  askJuneWorking?: boolean;
-  onAskJune?: () => void;
+  askClovyWorking?: boolean;
+  onAskClovy?: () => void;
   /** Opens the private-sharing dialog for this note. */
   onShare?: () => void;
   /** Opens the system print sheet with a PDF-ready version of the note. */
@@ -47,14 +47,14 @@ export function NoteHeaderActions({
       <button
         type="button"
         className="note-header-ask"
-        aria-expanded={askJuneOpen || undefined}
-        data-working={askJuneWorking || undefined}
-        title={askJuneWorking ? "June is working on your question" : undefined}
-        onClick={() => onAskJune?.()}
+        aria-expanded={askClovyOpen || undefined}
+        data-working={askClovyWorking || undefined}
+        title={askClovyWorking ? "Clovy is working on your question" : undefined}
+        onClick={() => onAskClovy?.()}
       >
         <IconBubble3 size={14} aria-hidden />
-        Ask June
-        {askJuneWorking ? <span className="note-header-ask-dot" aria-hidden /> : null}
+        Ask Clovy
+        {askClovyWorking ? <span className="note-header-ask-dot" aria-hidden /> : null}
       </button>
       {onShare ? (
         <button
@@ -113,7 +113,7 @@ function NoteOverflowMenu({
   async function handleCopyReference() {
     try {
       await navigator.clipboard.writeText(noteReferenceToken({ id: noteId, title: noteTitle }));
-      toast("Reference for June copied");
+      toast("Reference for Clovy copied");
     } catch {
       // Clipboard API can fail in restricted contexts; stay silent so retrying
       // the same menu action remains the least disruptive recovery.
@@ -143,7 +143,7 @@ function NoteOverflowMenu({
             }}
           >
             <IconReference size={14} />
-            Copy reference for June
+            Copy reference for Clovy
           </button>
           {onExportPdf ? (
             <button

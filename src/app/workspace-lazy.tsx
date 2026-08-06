@@ -91,7 +91,7 @@ function WorkspaceLoadFailure({ onRetry }: { onRetry: () => void }) {
   return (
     <section className="workspace-fallback workspace-load-error" role="alert">
       <h2>Couldn't open this view</h2>
-      <p>June couldn't load this part of the app. Try again.</p>
+      <p>Clovy couldn't load this part of the app. Try again.</p>
       <button type="button" className="primary-action primary-solid" onClick={onRetry}>
         Try again
       </button>

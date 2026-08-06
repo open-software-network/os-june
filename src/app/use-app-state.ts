@@ -21,7 +21,7 @@ import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { RecordingSourceMode, RecordingSourceReadinessDto } from "../lib/tauri";
 import { useAccountStatus } from "../lib/account-status";
 import { shouldReplayOnboarding } from "../lib/onboarding";
-import type { JuneUpdate } from "../lib/updater";
+import type { ClovyUpdate } from "../lib/updater";
 import { createInitialState, notesReducer } from "./state/app-state";
 import {
   INITIAL_UPDATE_STATUS_DISPLAY,
@@ -98,7 +98,7 @@ export function useAppState() {
   // Stored session id -> project (folder) ids. Project assignments are tracked
   // separately from note state.
   const [sessionFolders, setSessionFolders] = useState<Record<string, string[]>>({});
-  // Stored session id -> completed_at ISO. June-owned. See JUN-203.
+  // Stored session id -> completed_at ISO. Clovy-owned. See JUN-203.
   const [completedSessions, setCompletedSessions] = useState<Record<string, string>>({});
   // In-flight completion writes per stored session id, so rapid toggles for one
   // session persist in the order the user made them (see
@@ -190,7 +190,7 @@ export function useAppState() {
   const [accessibilityBannerDismissed, setAccessibilityBannerDismissed] = useState(false);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
-  const [readyUpdate, setReadyUpdate] = useState<UpdatePromptPayload<JuneUpdate> | null>(null);
+  const [readyUpdate, setReadyUpdate] = useState<UpdatePromptPayload<ClovyUpdate> | null>(null);
   const [updateStatusDisplay, dispatchUpdateStatusDisplay] = useReducer(
     updateStatusDisplayReducer,
     INITIAL_UPDATE_STATUS_DISPLAY,

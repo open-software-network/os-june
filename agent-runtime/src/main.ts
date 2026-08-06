@@ -29,11 +29,11 @@ process.on("SIGTERM", () => {
 });
 
 process.on("uncaughtException", (error) => {
-  process.stderr.write(`June agent runtime fatal error: ${errorMessage(error)}\n`);
+  process.stderr.write(`Clovy agent runtime fatal error: ${errorMessage(error)}\n`);
   process.exit(1);
 });
 
 process.on("unhandledRejection", (error) => {
-  process.stderr.write(`June agent runtime fatal rejection: ${errorMessage(error)}\n`);
+  process.stderr.write(`Clovy agent runtime fatal rejection: ${errorMessage(error)}\n`);
   process.exit(1);
 });

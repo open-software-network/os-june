@@ -10,13 +10,13 @@ vi.mock("../lib/recording-sounds", () => ({
   playRecordingSound: soundMocks.playRecordingSound,
 }));
 
-import { registerJuneSoundsDemo } from "../lib/june-sounds-demo";
+import { registerClovySoundsDemo } from "../lib/june-sounds-demo";
 
 type SoundWindow = typeof window & {
   __juneSounds?: (command?: string) => string;
 };
 
-describe("June sound console demo", () => {
+describe("Clovy sound console demo", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
@@ -24,7 +24,7 @@ describe("June sound console demo", () => {
   });
 
   it("prints the sound-family menu when called without a command", () => {
-    const api = registerJuneSoundsDemo();
+    const api = registerClovySoundsDemo();
 
     expect((window as SoundWindow).__juneSounds?.()).toContain('__juneSounds("all")');
 
@@ -34,7 +34,7 @@ describe("June sound console demo", () => {
 
   it("plays each family on demand", async () => {
     vi.useFakeTimers();
-    registerJuneSoundsDemo();
+    registerClovySoundsDemo();
 
     expect((window as SoundWindow).__juneSounds?.("recording")).toContain("recording");
     await vi.runAllTimersAsync();
@@ -51,7 +51,7 @@ describe("June sound console demo", () => {
     const order: string[] = [];
     soundMocks.playRecordingSound.mockImplementation((sound) => order.push(sound));
     soundMocks.playAgentSound.mockImplementation((sound) => order.push(sound));
-    registerJuneSoundsDemo();
+    registerClovySoundsDemo();
 
     (window as SoundWindow).__juneSounds?.("all");
     await vi.runAllTimersAsync();
@@ -61,7 +61,7 @@ describe("June sound console demo", () => {
 
   it("cancels a running sequence when a single cue is requested", async () => {
     vi.useFakeTimers();
-    registerJuneSoundsDemo();
+    registerClovySoundsDemo();
 
     (window as SoundWindow).__juneSounds?.("all");
     (window as SoundWindow).__juneSounds?.("ready");

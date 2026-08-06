@@ -1,4 +1,4 @@
-# June Companion threat model
+# Clovy Companion threat model
 
 ## Assets
 
@@ -36,13 +36,13 @@ and APNs signing material.
 - Replay, tampering, oversized payloads, stale controls, cross-user routes,
   duplicate connections, unbounded queues, and excessive frame rates fail
   closed.
-- Phone attachments land only in a June-owned app-data staging directory.
+- Phone attachments land only in a Clovy-owned app-data staging directory.
   Upload reservations, files, chunks, names, media types, hashes, counts, and
   lifetimes are bounded. Chunks are offset-checked and a commit succeeds only
   after the declared byte count and SHA-256 digest match. The staged file is
   non-executable, is never opened automatically, and reaches an agent run only
-  through June's existing attachment copier.
-- Mac browsing begins with a root the user selected in June Desktop Settings.
+  through Clovy's existing attachment copier.
+- Mac browsing begins with a root the user selected in Clovy Desktop Settings.
   There is no implicit home-directory grant. Roots are account-scoped,
   persisted by canonical path plus filesystem device and directory identity,
   individually revocable, and represented to the phone by opaque ids and
@@ -102,12 +102,12 @@ availability. Post-quantum security, traffic padding, multi-desktop routing,
 horizontal relay scale, peer-to-peer anonymity, and companion attachment
 malware scanning are not provided. File names and metadata disclosed from an
 approved root remain sensitive even without file contents. An attacker already
-able to replace files on the Mac can race metadata checks; June revalidates at
+able to replace files on the Mac can race metadata checks; Clovy revalidates at
 agent-send time, while a fully compromised endpoint remains outside the
 companion boundary.
 
 Saving a verified result to Photos creates a durable phone-controlled copy
-whose retention can outlive both the desktop artifact and June Companion's
+whose retention can outlive both the desktop artifact and Clovy Companion's
 encrypted snapshot cache. A cached open desktop handle can temporarily keep a
 deleted artifact's disk blocks alive for up to 30 idle minutes.
 

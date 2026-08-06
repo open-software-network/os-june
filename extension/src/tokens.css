@@ -1,6 +1,6 @@
 /*
  * Popup token subset copied from src/styles/tokens.css because an extension
- * document cannot inherit June's app document. The Rust
+ * document cannot inherit Clovy's app document. The Rust
  * `extension_popup_tokens_match_the_app_source` test fails if a copied value
  * drifts from the source of truth.
  */
@@ -26,7 +26,7 @@
    * this value has no counterpart in src/styles/tokens.css to drift from. */
   --extension-popup-min-w: 220px;
 
-  --brand-wash: #976851;
+  --brand-wash: #5a7c56;
   --foreground: oklch(27.24% 0.0015 84.59);
   --card: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);

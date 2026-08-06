@@ -12,7 +12,7 @@
 -
 
 - [ ] Tested visually where it matters (UI changes: attach a screenshot or recording).
-- [ ] Needs a June API (backend) deploy before it works end to end. <!-- check if yes; say which change -->
+- [ ] Needs a Clovy API (backend) deploy before it works end to end. <!-- check if yes; say which change -->
 
 ## Out of scope
 

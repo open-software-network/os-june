@@ -670,14 +670,14 @@ jobs:
           if [ "$release_state" = "draft" ]; then
             gh release edit "v$VERSION" \
               --repo open-software-network/os-june-releases \
-              --title "June v$VERSION" \
+              --title "Clovy v$VERSION" \
               --notes-file "$release_notes_file" \
               --draft \
               --prerelease=false
           else
             gh release create "v$VERSION" \
               --repo open-software-network/os-june-releases \
-              --title "June v$VERSION" \
+              --title "Clovy v$VERSION" \
               --notes-file "$release_notes_file" \
               --draft \
               --latest=false \

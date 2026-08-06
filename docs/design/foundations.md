@@ -1,6 +1,6 @@
 # Design foundations
 
-The theming model, design tokens, and type system that everything in June's UI
+The theming model, design tokens, and type system that everything in Clovy's UI
 builds on. Companion docs: [components.md](components.md) (the shared UI
 primitives), [conventions.md](conventions.md) (naming and interaction rules),
 and [taste.md](taste.md) (the sensibility behind the rules).
@@ -20,14 +20,19 @@ change animates instead of snapping. Surface neutrals mix a sliver of
 the greys the same amount a dusty one does; foreground/text tokens stay pure
 neutral for legibility.
 
-Five presets ship (rose, clay, sage, ocean, plum), clay is the default; a preset
+Five presets ship (rose, clay, sage, ocean, plum), sage is the default; a preset
 applies by setting the `--brand` / `--brand-wash` variables (see
-`src/lib/brand.ts`). Derived tokens (`--brand-tint`, `--brand-line`, `--warm-*`)
-re-mix from `--brand` automatically, so recoloring the accent recolors the whole
-UI. Light and dark are separate concerns: dark mode is a `data-theme="dark"`
-cascade that overrides colors and shadows (light-tuned black shadows vanish on
-near-black). See [conventions.md](conventions.md) for the brand pipeline and the
-`index.html` sync warning.
+`src/lib/brand.ts`). Derived tokens (`--brand-tint`, `--brand-line`, `--warm-*`,
+and surface neutrals) re-mix from `--brand` automatically, so recoloring the
+accent recolors the supporting UI. Clovy identity tokens and identity-led solid
+actions stay fixed across presets; Appearance-led Home details and composer
+send affordances remain preset-driven. Sage is the character's native
+appearance, so its Home and themed dock variants preserve canonical lime while
+the other presets recolor the character itself. Light and dark are separate
+concerns: dark mode is a `data-theme="dark"` cascade that overrides colors and
+shadows (light-tuned black shadows vanish on near-black). See
+[conventions.md](conventions.md) for the brand pipeline and the `index.html`
+sync warning.
 
 ## Tokens
 
@@ -47,6 +52,17 @@ a value (see [spec/design-tokens](../../spec/design-tokens.md)).
 - **Control sizes** (`--control-xs` to `--control-xl`, 22px to 36px):
   interactive control heights. Do not hand-roll min/max heights on buttons,
   inputs, or selects (see [spec/control-sizes](../../spec/control-sizes.md)).
+- **Appearance accent** (`--primary`, `--primary-foreground`, `--brand-bright`):
+  preset-driven color for selection, progress, checked controls, composer send
+  affordances, Home shortcuts, and the living Home character outside Sage.
+  Light uses the active brand; dark uses its luminous companion with dark ink
+  so the same role stays visible without changing hue families.
+- **Primary actions** (`--primary-action-background*`,
+  `--primary-action-border`, `--primary-action-foreground`): a separate,
+  theme-adaptive Clovy identity treatment - deep pine with a restrained lime
+  edge on light surfaces, and a lime field with dark Clovy ink on dark
+  surfaces. Use these tokens for identity-led actions such as onboarding and
+  setup, not preset-linked composer controls.
 
 ## Type system
 
@@ -137,9 +153,8 @@ decides the target in-browser:
   `mcp-add-input`, ...) pending a shared field treatment.
 - **Hand-rolled menus and popovers** (sidebar identity menu, context menus,
   composer `@` / slash menus) pending a shared positioning helper.
-- **White-on-solid literals** (resolved 2026-07-06): text/icon whites on fixed
-  brand, gradient, and destructive solids now use `--on-solid`, a token that
-  stays white in both themes (`--primary-foreground` inverts in dark, so it
-  was never the right substitute). Still open: the sidebar recording
+- **Solid-action foregrounds** (resolved 2026-08-05): text/icons on fixed dark
+  and destructive solids use `--on-solid`; theme-adaptive Clovy primary actions
+  use `--primary-action-foreground`. Still open: the sidebar recording
   indicator's bespoke always-dark pill uses raw oklch values and needs a
   dark-surface token family decision.

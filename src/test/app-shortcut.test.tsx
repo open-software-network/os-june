@@ -135,7 +135,7 @@ const mocks = vi.hoisted(() => ({
   setP3aEnabled: vi.fn(),
   videoGenerate: vi.fn(),
   videoStatus: vi.fn(),
-  startPeriodicJuneUpdateChecks: vi.fn(),
+  startPeriodicClovyUpdateChecks: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
@@ -178,7 +178,7 @@ vi.mock("../app/update-decision", async () => {
     await vi.importActual<typeof import("../app/update-decision")>("../app/update-decision");
   return {
     ...actual,
-    startPeriodicJuneUpdateChecks: mocks.startPeriodicJuneUpdateChecks,
+    startPeriodicClovyUpdateChecks: mocks.startPeriodicClovyUpdateChecks,
   };
 });
 
@@ -541,7 +541,7 @@ describe("App shortcuts", () => {
         consentVersion: 1,
       },
     });
-    mocks.startPeriodicJuneUpdateChecks.mockReturnValue(vi.fn());
+    mocks.startPeriodicClovyUpdateChecks.mockReturnValue(vi.fn());
     mocks.suggestAgentSessionTitle.mockImplementation(async (prompt: string) => ({
       title: prompt,
     }));
@@ -586,8 +586,8 @@ describe("App shortcuts", () => {
       render(<App />);
 
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
-      await waitFor(() => expect(mocks.startPeriodicJuneUpdateChecks).toHaveBeenCalledOnce());
-      expect(mocks.startPeriodicJuneUpdateChecks.mock.calls[0]?.[0]).toEqual(expect.any(Function));
+      await waitFor(() => expect(mocks.startPeriodicClovyUpdateChecks).toHaveBeenCalledOnce());
+      expect(mocks.startPeriodicClovyUpdateChecks.mock.calls[0]?.[0]).toEqual(expect.any(Function));
     } finally {
       vi.unstubAllEnvs();
     }
@@ -1778,7 +1778,7 @@ describe("App shortcuts", () => {
     });
 
     await waitFor(() =>
-      expect(screen.queryByRole("textbox", { name: "Message June" })).not.toBeInTheDocument(),
+      expect(screen.queryByRole("textbox", { name: "Message Clovy" })).not.toBeInTheDocument(),
     );
   });
 
@@ -1793,7 +1793,7 @@ describe("App shortcuts", () => {
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
 
     expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
-    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to Clovy" })).toBeInTheDocument();
   });
 
   it("keeps notes, session history, and sign out available while funding is required", async () => {
@@ -1822,7 +1822,7 @@ describe("App shortcuts", () => {
     await user.click(screen.getByRole("button", { name: "alex@example.com, account menu" }));
     await user.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(mocks.osAccountsLogout).toHaveBeenCalledWith({ clearBrowserSession: true });
-    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to Clovy" })).toBeInTheDocument();
   });
 
   it("docks a persistent, non-dismissible notice above the composer while funding is required", async () => {
@@ -1839,7 +1839,7 @@ describe("App shortcuts", () => {
     // The copy renders on the composer notice and inside the sidebar chip's
     // (collapsed) reveal.
     expect(
-      (await screen.findAllByText("Your starter credits are used up. Upgrade to keep using June."))
+      (await screen.findAllByText("Your starter credits are used up. Upgrade to keep using Clovy."))
         .length,
     ).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: "Upgrade to Pro" }).length).toBeGreaterThan(0);
@@ -2731,14 +2731,14 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Welcome to June" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to Clovy" })).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Continue with OpenSoftware" }));
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
-    // Clearing the gate lands in the persistent June conversation, not a new note.
+    // Clearing the gate lands in the persistent Clovy conversation, not a new note.
     expect(await screen.findByRole("region", { name: "Home" })).toBeInTheDocument();
     expect(mocks.createNote).not.toHaveBeenCalled();
   });
@@ -2789,7 +2789,7 @@ describe("App shortcuts", () => {
 
     render(<App />);
 
-    expect(screen.queryByRole("heading", { name: "Welcome to June" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Welcome to Clovy" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Continue with OpenSoftware" })).toBeNull();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
 

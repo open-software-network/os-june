@@ -1,4 +1,4 @@
-# June docs index
+# Clovy docs index
 
 Read first, in order: **[CONTEXT.md](../CONTEXT.md)** (domain glossary) →
 **[AGENTS.md](../AGENTS.md)** (agent guide) →
@@ -18,51 +18,52 @@ decision. See "When to add an ADR" in [AGENTS.md](../AGENTS.md).
 - [adr/0006](adr/0006-embed-hermes-sandboxed-runtime.md) — embed the pinned Hermes runtime as sandboxed child processes (superseded by ADR-0038)
 - [adr/0007](adr/0007-model-capability-source-of-truth.md) — model capabilities come from the live Venice catalog, not marketing traits
 - [adr/0008](adr/0008-image-generation-and-editing-tools.md) — image generation/editing: `/image` fast path + LLM tools, via Venice
-- [adr/0009](adr/0009-hermes-config-shared-ownership-merge.md) — config.yaml is shared with the Hermes dashboard; June deep-merges on spawn, never overwrites (superseded by ADR-0038)
+- [adr/0009](adr/0009-hermes-config-shared-ownership-merge.md) — config.yaml is shared with the Hermes dashboard; Clovy deep-merges on spawn, never overwrites (superseded by ADR-0038)
 - [adr/0010](adr/0010-note-references-in-agent-chat.md) — note references in agent chat: `@note:<id>` text token + `get_meeting_note` fetch-by-id
 - [adr/0011](adr/0011-bundled-hermes-skills.md) — selected Hermes skills ship as read-only app resources when the runtime pin cannot move (superseded by ADR-0038)
-- [adr/0012](adr/0012-direct-issue-report-submission.md) — issue reports submit directly (no client model turn, nothing to charge); June API generates the team-facing diagnosis
-- [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through June API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
+- [adr/0012](adr/0012-direct-issue-report-submission.md) — issue reports submit directly (no client model turn, nothing to charge); Clovy API generates the team-facing diagnosis
+- [adr/0013](adr/0013-stream-inference-responses-through-june-api.md) — inference responses stream through Clovy API (SSE pass-through + keep-alive heartbeats); charges settle after the stream ends
 - [adr/0014](adr/0014-pinned-dictation-paste-target.md) — the dictation paste target is pinned when the recording stops, never re-resolved at paste time
 - [adr/0015](adr/0015-video-generation-tools.md) — video generation: `/video` fast path + LLM tools, async job + poll, quote-priced, via Venice
 - [adr/0016](adr/0016-private-connectors-local-mode.md) — private connectors (local mode): Keychain-only token custody, app-proxied MCP calls straight to Google, trust modes enforced in the Rust proxy, earned autonomy, event-trigger daemon
-- [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the June extension, two tracks behind one broker; computer use productizes the pinned toolset (MCP-server shape superseded by ADR-0040)
+- [adr/0017](adr/0017-browser-use-via-june-extension.md) — browser use in the user's own browser via the Clovy extension, two tracks behind one broker; computer use productizes the pinned toolset (MCP-server shape superseded by ADR-0040)
 - [adr/0018](adr/0018-session-model-changes-apply-at-agent-run-boundaries.md) — session model changes are staged at Send and applied only at the next idle agent-run boundary
 - [adr/0019](adr/0019-windows-dictation-helper.md) — Windows dictation uses a platform-native helper process
 - [adr/0020](adr/0020-windows-dictation-keyboard-hook.md) — Windows shortcuts combine `RegisterHotKey` with a narrow keyboard hook
 - [adr/0021](adr/0021-june-api-v1-compatibility-policy.md) — `/v1` is additive-only for shipped app versions: per-version contract fixtures gate CI and production promotes, clients send `x-june-app-version`, error codes never renumber
 - [adr/0022](adr/0022-venice-private-first-model-routing.md) — service-managed text uses Venice private zero-retention first with Phala TEE fallback; existing `/v1` provider semantics stay compatible and pricing is fallback-safe
 - [adr/0023](adr/0023-attested-os-api-service-chain.md) - superseded by ADR-0024
-- [adr/0024](adr/0024-independent-product-verification.md) - June, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
+- [adr/0024](adr/0024-independent-product-verification.md) - Clovy, Open Software API, and Chat publish independent verification evidence without cross-product release pinning
 - [adr/0025](adr/0025-targeted-hermes-approval-protocol.md) - MCP approvals use stable request identity, targeted resolution, bounded queues, and fail-closed retirement (superseded by ADR-0038)
 - [adr/0026](adr/0026-durable-note-transcription-jobs.md) - saved-audio Source spans use durable, fingerprinted, idempotent note-transcription jobs
-- [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in June's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
-- [adr/0028](adr/0028-private-stdio-broker-for-computer-use.md) - Computer use runs through a June-owned private stdio driver broker with signed-helper TCC identity, task-scoped app authorization, and exact-window Stage Manager restoration (MCP-server shape superseded by ADR-0040)
+- [adr/0027](adr/0027-june-owned-project-memory-store.md) — memory entries live in Clovy's SQLite (not the Hermes memory toolset), scoped by project, agent writes via the loopback proxy, project context by prompt injection
+- [adr/0028](adr/0028-private-stdio-broker-for-computer-use.md) - Computer use runs through a Clovy-owned private stdio driver broker with signed-helper TCC identity, task-scoped app authorization, and exact-window Stage Manager restoration (MCP-server shape superseded by ADR-0040)
 - [adr/0029](adr/0029-dual-architecture-hermes-runtime.md) - the universal macOS app carries complete arm64 and x86_64 Hermes runtime trees and executes both before release (superseded by ADR-0038)
 - [adr/0030](adr/0030-explicit-per-session-profile-targeting.md) — profile switching writes the sticky active profile AND threads it explicitly on session.create; no per-profile Hermes process
 - [adr/0031](adr/0031-per-profile-data-isolation.md) — profiles isolate user data (notes/dictation/projects via a `profile` column, chat sessions via a `session_profiles` map); profile is the first data-partition key; delete prompts move-to-default vs delete
-- [adr/0032](adr/0032-session-completion-june-owned-local-state.md) — marking a session complete is June-owned local SQLite state keyed by the stored Hermes session id, orthogonal to Hermes' archive flag; mirrors the `session_folders` stack
+- [adr/0032](adr/0032-session-completion-june-owned-local-state.md) — marking a session complete is Clovy-owned local SQLite state keyed by the stored Hermes session id, orthogonal to Hermes' archive flag; mirrors the `session_folders` stack
 - [adr/0033](adr/0033-notion-hosted-mcp-connect-preview.md) - Notion hosted MCP connector preview with read-only `june_notion`, approved page creation and updates, and no selected-resource claim
-- [adr/0034](adr/0034-obsidian-vault-discovery-mcp.md) - Obsidian vault discovery uses a June-owned MCP server, not an ambient environment variable (MCP-server shape superseded by ADR-0040)
+- [adr/0034](adr/0034-obsidian-vault-discovery-mcp.md) - Obsidian vault discovery uses a Clovy-owned MCP server, not an ambient environment variable (MCP-server shape superseded by ADR-0040)
 - [adr/0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md) - Chrome Web Store packages are reviewed during desktop RC and the exact staged bytes publish after stable desktop promotion
-- [adr/0036](adr/0036-github-connector-app-user-tokens.md) - GitHub connector uses GitHub App user access tokens only (no app private key on device or backend), local-mode custody per ADR-0016, June-side read/write gating, approval-only writes
-- [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - June's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
-- [adr/0038](adr/0038-june-owned-openai-agents-runtime.md) - June owns the local agent harness, persistence, tools, approvals, and stdio protocol on top of the OpenAI Agents SDK
-- [adr/0039](adr/0039-june-owned-routines-and-mcp.md) - June owns routine scheduling and user-configured MCP transport, persistence, safety, and migration
-- [adr/0040](adr/0040-plugin-capabilities-as-host-tools.md) - June-owned plugin capabilities are in-loop host tools (brokered helpers for risky engines), never June-managed MCP servers
+- [adr/0036](adr/0036-github-connector-app-user-tokens.md) - GitHub connector uses GitHub App user access tokens only (no app private key on device or backend), local-mode custody per ADR-0016, Clovy-side read/write gating, approval-only writes
+- [adr/0037](adr/0037-versioned-local-sqlite-migrations.md) - Clovy's local SQLite schema uses an append-only release-ordered catalog, introspection-based legacy stamping, and one transaction for all pending migrations
+- [adr/0038](adr/0038-june-owned-openai-agents-runtime.md) - Clovy owns the local agent harness, persistence, tools, approvals, and stdio protocol on top of the OpenAI Agents SDK
+- [adr/0039](adr/0039-june-owned-routines-and-mcp.md) - Clovy owns routine scheduling and user-configured MCP transport, persistence, safety, and migration
+- [adr/0040](adr/0040-plugin-capabilities-as-host-tools.md) - Clovy-owned plugin capabilities are in-loop host tools (brokered helpers for risky engines), never Clovy-managed MCP servers
 - [adr/0041](adr/0041-june-companion-trust-boundaries.md) - original companion trust boundaries, relay-first E2EE, and desktop authority
 - [adr/0042](adr/0042-june-companion-native-swiftui.md) - native SwiftUI companion presentation; its mobile-login decision is superseded by ADRs 0043, 0046, and 0047
 - [adr/0043](adr/0043-companion-desktop-authorized-device-credential.md) - desktop-authorized pairing and revocable device credentials; its authorization model is current again through ADR 0047
-- [adr/0044](adr/0044-companion-device-generates-relay-credential.md) - companion-generated relay credentials; June API receives and stores only their hashes
+- [adr/0044](adr/0044-companion-device-generates-relay-credential.md) - companion-generated relay credentials; Clovy API receives and stores only their hashes
 - [adr/0045](adr/0045-companion-relay-single-replica-mvp.md) - the MVP relay is single-replica until pairing and live routing have shared cross-instance state
 - [adr/0046](adr/0046-companion-native-os-accounts-login.md) - superseded by ADR-0047
 - [adr/0047](adr/0047-companion-pairing-is-mobile-authorization.md) - the authenticated Desktop-created QR pairing is the phone's short-lived authorization; the phone has no account session
 - [adr/0048](adr/0048-companion-mutations-use-durable-at-most-once-reservations.md) - companion mutations reserve their operation id durably before side effects and never redispatch an outcome-unknown request
 - [adr/0049](adr/0049-cancelled-dictation-takes-never-deliver.md) - each helper-owned dictation take has one cancellation token, and cancelled takes cannot start later cleanup, history, or text delivery
-- [adr/0050](adr/0050-linear-official-hosted-mcp.md) - Linear agent capabilities come from Linear's official hosted MCP while June owns connection state, credential custody, and conservative approvals
+- [adr/0050](adr/0050-linear-official-hosted-mcp.md) - Linear agent capabilities come from Linear's official hosted MCP while Clovy owns connection state, credential custody, and conservative approvals
 - [adr/0051](adr/0051-companion-attachments-use-bounded-staging-and-opaque-mac-references.md) - companion attachments use bounded app-data staging and opaque, user-granted Mac file references
 - [adr/0052](adr/0052-companion-media-results-use-canonical-artifacts.md) - companion image/video results reuse canonical agent artifacts and cross E2EE only as bounded references plus verified full-file chunks
 - [adr/0053](adr/0053-companion-computer-use-approvals-are-one-shot.md) - linked companions may approve one exact Computer use interruption under the desktop policy ceiling, with a short-lived one-shot permit
+- [adr/0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md) - Clovy is the product name while shipped June-era bundle, storage, API, update, and tool identities remain stable
 
 ## Enforceable rules (spec/)
 
@@ -107,7 +108,7 @@ Per-repo config the engineering skills read before acting (see the
 - [browser-computer-use-prd.md](browser-computer-use-prd.md) — PRD: Browser use + Computer use plugins (JUN-278); extension in the user's browser + routines-only managed browser, phase-2 computer use
 - [release-extension.md](release-extension.md) - Chrome Web Store publisher setup, RC review gate, stable promotion, and recovery runbook
 - [computer-use-cua-driver-spike.md](computer-use-cua-driver-spike.md) — spike (JUN-288): run the bundled cua-driver outside the write jail as a broker-owned, separately-signed daemon (recommended on identity/lifecycle grounds; a fully relocated daemon does start in-jail, up to the TCC gate); pinning + installer-never-runs confirmed
-- [plugins/portfolio.md](plugins/portfolio.md) — JUN-309 portfolio: current ChatGPT plugin surface inventory, ranking rubric, June's top 10, shared product contract, sequencing, metrics, and explicit deferrals
+- [plugins/portfolio.md](plugins/portfolio.md) — JUN-309 portfolio: current ChatGPT plugin surface inventory, ranking rubric, Clovy's top 10, shared product contract, sequencing, metrics, and explicit deferrals
   - [Google Workspace](plugins/google-workspace-prd.md) — [implementation plan](plugins/google-workspace-implementation-plan.md)
   - [Browser use](plugins/browser-use-prd.md) — [implementation plan](plugins/browser-use-implementation-plan.md)
   - [Slack](plugins/slack-prd.md) — [implementation plan](plugins/slack-implementation-plan.md)
@@ -130,15 +131,15 @@ Per-repo config the engineering skills read before acting (see the
   - [Azure Boards](plugins/azure-boards-prd.md) - [implementation plan](plugins/azure-boards-implementation-plan.md)
   - [Canva](plugins/canva-prd.md) - [implementation plan](plugins/canva-implementation-plan.md)
 - [audio-pipeline.md](audio-pipeline.md) — capture → source separation → turns → transcription → note
-- [june-api-prd.md](june-api-prd.md) — June API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
-- [telemetry.md](telemetry.md) — public overview of June telemetry, current behavior, and policies
-- [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — June P3A: opt-in, privacy-preserving product telemetry
-- [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for June P3A phases
+- [june-api-prd.md](june-api-prd.md) — Clovy API: upstream proxy + OS Accounts authorize/charge (the canonical backend spec)
+- [telemetry.md](telemetry.md) — public overview of Clovy telemetry, current behavior, and policies
+- [telemetry-p3a-prd.md](telemetry-p3a-prd.md) — Clovy P3A: opt-in, privacy-preserving product telemetry
+- [telemetry-p3a-implementation-plan.md](telemetry-p3a-implementation-plan.md) — implementation plan for Clovy P3A phases
 - [telemetry-questions.md](telemetry-questions.md) — public P3A question catalog and buckets
 - [private-connectors-prd.md](private-connectors-prd.md) — private connectors & away-mode relay: an assistant that acts in email and calendar without OpenSoftware readable data (local mode shipping; away mode proposed)
 - [private-connectors-implementation-plan.md](private-connectors-implementation-plan.md) — implementation plan for private connectors phases (Phases 1-2 local mode implemented; see [adr/0016](adr/0016-private-connectors-local-mode.md))
 - [private-connectors-threat-model.md](private-connectors-threat-model.md) — local-mode threat model: the source of truth for all connector privacy copy (what OpenSoftware can and cannot see, the trust surface, agent protections, the known runtime limitation)
-- [configuration.md](configuration.md) — env + config reference (desktop client + June API)
+- [configuration.md](configuration.md) — env + config reference (desktop client + Clovy API)
 - [auto-model-rollout.md](auto-model-rollout.md) — canary, enablement, and rollback steps for automatic private model routing
 - [development.md](development.md) — local development: quick start, running against staging or an ephemeral Phala CVM, local data, permissions, agent skills, verification commands
 - [os-accounts-login.md](os-accounts-login.md) — Login with Open Software: PKCE, keychain, account gates
@@ -153,7 +154,7 @@ Per-repo config the engineering skills read before acting (see the
 - [companion-security-review.md](companion-security-review.md) - required independent review checklist
 - [release-macos.md](release-macos.md) / [release-windows.md](release-windows.md) — the release runbooks
 - [desktop-release-runner.md](desktop-release-runner.md) — Mac Studio self-hosted runner setup for signed desktop releases
-- [reproducible-builds.md](reproducible-builds.md) — June API source → TEE trust chain (Phase A shipped)
+- [reproducible-builds.md](reproducible-builds.md) — Clovy API source → TEE trust chain (Phase A shipped)
 - [github-security-readiness.md](github-security-readiness.md) — pre-public repo hardening checklist
 - [computer-use-support.md](computer-use-support.md) - state guide, TCC recovery, signed helper self-test, and macOS release regression response
 

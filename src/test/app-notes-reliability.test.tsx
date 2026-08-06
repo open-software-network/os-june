@@ -1443,7 +1443,7 @@ describe("notes recording reliability", () => {
     const recoverableNote = {
       ...first,
       processingStatus: "recoverable" as const,
-      lastError: "Recording interrupted. June saved the audio for recovery.",
+      lastError: "Recording interrupted. Clovy saved the audio for recovery.",
     };
     mocks.bootstrapApp.mockResolvedValue({
       folders: [],

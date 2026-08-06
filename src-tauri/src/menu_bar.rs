@@ -27,17 +27,17 @@ static MEETING_RECORDING_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// status and the dictation indicator) without an agent payload of its own.
 static LAST_AGENT_STATE: Mutex<Option<AgentMenuBarState>> = Mutex::new(None);
 
-/// The June logo mark as a macOS template image (black glyph on transparent).
+/// The Clovy logo mark as a macOS template image (black glyph on transparent).
 /// The menu bar must show the same mark as the app icon, but the app icon itself
 /// can't be used
 /// directly: template rendering keeps only the alpha channel, so the icon's
 /// opaque squircle background becomes a solid blob instead of the glyph.
 const TRAY_ICON_TEMPLATE_PNG: &[u8] = include_bytes!("../icons/tray-icon-template.png");
-/// Shown while a dictation take runs: June's "≈" wave plus a red recording dot.
+/// Shown while a dictation take runs: Clovy's mark plus a recording indicator.
 /// Unlike the logo these are full-colour (NON-template) images, because macOS
 /// flattens a template image to monochrome and would drop the red. That is why
 /// there are two — one per menu-bar appearance — selected by `menu_bar_is_dark`:
-/// a white wave for a dark bar, a black wave for a light one.
+/// a white mark for a dark bar, a black mark for a light one.
 const TRAY_ICON_DICTATING_DARK_PNG: &[u8] = include_bytes!("../icons/tray-icon-dictating-dark.png");
 const TRAY_ICON_DICTATING_LIGHT_PNG: &[u8] =
     include_bytes!("../icons/tray-icon-dictating-light.png");
@@ -250,7 +250,7 @@ where
 {
     let menu = Menu::new(manager)?;
 
-    let show_item = MenuItem::with_id(manager, MENU_SHOW_ID, "Open June", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(manager, MENU_SHOW_ID, "Open Clovy", true, None::<&str>)?;
     let settings_item =
         MenuItem::with_id(manager, MENU_SETTINGS_ID, "Settings...", true, None::<&str>)?;
     let new_session_item = MenuItem::with_id(
@@ -315,7 +315,7 @@ where
     menu.append(&settings_item)?;
     menu.append(&PredefinedMenuItem::separator(manager)?)?;
 
-    let quit_item = MenuItem::with_id(manager, MENU_QUIT_ID, "Quit June", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(manager, MENU_QUIT_ID, "Quit Clovy", true, None::<&str>)?;
     menu.append(&quit_item)?;
 
     Ok(menu)
@@ -399,7 +399,7 @@ fn tray_tooltip(
         (false, true) => "Dictating - ",
         (false, false) => "",
     };
-    format!("June - {activity}{status}")
+    format!("Clovy - {activity}{status}")
 }
 
 fn status_label(state: &AgentMenuBarState) -> String {
@@ -501,18 +501,18 @@ mod tests {
     fn tooltip_reflects_recording_and_dictation() {
         let s = AgentMenuBarState::default();
         // (dictation, recording)
-        assert_eq!(tray_tooltip(&s, false, false), "June - No active sessions");
+        assert_eq!(tray_tooltip(&s, false, false), "Clovy - No active sessions");
         assert_eq!(
             tray_tooltip(&s, true, false),
-            "June - Dictating - No active sessions"
+            "Clovy - Dictating - No active sessions"
         );
         assert_eq!(
             tray_tooltip(&s, false, true),
-            "June - Recording - No active sessions"
+            "Clovy - Recording - No active sessions"
         );
         assert_eq!(
             tray_tooltip(&s, true, true),
-            "June - Recording and dictating - No active sessions"
+            "Clovy - Recording and dictating - No active sessions"
         );
     }
 

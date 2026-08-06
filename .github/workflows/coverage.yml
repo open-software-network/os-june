@@ -63,7 +63,7 @@ jobs:
           if-no-files-found: error
 
   june-api:
-    name: June API coverage artifacts
+    name: Clovy API coverage artifacts
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

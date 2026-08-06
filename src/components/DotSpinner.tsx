@@ -1,11 +1,11 @@
 import type { CSSProperties } from "react";
-import { JUNE_SPINNER_COLS, type JuneSpinnerSize, juneSpinnerGrid } from "../lib/june-spinner-grid";
+import { SPINNER_GRID_COLS, type SpinnerSize, spinnerGrid } from "../lib/spinner-grid";
 
 // The dot spinner, drawn rather than typeset: a full square grid of perfect
 // circles with a smooth highlight that climbs diagonally from the bottom-left.
-// June's stepped mark reveals bright as the crest traces it; field dots ripple
-// faintly. The grid and sweep order live in lib/june-spinner-grid, while the
-// bounded motion lives in styles/dot-spinner.css and rests as the mark under
+// Every dot participates equally, so the loader is neutral rather than
+// logo-shaped. The grid and sweep order live in lib/spinner-grid, while the
+// bounded motion lives in styles/dot-spinner.css and rests as a grid under
 // prefers-reduced-motion. Each variant is a fixed-size, integer-px square rather
 // than a font-scaled glyph. Its theme-aware neutral default is exposed through
 // --spinner-neutral; contextual wrappers can override --spinner-color.
@@ -14,18 +14,18 @@ import { JUNE_SPINNER_COLS, type JuneSpinnerSize, juneSpinnerGrid } from "../lib
 // standalone loading moments.
 type DotSpinnerProps = {
   className?: string;
-  size?: JuneSpinnerSize;
+  size?: SpinnerSize;
 };
 
 export function DotSpinner({ className, size = "sm" }: DotSpinnerProps) {
-  const cells = juneSpinnerGrid(size);
+  const cells = spinnerGrid(size);
   // The surrounding status text carries the meaning for assistive tech, so the
   // glyph is decorative.
   return (
     <span
       className={["dot-spinner", className].filter(Boolean).join(" ")}
       data-size={size}
-      style={{ "--june-cols": JUNE_SPINNER_COLS[size] } as CSSProperties}
+      style={{ "--spinner-cols": SPINNER_GRID_COLS[size] } as CSSProperties}
       aria-hidden
     >
       {cells.map((cell, i) => (
@@ -34,7 +34,7 @@ export function DotSpinner({ className, size = "sm" }: DotSpinnerProps) {
           // biome-ignore lint/suspicious/noArrayIndexKey: the grid is a fixed-length constant.
           key={i}
           data-mark={cell.mark ? "" : undefined}
-          style={{ "--june-order": cell.order } as CSSProperties}
+          style={{ "--spinner-order": cell.order } as CSSProperties}
         />
       ))}
     </span>

@@ -11,7 +11,7 @@ import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import type { MaxUpgradeTransport } from "../lib/billing-actions";
 import type { MaxGrantWait } from "../lib/max-upgrade";
 import type { NoteChat } from "../components/note-chat/useNoteChat";
-import type { JuneUpdate } from "../lib/updater";
+import type { ClovyUpdate } from "../lib/updater";
 import type {
   UpdateInstallProgress,
   UpdatePromptPayload,
@@ -104,7 +104,7 @@ export type RenderAppLayoutDependencies = {
   pillIsDemo: boolean;
   pillStatus: RecordingStatusDto | null;
   preparingUpdate: boolean;
-  readyUpdate: UpdatePromptPayload<JuneUpdate> | null;
+  readyUpdate: UpdatePromptPayload<ClovyUpdate> | null;
   recordingInactivityPrompt: RecordingInactivityPrompt | null;
   recordingInactivitySecondsRemaining: number;
   recordingNoteTitle: string;

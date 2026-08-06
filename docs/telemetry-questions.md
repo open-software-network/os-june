@@ -1,11 +1,11 @@
-# June P3A question catalog
+# Clovy P3A question catalog
 
-June P3A is opt-in, question-based product telemetry. The app answers only the
+Clovy P3A is opt-in, question-based product telemetry. The app answers only the
 questions listed here, with coarse bucket indexes. It never sends prompts,
 responses, transcripts, notes, audio, file names, paths, URLs, search queries,
 user identifiers, install identifiers, cookies, or free-form strings.
 
-When telemetry is enabled, June uploads anonymous increments for these public
+When telemetry is enabled, Clovy uploads anonymous increments for these public
 questions as the relevant actions happen. Local counters keep a retry cursor for
 failed uploads, but the team reads aggregate cells from OS Accounts.
 
@@ -24,7 +24,7 @@ Every report is one question per request and carries only:
 
 | ID | Question | Buckets | Decision it informs |
 |---|---|---|---|
-| `general.active-days` | Days June was opened this week | 0 / 1 / 2-3 / 4-5 / 6-7 | Engagement baseline for all other ratios |
+| `general.active-days` | Days Clovy was opened this week | 0 / 1 / 2-3 / 4-5 / 6-7 | Engagement baseline for all other ratios |
 | `notes.meetings-recorded` | Meeting recording completed | event | Investment in meetings pipeline |
 | `notes.audio-source` | Most-used audio source this week | none / mic only / mic + system | System-audio maintenance cost |
 | `dictation.sessions` | Dictation session completed | event | Dictation as flagship vs. niche |

@@ -145,10 +145,14 @@ pub fn run() {
         // General -> Login Items. Enabling/disabling stays a user action in
         // Settings and onboarding; registering the plugin alone changes
         // nothing.
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ))
+        // Keep the June-era autostart entry name stable across the Clovy
+        // presentation rename. Changing this name would strand existing login
+        // items and make an enabled preference appear disabled after update.
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .app_name("June")
+                .build(),
+        )
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
@@ -464,7 +468,7 @@ pub fn run() {
             Ok(())
         })
         .build(context)
-        .expect("failed to build June")
+        .expect("failed to build Clovy")
         .run(|app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
                 shutdown::handle_exit_requested(app, code, &api);

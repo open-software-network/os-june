@@ -10,7 +10,7 @@ const extensionId = extensionIdFromManifestKey(manifest.key);
 if (extensionId !== EXPECTED_EXTENSION_ID) {
   throw new Error(
     `Bundled extension id ${extensionId} does not match ${EXPECTED_EXTENSION_ID}. ` +
-      "Keep the source manifest key intact before packaging June.",
+      "Keep the source manifest key intact before packaging Clovy.",
   );
 }
 

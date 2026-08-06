@@ -82,7 +82,7 @@ function applyStatus(status: RecordingStatusDto | RecordingTelemetryDto) {
     pill.dataset.state = paused ? "paused" : "recording";
     pill.setAttribute(
       "aria-label",
-      paused ? "Paused. Click to open June" : "Recording. Click to open June",
+      paused ? "Paused. Click to open Clovy" : "Recording. Click to open Clovy",
     );
   }
 
@@ -126,7 +126,7 @@ function applyMeetingEndStatus(status: MeetingEndStatus | null) {
       delete pill.dataset.mode;
       pill.setAttribute("role", "button");
       pill.setAttribute("tabindex", "0");
-      pill.setAttribute("aria-label", "Recording. Click to open June");
+      pill.setAttribute("aria-label", "Recording. Click to open Clovy");
     }
     // Let the snapped state paint before the transition comes back (same
     // two-frame dance as applyZone).
@@ -198,12 +198,12 @@ function resetBars() {
 // Focus the main window from Rust (reliable app activation — clicking a
 // non-activating panel won't bring a backgrounded app forward on its own); Rust
 // then emits the action React uses to land back on the recording note.
-function reopenJune() {
+function reopenClovy() {
   void invoke("meeting_hud_reopen").catch(() => {});
 }
 
 // One surface, two gestures: a press that moves past a small threshold drags
-// the window; a press that stays put is a click → reopen June. Handlers live
+// the window; a press that stays put is a click → reopen Clovy. Handlers live
 // on the document, not the pill: the native quarter-turn rotates pixels but
 // not DOM hit-testing, so when the pill stands vertical a click on it lands in
 // the DOM's gutter. The window is barely bigger than the pill, so document-
@@ -245,7 +245,7 @@ document.addEventListener(
     if (event.button !== 0) return;
     const wasClick = pill?.dataset.mode !== "meeting-end" && !!pressStart && !dragging;
     pressStart = undefined;
-    if (wasClick) reopenJune();
+    if (wasClick) reopenClovy();
   },
   { signal: lifecycle.signal },
 );
@@ -256,7 +256,7 @@ document.addEventListener(
     if (pill?.dataset.mode === "meeting-end") return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      reopenJune();
+      reopenClovy();
     }
   },
   { signal: lifecycle.signal },

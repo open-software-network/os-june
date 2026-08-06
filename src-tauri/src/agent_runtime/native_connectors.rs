@@ -1,7 +1,7 @@
-//! Direct native connector tools for the June-owned agent runtime.
+//! Direct native connector tools for the Clovy-owned agent runtime.
 //!
 //! The TypeScript harness sees only these function descriptors. Every call is
-//! dispatched here, where June resolves a Keychain-held token and uses the
+//! dispatched here, where Clovy resolves a Keychain-held token and uses the
 //! provider client directly. This deliberately does not call the legacy
 //! connector approval registry: mutations are paused by the SDK through each
 //! descriptor's `requiresApproval` flag, then reach this module exactly once

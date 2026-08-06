@@ -26,7 +26,7 @@ automation risks brand drift and accidental publication.
 
 ## Product promise
 
-Connect Canva, choose folders/designs, and let June prepare a bounded draft or
+Connect Canva, choose folders/designs, and let Clovy prepare a bounded draft or
 export job with the source note content and output format visible before action.
 
 ## V1 experience
@@ -44,7 +44,7 @@ export job with the source note content and output format visible before action.
 
 - Design/folder metadata and explicit design selection.
 - Asynchronous export jobs with supported-format discovery.
-- Local download through June's artifact broker and native save approval.
+- Local download through Clovy's artifact broker and native save approval.
 - Template autofill only after Phase 0 confirms general availability and review.
 
 ### Later
@@ -63,15 +63,15 @@ export job with the source note content and output format visible before action.
 
 Canva requires Connect API integrations to be associated with a web app and
 explicitly does not support desktop integrations. It also requires secure
-server custody for the client secret and user tokens. June cannot use the
+server custody for the client secret and user tokens. Clovy cannot use the
 Google-style local connector model. The architecture spike must either approve
 a provider-supported TEE web connector, with explicit token custody and Canva
-content/action transit through June API, or defer the integration. Selected
+content/action transit through Clovy API, or defer the integration. Selected
 designs/folders remain a narrower broker-enforced boundary after provider
 authorization.
 
 Design metadata, comments, template fields, and imported text are untrusted.
-Every export/create action is approval-only and displays the exact June content
+Every export/create action is approval-only and displays the exact Clovy content
 sent to Canva.
 
 ## Business model
@@ -93,7 +93,7 @@ existing billing.
 ## Risks and gates
 
 - Provider-supported web-app credential and user-token custody requires a new
-  approved trust boundary and June API data path.
+  approved trust boundary and Clovy API data path.
 - Public integration review rejects preview webhook use.
 - Export support varies by design type and format.
 - Autofill and brand-template availability may constrain the creation promise.

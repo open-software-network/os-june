@@ -203,8 +203,8 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
   }
 
   // "Report an issue": navigate to Agent and open the direct report dialog.
-  // It submits through June API without a model turn, so there is nothing to
-  // charge; June API creates the team-facing diagnosis.
+  // It submits through Clovy API without a model turn, so there is nothing to
+  // charge; Clovy API creates the team-facing diagnosis.
   function handleReportIssue(category: ReportCategory = "bug") {
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
@@ -225,7 +225,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
   // new-session flow.
   function handleOpenNoteChatInAgent(noteRef: { id: string; title: string }, sessionId?: string) {
     if (!sessionId) {
-      handleAskJuneAboutNote(noteRef);
+      handleAskClovyAboutNote(noteRef);
       return;
     }
     pendingSessionProjectRef.current = null;
@@ -234,7 +234,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     setActiveView("agent");
   }
 
-  function handleAskJuneAboutNote(noteRef: { id: string; title: string }) {
+  function handleAskClovyAboutNote(noteRef: { id: string; title: string }) {
     pendingSessionProjectRef.current = null;
     setAgentOrigin(undefined);
     markAgentNewSessionPending(undefined, { noteRef });
@@ -251,7 +251,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
 
   // "Start chat with this bundle" from the Bundles settings tab: the same
   // fresh-chat handshake the dictation prompt path uses, auto-submitting the
-  // bundle's slash command so June loads its skills.
+  // bundle's slash command so Clovy loads its skills.
   function handleStartBundleChat(prompt: string) {
     const trimmed = prompt.trim();
     if (!trimmed) return;
@@ -270,7 +270,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
   }
 
   // "New session" from inside a project uses the same fresh-chat handshake.
-  // The session is filed into the project once June persists its id.
+  // The session is filed into the project once Clovy persists its id.
   function handleNewAgentSessionInProject(folderId: string) {
     pendingSessionProjectRef.current = {
       folderId,
@@ -295,7 +295,7 @@ export function createAppDomainActions(dependencies: CreateAppDomainActionsDepen
     handleRemoveSessionFromFolder,
     handleReportIssue,
     handleOpenNoteChatInAgent,
-    handleAskJuneAboutNote,
+    handleAskClovyAboutNote,
     handleStartBundleChat,
     handleNewAgentSessionInProject,
   };

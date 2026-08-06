@@ -31,7 +31,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>June onboarding preview</title>
+    <title>Clovy onboarding preview</title>
     <link rel="icon" href="data:," />
     <script>
       // Pre-paint theme bootstrap, same as index.html (plus a ?theme=
@@ -103,7 +103,7 @@
           else localStorage.removeItem("june.onboarding.resumeStep");
         } catch (e) {}
 
-        // A plainly-not-June account for the signed-in preview path.
+        // A plainly-not-Clovy account for the signed-in preview path.
         const stubUser = { id: "u1", handle: "sam", displayName: "Sam Carter" };
 
         // The existing dictation key lets onboarding preserve a customized
@@ -226,7 +226,7 @@
                 // Pretend the user flips the toggle in System Settings and
                 // comes back; the wizard's poll picks it up. System audio
                 // has no poll — the row re-probes on window focus, so fake
-                // the return-to-June focus too.
+                // the return-to-Clovy focus too.
                 const pane = args.request && args.request.pane;
                 setTimeout(() => {
                   if (pane === "microphone") perms.microphone = "granted";

@@ -17,7 +17,7 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
-import { JUNE_SPINNER_COLS, juneSpinnerGrid } from "./lib/june-spinner-grid";
+import { SPINNER_GRID_COLS, spinnerGrid } from "./lib/spinner-grid";
 import { isOnboardingComplete, subscribeToOnboardingComplete } from "./lib/onboarding";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
@@ -80,7 +80,7 @@ if (cancelButton) {
     }),
   );
 }
-// The June dot spinner (the app-wide 3×3 mark), built by hand against the
+// The Clovy dot spinner (the app-wide 3×3 mark), built by hand against the
 // shared dot-spinner.css because this page has no React tree — same approach
 // as the agent HUD's appendDotSpinner.
 if (spinnerNode) {
@@ -88,10 +88,10 @@ if (spinnerNode) {
   spinner.className = "dot-spinner";
   spinner.dataset.size = "md";
   spinner.setAttribute("aria-hidden", "true");
-  spinner.style.setProperty("--june-cols", String(JUNE_SPINNER_COLS.md));
-  for (const cell of juneSpinnerGrid("md")) {
+  spinner.style.setProperty("--spinner-cols", String(SPINNER_GRID_COLS.md));
+  for (const cell of spinnerGrid("md")) {
     const dot = document.createElement("span");
-    dot.style.setProperty("--june-order", String(cell.order));
+    dot.style.setProperty("--spinner-order", String(cell.order));
     if (cell.mark) {
       dot.dataset.mark = "";
     }
@@ -172,7 +172,7 @@ const USES_NATIVE_ESC_TOOLTIP =
 const COLLAPSE_SETTLE_FALLBACK_MS = 600;
 const MEETING_PROMPT_TIMEOUT_MS = 30_000;
 // A short dictation round-trips in well under a second. Past this, the
-// user is watching a spinner wondering whether June hung, so say so.
+// user is watching a spinner wondering whether Clovy hung, so say so.
 const LONG_DICTATION_NOTICE_MS = 6_000;
 
 function invokeBestEffort(command: string, args?: Record<string, unknown>) {
@@ -1434,7 +1434,7 @@ stopButton?.addEventListener("click", async (event) => {
 
 // Cancel makes the current take terminal before asking the helper to discard
 // it. Work that has not started is suppressed; a metered request whose
-// settlement June API already spawned cannot be revoked at the desktop
+// settlement Clovy API already spawned cannot be revoked at the desktop
 // boundary. The helper answers with recording_discarded, which is the
 // authoritative confirmation that capture actually stopped. Keep the
 // listening HUD visible if the command write fails so an active recording is

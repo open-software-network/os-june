@@ -47,7 +47,7 @@ for arg in "$@"; do
 done
 
 # The Computer use helper is prepared and signed separately before Tauri runs.
-# Building only June here prevents Cargo from relinking that helper with the
+# Building only Clovy here prevents Cargo from relinking that helper with the
 # app's lower deployment target or a different active Swift toolchain.
 cargo build --bin os-june "${cargo_args[@]}"
 
@@ -63,13 +63,13 @@ else
 fi
 
 binary="$bin_dir/os-june"
-launcher_name="${OS_JUNE_DEV_APP_NAME:-June}"
+launcher_name="${OS_JUNE_DEV_APP_NAME:-Clovy}"
 if [[ -z "$launcher_name" || "$launcher_name" == */* || "$launcher_name" == *:* || "$launcher_name" == *$'\n'* || ${#launcher_name} -gt 80 ]]; then
   echo "Invalid development app name: $launcher_name" >&2
   exit 2
 fi
 launcher="$bin_dir/$launcher_name"
-tmp_launcher="$bin_dir/.June-launcher.tmp"
+tmp_launcher="$bin_dir/.Clovy-launcher.tmp"
 
 rm -f "$tmp_launcher"
 # Keep the product-named launcher and Cargo's canonical binary on the same

@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -58,7 +58,7 @@ modified time, custom-field type, canonical URL, and pagination metadata.
 - Update uses an explicit field patch and fresh modified time.
 - Custom-field writes validate current type, enum option, and project schema.
 - Approval shows destination breadcrumb, owner, dates, field diff, and the
-  June-originated action text.
+  Clovy-originated action text.
 - Create retries reconcile by a stable fingerprint against recent tasks in the
   same project. If uniqueness cannot be established, replay is blocked.
 

@@ -27,7 +27,7 @@ import { SettingsPageHeader } from "./AppSettings";
 
 const MEMORY_MAX_CHARS = 4_000;
 const MEMORY_TOGGLE_ERROR =
-  "Your memory setting was saved, but June could not finish applying it. Quit and reopen June before starting another agent run.";
+  "Your memory setting was saved, but Clovy could not finish applying it. Quit and reopen Clovy before starting another agent run.";
 // Filter sentinel for memories that aren't tied to any project.
 const SCOPE_ALL = "__all__";
 const SCOPE_GENERAL = "__general__";
@@ -190,22 +190,22 @@ export function MemorySettingsSection({
       <SettingsPageHeader
         id="memory-heading"
         title="Memory"
-        blurb="Everything June remembers, across every project. Memories stay on this Mac."
+        blurb="Everything Clovy remembers, across every project. Memories stay on this Mac."
       />
 
       <div className="settings-card">
         <div className="settings-row">
           <div className="settings-row-info">
-            <h3 className="settings-row-title">Let June remember things</h3>
+            <h3 className="settings-row-title">Let Clovy remember things</h3>
             <p className="settings-row-description">
-              June can save useful details across sessions and use them when they are relevant.
+              Clovy can save useful details across sessions and use them when they are relevant.
             </p>
           </div>
           <div className="settings-row-control">
             <Switch
               checked={enabled}
               disabled={!loaded || savingEnabled}
-              aria-label="Let June remember things"
+              aria-label="Let Clovy remember things"
               onCheckedChange={(next) => void toggleEnabled(next)}
             />
           </div>
@@ -214,7 +214,7 @@ export function MemorySettingsSection({
 
       {!enabled && loaded ? (
         <p className="memory-settings-hint">
-          Memory is off. Saved memories remain visible, but June cannot add or update them.
+          Memory is off. Saved memories remain visible, but Clovy cannot add or update them.
         </p>
       ) : null}
 
@@ -224,7 +224,7 @@ export function MemorySettingsSection({
           label="Saved memories"
           icon={<IconBrain size={28} />}
           title="Nothing remembered yet"
-          description="June saves useful details as you work together and brings them back when they're relevant. What it remembers shows up here."
+          description="Clovy saves useful details as you work together and brings them back when they're relevant. What it remembers shows up here."
           action={addMemoryButton}
         />
       ) : (
@@ -236,7 +236,7 @@ export function MemorySettingsSection({
             ) : null}
           </h2>
           <p className="settings-group-description">
-            Everything June has remembered, across every project. Search, filter by project, edit,
+            Everything Clovy has remembered, across every project. Search, filter by project, edit,
             or delete.
           </p>
           <div className="settings-card memory-manager-card">
@@ -356,7 +356,7 @@ export function MemoryRows({
                   {memory.content}
                 </button>
                 <p className="memory-meta">
-                  <span>{memory.source === "agent" ? "Added by June" : "Added by you"}</span>
+                  <span>{memory.source === "agent" ? "Added by Clovy" : "Added by you"}</span>
                   <span className="metadata-dot" aria-hidden />
                   <span>{formatMemoryDate(memory.createdAt)}</span>
                   {project && memory.folderId ? (
@@ -436,7 +436,7 @@ export function MemoryRows({
       <ConfirmDialog
         open={deleting !== undefined}
         title="Delete memory?"
-        description="This permanently removes this memory from June."
+        description="This permanently removes this memory from Clovy."
         confirmLabel="Delete"
         destructive
         onClose={() => setDeleting(undefined)}

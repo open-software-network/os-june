@@ -8,11 +8,11 @@
 
 ## Thesis
 
-Dropbox gives June a simple, broadly used file graph for meeting preparation
+Dropbox gives Clovy a simple, broadly used file graph for meeting preparation
 and artifact delivery. The plugin should search explicit folders, read files on
 demand, and upload approved outputs without creating a new cloud index.
 
-Dropbox ranks below Box because its governance advantage is weaker for June's
+Dropbox ranks below Box because its governance advantage is weaker for Clovy's
 confidential enterprise story, but it has the clearest desktop auth path in the
 follow-on set: Dropbox explicitly recommends PKCE with refresh tokens for
 desktop apps that need background access.
@@ -25,7 +25,7 @@ assistant integration can expose unrelated personal or team files.
 
 ## Product promise
 
-Choose App Folder or selected full-Dropbox folders. June reads files only when
+Choose App Folder or selected full-Dropbox folders. Clovy reads files only when
 needed and uploads a reviewed local artifact only to the chosen destination.
 
 ## V1 experience
@@ -34,7 +34,7 @@ needed and uploads a reviewed local artifact only to the chosen destination.
 - Choose an App Folder deployment or explicit folders where full access is
   justified.
 - Search metadata and read supported files on demand.
-- Export a June artifact and approve a new file or new revision upload.
+- Export a Clovy artifact and approve a new file or new revision upload.
 - Disconnect and revoke the Dropbox grant.
 
 ## Scope
@@ -45,7 +45,7 @@ needed and uploads a reviewed local artifact only to the chosen destination.
 - Bounded download/read through the artifact inspection pipeline.
 - File revisions, sharing metadata for display, and canonical links.
 - Approved upload of new files and revisions.
-- On-device `list_folder` cursor and long poll while June is awake.
+- On-device `list_folder` cursor and long poll while Clovy is awake.
 
 ### Later
 
@@ -61,13 +61,13 @@ needed and uploads a reviewed local artifact only to the chosen destination.
 
 ## Privacy and trust
 
-Dropbox's desktop PKCE and refresh-token guidance aligns with June local mode:
+Dropbox's desktop PKCE and refresh-token guidance aligns with Clovy local mode:
 token in Keychain, provider calls on-device, and no reusable secret. App Folder
 is preferred where it meets the job. Full Dropbox access requires explicit
 copy and a folder allowlist enforced in Rust.
 
 File content and metadata are untrusted. Upload approval shows account,
-destination, file name, size, format, collision behavior, and June source.
+destination, file name, size, format, collision behavior, and Clovy source.
 
 ## Business model
 

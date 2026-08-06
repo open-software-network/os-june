@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "June",
+  "productName": "Clovy",
   "version": "0.0.39",
   "identifier": "co.opensoftware.june",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "June",
+        "title": "Clovy",
         "width": 1180,
         "height": 780,
         "minWidth": 900,
@@ -27,7 +27,7 @@
       {
         "label": "hud",
         "url": "/hud.html",
-        "title": "June Dictation",
+        "title": "Clovy Dictation",
         "width": 124,
         "height": 32,
         "resizable": false,
@@ -44,7 +44,7 @@
       {
         "label": "agent-hud",
         "url": "/agent-hud.html",
-        "title": "June Agents",
+        "title": "Clovy Agents",
         "width": 240,
         "height": 48,
         "resizable": false,
@@ -61,7 +61,7 @@
       {
         "label": "meeting-hud",
         "url": "/meeting-hud.html",
-        "title": "June Recording",
+        "title": "Clovy Recording",
         "width": 76,
         "height": 76,
         "resizable": false,

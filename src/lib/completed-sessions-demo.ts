@@ -7,7 +7,7 @@
 //   window.__completedDemo("clear")       remove the demo sessions
 //
 // It seeds synthetic sessions straight into app state (no backend), marking a
-// slice of them in the June-owned completed_at map ("archived" is the
+// slice of them in the Clovy-owned completed_at map ("archived" is the
 // user-facing term, see CONTEXT.md), so both surfaces render in a plain
 // browser with no agent runtime. Demo ids share a prefix so re-runs replace
 // and "clear" removes only demo rows; a reload clears everything.

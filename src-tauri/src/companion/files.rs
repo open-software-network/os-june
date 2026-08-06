@@ -625,7 +625,7 @@ pub(super) async fn append_upload_chunk(
         if updated.rows_affected() != 1 {
             return Err(AppError::new(
                 "companion_upload_outcome_unknown",
-                "June could not confirm this phone attachment chunk.",
+                "Clovy could not confirm this phone attachment chunk.",
             ));
         }
         record.accepted_bytes = chunk_end;
@@ -691,7 +691,7 @@ pub(super) async fn commit_upload(
         }
         return Err(AppError::new(
             "companion_upload_outcome_unknown",
-            "June could not confirm this phone attachment commit.",
+            "Clovy could not confirm this phone attachment commit.",
         ));
     }
     record.state = UploadState::Committed;
@@ -1112,7 +1112,7 @@ async fn materialize_browse_attachment(
             let _ = fs::remove_dir_all(cleanup_directory).await;
             return Err(AppError::new(
                 "companion_browse_unavailable",
-                "June could not preserve this file selection.",
+                "Clovy could not preserve this file selection.",
             ));
         }
     };
@@ -1230,7 +1230,7 @@ fn materialize_browse_attachment_blocking(
 ) -> Result<MaterializedBrowseAttachment, AppError> {
     Err(AppError::new(
         "companion_root_identity_unavailable",
-        "June cannot securely preserve this file selection on this platform.",
+        "Clovy cannot securely preserve this file selection on this platform.",
     ))
 }
 
@@ -1258,7 +1258,7 @@ fn root_filesystem_identity(
 ) -> Result<RootFilesystemIdentity, AppError> {
     Err(AppError::new(
         "companion_root_identity_unavailable",
-        "June cannot verify this folder's volume identity on this platform.",
+        "Clovy cannot verify this folder's volume identity on this platform.",
     ))
 }
 
@@ -1421,7 +1421,7 @@ async fn ensure_upload_file(
     if length != record.accepted_bytes {
         return Err(AppError::new(
             "companion_upload_outcome_unknown",
-            "June could not reconcile this phone attachment after a restart.",
+            "Clovy could not reconcile this phone attachment after a restart.",
         ));
     }
     Ok(())
@@ -1455,7 +1455,7 @@ async fn append_chunk_file(path: &Path, offset: u64, bytes: &[u8]) -> Result<(),
     if length != offset {
         return Err(AppError::new(
             "companion_upload_outcome_unknown",
-            "June could not reconcile this phone attachment chunk.",
+            "Clovy could not reconcile this phone attachment chunk.",
         ));
     }
     file.seek(std::io::SeekFrom::Start(offset))
@@ -1717,7 +1717,7 @@ fn browse_io_error(error: std::io::Error) -> AppError {
     } else {
         AppError::new(
             "companion_browse_unavailable",
-            "June could not read this shared folder.",
+            "Clovy could not read this shared folder.",
         )
     }
 }
@@ -1725,7 +1725,7 @@ fn browse_io_error(error: std::io::Error) -> AppError {
 fn upload_io_error(_error: std::io::Error) -> AppError {
     AppError::new(
         "companion_upload_unavailable",
-        "June could not store this phone attachment.",
+        "Clovy could not store this phone attachment.",
     )
 }
 

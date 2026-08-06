@@ -96,7 +96,7 @@ if (process.env.JUNE_DEV_PREPARE_ONLY === "1") {
 }
 
 if (skipLocalApi) {
-  console.error("Skipping local June API because JUNE_DEV_SKIP_LOCAL_API=1.");
+  console.error("Skipping local Clovy API because JUNE_DEV_SKIP_LOCAL_API=1.");
 } else {
   if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
     console.error(`Could not find june-api/Cargo.toml under ${rootDir}`);
@@ -105,7 +105,7 @@ if (skipLocalApi) {
 
   if (await portIsOpen(apiPort)) {
     console.error(
-      `June API port ${apiPort} became occupied before startup. Restart make dev to select another port.`,
+      `Clovy API port ${apiPort} became occupied before startup. Restart make dev to select another port.`,
     );
     process.exit(1);
   } else {

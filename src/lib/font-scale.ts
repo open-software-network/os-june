@@ -15,7 +15,7 @@ import { isMacLikePlatform } from "./platform";
 
 export type FontScaleId = "default" | "large" | "larger";
 
-// Up-only ladder: June is a reading app, so there's no "denser" step — the two
+// Up-only ladder: Clovy is a reading app, so there's no "denser" step — the two
 // larger stops cover "comfortable" and "big" without crowding the fixed chrome
 // (spacing, control heights, and icon sizes stay put at these deltas).
 export const FONT_SCALE_PRESETS: {
@@ -121,7 +121,7 @@ function shortcutAction(event: KeyboardEvent): "increase" | "decrease" | "reset"
 }
 
 /**
- * Installs the standard desktop text zoom shortcuts. June's scale is
+ * Installs the standard desktop text zoom shortcuts. Clovy's scale is
  * intentionally up-only, so zooming out reverses a prior zoom-in and stops at
  * the default size.
  */

@@ -25,7 +25,7 @@ export function TelemetryConsentStep({ onContinue }: { onContinue: () => void })
 
   return (
     <StepCard
-      title="Help improve June"
+      title="Help improve Clovy"
       subtitle="Optional and off by default. Change it anytime in Settings."
       wide
       className="onboarding-card-privacy"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image-tag:
-        description: Existing June API image tag to deploy after viewer-only smoke tests.
+        description: Existing Clovy API image tag to deploy after viewer-only smoke tests.
         required: false
         default: production
         type: string
@@ -55,7 +55,7 @@ jobs:
           code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
             https://june-api.opensoftware.co/healthz)
           if [[ "$code" != "200" ]]; then
-            echo "::error::Primary June API is not healthy before the isolated deploy (HTTP $code)."
+            echo "::error::Primary Clovy API is not healthy before the isolated deploy (HTTP $code)."
             exit 1
           fi
 
@@ -160,7 +160,7 @@ jobs:
             primary=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
               https://june-api.opensoftware.co/healthz || true)
             if [[ "$primary" != "200" ]]; then
-              echo "::error::Primary June API became unhealthy during the isolated deploy (HTTP $primary)."
+              echo "::error::Primary Clovy API became unhealthy during the isolated deploy (HTTP $primary)."
               exit 1
             fi
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \

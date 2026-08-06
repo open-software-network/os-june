@@ -1,6 +1,6 @@
 /**
  * Per-session record of the Unrestricted opt-in. The Seatbelt write-jail is
- * applied when June's runtime process spawns, so the mode can't vary across
+ * applied when Clovy's runtime process spawns, so the mode can't vary across
  * the sessions a single process serves — instead, every send restarts the
  * runtime into the target session's recorded mode when they differ. This map
  * is what makes that enforcement possible: absence means sandboxed, so

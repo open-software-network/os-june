@@ -8,12 +8,12 @@
 
 ## Thesis
 
-Asana extends June's meeting-to-action loop beyond product engineering. It
+Asana extends Clovy's meeting-to-action loop beyond product engineering. It
 should prepare from selected projects, then turn approved meeting outcomes into
 tasks, comments, owners, and dates without indexing a workspace.
 
 Asana ranks above the other follow-on project tools because its cross-functional
-usage broadens June beyond Linear while retaining a reasonably bounded task
+usage broadens Clovy beyond Linear while retaining a reasonably bounded task
 model. Confidential OAuth exchange keeps delivery confidence below the first
 portfolio.
 
@@ -25,7 +25,7 @@ destination or duplicate task especially costly.
 
 ## Product promise
 
-Select the Asana projects June may use. Prepare from live project context and
+Select the Asana projects Clovy may use. Prepare from live project context and
 create or update explicit tasks only after the destination and field diff are
 approved.
 
@@ -46,7 +46,7 @@ approved.
 - Metadata-first task search and bounded task/comment reads.
 - Create task, add comment, and update name, description, assignee, due date,
   completion, section, and reviewed custom fields.
-- Local polling of linked tasks while June is awake.
+- Local polling of linked tasks while Clovy is awake.
 
 ### Later
 
@@ -63,7 +63,7 @@ approved.
 ## Privacy and trust
 
 Asana documents authorization code with PKCE, but its token exchange and revoke
-examples also require the app's client secret. June must prove a supported
+examples also require the app's client secret. Clovy must prove a supported
 desktop-safe flow or choose an approved credential boundary before making a
 local-mode claim. Project selection is enforced in Rust in addition to Asana's
 own permissions.

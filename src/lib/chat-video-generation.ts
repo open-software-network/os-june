@@ -1,7 +1,7 @@
 /**
  * Orchestration for generating a video from chat.
  *
- * Video generation is async: the June API returns a job id first, then the
+ * Video generation is async: the Clovy API returns a job id first, then the
  * caller polls until the desktop bridge has written the mp4 locally. This file
  * stays UI-free and never throws so the chat surface can render running,
  * complete, and error states deterministically.
@@ -63,7 +63,7 @@ export type GenerateChatVideoResult =
     };
 
 const DEFAULT_POLL_INTERVAL_MS = 2_500;
-// 360 polls x 2.5s = 900s, matching June's video job timeout. Video jobs
+// 360 polls x 2.5s = 900s, matching Clovy's video job timeout. Video jobs
 // routinely quote 300-400s+ (queue + render), so
 // the earlier 450s budget abandoned jobs the server would have delivered.
 const DEFAULT_MAX_POLLS = 360;

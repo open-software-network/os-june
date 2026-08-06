@@ -17,8 +17,8 @@ spec is a bug in this document.
 
 ## Thesis
 
-Browser use is June's universal adapter for web work that does not yet have a
-first-party connector. It turns June from an assistant that explains what to
+Browser use is Clovy's universal adapter for web work that does not yet have a
+first-party connector. It turns Clovy from an assistant that explains what to
 do into one that can do the work in visible, bounded tabs while the user keeps
 control of consequential actions.
 
@@ -30,29 +30,29 @@ web flows.
 
 ## Customer and problem
 
-June can search and fetch web pages, but users still perform interactive work:
+Clovy can search and fetch web pages, but users still perform interactive work:
 open a site, navigate stateful pages, fill a form, attach a file, or complete a
 workflow inside an existing login. Giving an agent an unrestricted browser
 profile would solve the capability problem by creating a larger trust problem.
 
 ## Product promise
 
-June works only in clearly marked tabs it creates or a tab the user explicitly
+Clovy works only in clearly marked tabs it creates or a tab the user explicitly
 shares. It pauses before sending, submitting, publishing, purchasing, deleting,
 or making another consequential change. Disconnect means the browser is no
-longer under June's control. A crash, browser restart, or extension update ends
-automation immediately; June never keeps driving a browser it has lost contact
+longer under Clovy's control. A crash, browser restart, or extension update ends
+automation immediately; Clovy never keeps driving a browser it has lost contact
 with, and a task fails rather than resuming silently.
 
 ## V1 experience
 
-- The Plugins tile guides installation and pairing of the June browser
+- The Plugins tile guides installation and pairing of the Clovy browser
   extension.
-- June opens task-owned tabs in a visible group and can use the user's existing
+- Clovy opens task-owned tabs in a visible group and can use the user's existing
   signed-in session there.
 - The user may share one existing tab explicitly; all other existing tabs are
   out of bounds.
-- June shows screenshots and progress in chat.
+- Clovy shows screenshots and progress in chat.
 - Sensitive fields for passwords, one-time codes, and payment data always
   require human takeover.
 - Sandboxed routines use a separate anonymous, ephemeral managed browser for
@@ -69,7 +69,7 @@ separate plugin and grant.
 ## Privacy and trust
 
 Page content needed for reasoning follows the user's selected inference path.
-The extension, native shim, and Rust broker stay on-device. June does not send
+The extension, native shim, and Rust broker stay on-device. Clovy does not send
 the user's browsing history or unrelated tabs to OpenSoftware. Policy lives in
 the broker, not in a prompt.
 

@@ -218,7 +218,7 @@ export type ScheduleDraft =
   | { kind: "interval"; minutes: number }
   | { kind: "custom"; expression: string };
 
-/** Renders a draft as a June schedule string: five-field cron for the
+/** Renders a draft as a Clovy schedule string: five-field cron for the
  * clock-time kinds, the "every Nm"/"every Nh" interval grammar, or the
  * custom expression verbatim. */
 export function scheduleFromDraft(draft: ScheduleDraft): string {

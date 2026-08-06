@@ -1,13 +1,17 @@
-# June Companion local development
+# Clovy Companion local development
 
 ## Prerequisites
 
 Use Rust with `aarch64-apple-ios-sim`, Xcode 26, and XcodeGen 2.45.4 or newer.
 The native app has no Node, Metro, React Native, or CocoaPods dependency.
-Local June API permits the in-memory relay; restart loses links.
+Local Clovy API permits the in-memory relay; restart loses links.
 
-June Companion does not need an OS Accounts OAuth registration. Pairing is
-created by a signed-in June Desktop and authorizes the phone with a revocable
+The `june-companion-app` repository and `JuneCompanion` Xcode project, target,
+and scheme names are retained technical identities under
+[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+
+Clovy Companion does not need an OS Accounts OAuth registration. Pairing is
+created by a signed-in Clovy Desktop and authorizes the phone with a revocable
 device credential after explicit Desktop approval. The Desktop token is never
 copied.
 
@@ -19,7 +23,7 @@ xcodegen generate
 open JuneCompanion.xcodeproj
 ```
 
-Run June API and a signed-in June Desktop with the relay URL. Open Desktop
+Run Clovy API and a signed-in Clovy Desktop with the relay URL. Open Desktop
 Settings > Linked devices and show a pairing code. Scan it from the companion,
 or expand Enter a code instead on Desktop and choose Enter pairing code on the
 phone. Review the device name and capabilities on Desktop, then approve.

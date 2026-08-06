@@ -160,7 +160,7 @@ final class SystemAudioRecorder {
             try? FileManager.default.removeItem(at: outputURL)
             try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
-        cleanupStaleAggregateDevices(named: "June System Audio")
+        cleanupStaleAggregateDevices(named: "Clovy System Audio")
         // Also sweep aggregates left behind by pre-rename "June" builds.
         cleanupStaleAggregateDevices(named: "June System Audio")
         if !checkOnly {
@@ -207,7 +207,7 @@ final class SystemAudioRecorder {
         tapDescription.isExclusive = true
         tapDescription.isPrivate = true
         tapDescription.muteBehavior = .unmuted
-        tapDescription.name = "June System Audio"
+        tapDescription.name = "Clovy System Audio"
 
         var tapID = AudioObjectID.unknown
         var err = AudioHardwareCreateProcessTap(tapDescription, &tapID)
@@ -238,7 +238,7 @@ final class SystemAudioRecorder {
 
         let aggregateUID = UUID().uuidString
         let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "June System Audio",
+            kAudioAggregateDeviceNameKey: "Clovy System Audio",
             kAudioAggregateDeviceUIDKey: aggregateUID,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
@@ -529,7 +529,7 @@ final class SystemAudioRecorder {
     private func acquirePowerAssertion() {
         guard powerAssertionID == 0 else { return }
         var assertionID = IOPMAssertionID(0)
-        let reason = "June recording in progress" as CFString
+        let reason = "Clovy recording in progress" as CFString
         let result = IOPMAssertionCreateWithName(
             kIOPMAssertionTypeNoDisplaySleep as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
@@ -695,7 +695,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     case .authorized:
         return
     case .denied:
-        throw "System Audio Recording permission is denied. Enable June in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission is denied. Enable Clovy in System Settings > Privacy & Security > Screen & System Audio Recording."
     case .unknown:
         break
     }
@@ -725,7 +725,7 @@ private func ensureSystemAudioPermission(logURL: URL?) throws {
     }
     writeLog("system audio permission request granted=\(granted)", logURL: logURL)
     guard granted else {
-        throw "System Audio Recording permission was not granted. Enable June in System Settings > Privacy & Security > Screen & System Audio Recording."
+        throw "System Audio Recording permission was not granted. Enable Clovy in System Settings > Privacy & Security > Screen & System Audio Recording."
     }
 }
 

@@ -1,6 +1,6 @@
 import type { VeniceModelDto } from "./tauri";
 
-// June's default image model. Mirrors DEFAULT_IMAGE_MODEL in the Rust providers
+// Clovy's default image model. Mirrors DEFAULT_IMAGE_MODEL in the Rust providers
 // module (src-tauri/src/providers/mod.rs) — keep the two in sync.
 export const DEFAULT_IMAGE_MODEL = "venice-sd35";
 

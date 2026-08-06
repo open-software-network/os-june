@@ -764,7 +764,7 @@ async fn dispatch_request(
                 remove_pending(app, operation_id);
                 return Err(AppError::new(
                     "companion_frontend_unavailable",
-                    "Open June on this Mac and try again.",
+                    "Open Clovy on this Mac and try again.",
                 ));
             }
             let result = tokio::time::timeout(FRONTEND_TIMEOUT, receiver)
@@ -773,13 +773,13 @@ async fn dispatch_request(
                     remove_pending(app, operation_id);
                     AppError::new(
                         "companion_frontend_timeout",
-                        "June on this Mac did not finish the request in time.",
+                        "Clovy on this Mac did not finish the request in time.",
                     )
                 })?
                 .map_err(|_| {
                     AppError::new(
                         "companion_frontend_unavailable",
-                        "June on this Mac stopped the request.",
+                        "Clovy on this Mac stopped the request.",
                     )
                 })?;
             Ok(frontend_response(capability, result))
@@ -1034,7 +1034,7 @@ mod tests {
             capability: Capability::AgentChat,
             result: ResultPayload::Error(ProtocolFailure {
                 code: FailureCode::MacOffline,
-                message: "Open June on your Mac and try again.".to_string(),
+                message: "Open Clovy on your Mac and try again.".to_string(),
                 retryable: true,
             }),
         };

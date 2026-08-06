@@ -98,7 +98,7 @@ async function creditApprovalRuns(runs: RoutineRunSession[], reported: Set<strin
 
 type RoutinesViewProps = {
   /** The chat-first creation path: hands off a composed agent prompt and the
-   * app opens a new June session with it, so the agent does the cron-job
+   * app opens a new Clovy session with it, so the agent does the cron-job
    * setup (naming, scheduling) from a plain description. */
   onCreateRoutine: (prompt: string) => void;
   /** Opens a past scheduled run in the agent view. */
@@ -417,7 +417,7 @@ export function RoutinesView({
           });
           if (eventTrigger && input.triggerAccountId) {
             // Subscribing is required setup, not best-effort. If it fails,
-            // removeRoutine below deletes the June routine and all
+            // removeRoutine below deletes the Clovy routine and all
             // connector rows so retrying cannot create a duplicate or leave a
             // dormant 2099 placeholder behind.
             await connectorTriggerSet({
@@ -432,7 +432,7 @@ export function RoutinesView({
             await removeRoutine(created.job_id);
           } catch (cleanupError) {
             throw new Error(
-              `${describeRoutineError(setupError)} June also could not remove the partially created routine: ${describeRoutineError(cleanupError)}`,
+              `${describeRoutineError(setupError)} Clovy also could not remove the partially created routine: ${describeRoutineError(cleanupError)}`,
             );
           }
           throw setupError;
@@ -536,7 +536,7 @@ export function RoutinesView({
 
   // The describe bar is the chat composer, anchored to the bottom of the
   // panel like the agent session pages — always there, so describing a
-  // routine to June never needs a button first.
+  // routine to Clovy never needs a button first.
   const describeBar = (
     <DescribeBar
       draft={describeDraft}
@@ -555,7 +555,7 @@ export function RoutinesView({
         onClose={() => setPendingDelete(null)}
         onConfirm={confirmDelete}
         title={`Delete “${pendingDelete?.name ?? ""}”?`}
-        description="June will stop running this routine. This can’t be undone."
+        description="Clovy will stop running this routine. This can’t be undone."
         confirmLabel="Delete"
         destructive
       />
@@ -612,7 +612,7 @@ export function RoutinesView({
             Routines
             {routines.length > 0 ? <span className="folders-count">{routines.length}</span> : null}
           </h1>
-          <p className="folders-subtitle">Automations June runs for you on a schedule.</p>
+          <p className="folders-subtitle">Automations Clovy runs for you on a schedule.</p>
         </div>
         <button type="button" className="primary-action primary-solid" onClick={() => openCreate()}>
           <IconPlusMedium size={13} />
@@ -749,7 +749,7 @@ function TemplateGrid({ onPick }: { onPick: (template: RoutineTemplate) => void 
                 // The list rows spell the badge out; cards just flash the
                 // warm shield and let the tip carry the explanation.
                 <HoverTip
-                  tip="This starter needs full access: when it fires, June can run commands and change any file your account can. You confirm that before creating it."
+                  tip="This starter needs full access: when it fires, Clovy can run commands and change any file your account can. You confirm that before creating it."
                   className="routines-item-badge routines-item-badge-warm routines-badge-compact"
                   tabIndex={0}
                   aria-label="Unrestricted"
@@ -847,7 +847,7 @@ function RoutineRow({
             <span className="routines-item-name">{routine.name}</span>
             {routineUnrestricted(routine) ? (
               <HoverTip
-                tip="This routine runs with full access: when it fires, June can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
+                tip="This routine runs with full access: when it fires, Clovy can run commands and change any file your account can. Routines without this badge run sandboxed and cannot touch your files."
                 className="routines-item-badge routines-item-badge-warm"
                 tabIndex={0}
               >
@@ -962,7 +962,7 @@ function timeValue(iso: string | null | undefined) {
 function describeRoutineError(err: unknown) {
   const message = messageFromError(err);
   if (/\bAPI returned 5\d\d\b/i.test(message)) {
-    return "June ran into a problem with that request.";
+    return "Clovy ran into a problem with that request.";
   }
   return message || "Routines are unavailable. Try again.";
 }
@@ -1006,14 +1006,14 @@ const DEJUNE_MODE_OPTIONS = [
     unrestricted: true,
     icon: <IconShieldCrossed size={16} aria-hidden />,
     title: "Unrestricted",
-    description: "When it fires, June can change any file your account can.",
+    description: "When it fires, Clovy can change any file your account can.",
   },
 ] as const;
 
 /** The chat experience as the routines pages' bottom bar: the agent
  * composer's box, sandbox trigger, and send arrow (same classes, same
  * affordances), permanently anchored like on the agent session pages.
- * Submitting hands the description off to a real June session that sets the
+ * Submitting hands the description off to a real Clovy session that sets the
  * routine up. */
 function DescribeBar({
   draft,
@@ -1060,7 +1060,7 @@ function DescribeBar({
       <form
         ref={rootRef}
         className="routines-describe-composer"
-        aria-label="Describe a routine to June"
+        aria-label="Describe a routine to Clovy"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit();
@@ -1070,7 +1070,7 @@ function DescribeBar({
           <GrowingTextarea
             aria-label="Describe a routine"
             value={draft}
-            placeholder="Have June help you set up a routine"
+            placeholder="Have Clovy help you set up a routine"
             onChange={(event) => onDraftChange(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.nativeEvent.isComposing) return;
@@ -1103,7 +1103,7 @@ function DescribeBar({
                 type="submit"
                 className="agent-composer-send"
                 disabled={!draft.trim() || Boolean(disabledReason)}
-                aria-label="Ask June to set it up"
+                aria-label="Ask Clovy to set it up"
                 title={disabledReason}
               >
                 <IconArrowUp size={16} />

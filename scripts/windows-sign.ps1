@@ -71,7 +71,7 @@ if ([string]::IsNullOrWhiteSpace($timestampUrl)) {
 $signtool = Find-SignTool
 
 Write-Host "[windows-sign] Signing $target"
-& $signtool sign /fd SHA256 /td SHA256 /tr $timestampUrl /f $certificatePath /p $certificatePassword /d "June" $target
+& $signtool sign /fd SHA256 /td SHA256 /tr $timestampUrl /f $certificatePath /p $certificatePassword /d "Clovy" $target
 if ($LASTEXITCODE -ne 0) {
   Fail "signtool sign failed with exit code $LASTEXITCODE."
 }

@@ -120,20 +120,20 @@ describe("agent note entry point pending request", () => {
 });
 
 describe("note header actions", () => {
-  it("calls the Ask June handler from the note toolbar", async () => {
+  it("calls the Ask Clovy handler from the note toolbar", async () => {
     const user = userEvent.setup();
-    const onAskJune = vi.fn();
+    const onAskClovy = vi.fn();
     render(
       createElement(NoteHeaderActions, {
         noteId: "note-1",
         noteTitle: "Launch plan",
-        onAskJune,
+        onAskClovy,
       }),
     );
 
-    await user.click(screen.getByRole("button", { name: "Ask June" }));
+    await user.click(screen.getByRole("button", { name: "Ask Clovy" }));
 
-    expect(onAskJune).toHaveBeenCalledTimes(1);
+    expect(onAskClovy).toHaveBeenCalledTimes(1);
   });
 
   it("shows a working dot while the note's chat is generating", () => {
@@ -141,26 +141,26 @@ describe("note header actions", () => {
       createElement(NoteHeaderActions, {
         noteId: "note-1",
         noteTitle: "Launch plan",
-        askJuneWorking: true,
+        askClovyWorking: true,
       }),
     );
 
-    // The button name stays clean ("Ask June"); the working state rides on a
+    // The button name stays clean ("Ask Clovy"); the working state rides on a
     // data attribute + a decorative dot, not the accessible name.
-    expect(screen.getByRole("button", { name: "Ask June" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Ask Clovy" })).toHaveAttribute(
       "data-working",
       "true",
     );
     expect(container.querySelector(".note-header-ask-dot")).not.toBeNull();
   });
 
-  it("copies a portable reference for June", async () => {
+  it("copies a portable reference for Clovy", async () => {
     const user = userEvent.setup();
     const writeText = installClipboard();
     render(createElement(NoteHeaderActions, { noteId: "note-1", noteTitle: "Launch plan" }));
 
     await user.click(screen.getByRole("button", { name: "Note actions" }));
-    await user.click(screen.getByRole("menuitem", { name: "Copy reference for June" }));
+    await user.click(screen.getByRole("menuitem", { name: "Copy reference for Clovy" }));
 
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(
@@ -220,7 +220,7 @@ describe("composer note reference trigger", () => {
 
     render(
       createElement(ComposerEditor, {
-        placeholder: "Message June",
+        placeholder: "Message Clovy",
         onChange: vi.fn(),
         onSubmit: vi.fn(),
         onReady: (readyEditor: Editor) => {
@@ -246,7 +246,7 @@ describe("composer note reference trigger", () => {
 
     render(
       createElement(ComposerEditor, {
-        placeholder: "Message June",
+        placeholder: "Message Clovy",
         onChange: vi.fn(),
         onSubmit: vi.fn(),
         onReady: (readyEditor: Editor) => {

@@ -28,7 +28,7 @@ describe("Computer use agent-run tool scope", () => {
   it.each([
     "What is Computer use?",
     "How do I use Computer use?",
-    "Does June use Computer use?",
+    "Does Clovy use Computer use?",
     "Should I use Computer use to open Calculator?",
     "Tell me whether Computer use is enabled.",
     "Do not use Computer use for this.",

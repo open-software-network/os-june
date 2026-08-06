@@ -233,7 +233,7 @@ pub fn system_audio_readiness() -> SourceReadinessDto {
             ))
         } else if !helper_available {
             Some(
-                "System audio helper is not built. Restart June or run pnpm tauri:dev again."
+                "System audio helper is not built. Restart Clovy or run pnpm tauri:dev again."
                     .to_string(),
             )
         } else {

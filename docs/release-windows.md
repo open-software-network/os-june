@@ -1,19 +1,24 @@
-# Releasing June for Windows
+# Releasing Clovy for Windows
 
-June ships Windows builds as an NSIS installer. The production Windows release
+Clovy ships Windows builds as an NSIS installer. The production Windows release
 workflow builds from the promoted commit recorded by `stable-build.json`, signs
 the app executable and installer with Authenticode, signs updater artifacts with
 the Tauri updater key, and attaches Windows assets to the existing
 `open-software-network/os-june-releases` release.
 
+The release repository, `June_*` artifact names, `os-june.exe`, and the
+`$env:LOCALAPPDATA\June` install path are retained June-era compatibility
+identities under
+[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+
 ## Windows support
 
 The Windows installer supports the app shell, OS Accounts sign-in, microphone
 recording, dictation shortcuts and paste, note generation, folders, and settings
-backed by the production June API. macOS system-audio capture and Seatbelt
+backed by the production Clovy API. macOS system-audio capture and Seatbelt
 sandbox features are macOS-only.
 
-Production Windows builds bundle the signed Node 24 agent sidecar, so June can
+Production Windows builds bundle the signed Node 24 agent sidecar, so Clovy can
 start the agent on a clean machine without Python, GitHub downloads, or a
 first-run runtime install. Sandboxed mode restricts host file tools to the
 workspace and disables shell execution on Windows. Unrestricted mode supports
@@ -80,7 +85,7 @@ The Windows workflow performs the release steps in order:
    SHA-256 checksum, and runs a startup smoke test from a path with spaces.
 7. Authenticode-signs the agent runtime executable and verifies its signature.
 8. Builds and signs the Windows dictation helper, then builds the Windows NSIS
-   installer with production OS Accounts and June API configuration embedded as
+   installer with production OS Accounts and Clovy API configuration embedded as
    fallback runtime config.
 9. Signs the app executable and NSIS installer through
    `scripts/windows-sign.ps1`.
@@ -134,19 +139,19 @@ Start-Process -FilePath $installer -ArgumentList "/S" -Wait
 Start-Process "$env:LOCALAPPDATA\June\os-june.exe"
 ```
 
-The installed app is branded as June, but the current Windows binary on disk is
+The installed app is branded as Clovy, but the current Windows binary on disk is
 `os-june.exe` under `$env:LOCALAPPDATA\June`.
 
 Confirm the signature status is `Valid`, the publisher is Open Software Network,
-the app launches as June, the sign-in copy mentions recording, notes, and
+the app launches as Clovy, the sign-in copy mentions recording, notes, and
 dictation, and sign-in lands on the fresh New session hero with the Sessions
 sidebar visible. Confirm the bundled agent starts on a clean VM with no Python
 installed, and Windows dictation can record from the microphone and paste into
 a normal app. Record from the microphone and generate a note against production
-June API before linking the installer publicly.
+Clovy API before linking the installer publicly.
 
 For updater validation after a second Windows release, install an older
-updater-capable Windows build, run **June -> Check for updates...**, confirm the
+updater-capable Windows build, run **Clovy -> Check for updates...**, confirm the
 prompt shows the new version, install, and verify the app exits for the Windows
 installer handoff and relaunches cleanly on the new version.
 

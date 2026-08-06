@@ -41,7 +41,7 @@ export function AgentThinking({
         >
           {variant === "typing-bubble" ? (
             <>
-              <span className="visually-hidden">June is typing</span>
+              <span className="visually-hidden">Clovy is typing</span>
               <span className="agent-typing-dots" aria-hidden="true">
                 <span />
                 <span />

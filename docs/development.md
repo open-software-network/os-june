@@ -1,6 +1,6 @@
 # Local development
 
-Day-to-day development reference for the desktop app and a local June API.
+Day-to-day development reference for the desktop app and a local Clovy API.
 Configuration details (every env var, pricing, custom models, connected mode)
 live in [configuration.md](configuration.md); when the two disagree, the env
 example files win.
@@ -18,10 +18,10 @@ pnpm install
 pnpm tauri:dev
 ```
 
-`pnpm tauri:dev` starts Vite and a local June API when their ports are free.
+`pnpm tauri:dev` starts Vite and a local Clovy API when their ports are free.
 If `127.0.0.1:1421` or `127.0.0.1:8080` is already listening, the script
 reuses the existing service. Set `VITE_PORT` or `JUNE_API_PORT` to choose a
-different port. Set `JUNE_DEV_SKIP_LOCAL_API=1` to skip the local June API
+different port. Set `JUNE_DEV_SKIP_LOCAL_API=1` to skip the local Clovy API
 entirely and leave the port probe alone; the staging and ephemeral targets
 below already do this.
 
@@ -31,7 +31,7 @@ Replay first-run onboarding without wiping all app data:
 pnpm tauri:dev --replay-onboarding
 ```
 
-You can also run June API directly:
+You can also run Clovy API directly:
 
 ```sh
 (cd june-api && cargo run -- serve)
@@ -41,10 +41,10 @@ Restart `pnpm tauri:dev` after changing the root `.env`. The running Tauri
 process does not reload client configuration.
 
 The example env files default to open source local mode: no OS Accounts login,
-no billing or credit charges, and no provider keys in the desktop env. June
+no billing or credit charges, and no provider keys in the desktop env. Clovy
 API accepts the local bearer token shared by `.env` and `june-api/.env`. That
 token must match in both files; it is not an OS Accounts token, just the
-shared secret between the local desktop app and the local June API. The June
+shared secret between the local desktop app and the local Clovy API. The Clovy
 API env example binds local mode to `127.0.0.1`; if you bind it to a network
 interface, replace the default local bearer token in both env files first.
 
@@ -62,9 +62,9 @@ Create a Google Desktop OAuth client and set `GOOGLE_OAUTH_CLIENT_ID` and
 `GOOGLE_OAUTH_CLIENT_SECRET`. Restart `pnpm tauri:dev` after changing either
 value.
 
-## Running against hosted June API
+## Running against hosted Clovy API
 
-Two ways to run the desktop app against a June API in a real TEE instead of
+Two ways to run the desktop app against a Clovy API in a real TEE instead of
 the local one: the shared staging deployment, or a disposable Phala CVM built
 from your working tree.
 
@@ -91,9 +91,9 @@ credits, because staging meters every request. Set
 prompt on every run.
 
 Auth is a real Login with Open Software against staging OS Accounts. The
-local-dev bearer token does not work: staging June API boots with
+local-dev bearer token does not work: staging Clovy API boots with
 `JUNE__LOCAL_DEV__ENABLED` unset, so it verifies OS Accounts JWTs and charges
-credits. Staging stays JWT-only on purpose. Every June API image soaks there
+credits. Staging stays JWT-only on purpose. Every Clovy API image soaks there
 before it is promoted to production, so it has to exercise the same auth and
 metering path production runs.
 
@@ -136,7 +136,7 @@ Prerequisites: Docker running, the `phala` CLI installed and authenticated
 keys. The script also needs `jq`, `curl`, `openssl`, `perl`, and `uuidgen`. It
 copies `JUNE__UPSTREAMS__VENICE__API_KEY` and `JUNE__UPSTREAMS__OPENAI__API_KEY`
 from `june-api/.env` verbatim; a key that is missing there stays missing, and
-June API drops the models whose provider it cannot reach.
+Clovy API drops the models whose provider it cannot reach.
 
 Cost: `tdx.small` bills $0.058/hr from creation until you delete the CVM. The
 image is pushed to `ttl.sh` with a `4h` tag. Tags there expire; the CVM keeps
@@ -181,7 +181,7 @@ the platform app data path for:
   is selected
 
 Saved audio is the source of truth for retry. If transcription or generation
-fails after capture, June keeps the audio and processing metadata so work can be
+fails after capture, Clovy keeps the audio and processing metadata so work can be
 retried without recording again.
 
 ## Agent skills
@@ -190,12 +190,12 @@ The agent loads skills from its managed `skills` folder and, when the folder
 exists, from `~/.agents/skills` in your home directory (the same location the
 `skills` CLI installs into). Drop a skill folder there and every agent session
 picks it up the next time it starts. Home-folder skills load read-only: the
-macOS write-jail grants writes only under June's own data directory, so the
+macOS write-jail grants writes only under Clovy's own data directory, so the
 agent can use these skills but cannot modify them.
 
 ## Permissions
 
-June asks for permissions only where the feature needs them:
+Clovy asks for permissions only where the feature needs them:
 
 - **Microphone:** required for meeting notes and dictation.
 - **Accessibility:** required for dictation paste into the previously focused

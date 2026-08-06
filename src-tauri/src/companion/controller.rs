@@ -624,7 +624,7 @@ fn pending_operation_response(capability: Capability) -> Response {
         capability,
         ResultPayload::Error(ProtocolFailure {
             code: FailureCode::OutcomeUnknown,
-            message: "This request may already have reached June. Check your Mac, then choose the action again only if it is still needed."
+            message: "This request may already have reached Clovy. Check your Mac, then choose the action again only if it is still needed."
                 .to_string(),
             retryable: false,
         }),
@@ -637,7 +637,7 @@ fn reservation_capacity_response(capability: Capability) -> Response {
         ResultPayload::Error(ProtocolFailure {
             code: FailureCode::Busy,
             message:
-                "June is still resolving earlier companion actions. Check your Mac, then try again."
+                "Clovy is still resolving earlier companion actions. Check your Mac, then try again."
                     .to_string(),
             retryable: true,
         }),

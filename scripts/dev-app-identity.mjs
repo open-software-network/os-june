@@ -5,7 +5,7 @@ const DEV_HARNESS_NAMES = new Map([
 
 export function devAppIdentityForBranch(
   branchName,
-  { baseName = "June", baseIdentifier = "co.opensoftware.june" } = {},
+  { baseName = "Clovy", baseIdentifier = "co.opensoftware.june" } = {},
 ) {
   const normalized = `${branchName ?? ""}`.trim();
   const namespace = normalized.split("/", 1)[0]?.toLowerCase();

@@ -1,5 +1,5 @@
-//! Versioned, bounded, capability-scoped messages exchanged by June desktop
-//! and a linked June companion. Relay envelopes deliberately contain only
+//! Versioned, bounded, capability-scoped messages exchanged by Clovy desktop
+//! and a linked Clovy Companion. Relay envelopes deliberately contain only
 //! routing metadata and ciphertext.
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -1543,7 +1543,7 @@ mod tests {
             id: id.to_string(),
             name: "Private model".to_string(),
             provider: "venice".to_string(),
-            description: "A curated model for June agent sessions.".to_string(),
+            description: "A curated model for Clovy agent sessions.".to_string(),
             routing: ModelRouting::Remote,
             privacy: Some(ModelPrivacy::Private),
             privacy_label: Some("Private mode".to_string()),

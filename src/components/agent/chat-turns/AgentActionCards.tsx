@@ -137,7 +137,7 @@ type DismissibleAccessCardProps = {
   onDismiss?: () => void;
 };
 
-/** June asked to enable "Agent CLI access" via the literal token its soul
+/** Clovy asked to enable "Agent CLI access" via the literal token its soul
  * teaches ([REQUEST:AGENT_CLI_ACCESS]). The agent can never flip the setting
  * itself — the flag file sits outside every sandbox write root — so this
  * card is the one-click, user-approved path. Resolution is derived from the
@@ -157,10 +157,10 @@ export function AgentCliAccessCard({
 
   const description = (
     <p>
-      June wants write access to the state folders of your coding CLIs (Claude Code, Codex, Gemini,
+      Clovy wants write access to the state folders of your coding CLIs (Claude Code, Codex, Gemini,
       opencode) so they stay logged in and can save their work in sandboxed sessions. Those folders
-      configure software that also runs outside June's sandbox. Enabling turns on "Agent CLI access"
-      in Settings and restarts the sandboxed runtime.
+      configure software that also runs outside Clovy's sandbox. Enabling turns on "Agent CLI
+      access" in Settings and restarts the sandboxed runtime.
     </p>
   );
 
@@ -265,7 +265,7 @@ export function BrowserApprovalCard({
   );
 }
 
-/** June asked to enable Browser use via the literal token its soul teaches
+/** Clovy asked to enable Browser use via the literal token its soul teaches
  * ([REQUEST:BROWSER_ACCESS]). The agent can never flip the setting itself —
  * the Browser access grant is a flag file outside every sandbox write root —
  * so this card is the one-click, user-approved path. Resolution is derived
@@ -285,10 +285,10 @@ export function AgentBrowserAccessCard({
 
   const description = (
     <p>
-      June wants to drive your browser to finish this task, in tabs it opens and tabs you explicitly
-      share. Page content from those tabs (visible text and screenshots) leaves this device and is
-      sent to your configured AI model for inference. Enabling turns on "Browser use" in Settings
-      and restarts the agent runtime.
+      Clovy wants to drive your browser to finish this task, in tabs it opens and tabs you
+      explicitly share. Page content from those tabs (visible text and screenshots) leaves this
+      device and is sent to your configured AI model for inference. Enabling turns on "Browser use"
+      in Settings and restarts the agent runtime.
     </p>
   );
 
@@ -407,12 +407,12 @@ export function ApprovalPart({
         >
           {outcomeUnconfirmed ? (
             <p>
-              The connection closed before June could confirm the response. This approval is no
+              The connection closed before Clovy could confirm the response. This approval is no
               longer actionable, but it may have already been applied. Check the agent activity
               before retrying.
             </p>
           ) : (
-            <p>This approval is no longer pending. June did not approve anything.</p>
+            <p>This approval is no longer pending. Clovy did not approve anything.</p>
           )}
           {part.command ? <pre>{part.command}</pre> : null}
         </ResolvedActionRow>
@@ -510,7 +510,7 @@ export function ApprovalPart({
             // Generation unavailable (offline, signed out): keep the
             // static framing rather than an empty panel.
             <p>
-              June is paused because this request needs your explicit permission before it can
+              Clovy is paused because this request needs your explicit permission before it can
               continue.
             </p>
           )}

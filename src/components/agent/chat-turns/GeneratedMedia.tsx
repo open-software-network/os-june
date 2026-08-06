@@ -2,38 +2,14 @@ import { IconArrowInbox } from "central-icons/IconArrowInbox";
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 import type { AgentChatPart } from "../../../lib/agent-chat-runtime";
 import { agentFilePreview, localVideoFileSrc } from "../../../lib/tauri";
+import { CLOVY_MARK_HEIGHT, CLOVY_MARK_PATH, CLOVY_MARK_WIDTH } from "../../brand/ClovyLogo";
 import { HoverTip } from "../../ui/HoverTip";
 
-const GENERATED_MEDIA_MARK_CELLS = [
-  "..................157775",
-  "..................179997",
-  "..................289997",
-  "..................389997",
-  ".....1122222222223798875",
-  "....15777777777788973211",
-  "....1799999999999983....",
-  "....2899999999999982....",
-  "....3899999999999971....",
-  "11237988777777777751....",
-  "5788973222222222211.....",
-  "799983..................",
-  "799982.............11211",
-  "799971............157775",
-  "577751............179997",
-  "11211.............289997",
-  "..................389997",
-  ".....1122222222223798875",
-  "....15777777777788973211",
-  "....1799999999999983....",
-  "....2899999999999982....",
-  "....3899999999999971....",
-  "11237988777777777751....",
-  "5788973222222222211.....",
-  "799983..................",
-  "799982..................",
-  "799971..................",
-  "577751..................",
-];
+const GENERATED_MEDIA_MARK_ROWS = 28;
+const GENERATED_MEDIA_MARK_COLS = Math.round(
+  GENERATED_MEDIA_MARK_ROWS * (CLOVY_MARK_WIDTH / CLOVY_MARK_HEIGHT),
+);
+const GENERATED_MEDIA_MARK_SAMPLES = [0.2, 0.5, 0.8] as const;
 
 /* One shared parameter set so the two wave kinds stay in the same physical
  * register: a wavefront is a gaussian band that brightens dots and pushes
@@ -85,7 +61,7 @@ const GENERATED_MEDIA_FIELD = {
 type GeneratedMediaRipple = { x: number; y: number; startedAt: number };
 
 /** The particle dot field behind a generating image/video: a fine stationary
- * lattice carrying the June Agents mark as brighter dots, with a soft sheen
+ * lattice carrying the Clovy mark as brighter dots, with a soft sheen
  * wavefront sweeping across on a fixed cadence. Pointer taps drop radial
  * ripples that push dots outward and let them settle back. Dot positions are
  * a pure function of time (no per-dot state), so dropped frames never desync
@@ -143,21 +119,34 @@ function GeneratedMediaDotField() {
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       const cols = Math.ceil(width / F.pitch);
       const rows = Math.ceil(height / F.pitch);
-      const markCols = GENERATED_MEDIA_MARK_CELLS[0].length;
-      const markRows = GENERATED_MEDIA_MARK_CELLS.length;
+      const markPath = new Path2D(CLOVY_MARK_PATH);
+      const markCols = GENERATED_MEDIA_MARK_COLS;
+      const markRows = GENERATED_MEDIA_MARK_ROWS;
       // Centered on the lattice, lifted one row to balance the footer bar.
       const markCol = Math.round((cols - markCols) / 2);
       const markRow = Math.round((rows - markRows) / 2) - 1;
       dots = [];
       for (let row = 0; row < rows; row++) {
         for (let col = 0; col < cols; col++) {
-          const inMark =
+          const inMarkBounds =
             row >= markRow &&
             row < markRow + markRows &&
             col >= markCol &&
             col < markCol + markCols;
-          const cell = inMark ? GENERATED_MEDIA_MARK_CELLS[row - markRow][col - markCol] : ".";
-          const mark = cell === "." ? 0 : Number.parseInt(cell, 10) / 9;
+          let mark = 0;
+          if (inMarkBounds) {
+            const localRow = row - markRow;
+            const localCol = col - markCol;
+            let covered = 0;
+            for (const sampleY of GENERATED_MEDIA_MARK_SAMPLES) {
+              for (const sampleX of GENERATED_MEDIA_MARK_SAMPLES) {
+                const x = ((localCol + sampleX) / markCols) * CLOVY_MARK_WIDTH;
+                const y = ((localRow + sampleY) / markRows) * CLOVY_MARK_HEIGHT;
+                if (context.isPointInPath(markPath, x, y, "evenodd")) covered += 1;
+              }
+            }
+            mark = covered / GENERATED_MEDIA_MARK_SAMPLES.length ** 2;
+          }
           // Two lattice-position hashes decorrelate each dot's glint cycle.
           const noise = Math.sin((row * 131 + col) * 12.9898) * 43758.5453;
           const seed = noise - Math.floor(noise);
@@ -343,7 +332,7 @@ function GeneratedMediaDotField() {
   );
 }
 
-/** A quiet particle dot-field canvas — carrying the June Agents mark — with
+/** A quiet particle dot-field canvas carrying the Clovy mark, with
  * its working label in a separate footer. */
 function AgentGeneratedMediaPlaceholder({ kind }: { kind: "image" | "video" }) {
   const label = kind === "image" ? "Generating image…" : "Generating video…";

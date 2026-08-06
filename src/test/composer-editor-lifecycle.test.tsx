@@ -67,7 +67,7 @@ describe("composer editor lifecycle", () => {
       render(
         <ComposerEditor
           ref={ref}
-          placeholder="Message June"
+          placeholder="Message Clovy"
           onChange={vi.fn()}
           onSubmit={vi.fn()}
         />,
@@ -115,7 +115,12 @@ describe("composer editor lifecycle", () => {
     editorMock.current = editor;
     const ref = createRef<ComposerEditorHandle>();
     render(
-      <ComposerEditor ref={ref} placeholder="Message June" onChange={vi.fn()} onSubmit={vi.fn()} />,
+      <ComposerEditor
+        ref={ref}
+        placeholder="Message Clovy"
+        onChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
     );
 
     ref.current?.setContent("Stale draft", "bug", { focus: false });

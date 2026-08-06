@@ -57,7 +57,7 @@ const MICROPHONE_STALL_THRESHOLD: Duration = Duration::from_secs(3);
 const MICROPHONE_STREAM_WARNING_MESSAGE: &str =
     "Microphone input stopped unexpectedly. Audio after this point may be missing.";
 const MICROPHONE_WRITER_WARNING_MESSAGE: &str =
-    "June stopped saving microphone audio. Stop the recording now to preserve the audio already written.";
+    "Clovy stopped saving microphone audio. Stop the recording now to preserve the audio already written.";
 const MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE: &str =
     "Microphone recording could not keep up. Some audio may be missing.";
 
@@ -668,7 +668,7 @@ pub fn capture_start_timeout_error() -> AppError {
 fn recording_already_active_error() -> AppError {
     AppError::new(
         "recording_already_active",
-        "A previous recording is still active. June attempted to save it locally; please try again.",
+        "A previous recording is still active. Clovy attempted to save it locally; please try again.",
     )
 }
 
@@ -702,7 +702,7 @@ fn cleanup_abandoned_capture(
 /// the mic callback writes silence in place of samples, so the user's voice
 /// never lands in the note but the mic track keeps growing in lockstep with
 /// system audio. Dictation owns this: the helper's listening window ducks the
-/// mic so dictating into June mid-meeting doesn't contaminate the meeting
+/// mic so dictating into Clovy mid-meeting doesn't contaminate the meeting
 /// note. Best-effort and idempotent — no active recording is a no-op, and the
 /// flag dies with the session, so a stop mid-dictation can't leak a duck.
 pub fn set_mic_ducked(ducked: bool) {

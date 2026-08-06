@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { JuneMark } from "../components/account/AccountGate";
+import { ClovyMark } from "../components/brand/ClovyLogo";
 import {
   applyBrandVar,
   type BrandId,
@@ -75,8 +75,8 @@ export function StyleguideApp() {
     <div className="sg-root">
       <header className="sg-topbar">
         <h1 className="sg-topbar-title">
-          <JuneMark />
-          <span>June</span>
+          <ClovyMark variant="mono" />
+          <span>Clovy</span>
           <span className="sg-topbar-title-divider" aria-hidden>
             |
           </span>

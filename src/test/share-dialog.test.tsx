@@ -162,7 +162,7 @@ describe("ShareDialog", () => {
     expect(fromBase64Url(fragment[3])).toHaveLength(16);
     expect(mocks.shareInviteKeySave.mock.calls[0][0].inviteKeyB64).toBe(fragment[3]);
     await waitFor(() => expect(clipboard).toHaveBeenCalledWith(linkField.value));
-    expect(screen.getByText(/June never stores the passcode/i)).toBeInTheDocument();
+    expect(screen.getByText(/Clovy never stores the passcode/i)).toBeInTheDocument();
     expect(screen.getByText(/only time the passcode is shown/i)).toBeInTheDocument();
 
     expect(screen.getByText("Link")).toBeInTheDocument();
@@ -451,7 +451,7 @@ describe("ShareDialog", () => {
     await user.click(await screen.findByRole("button", { name: "Create link" }));
 
     expect(
-      await screen.findByText(/Sharing isn't available on this June server yet/i),
+      await screen.findByText(/Sharing isn't available on this Clovy server yet/i),
     ).toBeInTheDocument();
     expect(screen.queryByText("sharing_unavailable")).not.toBeInTheDocument();
   });

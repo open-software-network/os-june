@@ -1,6 +1,6 @@
 # Audio pipeline — capture to note
 
-How June records meeting audio, separates sources, detects conversation turns,
+How Clovy records meeting audio, separates sources, detects conversation turns,
 and transcribes into a note. It is **saved-audio-first**: the local WAV is the
 source of truth, provider speed is secondary. See
 [ADR-0005](adr/0005-source-separated-audio-capture.md) (one WAV per source),
@@ -65,7 +65,7 @@ waiting for the full timeout.
 ## Automatic meeting completion
 
 Only a recording started from the native meeting prompt is eligible for
-automatic completion. At start, June snapshots the allowlisted external app
+automatic completion. At start, Clovy snapshots the allowlisted external app
 families that own the microphone and persists the recording origin, app-family
 set, and eligibility on `recording_sessions`. Manual, agent-started, and
 recovered recordings remain ineligible.

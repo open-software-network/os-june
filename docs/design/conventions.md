@@ -1,6 +1,6 @@
 # Design conventions
 
-Naming, interaction, and theming rules for working in June's stylesheet and UI.
+Naming, interaction, and theming rules for working in Clovy's stylesheet and UI.
 Companion docs: [foundations.md](foundations.md) (tokens and type),
 [components.md](components.md) (the shared primitives), and
 [taste.md](taste.md) (the sensibility behind the rules).
@@ -65,9 +65,17 @@ modules or scoping. That has consequences:
 - Light and dark cascade off the `data-theme` attribute; the accent applies by
   setting the `--brand` variables. `--brand` and the chroma-capped
   `--brand-wash` are `@property`-registered so they animate; derived tokens
-  (`--brand-tint`, `--brand-line`, `--warm-*`) re-mix from `--brand`
-  automatically.
-- Five presets (rose, clay, sage, ocean, plum; clay default) live in
+  (`--brand-tint`, `--brand-line`, `--warm-*`, and surface neutrals) re-mix from
+  `--brand` automatically. `applyBrandVar` also exposes the canonical preset id
+  as `data-brand` for the Sage character exception. Stateful `--primary` uses
+  the base accent in light and its luminous companion in dark, paired with
+  `--primary-foreground` for contrast. Composer send affordances, Home
+  shortcuts, and the living Home character use that preset-driven pair; the
+  character preserves canonical lime in Sage. Solid
+  `--primary-action-*` tokens intentionally use fixed Clovy identity colors and
+  swap value roles by light/dark theme for identity-led setup and onboarding
+  actions.
+- Five presets (rose, clay, sage, ocean, plum; sage default) live in
   `src/lib/brand.ts` as an id-to-hex map.
 - **Sync warning:** that id-to-hex map is **duplicated** in the pre-paint
   scripts of `index.html` and `styleguide.html` (so the first paint is correct

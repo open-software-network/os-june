@@ -57,8 +57,8 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
             defer: false
         )
         window.title = role == "observer"
-            ? "June Computer Use Observer"
-            : "June Computer Use Target"
+            ? "Clovy Computer Use Observer"
+            : "Clovy Computer Use Target"
         window.setAccessibilityIdentifier(role == "observer"
             ? "june-cu-observer-window"
             : "june-cu-target-window")

@@ -2,7 +2,7 @@
 
 `june.link` must never be added to the `os-june-api-production` ingress. The
 short-link origin runs on `os-june-link-production`, with a separate
-dstack-ingress, certificate volume, and viewer-only June API process.
+dstack-ingress, certificate volume, and viewer-only Clovy API process.
 
 ## Safety invariants
 
@@ -10,7 +10,7 @@ dstack-ingress, certificate volume, and viewer-only June API process.
 - The isolated compose owns only `june.link`.
 - `JUNE__SHARE__VIEWER_ONLY=true` removes share mutation, inference, upload,
   and reporting routes from the short-link process.
-- The June API image is smoke-tested in viewer-only mode before deployment.
+- The Clovy API image is smoke-tested in viewer-only mode before deployment.
 - The deployment is update-only: automation refuses to create or select the
   primary CVM.
 - The primary API must return 200 immediately before and after an isolated
@@ -74,6 +74,6 @@ image and does not change the primary CVM.
 ## Rollback
 
 Roll back or stop only `os-june-link-production`. Never edit the primary
-compose as part of a june.link rollback. Existing June API traffic remains on
+compose as part of a june.link rollback. Existing Clovy API traffic remains on
 `june-api.opensoftware.co`; pause client promotion until the isolated viewer is
 healthy again.

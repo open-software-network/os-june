@@ -1,0 +1,112 @@
+import { useId, type HTMLAttributes, type SVGProps } from "react";
+
+export const CLOVY_MARK_WIDTH = 257;
+export const CLOVY_MARK_HEIGHT = 264;
+export const CLOVY_MARK_VIEWBOX = `0 0 ${CLOVY_MARK_WIDTH} ${CLOVY_MARK_HEIGHT}`;
+
+/** Approved happy-eyes Clovy geometry from the marketing brand source. */
+export const CLOVY_MARK_PATH =
+  "M99.8104 0.0262613C138.071 -1.09911 151.338 34.147 150.906 66.788C167.086 45.9839 192.628 28.1589 220.16 38.9501C241.444 47.2931 249.633 72.6964 240.35 92.9462C233.01 108.96 220.258 118.226 204.12 124.622C227.262 127.441 256.1 138.358 256.872 166.01C257.135 174.337 253.911 182.401 247.976 188.255C239.398 196.79 229.401 198.063 218.1 198.198C218.809 203.806 219.436 208.075 218.173 213.732C216.633 220.792 212.285 226.916 206.129 230.7C199.246 234.9 190.188 235.879 182.506 233.804C160.618 227.878 149.874 210.258 139.249 192.639C141.827 211.271 139.744 230.327 130.786 247.389C124.994 257.838 113.127 266.907 102.004 262.545C99.7278 261.652 98.0027 260.037 97.3554 257.294C95.4185 249.082 101.913 246.2 106.112 241.234C118.643 226.414 122.536 210.503 122.279 193.751C117.643 206.759 112.835 215.471 101.8 227.467C78.3712 252.945 34.7107 245.56 34.2548 206.465C34.1017 193.319 42.7063 179.94 52.4725 170.682C30.5596 169.39 9.31687 162.366 1.8827 139.435C-1.39788 128.962 -0.361542 117.612 4.75966 107.904C9.57541 98.6542 17.9531 91.7675 27.9599 88.8339C45.4751 83.5195 62.0831 89.9152 77.4052 98.0311C58.417 71.6194 44.7798 31.7735 77.2987 7.72646C83.6764 3.01084 91.9867 0.92448 99.8104 0.0262613ZM107.627 109C100.101 109 93.9999 119.074 93.9999 131.5C93.9999 137.007 95.1986 142.053 97.1884 145.964C98.1705 147.893 100.792 147.568 102.395 146.113C103.87 144.775 105.621 144 107.5 144C109.446 144 111.256 144.832 112.763 146.259C114.334 147.747 116.946 148.106 117.948 146.188C120.008 142.247 121.254 137.114 121.254 131.5C121.254 119.074 115.153 109 107.627 109ZM147.627 109C140.101 109 134 119.074 134 131.5C134 137.007 135.199 142.053 137.188 145.964C138.17 147.893 140.792 147.568 142.395 146.113C143.87 144.775 145.621 144 147.5 144C149.446 144 151.256 144.832 152.763 146.259C154.334 147.747 156.946 148.106 157.948 146.188C160.008 142.247 161.254 137.114 161.254 131.5C161.254 119.074 155.153 109 147.627 109Z";
+
+const CLOVY_EYES_START = CLOVY_MARK_PATH.indexOf("M107.627 109");
+
+/** Canonical outer silhouette with the static eye apertures removed. */
+export const CLOVY_BODY_PATH = CLOVY_MARK_PATH.slice(0, CLOVY_EYES_START);
+
+/** Canonical open eyes, split out so personified Clovy can swap expressions. */
+export const CLOVY_EYES_PATH = CLOVY_MARK_PATH.slice(CLOVY_EYES_START);
+
+export const CLOVY_LIME = "#EEFE92";
+export const CLOVY_LIME_SHADE = "#C4F979";
+export const CLOVY_LEAF_INK = "#183D2F";
+
+export type ClovyLogoVariant = "gradient" | "mono" | "leaf-ink";
+
+export type ClovyLogoProps = Omit<SVGProps<SVGSVGElement>, "children"> & {
+  label?: string;
+  variant?: ClovyLogoVariant;
+};
+
+const WORDMARK_VIEWBOX = "0 0 1099 242";
+export const CLOVY_WORDMARK_PATHS = [
+  "M115.845 0C181.322 0 223.967 31.8996 230.683 102.078C231.354 108.794 227.996 112.151 221.28 112.151H145.394C139.014 112.151 135.32 109.465 133.306 102.414C130.619 92.6764 125.582 87.3037 115.845 87.3037C103.421 87.3038 95.6982 100.399 95.6982 120.546C95.6983 141.364 103.421 154.46 115.845 154.46C125.582 154.46 130.62 149.087 133.642 138.678C135.656 131.627 139.35 128.94 145.729 128.94H221.616C228.332 128.94 231.69 132.298 231.019 139.014C224.303 209.864 181.658 241.764 115.845 241.764C48.3526 241.764 7.65086e-05 204.491 0 120.882C0 37.6079 48.3526 6.23639e-05 115.845 0Z",
+  "M523.202 0C592.709 0 642.405 37.6078 642.405 120.882C642.405 204.491 592.709 241.764 523.202 241.764C453.695 241.764 404 204.491 404 120.882C404 37.6079 453.695 0.000110102 523.202 0ZM523.202 94.0195C509.771 94.0197 499.697 102.414 499.697 120.546C499.697 132.675 503.889 140.473 510.47 144.481C511.981 145.401 512.706 147.317 511.887 148.885L505.758 160.61C504.713 162.608 506.162 165 508.416 165H537.707C539.913 165 541.365 162.699 540.414 160.708L534.659 148.65C533.924 147.109 534.637 145.286 536.087 144.385C542.58 140.351 546.707 132.581 546.707 120.546C546.707 102.414 536.633 94.0195 523.202 94.0195Z",
+  "M335.678 3.35742C342.393 3.35754 345.416 6.7161 344.408 13.4316L335.342 77.2295C334.334 83.9451 337.357 87.3037 344.072 87.3037H386.045C392.76 87.3038 396.118 90.6614 396.118 97.377V228.332C396.118 235.048 392.76 238.405 386.045 238.405H234.942C228.227 238.405 225.205 235.047 226.212 228.332L257.104 13.4316C258.112 6.71611 261.805 3.35755 268.521 3.35742H335.678Z",
+  "M733.619 3.35742C740.335 3.35754 743.692 6.7161 743.356 13.4316L739.327 131.627C739.327 135.992 740.67 139.35 745.371 139.35C750.743 139.35 753.094 136.328 753.766 131.963L775.592 13.4316C776.935 6.71602 780.628 3.35746 787.344 3.35742H878.341C885.056 3.35742 887.407 6.3799 885.057 12.7598L805.477 229.004C803.126 235.384 798.76 238.405 792.045 238.405H659.747C653.031 238.405 649.673 235.048 649.673 228.332V13.4316C649.673 6.71598 653.031 3.35742 659.747 3.35742H733.619Z",
+  "M975.939 3.35742C982.655 3.35756 986.013 6.71612 986.013 13.4316V76.8945C986.013 85.2889 989.371 90.3252 994.743 90.3252C1001.12 90.325 1004.48 83.6099 1004.48 74.8799V13.4316C1004.48 6.71608 1007.84 3.35752 1014.55 3.35742H1088.43C1095.14 3.35742 1098.5 6.71598 1098.5 13.4316V147.408C1098.5 212.55 1071.3 238.405 1003.81 238.405H905.425C898.709 238.405 895.352 235.048 895.352 228.332V181.322C895.352 174.607 898.709 171.249 905.425 171.249H969.896C996.086 171.249 1005.15 159.161 1005.15 129.612C1005.15 125.583 1003.14 123.568 999.443 123.568C995.75 123.569 994.071 125.919 992.393 128.94C982.991 144.051 968.552 157.817 944.04 157.817C903.41 157.817 891.993 133.977 891.993 103.757V13.4316C891.993 6.71598 895.352 3.35742 902.067 3.35742H975.939Z",
+] as const;
+
+function useLogoPaint(variant: ClovyLogoVariant) {
+  const id = `clovy-gradient-${useId().replaceAll(":", "")}`;
+  if (variant === "mono") return { fill: "currentColor", id };
+  if (variant === "leaf-ink") return { fill: CLOVY_LEAF_INK, id };
+  return { fill: `url(#${id})`, id };
+}
+
+function accessibilityProps(label?: string) {
+  return label ? { "aria-label": label, role: "img" as const } : { "aria-hidden": true as const };
+}
+
+function ClovyGradient({ id, x, y2 }: { id: string; x: number; y2: number }) {
+  return (
+    <linearGradient id={id} x1={x} x2={x} y1="0" y2={y2} gradientUnits="userSpaceOnUse">
+      <stop stopColor={`var(--clovy-glow-top, ${CLOVY_LIME})`} />
+      <stop offset="1" stopColor={`var(--clovy-glow, ${CLOVY_LIME_SHADE})`} />
+    </linearGradient>
+  );
+}
+
+export function ClovyMark({ label, variant = "gradient", ...props }: ClovyLogoProps) {
+  const paint = useLogoPaint(variant);
+  return (
+    <svg
+      viewBox={CLOVY_MARK_VIEWBOX}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      focusable="false"
+      {...accessibilityProps(label)}
+      {...props}
+    >
+      <title>{label ?? "Clovy"}</title>
+      {variant === "gradient" ? <ClovyGradient id={paint.id} x={128.443} y2={263.666} /> : null}
+      <path fillRule="evenodd" clipRule="evenodd" d={CLOVY_MARK_PATH} fill={paint.fill} />
+    </svg>
+  );
+}
+
+export function ClovyWordmark({ label, variant = "gradient", ...props }: ClovyLogoProps) {
+  const paint = useLogoPaint(variant);
+  return (
+    <svg
+      viewBox={WORDMARK_VIEWBOX}
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      focusable="false"
+      {...accessibilityProps(label)}
+      {...props}
+    >
+      <title>{label ?? "Clovy"}</title>
+      {variant === "gradient" ? <ClovyGradient id={paint.id} x={549.25} y2={241.764} /> : null}
+      {CLOVY_WORDMARK_PATHS.map((path) => (
+        <path key={path} d={path} fill={paint.fill} />
+      ))}
+    </svg>
+  );
+}
+
+export type ClovyAppTileProps = Omit<HTMLAttributes<HTMLSpanElement>, "children"> & {
+  label?: string;
+};
+
+/** Compact rendering of the native icon's pine tile and neon Clovy mark. */
+export function ClovyAppTile({ className, label, ...props }: ClovyAppTileProps) {
+  return (
+    <span
+      className={`clovy-app-tile${className ? ` ${className}` : ""}`}
+      {...(label ? { "aria-label": label, role: "img" as const } : { "aria-hidden": true })}
+      {...props}
+    >
+      <ClovyMark variant="gradient" />
+    </span>
+  );
+}

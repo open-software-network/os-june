@@ -1,4 +1,4 @@
-// Dev-only coordinator for inspecting June's shared spinner in representative
+// Dev-only coordinator for inspecting Clovy's shared spinner in representative
 // production contexts from one console command:
 //
 //   window.__spinnerDemo()       show sidebar, gallery, HUD, and toast samples

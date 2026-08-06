@@ -121,7 +121,7 @@ describe("account and run status", () => {
       tone: "ok",
     });
     expect(accountStatusMeta("reconnect_required", "linear").blurb).toBe(
-      "Linear needs you to sign in again before June can use this workspace.",
+      "Linear needs you to sign in again before Clovy can use this workspace.",
     );
     expect(accountStatusMeta("unavailable", "notion").label).toBe("Status unavailable");
   });

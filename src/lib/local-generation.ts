@@ -18,7 +18,7 @@ export function localGenerationOptionId(modelId: string) {
 /** Inverse of {@link localGenerationOptionId}: the raw local model id encoded
  * in a synthetic option id, or null when the id is not a synthetic local
  * option (or is malformed). The tagged id stays intact in session settings to
- * retain upstream provenance; June's on-device integration uses this inverse
+ * retain upstream provenance; Clovy's on-device integration uses this inverse
  * only when it needs to display or forward the raw local id. */
 export function rawLocalGenerationModelId(optionId: string): string | null {
   if (!optionId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) return null;
@@ -34,7 +34,7 @@ export function rawLocalGenerationModelId(optionId: string): string | null {
 
 /** Display-only row for a session whose tagged local choice no longer matches
  * the configured endpoint. Keep the original choice visible; sends fail closed
- * in June's on-device provider proxy until the user reconfigures or selects
+ * in Clovy's on-device provider proxy until the user reconfigures or selects
  * another model. */
 export function unavailableLocalGenerationOption(optionId: string): VeniceModelDto | null {
   const modelId = rawLocalGenerationModelId(optionId);

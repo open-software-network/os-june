@@ -1,18 +1,18 @@
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
 import { useEffect, useState } from "react";
 import type { ReferralNudgeMoment } from "../../lib/referral-nudge";
-import { JuneGlassMark } from "../brand/JuneGlassMark";
+import { ClovyMark } from "../brand/ClovyLogo";
 
 export type { ReferralNudgeMoment };
 
 /**
  * The referral delight nudge: a rare, dismissible invite card that appears at
- * moments June has just delivered value (5th meeting note, first successful
+ * moments Clovy has just delivered value (5th meeting note, first successful
  * agent task, 25th dictation, positive feedback). Deliberately a small cousin
  * of the referral dialog's hero — the same terracotta gradient, grain, and
- * June mark — so clicking through into that dialog feels continuous.
+ * Clovy mark — so clicking through into that dialog feels continuous.
  *
- * The card never auto-dismisses (a dictation lands while June is backgrounded;
+ * The card never auto-dismisses (a dictation lands while Clovy is backgrounded;
  * the card waits to be found) and never steals focus. Trigger moments and
  * frequency caps live with the caller, not here.
  */
@@ -23,18 +23,18 @@ export const OPEN_REFERRAL_DIALOG_EVENT = "june:open-referral-dialog";
 const MOMENT_COPY: Record<ReferralNudgeMoment, { title: string; body: string }> = {
   meetings: {
     title: "Five meetings, all captured",
-    body: "Know someone who lives in meetings? They get a free month of June, and when they subscribe, so do you.",
+    body: "Know someone who lives in meetings? They get a free month of Clovy, and when they subscribe, so do you.",
   },
   agent: {
     title: "Give a month, get a month",
-    body: "Share June with a friend. They get a free month, and when they subscribe, so do you.",
+    body: "Share Clovy with a friend. They get a free month, and when they subscribe, so do you.",
   },
   dictation: {
     title: "Twenty-five dictations in",
-    body: "Know someone who types too much? They get a free month of June, and when they subscribe, so do you.",
+    body: "Know someone who types too much? They get a free month of Clovy, and when they subscribe, so do you.",
   },
   feedback: {
-    title: "Glad you're enjoying June",
+    title: "Glad you're enjoying Clovy",
     body: "Share it with a friend. They get a free month, and when they subscribe, so do you.",
   },
 };
@@ -79,13 +79,10 @@ export function ReferralNudge({
   return (
     <aside className="referral-nudge" role="status" data-leaving={leaving || undefined}>
       <div className="referral-nudge-hero">
-        {/* The sign-in surfaces' 3D glass mark, reprised at gift scale — the
-            same object the user met at their first sign-in, now the thing
-            they're invited to hand to a friend. Falls back to the flat
-            gradient mark (recolored white via --brand below) without WebGL
-            or under reduced motion. */}
-        <span className="referral-nudge-mark-glass" aria-hidden>
-          <JuneGlassMark />
+        {/* The same flat Clovy mark used at first sign-in, reprised at
+            gift scale as the thing the user is invited to hand to a friend. */}
+        <span className="referral-nudge-brand-mark" aria-hidden>
+          <ClovyMark variant="mono" />
         </span>
         <p className="referral-nudge-title">{copy.title}</p>
       </div>

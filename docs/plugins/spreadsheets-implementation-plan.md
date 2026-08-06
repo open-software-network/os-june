@@ -3,11 +3,11 @@
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" (and any Hermes bridge commands such as
 > `import_hermes_bridge_file`) refer to the removed embedded Hermes runtime.
-> Agent-facing MCP registration is now June-owned per
+> Agent-facing MCP registration is now Clovy-owned per
 > [ADR-0038](../adr/0038-june-owned-openai-agents-runtime.md) and
 > [ADR-0039](../adr/0039-june-owned-routines-and-mcp.md); read "Hermes" below
-> as "the June agent runtime" and route MCP registration through the ADR-0039
-> mechanism. The MCP-server integration shape itself is superseded: June-owned
+> as "the Clovy agent runtime" and route MCP registration through the ADR-0039
+> mechanism. The MCP-server integration shape itself is superseded: Clovy-owned
 > capabilities are built as in-loop host tools per
 > [ADR-0040](../adr/0040-plugin-capabilities-as-host-tools.md).
 
@@ -21,14 +21,14 @@
 Extend the shared artifact broker with a typed workbook IR and deterministic
 CSV/TSV/XLSX adapters. Keep binary generation and validation out of model text,
 bound every read/write, never execute active content, and export only through
-the June UI.
+the Clovy UI.
 
 ## Dependencies
 
 - Documents Phase 0 selects the shared artifact worker/broker pattern.
 - The package-security spec governs any new Rust crate, Python wheel, binary,
   and build script.
-- A formula-engine spike must establish exactly which functions June can
+- A formula-engine spike must establish exactly which functions Clovy can
   calculate versus preserve without calculation.
 
 ## Phase 0: workbook engine spike
@@ -44,7 +44,7 @@ writer) with an isolated pinned worker. Evaluate:
 - render strategy for table and chart previews.
 
 Exit with a supported feature/function matrix. Unsupported formulas are
-preserved and labeled "not recalculated" or rejected for a requested edit; June
+preserved and labeled "not recalculated" or rejected for a requested edit; Clovy
 never invents a cached value.
 
 ## Architecture
@@ -54,7 +54,7 @@ Hermes -> june_spreadsheets MCP -> Rust artifact broker -> workbook engine
                                              |-> immutable workbook versions
                                              |-> table/chart previews
                                              `-> validation + calculation report
-June UI -> native save dialog -> explicit export copy
+Clovy UI -> native save dialog -> explicit export copy
 ```
 
 Workbook IR includes workbook metadata, sheet properties, cells with typed

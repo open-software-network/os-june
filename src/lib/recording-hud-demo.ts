@@ -10,7 +10,7 @@
 // - Main window devtools (Tauri dev app): events go out on the Tauri bus
 //   only, the same channels Rust pushes status and zone changes on. CAVEAT:
 //   in the real app the meeting-hud native window only shows when a recording
-//   is live AND June is backgrounded/minimized/hidden — Rust decides (see
+//   is live AND Clovy is backgrounded/minimized/hidden — Rust decides (see
 //   src-tauri/src/meeting_hud.rs). So in-app these bus events only restyle
 //   the pill if Rust is already showing it; the standalone page is the
 //   primary sandbox for this driver. This driver never force-shows the window.
@@ -51,12 +51,12 @@ const HELP = [
   "Window rotation is Rust-side: on the standalone page only the CSS",
   "counter-turn is visible — the pill content rotates without the window",
   "turning. In the real app the native window only shows when a recording",
-  "is live and June is backgrounded/minimized/hidden (Rust-managed), so bus events here",
+  "is live and Clovy is backgrounded/minimized/hidden (Rust-managed), so bus events here",
   "only restyle the pill if it is already on screen.",
   "",
   '"end" in the dev app arms the REAL meeting-end countdown on the live',
   "recording (start one first): the record dock shows the draining notice",
-  "while June is frontmost, and backgrounding June pops the native card",
+  "while Clovy is frontmost, and backgrounding Clovy pops the native card",
   "top-center; Keep/Stop/expiry drive the actual session — Stop now and the",
   '15s lapse genuinely finish the recording; "clear" suppresses it like Keep',
   "recording. On the standalone page the same card is faked in place and the",

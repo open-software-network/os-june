@@ -1,6 +1,6 @@
 # Local CI signoff
 
-June uses local signoff for PR checks that are either expensive or slow during
+Clovy uses local signoff for PR checks that are either expensive or slow during
 agent iteration.
 
 The `desktop` workflow still runs cheap hosted checks on PRs and still runs the

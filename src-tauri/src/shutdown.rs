@@ -263,14 +263,14 @@ pub(crate) fn prepare_for_updater_exit(app: &tauri::AppHandle) -> Result<(), App
                     );
                     Err(AppError::new(
                         "update_cleanup_timed_out",
-                        "June could not finish preparing for the update. Try installing it again.",
+                        "Clovy could not finish preparing for the update. Try installing it again.",
                     ))
                 }
             }
         }
         BeginShutdown::AlreadyRunning(_) => Err(AppError::new(
             "update_cleanup_incomplete",
-            "June is already shutting down. Try installing the update again.",
+            "Clovy is already shutting down. Try installing the update again.",
         )),
     }
 }

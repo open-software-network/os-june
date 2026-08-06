@@ -21,7 +21,7 @@ function session(id: string): AgentSessionDto {
 }
 
 describe("session data partition filtering", () => {
-  it("keeps June-owned sessions in their assigned data partition", () => {
+  it("keeps Clovy-owned sessions in their assigned data partition", () => {
     const sessions = [session("work-session"), session("default-session")];
     const partitions = sessionPartitionMap([{ sessionId: "work-session", profile: "work" }]);
 

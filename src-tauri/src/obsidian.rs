@@ -293,7 +293,7 @@ fn validate_vault_path(path: &Path) -> Result<PathBuf, AppError> {
 fn ensure_readable(path: &Path) -> Result<(), AppError> {
     fs::read_dir(path)
         .map(|_| ())
-        .map_err(|_| AppError::new("obsidian_vault_unreadable", "June cannot read this vault."))
+        .map_err(|_| AppError::new("obsidian_vault_unreadable", "Clovy cannot read this vault."))
 }
 
 fn ensure_writable(path: &Path) -> Result<(), AppError> {
@@ -307,7 +307,7 @@ fn ensure_writable(path: &Path) -> Result<(), AppError> {
     result.map(|_| ()).map_err(|_| {
         AppError::new(
             "obsidian_vault_unwritable",
-            "June cannot write to this vault.",
+            "Clovy cannot write to this vault.",
         )
     })
 }

@@ -1,4 +1,4 @@
-# June integration portfolio: next ten
+# Clovy integration portfolio: next ten
 
 - **Owner:** CEO + CTO
 - **Date:** 2026-07-14
@@ -7,7 +7,7 @@
 
 ## Executive decision
 
-After June's first ten plugins, the next ten provider integrations should be:
+After Clovy's first ten plugins, the next ten provider integrations should be:
 
 | Overall rank | Integration | Score | Portfolio role | Primary gate |
 | ---: | --- | ---: | --- | --- |
@@ -23,7 +23,7 @@ After June's first ten plugins, the next ten provider integrations should be:
 | 20 | Canva | 56 | Reviewed visual follow-through | Server-side secret custody and API review limits |
 
 This is a research and sequencing decision, not approval to implement all ten
-at once. GitHub, Linear, and Google remain existing June workstreams and are
+at once. GitHub, Linear, and Google remain existing Clovy workstreams and are
 not rescored here. The original top ten remain ahead of this follow-on set.
 
 ## Method
@@ -32,7 +32,7 @@ The scores are the unchanged values from the reproducible scorecard in
 [portfolio.md](portfolio.md). That scorecard weights core-loop fit (25), ICP
 frequency (20), action leverage (15), retention and composition (15), privacy
 differentiation (15), and delivery confidence (10). Ties retain the original
-order after considering fit with June's current customers and the amount of
+order after considering fit with Clovy's current customers and the amount of
 new architecture required.
 
 | Integration | Core /25 | Frequency /20 | Action /15 | Retention /15 | Privacy /15 | Delivery /10 | Total |
@@ -50,7 +50,7 @@ new architecture required.
 
 ## Portfolio thesis
 
-The follow-on set expands June in four directions without pretending every
+The follow-on set expands Clovy in four directions without pretending every
 provider deserves a one-off architecture:
 
 - HubSpot, Salesforce, and Pipedrive turn customer meetings into reviewed CRM
@@ -63,7 +63,7 @@ provider deserves a one-off architecture:
 - Canva turns approved meeting outcomes into bounded visual artifacts and
   export jobs.
 
-The repeated product advantage is not generic search. June combines the user's
+The repeated product advantage is not generic search. Clovy combines the user's
 local note graph with a live provider object, then proposes one bounded action
 whose destination and disclosure are visible before approval.
 
@@ -91,7 +91,7 @@ Each plan therefore begins with an auth matrix and ends the spike with one of:
 ### Local mode and events stay separate
 
 Provider webhooks require public HTTPS endpoints. Local mode uses live fetch,
-bounded polling, or a provider-supported on-device long poll while June is
+bounded polling, or a provider-supported on-device long poll while Clovy is
 awake. Webhooks belong to an accepted away-mode relay design and cannot become
 an undocumented backend content path.
 
@@ -102,7 +102,7 @@ pipelines, Salesforce record types, Asana projects, Box/Dropbox folders,
 GitLab groups/projects, ClickUp spaces/lists, Pipedrive pipelines, Azure DevOps
 projects, or Canva folders/designs. The component that holds the provider
 credential enforces that selection after resolving provider ids: the Rust
-provider proxy for local mode, or the June API broker for a server connector.
+provider proxy for local mode, or the Clovy API broker for a server connector.
 A model-supplied id cannot widen it at either boundary.
 
 ## Sequencing
@@ -143,10 +143,10 @@ approval, retry, revocation, prompt-injection, billing, and measurement rules
 in [portfolio.md](portfolio.md). In addition:
 
 1. A provider-specific auth matrix is release evidence, not a planning note.
-2. Approval previews show both the provider destination and June-originated
+2. Approval previews show both the provider destination and Clovy-originated
    note content that will leave the device.
 3. Broad CRM or file scopes are never treated as proof that broad use is
-   appropriate. June enforces the narrower user selection.
+   appropriate. Clovy enforces the narrower user selection.
 4. Schema discovery is cached as non-secret metadata only and invalidated on
    permission or provider-schema changes.
 5. Provider webhooks remain off until an accepted relay threat model names
@@ -158,7 +158,7 @@ The ordering should be rescored when any of these happens:
 
 - a provider adds or removes public-client PKCE, materially changing delivery
   confidence;
-- June identifies a primary sales, support, creative, or enterprise file ICP;
+- Clovy identifies a primary sales, support, creative, or enterprise file ICP;
 - the first three provider pilots produce activation and weekly task data;
 - away mode has an accepted threat model and implementation; or
 - user research shows one omitted workflow is more frequent than the assumed

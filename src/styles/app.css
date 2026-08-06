@@ -260,54 +260,53 @@ input:focus-visible,
   margin: 0 auto;
 }
 
-/* New-session warmth: a whisper of brand orange welling up from the bottom of
- * the intro screen, clear at the top so the greeting and bar stay neutral.
- * Two stacked layers share the same bounds and fade: ::before paints the wash
- * gradient, ::after paints the 1px inset rim that keeps the wash's edge crisp
- * against the shell — a separate layer because the rim must dissolve toward
- * the top alongside the wash (a bare hairline over the clear region reads as
- * a stray border, most visibly in dark mode), and a box-shadow can only fade
- * via a mask on its own element. Full-bleed behind the centered hero column
- * (z-index:-1 keeps them above the card but under the content), fading on
- * opacity as the composer glides to its dock on thread handoff. */
+/* The new-session accent borrows the original bottom-rising ombre, but keeps
+ * it inside the canvas. A broad linear horizon avoids the spotlight effect;
+ * the side mask dissolves the wash before it reaches either panel edge. */
 .agent-workspace::before,
 .agent-workspace::after {
   content: "";
   position: absolute;
-  /* Bleed past .main-panel-body's horizontal padding so the wash reaches the
-   * card's left/right edges and rounded corners (.main-panel clips the
-   * overflow); top/bottom already sit flush to the card in the agent view. */
-  top: 0;
+  top: 28%;
   bottom: 0;
-  left: calc(var(--sp-8) * -1);
-  right: calc(var(--sp-8) * -1);
+  left: 50%;
+  width: min(var(--hero-wash-max-w), calc(100% - var(--sp-8) - var(--sp-8)));
   z-index: -1;
   pointer-events: none;
   opacity: 0;
+  transform: translateX(-50%);
   transition: opacity 280ms var(--ease-out);
 }
 
 .agent-workspace::before {
-  background: linear-gradient(to bottom, transparent 30%, var(--hero-wash));
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--hero-wash-soft) 42%,
+    var(--hero-wash) 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--hero-wash-side-fade),
+    #000 calc(100% - var(--hero-wash-side-fade)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 var(--hero-wash-side-fade),
+    #000 calc(100% - var(--hero-wash-side-fade)),
+    transparent
+  );
 }
 
-.agent-workspace::after {
-  /* Per-theme rim colors live in tokens.css (--hero-wash-rim). The mask
-   * mirrors the wash gradient's stops so the rim emerges exactly where the
-   * warmth does. */
-  border-radius: var(--r-window);
-  box-shadow: inset 0 0 0 1px var(--hero-wash-rim);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
-  mask-image: linear-gradient(to bottom, transparent 30%, #000 100%);
-}
-
-.agent-workspace[data-hero="true"]::before,
-.agent-workspace[data-hero="true"]::after {
+.agent-workspace[data-hero="true"]::before {
   opacity: 1;
 }
 
 /* Home keeps a real (if quiet) share of the hero's warm floor — the wash
- * rising from the composer is what makes the thread feel like June's room
+ * rising from the composer is what makes the thread feel like Clovy's room
  * rather than a console. Hero owns the full-strength moment. Home re-curves
  * the gradient rather than opacity-scaling it: a taller, gentler ombre (felt
  * from mid-canvas, never loud at the floor). */
@@ -316,11 +315,16 @@ input:focus-visible,
  * the card's top edge, and the listening bloom (z 4) sits crisp above the
  * veil. The hero rim never renders in home, so its pseudo is free. */
 .agent-workspace[data-home="true"]::after {
+  top: 0;
   bottom: auto;
+  left: calc(var(--sp-8) * -1);
+  right: calc(var(--sp-8) * -1);
+  width: auto;
   height: var(--home-top-fade-size);
   z-index: 3;
   border-radius: 0;
   box-shadow: none;
+  transform: none;
   -webkit-mask-image: none;
   mask-image: none;
   background: linear-gradient(to bottom, var(--card), transparent);
@@ -340,7 +344,15 @@ input:focus-visible,
 }
 
 .agent-workspace[data-home="true"]::before {
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sp-8) * -1);
+  right: calc(var(--sp-8) * -1);
+  width: auto;
   opacity: 1;
+  transform: none;
+  -webkit-mask-image: none;
+  mask-image: none;
   /* Bottom-hugging: the top third stays pure canvas, then the warmth eases in
    * and gathers at the floor (hero-strength at the very bottom). */
   background: linear-gradient(
@@ -492,13 +504,19 @@ input:focus-visible,
   align-items: center;
   justify-content: center;
   gap: var(--sp-2);
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--primary-action-border);
   border-radius: var(--r-sm);
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
   transition:
     background-color var(--t-fast) var(--ease-out),
     border-color var(--t-fast) var(--ease-out);
+}
+
+.agent-new-task:hover:not(:disabled),
+.agent-icon-button:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .agent-new-task {
@@ -2309,7 +2327,7 @@ input:focus-visible,
   line-height: 1.55;
 }
 
-/* Home is a relationship thread: June speaks in plain text on the warm canvas
+/* Home is a relationship thread: Clovy speaks in plain text on the warm canvas
  * (exactly like a focused session, so the two surfaces share one voice), and
  * the person's messages sit in soft card bubbles that echo the composer they
  * were just typed in. No solid accent fills — warmth comes from the canvas
@@ -2335,7 +2353,7 @@ input:focus-visible,
 }
 
 /* Exchange rhythm: the reply gets enough separation from the sent bubble to
- * read as a new voice, while a new message after June's reply opens an even
+ * read as a new voice, while a new message after Clovy's reply opens an even
  * fuller breath. Conversations read in beats, not as one even-spaced list.
  * Day markers carry their own margins at boundaries. */
 .agent-timeline[data-home="true"] .agent-user-turn + .agent-assistant-turn {
@@ -2378,7 +2396,7 @@ input:focus-visible,
 /* Only the last message of a user run speaks the curl (iMessage grouping);
  * earlier messages in the run stay fully rounded. The source slices are
  * intrinsic coordinates from home-chat-bubble.svg. Render widths stay on
- * June's radius/spacing tokens; when a one-line bubble is shorter than the
+ * Clovy's radius/spacing tokens; when a one-line bubble is shorter than the
  * two radius slices, WebKit scales them down together. */
 .agent-timeline[data-home="true"] .agent-user-turn[data-user-run-end="true"] .agent-user-turn-body {
   border-radius: 0;
@@ -2396,7 +2414,7 @@ input:focus-visible,
   display: none;
 }
 
-/* June composing: bare dots at the reply position — no bubble chrome, since
+/* Clovy composing: bare dots at the reply position — no bubble chrome, since
  * her messages render bare on the canvas too. The dots breathe (a slow
  * opacity wave, no bounce) so the state reads as presence gathering itself
  * rather than a keyboard clattering. */
@@ -2498,7 +2516,7 @@ input:focus-visible,
   display: none;
 }
 
-/* June opens each day with a serif salutation — a display moment (per the
+/* Clovy opens each day with a serif salutation — a display moment (per the
  * font-families spec), not a message bubble, because the check-in is
  * client-authored ambiance rather than a model reply. */
 .agent-home-greeting {
@@ -2507,178 +2525,71 @@ input:focus-visible,
   margin-block: var(--sp-4) var(--sp-2);
 }
 
-/* June's bloom above the salutation: the character standing in for an avatar
- * row, warm but small — presence, not logo. The span carries the idle float so
- * the svg's own transform stays free for the wink tilt. */
+/* The living marketing-page Clovy carries the Home greeting: a themed body,
+ * pine eyes, an occasional blink, and a slight delayed response to the pointer. */
 .agent-home-greeting-mark {
   display: inline-flex;
   margin-bottom: var(--sp-1);
-  color: var(--brand);
 }
 
-/* The bloom's life signs: a slow float, a head-cock, and a periodic wink on a
- * long cycle that runs out of phase with the float. The two eye states are
- * FULL-BODY paths, so they must swap in a single frame (step-end): any
- * crossfade has both bodies semi-transparent at once, dimming the whole
- * flower into a visible flash. The wink reads through the held closed beat
- * (~360ms) and the eased tilt, not through eyelid fades. Static open eyes
- * under reduced motion. */
-.june-bloom {
+.clovy-alive {
+  --clovy-alive-fill-top: var(--clovy-glow-top);
+  --clovy-alive-fill-bottom: var(--clovy-glow);
+  --clovy-alive-depth-color: color-mix(
+    in oklch,
+    var(--clovy-leaf-deep) 72%,
+    var(--clovy-tile-bottom)
+  );
+  --clovy-alive-sheen-color: var(--clovy-lime-top);
+  --clovy-alive-rim-color: var(--clovy-lime-top);
+}
+
+.clovy-alive[data-palette="appearance"] {
+  --clovy-alive-fill-top: color-mix(in oklch, var(--primary) 76%, var(--on-solid));
+  --clovy-alive-fill-bottom: var(--primary);
+  --clovy-alive-depth-color: color-mix(in oklch, var(--primary) 68%, var(--clovy-ink));
+  --clovy-alive-sheen-color: color-mix(in oklch, var(--primary) 42%, var(--on-solid));
+  --clovy-alive-rim-color: color-mix(in oklch, var(--primary) 58%, var(--on-solid));
+}
+
+:root[data-brand="sage"] .clovy-alive[data-palette="appearance"] {
+  --clovy-alive-fill-top: var(--clovy-glow-top);
+  --clovy-alive-fill-bottom: var(--clovy-glow);
+  --clovy-alive-depth-color: color-mix(
+    in oklch,
+    var(--clovy-leaf-deep) 72%,
+    var(--clovy-tile-bottom)
+  );
+  --clovy-alive-sheen-color: var(--clovy-lime-top);
+  --clovy-alive-rim-color: var(--clovy-lime-top);
+}
+
+.clovy-home-mark {
   display: block;
+  overflow: visible;
+}
+
+.clovy-alive-body {
+  transform-box: fill-box;
   transform-origin: 50% 55%;
 }
 
-.june-bloom .june-bloom-wink {
-  opacity: 0;
+.clovy-alive-depth {
+  fill: var(--clovy-alive-depth-color);
+  opacity: 0.48;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .agent-home-greeting-mark,
-  .agent-home-listening {
-    animation: june-bloom-float var(--home-presence-float-dur) var(--ease-in-out) infinite;
-  }
-
-  .june-bloom[data-animated] {
-    animation: june-bloom-tilt var(--home-presence-wink-dur) var(--ease-in-out) infinite;
-  }
-
-  .june-bloom[data-animated] .june-bloom-open {
-    animation: june-bloom-eyes-open var(--home-presence-wink-dur) step-end infinite;
-  }
-
-  .june-bloom[data-animated] .june-bloom-wink {
-    animation: june-bloom-eyes-wink var(--home-presence-wink-dur) step-end infinite;
-  }
+.clovy-alive-sheen {
+  opacity: 0.16;
 }
 
-@keyframes june-bloom-float {
-  0%,
-  100% {
-    transform: translateY(0);
-  }
-  50% {
-    transform: translateY(var(--home-presence-float-y));
-  }
+.clovy-alive-rim {
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-/* step-end holds each segment's starting value, so the pair flips at exactly
- * 80% and back at 81.9% (a ~360ms closed beat) with no intermediate frames.
- * The keyframe positions must stay identical across both, or the face
- * double-exposes. */
-@keyframes june-bloom-eyes-open {
-  0% {
-    opacity: 1;
-  }
-  80% {
-    opacity: 0;
-  }
-  81.9%,
-  100% {
-    opacity: 1;
-  }
-}
-
-@keyframes june-bloom-eyes-wink {
-  0% {
-    opacity: 0;
-  }
-  80% {
-    opacity: 1;
-  }
-  81.9%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes june-bloom-tilt {
-  0%,
-  79.3% {
-    transform: rotate(0deg);
-  }
-  80.4%,
-  81.9% {
-    transform: rotate(var(--home-presence-tilt));
-  }
-  83%,
-  100% {
-    transform: rotate(0deg);
-  }
-}
-
-/* The small listening bloom acknowledges direct attention with one wink. The
- * periodic idle cycle yields to this short one-shot while hovered, then returns
- * with open eyes. Reduced-motion users get the same state change without the
- * timed head tilt. */
-.agent-home-listening:hover .june-bloom-open,
-.agent-home-greeting-mark:hover .june-bloom-open {
-  opacity: 0;
-}
-
-.agent-home-listening:hover .june-bloom-wink,
-.agent-home-greeting-mark:hover .june-bloom-wink {
-  opacity: 1;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .agent-home-listening:hover .june-bloom[data-animated],
-  .agent-home-greeting-mark:hover .june-bloom[data-animated] {
-    animation: june-bloom-hover-tilt calc(var(--t-slow) * 2) var(--ease-out) 1;
-  }
-
-  .agent-home-listening:hover .june-bloom-open,
-  .agent-home-greeting-mark:hover .june-bloom-open {
-    opacity: 1;
-    animation: june-bloom-hover-eyes-open calc(var(--t-slow) * 2) step-end 1;
-  }
-
-  .agent-home-listening:hover .june-bloom-wink,
-  .agent-home-greeting-mark:hover .june-bloom-wink {
-    opacity: 0;
-    animation: june-bloom-hover-eyes-wink calc(var(--t-slow) * 2) step-end 1;
-  }
-}
-
-@keyframes june-bloom-hover-eyes-open {
-  0%,
-  24% {
-    opacity: 1;
-  }
-  25%,
-  58% {
-    opacity: 0;
-  }
-  59%,
-  100% {
-    opacity: 1;
-  }
-}
-
-@keyframes june-bloom-hover-eyes-wink {
-  0%,
-  24% {
-    opacity: 0;
-  }
-  25%,
-  58% {
-    opacity: 1;
-  }
-  59%,
-  100% {
-    opacity: 0;
-  }
-}
-
-@keyframes june-bloom-hover-tilt {
-  0%,
-  20%,
-  100% {
-    transform: rotate(0deg);
-  }
-  35%,
-  62% {
-    transform: rotate(var(--home-presence-tilt));
-  }
+.clovy-alive-eye {
+  fill: var(--clovy-pine);
 }
 
 .agent-home-greeting h2 {
@@ -2865,7 +2776,7 @@ input:focus-visible,
 
 /* No pill: Home already stacks the suggestion chips over the composer
  * capsule, and a third pill here read as one shape too many. The action is a
- * quiet brand-colored line under June's sentence — the capsule exists only
+ * quiet brand-colored line under Clovy's sentence — the capsule exists only
  * as the hover tint. The negative start margin cancels the hover padding so
  * the label sits flush with the message text at rest. */
 .agent-home-task-message > button {
@@ -2880,7 +2791,7 @@ input:focus-visible,
   border-radius: var(--r-pill);
   background: none;
   color: var(--brand);
-  /* Inherits the thread's --fs-lg: the link is a continuation of June's
+  /* Inherits the thread's --fs-lg: the link is a continuation of Clovy's
    * sentence, so it reads at the same size as the message text above it. */
   font-weight: var(--fw-medium);
   cursor: pointer;
@@ -3611,7 +3522,7 @@ button.agent-user-attachment:hover {
   opacity: 0;
 }
 
-/* Running rows trade the status word for the fixed-size June mark spinner.
+/* Running rows trade the status word for the fixed-size Clovy mark spinner.
  * It stays on the spinner's neutral default — a working row is ambient
  * activity, not a semantic accent. */
 .agent-tool-spinner {
@@ -3798,7 +3709,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Generating state: a particle dot field inside a quiet card - the lattice,
- * the June Agents mark, the traveling sheen, and the pointer ripples are all
+ * the Clovy Agents mark, the traveling sheen, and the pointer ripples are all
  * drawn by GeneratedMediaDotField on a canvas; these rules supply the surface
  * and the per-theme ink the canvas reads (color + the alpha custom props).
  * The status lives in its own footer, so the sheen never crosses the text. */
@@ -4654,7 +4565,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Near-full reads as a themed intensity shift, not an error: a nearly-full
-   context is a heads up (June can compact it), so --destructive would
+   context is a heads up (Clovy can compact it), so --destructive would
    overclaim. --warm-strong is the deepened brand tone, so the signal tracks
    the selected theme preset instead of flashing red. */
 .agent-usage-meter-track[data-level="critical"] .agent-usage-meter-segment[data-lit="true"] {
@@ -6059,7 +5970,7 @@ button.agent-user-attachment:hover {
   font-size: var(--fs-sm);
 }
 
-/* Feature 06: the steer input shown above the composer box while June works.
+/* Feature 06: the steer input shown above the composer box while Clovy works.
  * Centered on the same chat measure as the notice/box so it reads as part of
  * the composer column, and quiet enough not to compete with the Stop control
  * in the box below. */
@@ -6111,20 +6022,22 @@ button.agent-user-attachment:hover {
   padding: 0;
   border: 0;
   border-radius: var(--r-md);
-  background: var(--brand);
+  background: var(--primary);
   color: var(--primary-foreground);
+  box-shadow: none;
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
 }
 
 .agent-composer-steer-send:hover {
-  background: color-mix(in oklch, var(--brand) 88%, black);
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
 }
 
 .agent-composer-steer-send:disabled {
   background: var(--surface-subtle);
   color: var(--muted-foreground);
+  box-shadow: none;
   cursor: default;
 }
 
@@ -6980,6 +6893,15 @@ button.agent-user-attachment:hover {
   border-radius: var(--r-sm);
   background: color-mix(in oklch, var(--muted) 55%, transparent);
   color: var(--foreground);
+}
+
+.agent-composer-model-row-logo[data-brand="clovy"],
+.model-picker-logo[data-brand="clovy"],
+.model-summary-logo[data-brand="clovy"] {
+  background: color-mix(in oklch, var(--clovy-lime) 72%, var(--card));
+  color: var(--clovy-pine);
+  box-shadow: inset 0 0 0 var(--border-width)
+    color-mix(in oklch, var(--clovy-pine) 12%, transparent);
 }
 
 .agent-composer-model-row-name {
@@ -8465,7 +8387,7 @@ button.agent-user-attachment:hover {
   color: var(--foreground);
 }
 
-/* Stop control — takes over the send slot while June is working on the open
+/* Stop control — takes over the send slot while Clovy is working on the open
  * session. The record button's warm hover recipe (cream surface, terracotta
  * glyph) rather than a solid fill: present but subtle, an interrupt offered
  * rather than an alarm. */
@@ -8493,8 +8415,8 @@ button.agent-user-attachment:hover {
   pointer-events: none;
 }
 
-/* Send is the primary action in the brand terracotta (the logo mark color);
- * dictation stays a ghost. The arrow is always in its slot — it just goes
+/* Send is the preset-colored action; dictation stays a ghost. The arrow is
+ * always in its slot — it just goes
  * quiet while there's nothing to send, and lights up as the user types.
  * Deliberately NO entrance motion on this button: an arrow nudge on the first
  * keystroke read as jank, and the box-level version misaligned the disabled
@@ -8508,8 +8430,9 @@ button.agent-user-attachment:hover {
   padding: 0;
   border: 0;
   border-radius: var(--r-lg);
-  background: var(--brand);
-  color: var(--on-solid);
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: none;
   transition:
     background-color var(--t-fast) var(--ease-out),
     color var(--t-fast) var(--ease-out);
@@ -8517,12 +8440,13 @@ button.agent-user-attachment:hover {
 }
 
 .agent-composer-send:hover {
-  background: color-mix(in oklch, var(--brand) 88%, black);
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground));
 }
 
 .agent-composer-send:disabled {
   background: var(--surface-subtle);
   color: var(--muted-foreground);
+  box-shadow: none;
   cursor: default;
 }
 
@@ -8542,7 +8466,7 @@ button.agent-user-attachment:hover {
   }
 }
 
-/* The steer-send needs no CSS of its own: while June works, stop and send
+/* The steer-send needs no CSS of its own: while Clovy works, stop and send
    TRADE the one corner slot on the draft state (typed = send, empty = stop),
    the same keyed scale-swap every send/stop trade uses. A two-button
    choreography (send sliding in beside stop) kept fighting the right-anchored
@@ -8743,8 +8667,9 @@ button.agent-user-attachment:hover {
 .agent-hero-chip-icon {
   display: inline-grid;
   place-items: center;
-  /* Warm terracotta to echo the new-session fade behind these chips. */
-  color: var(--brand);
+  /* Shortcut affordance, not fixed identity: follow the active Appearance
+   * preset, using its luminous companion on the dark canvas. */
+  color: var(--primary);
 }
 
 .agent-hero-footnote {
@@ -8917,7 +8842,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Windows has no traffic-light controls, so the titlebar-h (28px) of top
- * padding baked into .sidebar is dead space above the June logo. Reclaim it
+ * padding baked into .sidebar is dead space above the Clovy logo. Reclaim it
  * so the sidebar header sits flush at the top. Scoped to default mode only —
  * Settings keeps the original clearance since it has no sidebar-header and
  * the toggle falls back to the titlebar band there.
@@ -8936,7 +8861,7 @@ button.agent-user-attachment:hover {
 }
 
 /* Windows-only: when the sidebar is expanded and in default mode, visually
- * place the toggle in the sidebar header band — in line with the June logo,
+ * place the toggle in the sidebar header band — in line with the Clovy logo,
  * floated to the right edge with space between. The toggle stays position:fixed
  * (owned by App.tsx) so it never unmounts; this is pure visual placement.
  *
@@ -9027,13 +8952,31 @@ button.agent-user-attachment:hover {
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  /* Matches .sidebar-brand-mark: the wordmark scales with the text-size
-   * preference, so its wrapper must grow with it. */
-  height: calc(14px * var(--font-scale));
+  height: calc(12.5px * var(--font-scale));
   color: var(--foreground);
   text-decoration: none;
   flex: 0 1 auto;
   min-width: 0;
+}
+
+.clovy-app-tile {
+  display: inline-grid;
+  overflow: hidden;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: var(--r-md);
+  background: linear-gradient(180deg, var(--clovy-tile-top), var(--clovy-tile-bottom));
+  box-shadow:
+    inset 0 0 0 var(--border-width) color-mix(in oklch, var(--clovy-lime-top) 12%, transparent),
+    var(--shadow-sm);
+  line-height: 0;
+}
+
+.clovy-app-tile svg {
+  display: block;
+  width: 62%;
+  height: auto;
+  filter: drop-shadow(0 1px 2px color-mix(in oklch, var(--clovy-tile-bottom) 72%, transparent));
 }
 
 .sidebar-recording-indicator {
@@ -9115,15 +9058,9 @@ button.agent-user-attachment:hover {
   opacity: 0.38;
 }
 
-/* Two wordmarks ship side by side; CSS picks the right one per theme. */
-/* Inline wordmark: lettering rides on currentColor (the foreground), the mark
- * squircle derives from --brand, so one element covers light/dark AND every
- * accent. Replaces the old light/dark <img> swap. */
 .sidebar-brand-mark {
   display: block;
-  /* The wordmark is brand *text*, so it rides the text-size preference like
-   * the nav labels beside it — unlike glyph icons, which stay fixed chrome. */
-  height: calc(14px * var(--font-scale));
+  height: calc(12.5px * var(--font-scale));
   width: auto;
   color: var(--foreground);
 }
@@ -12609,7 +12546,7 @@ button.agent-user-attachment:hover {
 }
 
 .switch[data-state="checked"] {
-  background: var(--foreground);
+  background: var(--primary);
 }
 
 .switch:disabled {
@@ -13601,7 +13538,7 @@ button.agent-user-attachment:hover {
   gap: var(--sp-2);
 }
 
-/* June personality settings carry the four onboarding characters forward in
+/* Clovy personality settings carry the four onboarding characters forward in
  * a denser form. The options stay neutral like the rest of Settings; color is
  * reserved for each character so the card chrome does not become noisy. */
 .settings-personality-card {
@@ -13983,13 +13920,7 @@ button.agent-user-attachment:hover {
 }
 
 .btn.computer-use-permission-primary-action {
-  background: var(--foreground);
-  color: var(--primary-foreground);
   white-space: nowrap;
-}
-
-.btn.computer-use-permission-primary-action:hover:not(:disabled) {
-  background: color-mix(in oklch, var(--foreground) 86%, transparent);
 }
 
 .computer-use-permission-helper {
@@ -15254,9 +15185,14 @@ button.agent-user-attachment:hover {
 }
 
 .skill-bundles-new {
-  background: var(--primary);
-  color: var(--primary-foreground);
-  border-color: transparent;
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
+}
+
+.skill-bundles-new:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .skill-bundles-new:disabled,
@@ -15384,9 +15320,14 @@ button.agent-user-attachment:hover {
 }
 
 .skill-bundle-start {
-  background: var(--primary);
-  color: var(--primary-foreground);
-  border-color: transparent;
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
+}
+
+.skill-bundle-start:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .skill-bundle-delete {
@@ -15552,9 +15493,14 @@ button.agent-user-attachment:hover {
 }
 
 .skill-bundle-editor-save {
-  background: var(--primary);
-  color: var(--primary-foreground);
-  border-color: transparent;
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
+}
+
+.skill-bundle-editor-save:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .skill-bundle-editor-save:disabled {
@@ -16653,9 +16599,14 @@ button.agent-user-attachment:hover {
 }
 
 .skill-setup-save {
-  border-color: transparent;
-  background: var(--foreground);
-  color: var(--background);
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
+}
+
+.skill-setup-save:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .skill-setup-save:disabled {
@@ -18295,7 +18246,7 @@ button.agent-user-attachment:hover {
 
 .mcp-add-dialog .primary-action.primary-solid:hover,
 .mcp-tools-dialog .primary-action.primary-solid:hover {
-  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
+  background: var(--primary-action-background-hover);
 }
 
 .mcp-add-dialog .dialog-footer,
@@ -18920,7 +18871,7 @@ button.memory-project:hover {
   animation: sign-in-prompt-spin 0.9s linear infinite;
 }
 
-/* App-wide loading indicator: the dot spinner that draws June's mark. Its size
+/* App-wide loading indicator: the dot spinner that draws Clovy's mark. Its size
  * is fixed per variant (data-size sm/md/lg) in dot-spinner.css, not font-scaled;
  * the default color is the theme-aware --spinner-neutral token. */
 .spinner {
@@ -19315,10 +19266,6 @@ button.memory-project:hover {
   color: var(--foreground);
 }
 
-.model-summary-logo[data-brand="june"] {
-  background: transparent;
-}
-
 .model-summary-name {
   grid-area: name;
   align-self: center;
@@ -19666,21 +19613,25 @@ button.memory-project:hover {
   color: var(--muted-foreground);
 }
 
-/* Primary solid button (Granola / Claude style) -------------------- */
+/* Primary solid action --------------------------------------------- */
 
-.primary-action.primary-solid {
-  border-color: transparent;
-  background: var(--primary);
-  color: var(--primary-foreground);
+.primary-action.primary-solid:not(.primary-destructive),
+.btn.btn-primary {
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
 }
 
-.primary-action.primary-solid:hover {
-  background: color-mix(in oklch, var(--primary) 92%, var(--foreground));
-  border-color: transparent;
+.primary-action.primary-solid:not(.primary-destructive):hover:not(:disabled),
+.btn.btn-primary:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
-.primary-action.primary-solid:disabled {
+.primary-action.primary-solid:disabled,
+.btn.btn-primary:disabled {
   opacity: 0.55;
+  box-shadow: none;
   cursor: not-allowed;
 }
 
@@ -19694,8 +19645,8 @@ button.memory-project:hover {
   margin-left: var(--sp-1);
   padding: 0 5px;
   border-radius: var(--r-xs);
-  background: color-mix(in oklch, var(--primary-foreground) 18%, transparent);
-  color: color-mix(in oklch, var(--primary-foreground) 80%, transparent);
+  background: color-mix(in oklch, var(--primary-action-foreground) 18%, transparent);
+  color: color-mix(in oklch, var(--primary-action-foreground) 80%, transparent);
   font-family: var(--font-sans);
   font-size: var(--fs-2xs);
   font-weight: 400;
@@ -19840,7 +19791,7 @@ button.memory-project:hover {
 }
 
 /* Home has no identity header — the canvas is the surface. Once the daily
- * greeting retires, June's bloom keeps quiet watch from the top-left corner
+ * greeting retires, Clovy's bloom keeps quiet watch from the top-left corner
  * (floating and occasionally winking): she is listening. Decorative only, so
  * it has no click action; its tiny hit area only acknowledges a direct hover. */
 .agent-home-listening {
@@ -19855,7 +19806,7 @@ button.memory-project:hover {
   pointer-events: auto;
 }
 
-/* Messages keeps its input as one compact row. Preserve June's model and
+/* Messages keeps its input as one compact row. Preserve Clovy's model and
  * attachment controls, but let them read as accessories to the conversation
  * instead of a two-storey agent console. Controls align to the bottom edge so
  * a wrapping draft grows upward above them; the radius is concentric with the
@@ -23131,8 +23082,9 @@ button.memory-project:hover {
   padding: 0;
   border: 0;
   border-radius: var(--r-md);
-  background: var(--foreground);
-  color: var(--background);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
   cursor: pointer;
   transition:
     background-color var(--t-fast) var(--ease-out),
@@ -23141,7 +23093,7 @@ button.memory-project:hover {
 
 .folder-add-trigger:hover,
 .folder-add-trigger[aria-expanded="true"] {
-  background: color-mix(in oklch, var(--foreground) 88%, var(--card));
+  background: var(--primary-action-background-hover);
 }
 
 .folder-add-popover {
@@ -23520,7 +23472,7 @@ button.memory-project:hover {
   z-index: 1;
 }
 
-/* June brandmark, pinned to the top-left corner of the hero. Absolute so it
+/* Clovy brandmark, pinned to the top-left corner of the hero. Absolute so it
  * floats above the centered offer copy; white via currentColor against the
  * terracotta. Placed after the `> *` rule so this position wins. */
 .referral-hero-logo {
@@ -23530,6 +23482,12 @@ button.memory-project:hover {
   display: inline-flex;
   color: var(--on-solid);
   opacity: 0.92;
+}
+
+.referral-hero-logo svg {
+  display: block;
+  width: 28px;
+  height: auto;
 }
 
 .referral-hero-eyebrow {
@@ -23624,15 +23582,16 @@ button.memory-project:hover {
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
   line-height: 1;
   cursor: pointer;
   transition: opacity var(--t-fast) var(--ease-out);
 }
 
 .copy-link-action:hover:not(:disabled) {
-  opacity: 0.9;
+  background: var(--primary-action-background-hover);
 }
 
 .copy-link-action:disabled {
@@ -23749,14 +23708,14 @@ button.memory-project:hover {
    the connector approvals tray but in the opposite corner, so the two
    never collide; under the dialog layer. Visually a small cousin of the
    referral dialog above — the same terracotta hero recipe (gradient,
-   grain, June mark) — so the click-through feels continuous. */
+   grain, Clovy mark) — so the click-through feels continuous. */
 .referral-nudge {
   position: fixed;
   /* Window bottom-left, on the main-panel card's equal --sp-3 inset so the
      two share a bottom line. The compact overlay shadow preserves that
      breathing room instead of visually filling it with a long downward blur.
      Keep this a static inset: anchoring to the animated --sidebar-w-current
-     made the compositor move a blend-mode + WebGL stack continuously, which
+     made the compositor move a blend-mode stack continuously, which
      read as noise flashing on the hero. It overlaps the sidebar footer while
      parked; Escape and the X both clear it. */
   left: var(--sp-3);
@@ -23861,13 +23820,9 @@ button.memory-project:hover {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* The 3D glass June mark (the welcome surface's centerpiece) at gift scale,
-   centered above the title. The square box reserves identical space for the
-   canvas and its fallbacks, as .welcome-mark-glass does. */
-.referral-nudge-mark-glass {
-  /* Above the grain ::after — the soft-light blend must never paint over the
-     WebGL canvas (compositors alternate-rasterize that stack, which shows as
-     noise flashing on the mark). Same layering as .referral-hero > *. */
+/* The flat gradient Clovy mark at gift scale, centered above the title. */
+.referral-nudge-brand-mark {
+  /* Above the grain ::after so the soft-light texture does not dull the mark. */
   position: relative;
   z-index: 1;
   display: inline-flex;
@@ -23877,14 +23832,9 @@ button.memory-project:hover {
   width: 96px;
   height: 96px;
   line-height: 0;
-  /* The gradient-mark fallback derives its stops from --brand, which would
-     vanish brand-on-brand against this terracotta hero; remapping --brand to
-     the hero's ink renders it as the white mark instead. The WebGL palette
-     is JS-side and unaffected. */
-  --brand: var(--on-solid);
 }
 
-.referral-nudge-mark-glass svg {
+.referral-nudge-brand-mark svg {
   display: block;
   width: 48px;
   height: auto;
@@ -24093,7 +24043,7 @@ button.memory-project:hover {
   cursor: default;
 }
 
-/* Bare June mark, no tile: faint at rest, warms to brand on hover. The fixed
+/* Bare Clovy mark, no tile: faint at rest, warms to brand on hover. The fixed
  * mark-sized box mirrors .update-status-mark, so swapping to the dot spinner
  * never reflows the copy; the spinner keeps its darker --spinner-neutral. */
 .update-relaunch-mark {
@@ -24177,7 +24127,7 @@ button.memory-project:hover {
   gap: var(--sp-3);
 }
 
-/* The fixed mark-sized box gives the busy dot spinner and settled June mark
+/* The fixed mark-sized box gives the busy dot spinner and settled Clovy mark
  * the same footprint, so swapping them never reflows the status text. The
  * static mark is muted; the spinner keeps its darker --spinner-neutral. */
 .update-status-mark {
@@ -24633,26 +24583,23 @@ button.memory-project:hover {
   height: 100%;
 }
 
-/* The 3D glass June mark on the welcome / sign-in surfaces. A fixed square box
-   reserves the same footprint whether the WebGL canvas or the flat fallback mark
-   renders inside it, so degrading to the static mark never shifts layout. Kept
-   small on purpose — a hero brand moment, not a takeover. */
-.welcome-mark-glass {
-  display: inline-flex;
-  width: 112px;
-  height: 112px;
+/* The native-icon tile makes onboarding and sign-in unmistakably Clovy while
+   keeping the identity moment compact enough to leave the title in charge. */
+.welcome-brand-mark {
+  display: inline-grid;
+  width: 72px;
+  height: 72px;
   align-items: center;
   justify-content: center;
   align-self: center;
+  border-radius: var(--r-xl);
   line-height: 0;
   margin-bottom: var(--sp-2);
 }
 
-/* Only the fallback mark is an <svg> (the glass renders a <canvas>). Size the
-   fallback up so it reads as a deliberate mark, not a shrunken glyph. */
-.welcome-mark-glass svg {
+.welcome-brand-mark svg {
   display: block;
-  width: 72px;
+  width: 62%;
   height: auto;
 }
 
@@ -24897,7 +24844,7 @@ button.memory-project:hover {
 }
 
 /* Wordless progress: one dot per step, the current one stretched into a short
- * terracotta pill. */
+ * accent pill. --primary stays earthy in light mode and lifts in dark mode. */
 .onboarding-topbar {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -24927,12 +24874,12 @@ button.memory-project:hover {
 }
 
 .onboarding-progress-seg[data-state="done"] {
-  background: color-mix(in oklch, var(--brand) 50%, transparent);
+  background: color-mix(in oklch, var(--primary) 50%, transparent);
 }
 
 .onboarding-progress-seg[data-state="current"] {
   width: 18px;
-  background: var(--brand);
+  background: var(--primary);
 }
 
 .onboarding-body {
@@ -24995,63 +24942,30 @@ button.memory-project:hover {
   }
 }
 
-/* The continue button: direct terracotta with a quiet border beam. */
-.onboarding-primary-beam {
-  width: 100%;
-  border-radius: var(--r-lg);
-}
-
+/* Continue uses the shared solid primary treatment at onboarding scale. */
 .primary-action.onboarding-continue {
   position: relative;
   z-index: 1;
   width: 100%;
   min-height: var(--control-xl);
-  border: 1px solid color-mix(in oklch, var(--brand) 78%, black 12%);
   border-radius: var(--r-lg);
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--brand) 92%, white 8%),
-    color-mix(in oklch, var(--brand) 88%, black 12%)
-  );
-  color: var(--on-solid);
   font-weight: var(--fw-medium);
-  text-shadow: 0 1px 1px color-mix(in oklch, black 18%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 22%, transparent),
-    0 2px 8px color-mix(in oklch, var(--brand) 20%, transparent);
-  transition:
-    border-color var(--t-fast) var(--ease-out),
-    box-shadow var(--t-fast) var(--ease-out),
-    transform var(--t-fast) var(--ease-out),
-    filter var(--t-fast) var(--ease-out);
-}
-
-.primary-action.onboarding-continue:hover:not(:disabled) {
-  border-color: color-mix(in oklch, var(--brand) 72%, white 16%);
-  box-shadow:
-    inset 0 1px 0 color-mix(in oklch, white 26%, transparent),
-    0 3px 12px color-mix(in oklch, var(--brand) 26%, transparent);
-  filter: brightness(1.03);
+  transition: transform var(--t-fast) var(--ease-out);
 }
 
 .primary-action.onboarding-continue:active:not(:disabled) {
   transform: translateY(1px);
-  filter: brightness(0.95);
-  box-shadow:
-    inset 0 1px 3px color-mix(in oklch, black 18%, transparent),
-    0 1px 4px color-mix(in oklch, var(--brand) 18%, transparent);
 }
 
 .primary-action.onboarding-continue:disabled {
   border-color: var(--border-subtle);
   background: var(--muted);
   color: var(--muted-foreground);
-  text-shadow: none;
   box-shadow: none;
   cursor: default;
 }
 
-/* Welcome screen's what-is-June rows: same 28px icon-chip anatomy as the
+/* Welcome screen's what-is-Clovy rows: same 28px icon-chip anatomy as the
  * permission rows, minus the connectors. */
 .onboarding-points {
   margin: var(--sp-2) 0 0;
@@ -25203,22 +25117,7 @@ button.memory-project:hover {
 
 .onboarding-mood-option,
 .onboarding-character {
-  --mood-accent: var(--onboarding-mood-clearheaded);
-}
-
-.onboarding-mood-option[data-mood="calm"],
-.onboarding-character[data-mood="calm"] {
-  --mood-accent: var(--onboarding-mood-calm);
-}
-
-.onboarding-mood-option[data-mood="quick-witted"],
-.onboarding-character[data-mood="quick-witted"] {
-  --mood-accent: var(--onboarding-mood-quick-witted);
-}
-
-.onboarding-mood-option[data-mood="strategic"],
-.onboarding-character[data-mood="strategic"] {
-  --mood-accent: var(--onboarding-mood-strategic);
+  --mood-accent: var(--brand);
 }
 
 .onboarding-mood-option {
@@ -25305,7 +25204,13 @@ button.memory-project:hover {
 }
 
 .onboarding-character {
-  --onboarding-sticker-keyline: var(--on-solid);
+  --clovy-character-depth: color-mix(
+    in oklch,
+    var(--clovy-leaf-deep) 72%,
+    var(--clovy-tile-bottom)
+  );
+  --clovy-character-feature: var(--clovy-pine);
+  --clovy-character-rim: color-mix(in oklch, var(--clovy-lime-top) 62%, var(--clovy-leaf));
 
   position: relative;
   isolation: isolate;
@@ -25316,16 +25221,16 @@ button.memory-project:hover {
   border-radius: var(--r-2xl);
   background: radial-gradient(
     circle at center,
-    color-mix(in oklch, var(--mood-accent) 18%, transparent),
-    transparent 68%
+    color-mix(in oklch, var(--clovy-lime) 18%, transparent),
+    transparent 66%
   );
 }
 
 [data-theme="dark"] .onboarding-character {
-  --onboarding-sticker-keyline: color-mix(
-    in oklch,
-    var(--mood-accent) var(--onboarding-sticker-keyline-dark-tint),
-    var(--on-solid)
+  background: radial-gradient(
+    circle at center,
+    color-mix(in oklch, var(--clovy-lime) 24%, transparent),
+    transparent 68%
   );
 }
 
@@ -25339,13 +25244,262 @@ button.memory-project:hover {
   overflow: visible;
 }
 
-.onboarding-character-keyline {
-  fill: var(--onboarding-sticker-keyline);
-  stroke: var(--onboarding-sticker-keyline);
+.onboarding-character-body,
+.onboarding-character-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
-.onboarding-character-ink {
-  fill: var(--mood-accent);
+.onboarding-character-depth {
+  fill: var(--clovy-character-depth);
+  opacity: 0.5;
+}
+
+.onboarding-character-fill {
+  filter: drop-shadow(0 4px 7px color-mix(in oklch, var(--clovy-pine) 18%, transparent));
+}
+
+.onboarding-character-rim {
+  fill: none;
+  stroke: var(--clovy-character-rim);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.72;
+}
+
+.onboarding-character-eyes {
+  fill: var(--clovy-character-feature);
+}
+
+/* The stage mounts a single canonical character and remounts its body group
+ * on every selection, so each mood replays a one-shot greeting gesture and
+ * then settles into a quieter idle loop. The idle is listed second with a
+ * delay equal to the gesture's duration, so it takes over seamlessly; rapid
+ * changes simply remount and retarget. */
+@media (prefers-reduced-motion: no-preference) {
+  .onboarding-personality-stage .onboarding-character[data-mood="calm"] .onboarding-character-body {
+    animation:
+      clovy-calm-settle var(--onboarding-personality-gesture-duration) var(--ease-out) both,
+      clovy-calm-breathe var(--onboarding-personality-idle-duration) var(--ease-in-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="clearheaded"]
+    .onboarding-character-body {
+    animation:
+      clovy-clearheaded-nod var(--onboarding-personality-gesture-duration) var(--ease-out) both,
+      clovy-clearheaded-center var(--onboarding-personality-idle-duration) var(--ease-in-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="clearheaded"]
+    .onboarding-character-eyes {
+    animation:
+      clovy-clearheaded-greet-blink var(--onboarding-personality-gesture-duration) var(--ease-out)
+      both,
+      clovy-clearheaded-blink var(--onboarding-personality-idle-duration) var(--ease-in-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="quick-witted"]
+    .onboarding-character-body {
+    animation:
+      clovy-quick-hop var(--onboarding-personality-gesture-duration) var(--ease-spring) both,
+      clovy-quick-bop var(--onboarding-personality-idle-duration) var(--ease-spring)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="quick-witted"]
+    .onboarding-character-eyes {
+    animation:
+      clovy-quick-look var(--onboarding-personality-gesture-duration) var(--ease-out) both,
+      clovy-quick-glance var(--onboarding-personality-idle-duration) var(--ease-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="strategic"]
+    .onboarding-character-body {
+    animation:
+      clovy-strategic-lean-in var(--onboarding-personality-gesture-duration) var(--ease-in-out) both,
+      clovy-strategic-lean var(--onboarding-personality-idle-duration) var(--ease-in-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+
+  .onboarding-personality-stage
+    .onboarding-character[data-mood="strategic"]
+    .onboarding-character-eyes {
+    animation:
+      clovy-strategic-survey var(--onboarding-personality-gesture-duration) var(--ease-in-out) both,
+      clovy-strategic-scan var(--onboarding-personality-idle-duration) var(--ease-in-out)
+      var(--onboarding-personality-gesture-duration) infinite;
+  }
+}
+
+/* Calm settles down in one exhale, then breathes slowly. Amplitudes are in
+ * SVG user units: the stage renders the ~264-unit body at roughly half
+ * scale, so 6 units read as about 3px on screen. */
+@keyframes clovy-calm-settle {
+  0% {
+    transform: translateY(-4px) scale(0.99, 1.01);
+  }
+  45% {
+    transform: translateY(7px) scale(1.03, 0.97);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes clovy-calm-breathe {
+  50% {
+    transform: translateY(6px) scale(1.02, 0.98);
+  }
+}
+
+/* Clearheaded lifts attentively with a crisp double blink, then holds nearly
+ * still with an occasional blink. */
+@keyframes clovy-clearheaded-nod {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  32% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes clovy-clearheaded-greet-blink {
+  0%,
+  18%,
+  36%,
+  60%,
+  78%,
+  100% {
+    transform: scaleY(1);
+  }
+  27%,
+  69% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes clovy-clearheaded-center {
+  46%,
+  52% {
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes clovy-clearheaded-blink {
+  0%,
+  45%,
+  49%,
+  100% {
+    transform: scaleY(1);
+  }
+  47% {
+    transform: scaleY(0.08);
+  }
+}
+
+/* Quick-witted hops once with a sideways look, then repeats a smaller bop
+ * and glance on a relaxed cadence. */
+@keyframes clovy-quick-hop {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  35% {
+    transform: translateY(-14px) rotate(4deg);
+  }
+  65% {
+    transform: translateY(3px) rotate(-1.5deg);
+  }
+}
+
+@keyframes clovy-quick-look {
+  0%,
+  15%,
+  85%,
+  100% {
+    transform: translateX(0);
+  }
+  40%,
+  65% {
+    transform: translateX(12px);
+  }
+}
+
+@keyframes clovy-quick-bop {
+  0%,
+  14%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  5% {
+    transform: translateY(-8px) rotate(3deg);
+  }
+  9% {
+    transform: translateY(2px) rotate(-1.2deg);
+  }
+}
+
+@keyframes clovy-quick-glance {
+  0%,
+  14%,
+  100% {
+    transform: translateX(0);
+  }
+  5%,
+  9% {
+    transform: translateX(9px);
+  }
+}
+
+/* Strategic leans in once with a deliberate survey, then keeps a slow lean
+ * and a periodic scan. */
+@keyframes clovy-strategic-lean-in {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0);
+  }
+  45% {
+    transform: translateX(4px) rotate(-3deg);
+  }
+}
+
+@keyframes clovy-strategic-survey {
+  0%,
+  20%,
+  100% {
+    transform: translateX(0);
+  }
+  45%,
+  60% {
+    transform: translateX(-10px);
+  }
+  80% {
+    transform: translateX(6px);
+  }
+}
+
+@keyframes clovy-strategic-lean {
+  50% {
+    transform: translateX(3px) rotate(-2deg);
+  }
+}
+
+@keyframes clovy-strategic-scan {
+  35%,
+  65% {
+    transform: translateX(8px);
+  }
 }
 
 .onboarding-mood-copy {
@@ -25367,91 +25521,128 @@ button.memory-project:hover {
   text-wrap: balance;
 }
 
-.onboarding-mood-preview {
-  --onboarding-preview-character-size: calc(var(--control-xl) + var(--sp-5));
+/* Personality is one decision surface: character and greeting establish the
+ * selected mood, then the integrated selector retargets that same character.
+ * Inactive choices stay borderless so only the current selection reads as a
+ * control surface. The stage is a real elevated card (the grey panel wash
+ * read muddy on the warm backdrop) with the hero wash rising from its floor,
+ * so the accent has a visible source under the picker without tinting the
+ * character's headroom. */
+.onboarding-personality-stage {
+  --onboarding-personality-character-size: calc(var(--onboarding-sticker-card-size) * 2);
 
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  width: 100%;
-  margin: var(--sp-2) auto 0;
-  padding: var(--sp-6);
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-4) 0 0;
+  padding: var(--sp-5) var(--sp-5) var(--sp-3);
   border: var(--border-width) solid var(--border-subtle);
   border-radius: var(--r-xl);
-  background: color-mix(in oklch, var(--card) 96%, var(--muted));
+  background:
+    linear-gradient(to top, var(--hero-wash), var(--hero-wash-soft) 34%, transparent 62%),
+    var(--card);
   box-shadow: var(--shadow-sm);
-  text-align: left;
+  text-align: center;
 }
 
-.onboarding-mood-preview::before {
-  position: absolute;
-  inset: 45% 0 0;
-  z-index: -1;
-  background: linear-gradient(
-    180deg,
-    transparent,
-    color-mix(in oklch, var(--warm-soft) 18%, transparent)
-  );
-  content: "";
-  pointer-events: none;
+.onboarding-personality-stage .onboarding-character {
+  --onboarding-sticker-card-size: var(--onboarding-personality-character-size);
 }
 
-.onboarding-mood-preview-stack {
-  position: relative;
-  z-index: 1;
+/* The stage's scaled character keeps only its illustrated depth edge. A second
+ * ambient shadow doubles that edge and reads as a hard black outline here. */
+.onboarding-personality-stage .onboarding-character-fill {
+  filter: none;
+}
+
+/* At stage scale the shifted silhouette should be a soft depth cue, not a
+ * second character beneath the lime body. */
+.onboarding-personality-stage .onboarding-character-depth {
+  opacity: 0.12;
+}
+
+.onboarding-personality-stage-copy {
   display: grid;
-}
-
-.onboarding-mood-preview-content {
-  display: grid;
-  grid-area: 1 / 1;
-  grid-template-columns: var(--onboarding-preview-character-size) minmax(0, 1fr);
-  align-items: start;
-  gap: var(--sp-3);
-  opacity: 0;
-  filter: blur(var(--onboarding-preview-swap-blur));
-  pointer-events: none;
-  transition:
-    opacity var(--t-med) var(--ease-in-out),
-    filter var(--t-med) var(--ease-in-out);
-  will-change: opacity, filter;
-}
-
-.onboarding-mood-preview-content[data-active="true"] {
-  opacity: 1;
-  filter: blur(0);
-}
-
-.onboarding-mood-preview .onboarding-character.onboarding-mood-preview-character {
-  width: var(--onboarding-preview-character-size);
-  height: var(--onboarding-preview-character-size);
-  border-radius: var(--r-xl);
-}
-
-.onboarding-mood-preview-character .onboarding-character-art {
-  inset: var(--sp-1);
-  width: calc(100% - var(--sp-1) - var(--sp-1));
-  height: calc(100% - var(--sp-1) - var(--sp-1));
-}
-
-.onboarding-mood-preview-copy {
   min-width: 0;
-  padding-top: var(--sp-2);
 }
 
-.onboarding-mood-preview-speaker {
-  display: block;
-  color: var(--muted-foreground);
-  font-size: var(--fs-xs);
-  line-height: 1.2;
-}
-
-.onboarding-mood-preview-greeting {
-  margin: var(--sp-1) 0 0;
+.onboarding-personality-greeting {
+  margin: 0;
   color: var(--foreground);
   font-size: var(--fs-lg);
   line-height: 1.5;
-  text-wrap: pretty;
+  text-wrap: balance;
+}
+
+.onboarding-personality-picker {
+  width: 100%;
+  min-inline-size: 0;
+  margin: var(--sp-1) 0 0;
+  padding: var(--sp-3) 0 0;
+  border: 0;
+  border-top: var(--border-width) solid var(--border-subtle);
+}
+
+.onboarding-personality-options {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-1);
+}
+
+.onboarding-personality-option {
+  --personality-line-strong: color-mix(in oklch, var(--brand) 30%, var(--card));
+
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: center;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+/* Opaque against the card, not translucent: the hover has to stay one step
+ * below the selected tint even where the floor wash already carries green. */
+.onboarding-personality-option:hover {
+  background: color-mix(in oklch, var(--brand) 7%, var(--card));
+}
+
+/* Selection and keyboard focus both read as an inset ring — never an
+ * ambient shadow. */
+.onboarding-personality-option[data-selected="true"] {
+  background: color-mix(in oklch, var(--brand) 14%, var(--card));
+  box-shadow: inset 0 0 0 var(--border-width) var(--personality-line-strong);
+}
+
+.onboarding-personality-option[data-focus-visible="true"] {
+  outline: none;
+  box-shadow: inset 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-personality-option[data-selected="true"][data-focus-visible="true"] {
+  box-shadow:
+    inset 0 0 0 var(--border-width) var(--personality-line-strong),
+    inset 0 0 0 3px var(--focus-ring);
+}
+
+.onboarding-personality-option-name {
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.25;
+}
+
+.onboarding-personality-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  text-wrap: balance;
 }
 
 .onboarding-mood-save-error {
@@ -25484,7 +25675,8 @@ button.memory-project:hover {
     grid-column: auto;
   }
 
-  .onboarding-mood-grid {
+  .onboarding-mood-grid,
+  .onboarding-personality-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -25497,11 +25689,8 @@ button.memory-project:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .onboarding-mood-option,
-  .onboarding-mood-check {
-    transition: none;
-  }
-
-  .onboarding-mood-preview-content {
+  .onboarding-mood-check,
+  .onboarding-personality-option {
     transition: none;
   }
 }
@@ -25915,17 +26104,18 @@ button.memory-project:hover {
   gap: var(--sp-2);
   min-height: var(--control-sm);
   padding: 0 var(--sp-3);
-  border: 1px solid transparent;
+  border: 1px solid var(--primary-action-border);
   border-radius: var(--r-sm);
-  background: var(--primary);
-  color: var(--primary-foreground);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
   font-size: var(--fs-sm);
   font-weight: 400;
   cursor: pointer;
 }
 
 .skills-hub-install:hover {
-  opacity: 0.92;
+  background: var(--primary-action-background-hover);
 }
 
 .skills-hub-install-progress {
@@ -26685,9 +26875,14 @@ button.memory-project:hover {
 }
 
 .team-taps-skill-install {
-  background: var(--primary);
-  color: var(--primary-foreground);
-  border-color: transparent;
+  border-color: var(--primary-action-border);
+  background: var(--primary-action-background);
+  color: var(--primary-action-foreground);
+  box-shadow: var(--primary-action-highlight);
+}
+
+.team-taps-skill-install:hover:not(:disabled) {
+  background: var(--primary-action-background-hover);
 }
 
 .team-taps-skill-installing,
@@ -27866,7 +28061,7 @@ button.memory-project:hover {
 }
 
 /* Note chat panel -----------------------------------------------------
- * Ask June beside the open note: the same attach mechanics as the agent
+ * Ask Clovy beside the open note: the same attach mechanics as the agent
  * files panel — a sibling card fixed to the window's right edge, the main
  * card sliding left via the shell's explicit open-state class — but holding a conversation
  * instead of a document (src/components/note-chat/). */
@@ -27967,7 +28162,7 @@ button.memory-project:hover {
 }
 
 /* The thread speaks the agent view's language at panel scale: user turns as
- * right-aligned muted bubbles, June in plain prose. */
+ * right-aligned muted bubbles, Clovy in plain prose. */
 .note-chat-turn-user {
   align-self: flex-end;
   max-width: 85%;

@@ -9,7 +9,7 @@ import { IconNvidia } from "central-icons/IconNvidia";
 import { IconOllama } from "central-icons/IconOllama";
 import { IconOpenai } from "central-icons/IconOpenai";
 import { IconPerplexity } from "central-icons/IconPerplexity";
-import { JuneGlyph } from "../brand/JuneWordmark";
+import { ClovyMark } from "../brand/ClovyLogo";
 
 type ProviderLogoProps = {
   provider: string;
@@ -22,7 +22,14 @@ export function ProviderLogo({ provider, id, name = "", size = 18 }: ProviderLog
   const kind = classifyProvider(provider, id, name);
   switch (kind) {
     case "june":
-      return <JuneGlyph size={size} />;
+      return (
+        <ClovyMark
+          width={Math.round(size * 0.78)}
+          height={Math.round(size * 0.78)}
+          label="Clovy"
+          variant="mono"
+        />
+      );
     case "openai":
       return <IconOpenai size={size} aria-label="OpenAI" />;
     case "anthropic":
@@ -76,7 +83,7 @@ type ProviderKind =
   | "unknown";
 
 function classifyProvider(provider: string, id: string, name: string): ProviderKind {
-  // Auto is a June-managed route even when its catalog record inherits a
+  // Auto is a Clovy-managed route even when its catalog record inherits a
   // provider value from the currently available routing backends.
   if (id.toLowerCase() === "open-software/auto") return "june";
 

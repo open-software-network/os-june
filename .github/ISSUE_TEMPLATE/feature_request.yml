@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an improvement or a new capability for June
+description: Suggest an improvement or a new capability for Clovy
 labels: ["enhancement"]
 body:
   - type: markdown
@@ -11,8 +11,8 @@ body:
     id: problem
     attributes:
       label: What problem would this solve
-      description: Describe the situation where June falls short today.
-      placeholder: I dictate in two languages and June always cleans up my text in English.
+      description: Describe the situation where Clovy falls short today.
+      placeholder: I dictate in two languages and Clovy always cleans up my text in English.
     validations:
       required: true
   - type: textarea

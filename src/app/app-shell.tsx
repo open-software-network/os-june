@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import type { FolderDto, NoteDto, NoteListItemDto } from "../lib/tauri";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import { navEquals, type TabNav } from "./tabs/tabs";
-// "June is up to date." is a confirmation, not a call to action: linger, then
+// "Clovy is up to date." is a confirmation, not a call to action: linger, then
 // hide on its own. Failures persist until dismissed; busy statuses advance
 // when their operation resolves and may also be dismissed while in flight.
 export const UP_TO_DATE_DISMISS_MS = 4000;

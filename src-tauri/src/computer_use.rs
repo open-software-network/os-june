@@ -1,4 +1,4 @@
-//! June-owned Computer use trust boundary.
+//! Clovy-owned Computer use trust boundary.
 //!
 //! The agent runtime reaches one internal tool broker. That server can only call the
 //! authenticated native broker; it never receives the
@@ -552,7 +552,7 @@ impl DriverClient {
                 let _ = std::fs::remove_dir_all(&socket_dir);
                 AppError::new(
                     "computer_use_driver_start_failed",
-                    "The private Computer use channel was not owned by June's bundled driver.",
+                    "The private Computer use channel was not owned by Clovy's bundled driver.",
                 )
             })?;
         if !process_executable_path(pid as libc::pid_t)
@@ -583,7 +583,7 @@ impl DriverClient {
                     "capabilities": {
                         "experimental": { "juneComputerUseCapability": capability }
                     },
-                    "clientInfo": { "name": "June", "version": env!("CARGO_PKG_VERSION") }
+                    "clientInfo": { "name": "Clovy", "version": env!("CARGO_PKG_VERSION") }
                 }),
                 &mut ignore_notification,
             )
@@ -806,7 +806,7 @@ impl DriverClient {
     async fn stop(self) {}
 }
 
-/// Fixed release-only QA bridge. It runs as June's real signed executable so
+/// Fixed release-only QA bridge. It runs as Clovy's real signed executable so
 /// the nested helper can authenticate its parent, but it can operate only the
 /// two disposable fixture bundle identifiers created by the release test.
 /// This deliberately is not a general driver proxy.
@@ -816,7 +816,7 @@ pub async fn run_release_self_test_host(
     permission_prompt: Option<String>,
 ) -> Result<(), String> {
     if !release_self_test_driver_path_allowed(&path) {
-        return Err("the self-test host accepts only June's bundled helper".to_string());
+        return Err("the self-test host accepts only Clovy's bundled helper".to_string());
     }
     let permission_prompt = match permission_prompt.as_deref() {
         None => None,
@@ -870,7 +870,7 @@ pub async fn run_release_self_test_host(
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "June Computer Use Release Self-Test", "version": env!("CARGO_PKG_VERSION")}
+                    "serverInfo": {"name": "Clovy Computer Use Release Self-Test", "version": env!("CARGO_PKG_VERSION")}
                 }
             }),
             "tools/list" => {
@@ -897,7 +897,7 @@ pub async fn run_release_self_test_host(
                     release_self_test_error(
                         id,
                         -32602,
-                        "Release self-test calls are limited to June's disposable fixtures.",
+                        "Release self-test calls are limited to Clovy's disposable fixtures.",
                     )
                 } else {
                     let mut ignore_notification = |_: &Value| {};
@@ -1375,7 +1375,7 @@ fn packaged_driver_bundles(path: &Path) -> Result<Option<PackagedDriverBundles>,
     {
         return Err(AppError::new(
             "computer_use_driver_signature_failed",
-            "The Computer use driver is not nested under the running June app.",
+            "The Computer use driver is not nested under the running Clovy app.",
         ));
     }
 
@@ -1445,8 +1445,8 @@ fn signature_cache_matches(
     // still cannot inherit the original helper's TCC grant because macOS keys
     // that grant to its signed code identity/cdhash, or connect to the genuine
     // helper because every accepted socket is checked live by audit token
-    // against June's identifier and the helper-derived Team OU. Explicit retry
-    // bypasses this cache, and a new June process begins with an empty cache.
+    // against Clovy's stable identifier and the helper-derived Team OU. Explicit retry
+    // bypasses this cache, and a new Clovy process begins with an empty cache.
     !force && cached.is_some_and(|cached| cached.fingerprint == *fingerprint)
 }
 
@@ -1618,7 +1618,7 @@ async fn driver_version(path: &Path) -> Result<String, AppError> {
         Err({
             AppError::new(
                 "computer_use_driver_version_mismatch",
-                "The bundled Computer use driver version does not match June's pin.",
+                "The bundled Computer use driver version does not match Clovy's pin.",
             )
         })
     }
@@ -1688,7 +1688,7 @@ async fn read_permission_probe(
         accessibility,
         // The helper is fresh for every probe. macOS evaluates Accessibility
         // against the nested helper and Screen Recording against its signed
-        // outer June responsible app. Keep accepting the live field for
+        // outer Clovy responsible app. Keep accepting the live field for
         // compatibility with older helpers.
         screen_recording: preflight && capturable,
     })
@@ -1848,7 +1848,7 @@ async fn status_inner(app: &AppHandle, computer_use: &ComputerUseState) -> Compu
                 "Computer use could not verify its safety rollout. Check your connection and try again."
                     .to_string()
             } else {
-                "Computer use is temporarily unavailable for this June or macOS version."
+                "Computer use is temporarily unavailable for this Clovy or macOS version."
                     .to_string()
             }),
         };
@@ -2257,7 +2257,7 @@ pub async fn computer_use_request_permissions(
     if !rollout_gate().await.enabled {
         return Err(AppError::new(
             "computer_use_rollout_disabled",
-            "Computer use is temporarily unavailable for this June or macOS version.",
+            "Computer use is temporarily unavailable for this Clovy or macOS version.",
         ));
     }
     stop_inner(&app, &state).await;
@@ -2287,7 +2287,7 @@ pub async fn computer_use_stop(
     Ok(ComputerUseStopResult { stopped: true })
 }
 
-/// Opens the Computer use broker only for a turn submitted from June's visible
+/// Opens the Computer use broker only for a turn submitted from Clovy's visible
 /// chat surface. The agent workspace receives the matching loopback
 /// capability; the launchd routine gateway does not. This in-process lease is
 /// a second gate, and makes Stop sticky until the user starts another turn.
@@ -2708,7 +2708,7 @@ fn reject_unverifiable_companion_action(action: &str) -> Result<(), AppError> {
     if action == "open_app" {
         return Err(AppError::new(
             "companion_computer_use_target_unverified",
-            "Opening an app requires approval on this Mac so June can verify the launched app.",
+            "Opening an app requires approval on this Mac so Clovy can verify the launched app.",
         ));
     }
     Ok(())
@@ -2809,7 +2809,7 @@ fn ensure_attended_run(state: &ComputerUseState) -> Result<(), AppError> {
     } else {
         Err(AppError::new(
             "computer_use_attended_run_required",
-            "Computer use is available only during a turn started from June chat.",
+            "Computer use is available only during a turn started from Clovy chat.",
         ))
     }
 }
@@ -2838,7 +2838,7 @@ async fn ensure_action_eligible(app: &AppHandle) -> Result<(), AppError> {
     if !rollout_gate().await.enabled {
         return Err(AppError::new(
             "computer_use_rollout_disabled",
-            "Computer use is temporarily unavailable for this June or macOS version.",
+            "Computer use is temporarily unavailable for this Clovy or macOS version.",
         ));
     }
     if !grant_enabled(app).await {
@@ -3078,7 +3078,7 @@ fn select_window(
         return Err(AppError::new(
             "computer_use_target_blocked",
             format!(
-                "June cannot operate {} with Computer use.",
+                "Clovy cannot operate {} with Computer use.",
                 selected.app_name
             ),
         ));
@@ -3144,19 +3144,19 @@ async fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), 
     let main = app.get_webview_window("main").ok_or_else(|| {
         AppError::new(
             "computer_use_window_restore_failed",
-            "June's main window is not available for the Computer use task.",
+            "Clovy's main window is not available for the Computer use task.",
         )
     })?;
     let handle = main.ns_window().map_err(|error| {
         AppError::new(
             "computer_use_window_restore_failed",
-            format!("June could not prepare its window for Computer use. {error}"),
+            format!("Clovy could not prepare its window for Computer use. {error}"),
         )
     })?;
     if handle.is_null() {
         return Err(AppError::new(
             "computer_use_window_restore_failed",
-            "June could not prepare its window for Computer use.",
+            "Clovy could not prepare its window for Computer use.",
         ));
     }
 
@@ -3185,7 +3185,7 @@ async fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), 
     .map_err(|error| {
         AppError::new(
             "computer_use_window_restore_failed",
-            format!("June could not prepare its window for Computer use. {error}"),
+            format!("Clovy could not prepare its window for Computer use. {error}"),
         )
     })?;
     tokio::time::timeout(Duration::from_secs(1), receiver)
@@ -3193,13 +3193,13 @@ async fn set_june_stage_companion(app: &AppHandle, enabled: bool) -> Result<(), 
         .map_err(|_| {
             AppError::new(
                 "computer_use_window_restore_failed",
-                "June could not prepare its window for Computer use.",
+                "Clovy could not prepare its window for Computer use.",
             )
         })?
         .map_err(|_| {
             AppError::new(
                 "computer_use_window_restore_failed",
-                "June could not prepare its window for Computer use.",
+                "Clovy could not prepare its window for Computer use.",
             )
         })?;
     Ok(())
@@ -3234,7 +3234,7 @@ async fn join_target_to_june_stage(
         Some(epoch),
     )
     .await?;
-    // The driver activates the target while June's main window is an AppKit
+    // The driver activates the target while Clovy's main window is an AppKit
     // Stage Manager companion. WindowManager can therefore show both apps in
     // the active set without a cursor-moving shelf click. Keep the wait bounded
     // while WindowServer finishes the transition and verify the exact window.
@@ -3253,7 +3253,7 @@ async fn join_target_to_june_stage(
     // exact window as off-screen after AppKit accepted application activation.
     // Treat that activation as authoritative; if it is unavailable, require
     // both exact-window SkyLight focus and Accessibility raise. Combined with
-    // June's companion collection behavior, either proof avoids turning a
+    // Clovy's companion collection behavior, either proof avoids turning a
     // successful stage change into a slow false failure.
     if native_verified {
         last_seen.is_on_screen = true;
@@ -3262,7 +3262,7 @@ async fn join_target_to_june_stage(
     }
     Err(AppError::new(
         "computer_use_window_restore_failed",
-        "June could not add that app window to the current Stage Manager group. Do not retry this window during the current task.",
+        "Clovy could not add that app window to the current Stage Manager group. Do not retry this window during the current task.",
     ))
 }
 
@@ -3576,7 +3576,7 @@ fn open_app_name(arguments: &Value) -> Result<String, AppError> {
     if blocked_app(name) {
         return Err(AppError::new(
             "computer_use_target_blocked",
-            format!("June cannot open {name} with Computer use."),
+            format!("Clovy cannot open {name} with Computer use."),
         ));
     }
     Ok(name.to_string())
@@ -3766,7 +3766,7 @@ async fn open_app(
     let identity = app_identity(pid).ok_or_else(|| {
         AppError::new(
             "computer_use_target_unverified",
-            "June could not verify the opened app identity.",
+            "Clovy could not verify the opened app identity.",
         )
     })?;
     let reported_name = launched
@@ -3777,7 +3777,7 @@ async fn open_app(
     if blocked_target(reported_name, &identity) {
         return Err(AppError::new(
             "computer_use_target_blocked",
-            format!("June cannot operate {reported_name} with Computer use."),
+            format!("Clovy cannot operate {reported_name} with Computer use."),
         ));
     }
     ensure_task_generation_current(state, task_generation)?;
@@ -3858,7 +3858,7 @@ async fn open_app(
         "window_id": selected.as_ref().map(|window| window.window_id),
         "windows": available_windows,
         "message": if selected.is_some() {
-            "The app is ready in June's current Stage Manager group. Capture the returned window before acting."
+            "The app is ready in Clovy's current Stage Manager group. Capture the returned window before acting."
         } else {
             "The app opened, but no operable window appeared yet. Wait, then call list_apps."
         },
@@ -3919,7 +3919,7 @@ async fn focus_app(
         "window_id": target.window_id,
         "raised": joined_current_stage,
         "message": if joined_current_stage {
-            "The window was added to June's current Stage Manager group. Capture it before acting."
+            "The window was added to Clovy's current Stage Manager group. Capture it before acting."
         } else {
             "Target selected without raising its window. Capture it before acting."
         },
@@ -4165,7 +4165,7 @@ async fn park_app_authorization(
         action_id,
         action: "use_app".to_string(),
         target_app: sanitize_line(target_app),
-        summary: "June can inspect and operate this app until the current task ends.".to_string(),
+        summary: "Clovy can inspect and operate this app until the current task ends.".to_string(),
         capture_path: None,
         requested_at_ms: now,
         expires_at_ms: now.saturating_add(APPROVAL_TIMEOUT.as_millis() as u64),
@@ -4210,7 +4210,10 @@ fn validate_sensitive_action(
     if blocked_target(&target.app_name, &target.identity) {
         return Err(AppError::new(
             "computer_use_target_blocked",
-            format!("June cannot operate {} with Computer use.", target.app_name),
+            format!(
+                "Clovy cannot operate {} with Computer use.",
+                target.app_name
+            ),
         ));
     }
     let references = referenced_elements(action, arguments);
@@ -4354,7 +4357,7 @@ fn driver_action(
                 object.insert("y".to_string(), json!(y));
                 // cua-driver's dedicated double_click pixel path takes screen
                 // coordinates. Its click path takes the window-local screenshot
-                // coordinates exposed by June and supports an exact count.
+                // coordinates exposed by Clovy and supports an exact count.
                 if action == "double_click" {
                     object.insert("count".to_string(), json!(2));
                     tool = "click";
@@ -4688,6 +4691,7 @@ fn blocked_app(app: &str) -> bool {
         .flat_map(char::to_lowercase)
         .collect();
     [
+        "clovy",
         "june",
         "terminal",
         "iterm",
@@ -5753,6 +5757,7 @@ mod tests {
     #[test]
     fn blocked_apps_cover_self_terminal_security_and_credentials() {
         for app in [
+            "Clovy",
             "June",
             "Terminal",
             "iTerm2",
@@ -6390,7 +6395,7 @@ mod tests {
         let sanitized = sanitize_capture_result(
             result,
             "TextEdit",
-            Some("/Users/alice/Library/Application Support/June/captures/capture.png"),
+            Some("/Users/alice/Library/Application Support/Clovy/captures/capture.png"),
             100,
         );
         let structured = sanitized["structuredContent"]

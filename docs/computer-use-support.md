@@ -1,19 +1,23 @@
 # Computer use support runbook
 
-Computer use has independent gates: June's stored grant, the June API rollout
+Computer use has independent gates: Clovy's stored grant, the Clovy API rollout
 decision, macOS access for the signed helper, an active plan, a vision-capable
 model, and a visible attended turn. Do not treat one as proof that the others
 are enabled.
+
+The shipped helper bundle names and development executable aliases documented
+below retain their June-era technical identities under
+[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
 
 ## State guide
 
 | State | Meaning | Action |
 | --- | --- | --- |
 | `unsupported` | This is not macOS. | Computer use is not shipped on Windows. |
-| `rollout_disabled` | June API disabled this app/macOS version, or the first safety decision could not be fetched. | Keep the grant revocable, check connectivity, then inspect June API's `[computer_use]` config. Do not bypass the gate. |
-| `plan_required` | No active Pro/Max or compatible legacy paid subscription is cached. | Refresh the account or open View plans. An existing June grant can still be revoked. |
-| `off` | The June grant is off. The helper may still have macOS grants. | Enable from Plugins after reading the permission explanation. |
-| `driver_missing` | The signed app does not contain the pinned helper/stamp. | Reinstall or update June. Do not run an upstream installer. |
+| `rollout_disabled` | Clovy API disabled this app/macOS version, or the first safety decision could not be fetched. | Keep the grant revocable, check connectivity, then inspect Clovy API's `[computer_use]` config. Do not bypass the gate. |
+| `plan_required` | No active Pro/Max or compatible legacy paid subscription is cached. | Refresh the account or open View plans. An existing Clovy grant can still be revoked. |
+| `off` | The Clovy grant is off. The helper may still have macOS grants. | Enable from Plugins after reading the permission explanation. |
+| `driver_missing` | The signed app does not contain the pinned helper/stamp. | Reinstall or update Clovy. Do not run an upstream installer. |
 | `driver_mismatch` | The helper version does not match the repo pin. | Stop rollout and inspect the build provenance/SBOM. |
 | `permission_missing` | Accessibility, Screen Recording, or the live capture probe is absent. | Use Continue to macOS access, then the separate Open settings links. |
 | `model_unsupported` | The selected generation model lacks authoritative vision capability. | Choose a vision-capable model. |
@@ -26,34 +30,34 @@ are enabled.
 2. Confirm the intended helper exists in the installed app at
    `Contents/Resources/native/bin/June Computer Use Driver.app` and has bundle
    identifier `co.opensoftware.june.computer-use-driver`. A packaged helper
-   also requires the signed outer June app with the same Developer ID team.
+   also requires the signed outer Clovy app with the same Developer ID team.
 3. In System Settings > Privacy & Security, inspect Accessibility and Screen
    Recording separately. Accessibility names `June Computer Use Driver`;
    Screen Recording names the outer `June` app because macOS assigns capture to
    the responsible launcher. If either entry is absent, drag the matching card
-   from June into that pane: the helper card for Accessibility, or the outer
-   June card for Screen Recording. Removing a macOS grant may require June to
+   from Clovy into that pane: the helper card for Accessibility, or the outer
+   Clovy card for Screen Recording. Removing a macOS grant may require Clovy to
    be quit and reopened before macOS reports the new state.
-4. Return to June. The visible setup page polls one signed-helper probe at a
+4. Return to Clovy. The visible setup page polls one signed-helper probe at a
    time while incomplete and reconfigures the runtime when the helper becomes
    capturable. Polling pauses while the page is hidden and refreshes when it
    becomes visible again.
 5. If the driver crashed, Stop clears its private child and the next eligible
-   task starts a new one. Never start an upstream daemon beside June.
+   task starts a new one. Never start an upstream daemon beside Clovy.
 6. The first access to each target app asks once for access during the current
    task. Click Allow for this task. Captures and actions in that verified app do
-   not ask again until the task ends or Stop is pressed. If June later asks to
+   not ask again until the task ends or Stop is pressed. If Clovy later asks to
    open that same already-approved running app by display name, the broker
    reuses its exact verified identity instead of showing a second alias prompt.
 7. A Stage Manager shelf window is restored automatically after the app is
-   allowed. June first activates its own window, then raises the exact target
-   window into June's current group without a separate approval. If restore
-   fails, June stops retrying that window for the current task. Press Stop and
+   allowed. Clovy first activates its own window, then raises the exact target
+   window into Clovy's current group without a separate approval. If restore
+   fails, Clovy stops retrying that window for the current task. Press Stop and
    start a new task rather than switching Spaces manually.
-8. If the target changed while an authorization card waited, ask June to retry
+8. If the target changed while an authorization card waited, ask Clovy to retry
    the app. A stale-target failure is expected safety behavior.
 
-Turning the June switch off removes June's runtime grant and immediately stops
+Turning the Clovy switch off removes Clovy's runtime grant and immediately stops
 the task. It cannot silently remove macOS TCC entries; the user removes those
 from System Settings.
 
@@ -62,7 +66,7 @@ from System Settings.
 Every macOS `make dev` launch gives the debug Computer use helper a stable
 bundle identifier derived from the current worktree path. The launch registers
 that helper with LaunchServices, clears Accessibility for the helper identifier,
-clears Screen Recording for the outer June development app identifier, and
+clears Screen Recording for the outer Clovy development app identifier, and
 removes stale debug staging copies before Tauri copies the signed bundle again.
 This provides a fresh permission walkthrough on every dev restart without
 resetting Screen Recording for the wrong responsible app.
@@ -71,7 +75,7 @@ The Screen Recording reset is deferred (not treated as a failure) when the app
 bundle identifier is not yet registered with LaunchServices. This is expected on
 a clean worktree where `tauri dev` runs the Cargo binary directly instead of a
 packaged `.app` bundle. In that state there are no TCC grants to clear, so the
-launch proceeds normally. Once a June app with that identifier has been built
+launch proceeds normally. Once a Clovy app with that identifier has been built
 and run at least once, LaunchServices knows the bundle and subsequent resets
 succeed.
 
@@ -108,10 +112,10 @@ cargo build --manifest-path src-tauri/Cargo.toml --bin os-june --locked
 pnpm computer-use:self-test
 ```
 
-The gate checks the exact upstream commit, June helper source fingerprint,
+The gate checks the exact upstream commit, Clovy helper source fingerprint,
 bundle metadata, declared architecture slices, signature, SPDX SBOM, MIT
-notice, direct-launch rejection, authenticated June-parent handshake, narrow
-driver schemas, and June MCP schema. A schema failure means the pin cannot be
+notice, direct-launch rejection, authenticated Clovy-parent handshake, narrow
+driver schemas, and Clovy MCP schema. A schema failure means the pin cannot be
 upgraded without reviewing `computer_use.rs`, `computer_use_driver.rs`, and
 `cua-driver-contract.json` together.
 
@@ -128,13 +132,13 @@ same command with `--prompt-permissions` passed directly to
 prompting. macOS does not provide a supported command that fabricates these
 user grants.
 
-The live fixture runs through the real signed June executable's fixed QA host,
+The live fixture runs through the real signed Clovy executable's fixed QA host,
 which accepts only the bundled helper and the two disposable fixture bundle
 identifiers. It captures the target, clicks a numbered button while the observer
 remains frontmost, verifies the real pointer and current-Space window flags did
 not change, kills both fixtures, and exits the private driver. The manual
 Stage Manager pass additionally verifies that the exact shelf window joins
-June's current group without moving the pointer or showing another decision.
+Clovy's current group without moving the pointer or showing another decision.
 The release workflows do not run this fixture; computer use is validated on the
 release-candidate channel before promotion. Run it manually when validating a
 release runner or diagnosing a signed-build regression.
@@ -152,7 +156,7 @@ release runner or diagnosing a signed-build regression.
 
 ## Emergency rollout
 
-June API's `[computer_use]` section supports:
+Clovy API's `[computer_use]` section supports:
 
 ```toml
 [computer_use]
@@ -162,7 +166,7 @@ disabled_macos_versions = ["15.5.*"]
 ```
 
 Entries are exact or use one trailing wildcard. After changing production
-configuration, deploy June API and verify `/v1/computer-use/rollout` with the
+configuration, deploy Clovy API and verify `/v1/computer-use/rollout` with the
 affected `x-june-app-version` and `x-june-macos-version` headers. A desktop
 that observes a disable stops active work and keeps that disable sticky if the
 API subsequently becomes unavailable. The normal successful-decision cache is

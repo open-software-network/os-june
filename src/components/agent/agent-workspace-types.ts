@@ -3,7 +3,7 @@ import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNo
 import type { AgentProjectContext } from "../../lib/agent-project-context";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
 /** Where the session was opened from — rendered as the leading crumbs in the
- * sticky session bar ("Projects / June" or "Agents") with a back arrow. */
+ * sticky session bar ("Projects / Clovy" or "Agents") with a back arrow. */
 export type AgentWorkspaceOrigin = {
   backLabel: string;
   onBack: () => void;

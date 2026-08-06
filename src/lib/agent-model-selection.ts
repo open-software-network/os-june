@@ -1,6 +1,6 @@
 export const AUTO_MODEL_ID = "open-software/auto";
 
-// Rust decodes this tagged model at the June API boundary and forwards the
+// Rust decodes this tagged model at the Clovy API boundary and forwards the
 // selected Auto cost-to-quality value with the request. Keeping it in the
 // run model also makes a session's preference survive navigation, retries,
 // and app restarts without changing the public runtime protocol.

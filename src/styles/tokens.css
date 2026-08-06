@@ -33,7 +33,7 @@
 @property --brand {
   syntax: "<color>";
   inherits: true;
-  initial-value: #b5551f;
+  initial-value: #3f812f;
 }
 
 /* Surface-tinting companion to --brand: the accent with its oklch chroma capped
@@ -43,7 +43,7 @@
 @property --brand-wash {
   syntax: "<color>";
   inherits: true;
-  initial-value: #976851;
+  initial-value: #5a7c56;
 }
 
 /* The --fs-* type tokens are registered as lengths so their computed value
@@ -170,9 +170,9 @@
   --companion-pairing-qr-size: 256px;
   --companion-pairing-qr-canvas: oklch(100% 0 none);
   --onboarding-moods-max-w: 620px;
-  --onboarding-preview-swap-blur: 3px;
   --onboarding-sticker-card-size: 78px;
-  --onboarding-sticker-keyline-dark-tint: 16%;
+  --onboarding-personality-gesture-duration: 960ms;
+  --onboarding-personality-idle-duration: 4800ms;
   --onboarding-area-icon-tint: 14%;
   /* Breadcrumb (.detail-bar) height — its min-height, and what content fits
    * inside it resolves to. Shared with the rules that tuck scrollers behind
@@ -218,6 +218,10 @@
    * dictation, the editor) so they line up, and steps up on larger displays
    * so the column doesn't feel marooned in whitespace on big monitors. */
   --content-max: 760px;
+  /* New-session ambience is wider than the conversation rail, then dissolves
+   * before the panel edge so it reads as a floor rather than another card. */
+  --hero-wash-max-w: 960px;
+  --hero-wash-side-fade: 16%;
 
   /* Computer use surfaces. These bounds are shared layout contracts rather
    * than incidental component pixels: plugin cards stay usable as the grid
@@ -268,12 +272,11 @@
   --card-foreground: oklch(27.24% 0.0015 84.59);
   --popover: color-mix(in oklch, oklch(100% 0 none), var(--brand-wash) 2%);
   --popover-foreground: oklch(27.24% 0.0015 84.59);
-  --primary: oklch(34% 0.008 84.59);
-  --primary-foreground: oklch(100% 0 none);
-  /* Text/icons on fixed brand, gradient, or destructive solids. Identical in
-   * both themes (no dark override) - unlike --primary-foreground, which
-   * inverts in dark mode. */
+  /* Text/icons on fixed dark, brand, or destructive solids. Primary actions
+   * own a theme-adaptive foreground token below. */
   --on-solid: oklch(100% 0 none);
+  --primary: var(--brand);
+  --primary-foreground: var(--on-solid);
   --secondary: color-mix(in oklch, oklch(97.03% 0 none), var(--brand-wash) 3%);
   --secondary-foreground: oklch(20.44% 0 none);
   --muted: color-mix(in oklch, oklch(92.87% 0.0015 84.59), var(--brand-wash) 4%);
@@ -312,31 +315,51 @@
   --spinner-neutral: color-mix(in oklch, var(--muted-foreground) 45%, var(--foreground));
   --popover-border: color-mix(in oklch, var(--foreground) 10%, transparent);
 
-  /* Default accent — the clay terracotta, the base every derived token mixes
-   * from. Themeable: the Appearance picker overrides this one value at runtime
-   * and everything below derives from it, so the whole UI recolors. The app
-   * icon (src-tauri/icons) and in-app marks are generated from this same clay,
-   * so the brand identity stays consistent across the accent set. */
-  --brand: #b5551f;
+  /* Sage is Clovy's default interface accent. Its brighter leaf value keeps
+   * small controls alive while the low-chroma wash keeps large surfaces quiet.
+   * Appearance presets can still override both values at runtime. */
+  --brand: #3f812f;
+  --brand-wash: #5a7c56;
+
+  /* Clovy identity colors are intentionally independent from the selectable
+   * interface accent. Lime belongs to the character, app icon, and restrained
+   * highlights; leaf and pine carry larger solid surfaces. */
+  --clovy-lime-top: #eefe92;
+  --clovy-lime: #c4f979;
+  --clovy-leaf: #3f812f;
+  --clovy-leaf-deep: #245c2d;
+  --clovy-pine: #183d2f;
+  --clovy-ink: #18200c;
+  --clovy-glow-top: var(--clovy-lime-top);
+  --clovy-glow: var(--clovy-lime);
+  --clovy-mark-foreground: var(--clovy-leaf-deep);
+  --clovy-tile-top: #10271d;
+  --clovy-tile-bottom: #020b08;
   /* Chroma-capped companion to --brand (see the @property block). Surface
    * neutrals mix from this so clay's high chroma doesn't over-cream the greys;
    * the Appearance picker overrides both --brand and --brand-wash together. */
-  --brand-wash: #976851;
-  /* Each onboarding mood borrows a shipped theme accent: ocean for calm,
-   * sage for clearheaded, clay for quick-witted, and plum for strategic.
-   * The card uses these as a wash while the sticker gets the solid swatch. */
-  --onboarding-mood-calm: #3d7b9a;
-  --onboarding-mood-clearheaded: #527f4d;
-  --onboarding-mood-quick-witted: #b5551f;
-  --onboarding-mood-strategic: #965d84;
-  /* Luminous accent for brief clay details (the image-gen mark's glint and its
-   * press ripple). Mixing --brand with white lifts lightness but drops chroma,
-   * which reads as dusty *mud* the moment it's painted over the light dot
-   * field. So the real value (below, under @supports) pins the glint to a fixed
-   * high lightness AND healthy chroma via relative color syntax, keeping only
-   * the active brand's hue - a clean, warm, saturated spark in either theme.
-   * This color-mix is the graceful fallback for engines without oklch(from). */
+  /* Luminous companion for brief accent details. Mixing --brand with white
+   * lifts lightness but drops chroma, so the relative-color override below
+   * pins the highlight to a bright, saturated version of the active hue. */
   --brand-bright: color-mix(in oklch, var(--brand) 72%, var(--on-solid));
+
+  /* Primary actions keep a different visual weight from the lime character
+   * and the Sage selection state. Light surfaces use Clovy pine as an anchor,
+   * with lime appearing only as a quiet upper-edge reflection. */
+  --primary-action-background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--clovy-pine) 88%, var(--clovy-leaf) 12%),
+    var(--clovy-pine)
+  );
+  --primary-action-background-hover: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--clovy-pine) 80%, var(--clovy-leaf) 20%),
+    color-mix(in oklch, var(--clovy-pine) 94%, var(--clovy-leaf) 6%)
+  );
+  --primary-action-border: color-mix(in oklch, var(--clovy-pine) 88%, var(--clovy-lime) 12%);
+  --primary-action-highlight: inset 0 1px 0
+    color-mix(in oklch, var(--clovy-lime-top) 24%, transparent);
+  --primary-action-foreground: var(--on-solid);
 
   --record: oklch(60% 0.22 27);
   /* Soft dusty tint of the brand, for quiet button backdrops and hovers
@@ -365,13 +388,10 @@
   --search-match: color-mix(in oklch, var(--brand) 28%, var(--card));
   --search-match-active: color-mix(in oklch, var(--brand) 48%, var(--card));
   --search-match-active-ring: color-mix(in oklch, var(--brand) 70%, var(--foreground));
-  /* New-session hero wash — the warm gradient pooling at the bottom of the
-   * intro screen, with a 1px inset rim that keeps its edge crisp against the
-   * shell. The brand tint works over both cards (a subtle glow in dark), but
-   * the rim flips: card-white hairline in light, faint white inner highlight
-   * in dark — a card-derived line goes near-black there and muddies the rim. */
-  --hero-wash: color-mix(in oklch, var(--brand) 11%, transparent);
-  --hero-wash-rim: color-mix(in oklch, var(--card) 70%, transparent);
+  /* Two strengths for the new-session floor wash. The chroma-capped lead-in
+   * keeps the transition quiet; the active accent gathers at the bottom. */
+  --hero-wash: color-mix(in oklch, var(--brand) 10%, transparent);
+  --hero-wash-soft: color-mix(in oklch, var(--brand-wash) 4%, transparent);
   /* Focus ring lives in the warm-grey family so it never reads as a cool
    * macOS-blue glow next to the rest of the palette. */
   --focus-ring: oklch(60% 0.03 84.59 / 22%);
@@ -396,10 +416,6 @@
   --stream-word-fade-dur: 1500ms;
   --home-typing-breath-dur: 1900ms;
   --home-typing-blur: 2.5px;
-  --home-presence-float-dur: 7s;
-  --home-presence-float-y: -2px;
-  --home-presence-wink-dur: 19s;
-  --home-presence-tilt: -4deg;
   --home-top-fade-size: 56px;
   --icon-swap-dur: 250ms;
   --icon-swap-blur: 2px;
@@ -433,7 +449,7 @@
   --shadow-inset: 0 0 0 1px oklch(0% 0 none / 4%);
 }
 
-/* The luminous clay glint (see --brand-bright above), inheriting only the
+/* The luminous accent glint (see --brand-bright above), inheriting only the
  * active brand's hue so it stays themed across every Appearance preset. The
  * spark reads differently against each theme's field, so lightness and chroma
  * are tuned per theme rather than shared:
@@ -507,8 +523,29 @@
   --card-foreground: oklch(0.985 0.0015 84.59);
   --popover: color-mix(in oklch, oklch(0.195 0.0015 84.59), var(--brand-wash) 6%);
   --popover-foreground: oklch(0.985 0.0015 84.59);
-  --primary: oklch(0.86 0.008 84.59);
-  --primary-foreground: oklch(0.216 0.0015 84.59);
+  /* Stateful and preset-linked controls need the luminous companion on a
+   * near-black field. The paired foreground flips with it so send arrows,
+   * badges, and toggle thumbs keep contrast. */
+  --primary: var(--brand-bright);
+  --primary-foreground: var(--clovy-ink);
+  --clovy-mark-foreground: var(--clovy-lime-top);
+  /* On dark surfaces the identity roles can invert: the surrounding neutral
+   * field supplies separation, so the action may carry lime without competing
+   * with the character. Pine remains in the lower edge to keep it grounded. */
+  --primary-action-background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--clovy-lime) 72%, var(--clovy-lime-top) 28%),
+    color-mix(in oklch, var(--clovy-lime) 88%, var(--clovy-leaf) 12%)
+  );
+  --primary-action-background-hover: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--clovy-lime) 60%, var(--clovy-lime-top) 40%),
+    color-mix(in oklch, var(--clovy-lime) 92%, var(--clovy-leaf) 8%)
+  );
+  --primary-action-border: color-mix(in oklch, var(--clovy-lime) 82%, var(--clovy-pine) 18%);
+  --primary-action-highlight: inset 0 1px 0
+    color-mix(in oklch, var(--clovy-lime-top) 76%, transparent);
+  --primary-action-foreground: var(--clovy-ink);
   --secondary: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
   --secondary-foreground: oklch(0.985 0.0015 84.59);
   --muted: color-mix(in oklch, oklch(0.268 0.0015 84.59), var(--brand-wash) 7%);
@@ -545,9 +582,6 @@
   --search-match: color-mix(in oklch, var(--brand) 42%, var(--card));
   --search-match-active: color-mix(in oklch, var(--brand) 62%, var(--card));
   --search-match-active-ring: color-mix(in oklch, var(--brand) 70%, white);
-  /* See the light-theme note: the wash tint carries over, the rim becomes a
-   * faint white inner highlight (kin to this theme's --shadow-inset). */
-  --hero-wash-rim: oklch(100% 0 none / 8%);
   --focus-ring: oklch(0.78 0.025 84.59 / 22%);
   --scrim: oklch(0% 0 none / 55%);
   /* Selection keeps the foreground white (no contrast flip) and lays a

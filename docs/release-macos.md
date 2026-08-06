@@ -1,13 +1,17 @@
-# Releasing June for macOS
+# Releasing Clovy for macOS
 
-June ships signed, notarized macOS builds with in-app auto-updates through
+Clovy ships signed, notarized macOS builds with in-app auto-updates through
 `tauri-plugin-updater`. The source repo stays private; update artifacts,
 signatures, the DMG, and `latest.json` are published to the public
 `open-software-network/os-june-releases` repo.
 
+The release repository, `June_*` artifact names, and documented `June.app`
+validation paths are retained June-era compatibility identities under
+[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
+
 ## macOS support
 
-June supports macOS 14.0 and later on Apple Silicon and Intel Macs, including
+Clovy supports macOS 14.0 and later on Apple Silicon and Intel Macs, including
 macOS 15. Production and staging builds ship as universal macOS apps. System
 audio capture uses Core Audio process taps and is available only on macOS 14.2
 and later. On macOS 14.0 or 14.1, recording falls back to microphone-only mode.
@@ -234,14 +238,14 @@ The release workflow reads the packaged sidecar entitlements and runs both
 architecture slices before notarization.
 
 For the first updater-to-updater validation, install an older updater-capable
-build, run **June -> Check for updates…**, confirm the prompt shows the
+build, run **Clovy -> Check for updates…**, confirm the prompt shows the
 new version and release notes, install, and verify the app relaunches without
 Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
 still granted after relaunch. During the relaunch, confirm the app remains
 responsive after the command is accepted: the main event loop must return in
 under one second while bounded child cleanup continues off-thread. For the
 forced-child check, stop the tracked `june-agent-runtime` process with
-`kill -STOP <pid>` before accepting the update and confirm June still
+`kill -STOP <pid>` before accepting the update and confirm Clovy still
 relaunches after kill escalation or the five-second aggregate deadline instead
 of showing a permanent beachball.
 

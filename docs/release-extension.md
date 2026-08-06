@@ -1,9 +1,13 @@
-# Releasing the June browser extension
+# Releasing the Clovy browser extension
 
-The June Chrome extension is released as part of the desktop RC-to-stable flow.
+The Clovy Chrome extension is released as part of the desktop RC-to-stable flow.
 The RC workflow submits changed extension bytes for Chrome review with deferred
 publication. Stable desktop promotion is blocked until Chrome approves that
 exact package, then publishes it after the desktop release succeeds.
+
+The `June-extension.zip` artifact name and existing store item identity are
+retained June-era compatibility identities under
+[ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
 
 The architecture and trade-offs are recorded in [ADR 0035](adr/0035-extension-releases-follow-desktop-rc-promotion.md).
 
@@ -63,7 +67,7 @@ already out:
 ## One-time Chrome Web Store setup
 
 1. Register the publisher, build the current extension, and upload its bootstrap
-   `0.1.0` package once through the Developer Dashboard to create the June item.
+   `0.1.0` package once through the Developer Dashboard to create the Clovy item.
    The uploaded manifest must not contain a `key` field (strip it from the
    built `extension/dist/manifest.json` before zipping; the store rejects it).
    Complete the Store listing, Privacy, Distribution, and reviewer instructions,

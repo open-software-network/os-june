@@ -9,7 +9,7 @@
 ## Thesis
 
 Salesforce is the enterprise CRM system of record most likely to contain the
-customer, opportunity, and account context surrounding a meeting. June should
+customer, opportunity, and account context surrounding a meeting. Clovy should
 turn a reviewed note into precise record updates while respecting each org's
 schema, policies, and administrator controls.
 
@@ -21,13 +21,13 @@ on edition and permissions, and app registration requires administrator work.
 
 Enterprise sellers and customer teams lose meeting detail between the call and
 CRM entry. Generic automation guesses at fields or demands broad admin access.
-June has better source context locally but must not treat that as permission to
+Clovy has better source context locally but must not treat that as permission to
 write broadly.
 
 ## Product promise
 
-An administrator enables June for an org, a user selects supported objects and
-opportunities, and June prepares bounded record updates whose exact field diff
+An administrator enables Clovy for an org, a user selects supported objects and
+opportunities, and Clovy prepares bounded record updates whose exact field diff
 and source disclosure are approved before commit.
 
 ## V1 experience
@@ -35,7 +35,7 @@ and source disclosure are approved before commit.
 - Connect through a Salesforce External Client App and browser authorization.
 - Discover supported standard objects and a reviewed custom-field subset.
 - Search/read Accounts, Contacts, Opportunities, Tasks, and Events.
-- Link a June meeting to selected records.
+- Link a Clovy meeting to selected records.
 - Draft an activity record, follow-up task, or selected Opportunity update.
 - Approve every write against freshly read state.
 
@@ -58,20 +58,20 @@ and source disclosure are approved before commit.
 
 - General SOQL supplied by the model.
 - Bulk API jobs, admin operations, schema changes, or unrestricted Apex.
-- Mirroring Salesforce data into June.
+- Mirroring Salesforce data into Clovy.
 - Autonomous opportunity-stage or forecast changes at launch.
 
 ## Privacy and trust
 
 Salesforce now directs new integrations toward External Client Apps. Its
 documented MCP client setup supports authorization code with PKCE and no client
-secret, which is promising for device custody, but June must prove the same
+secret, which is promising for device custody, but Clovy must prove the same
 path for the selected REST scopes and packaged distribution. Org permissions
-remain the maximum boundary; June's selected objects, records, and fields are a
+remain the maximum boundary; Clovy's selected objects, records, and fields are a
 narrower enforced boundary.
 
 All record content is untrusted. Writes are approval-only. Approval names the
-org, record, field diff, current version material, and June note excerpt.
+org, record, field diff, current version material, and Clovy note excerpt.
 
 ## Business model
 
@@ -95,7 +95,7 @@ agent billing.
 - API availability, field-level security, validation rules, and record types
   differ across editions and customers.
 - Composite operations can partially fail unless explicitly transactional.
-- Hosted MCP is a separate provider path and not automatically June's v1.
+- Hosted MCP is a separate provider path and not automatically Clovy's v1.
 
 ## Decision requested
 

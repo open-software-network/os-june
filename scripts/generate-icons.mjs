@@ -7,22 +7,22 @@
 // It does two jobs:
 //
 //   1. Base icon set. Rebuilds src-tauri/icons/*.png, icon.icns, icon.ico, and
-//      the android/ + ios/ subdirs from src-tauri/icons/june-app-icon.svg using
+//      the android/ + ios/ subdirs from src-tauri/icons/clovy-app-icon.svg using
 //      the Tauri CLI's `tauri icon` command (a devDependency, resvg under the
 //      hood). This is the set Tauri bundles into the app.
 //
-//   2. Themed macOS dock icons. One per accent preset. Each themed icon is the
-//      same squircle mark tinted to a different accent. The only per-brand
-//      difference is a two-stop background gradient (a lighter and a darker
-//      shade of the accent), so all brands render from a single template SVG
-//      (_src/icon.template.svg) with the two stop colors substituted per brand.
-//      The accent hexes are read straight out of src/lib/brand.ts so brand.ts
-//      stays the single source of truth. Output lands in
+//   2. Themed macOS dock icons. One per accent preset. Sage keeps Clovy's
+//      canonical lime material; every other preset gives the mark a luminous
+//      tonal version of its own hue on a dark matching tile. All variants
+//      render from a single template SVG (_src/icon.template.svg), with the
+//      background and mark stops substituted per brand. The accent hexes are
+//      read straight out of src/lib/brand.ts so brand.ts stays the single
+//      source of truth. Output lands in
 //      src-tauri/icons/themed/icon-<brand>.png at 1024x1024 (Rust's
 //      theme_icon.rs embeds these).
 //
 // When to run it:
-//   - You changed june-app-icon.svg (the base mark).
+//   - You changed clovy-app-icon.svg (the base mark).
 //   - You changed a preset's hex in src/lib/brand.ts.
 //   - You added or removed a preset in src/lib/brand.ts. Stale
 //     themed/icon-<brand>.png files for dropped brands are deleted for you.
@@ -52,7 +52,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDir, "..");
 
-const BASE_SVG = join(root, "src-tauri", "icons", "june-app-icon.svg");
+const BASE_SVG = join(root, "src-tauri", "icons", "clovy-app-icon.svg");
 const ICONS_DIR = join(root, "src-tauri", "icons");
 const THEMED_DIR = join(ICONS_DIR, "themed");
 const TEMPLATE_SVG = join(THEMED_DIR, "_src", "icon.template.svg");
@@ -61,11 +61,19 @@ const BRAND_TS = join(root, "src", "lib", "brand.ts");
 // Dock icons render at the SVG's native 1024x1024.
 const THEMED_SIZE = 1024;
 
-// Per-brand gradient stops are the base hex nudged in HSL lightness: the top
-// stop a touch lighter, the bottom stop a touch darker. These offsets reproduce
-// the original hand-tuned stops for every dusty preset within a few RGB units.
-const LIGHT_OFFSET = 0.12;
-const DARK_OFFSET = -0.08;
+// Per-brand background stops preserve the accent hue while scaling its HSL
+// lightness into the dark register.
+const LIGHT_FACTOR = 0.38;
+const DARK_FACTOR = 0.18;
+
+const IDENTITY_MARK_PALETTE = Object.freeze({
+  top: "#F0FF92",
+  high: "#E2FF6D",
+  mid: "#D7FF54",
+  bottom: "#B0FA65",
+  strokeTop: "#F6FFC4",
+  strokeBottom: "#54D55F",
+});
 
 function tauriBinary() {
   const binary = process.platform === "win32" ? "tauri.cmd" : "tauri";
@@ -141,17 +149,35 @@ function hslToRgb([h, s, l]) {
   return [hue2rgb(p, q, h + 1 / 3) * 255, hue2rgb(p, q, h) * 255, hue2rgb(p, q, h - 1 / 3) * 255];
 }
 
-function shiftLightness(hex, delta) {
+function scaleLightness(hex, factor) {
   const [h, s, l] = rgbToHsl(hexToRgb(hex));
-  const nextL = Math.max(0, Math.min(1, l + delta));
+  const nextL = Math.max(0, Math.min(1, l * factor));
   return rgbToHex(hslToRgb([h, s, nextL]));
+}
+
+function luminousTone(hex, lightness, saturationFloor, saturationScale = 1) {
+  const [h, s] = rgbToHsl(hexToRgb(hex));
+  const saturation = Math.min(0.9, Math.max(s * saturationScale, saturationFloor));
+  return rgbToHex(hslToRgb([h, saturation, lightness]));
+}
+
+export function clovyMarkPalette(id, value) {
+  if (id === "sage") return { ...IDENTITY_MARK_PALETTE };
+  return {
+    top: luminousTone(value, 0.84, 0.38, 0.82),
+    high: luminousTone(value, 0.76, 0.52, 0.94),
+    mid: luminousTone(value, 0.69, 0.58, 1.02),
+    bottom: luminousTone(value, 0.62, 0.62, 1.06),
+    strokeTop: luminousTone(value, 0.9, 0.3, 0.72),
+    strokeBottom: luminousTone(value, 0.54, 0.64, 1.1),
+  };
 }
 
 // Render an SVG file to a single PNG at `size`, then move it into place.
 // `tauri icon --png <size>` writes <size>x<size>.png into a fresh temp dir, so
 // we grab that one file and copy it to the destination.
 function renderSvgToPng(svgPath, destPath, size) {
-  const outDir = mkdtempSync(join(tmpdir(), "june-icon-"));
+  const outDir = mkdtempSync(join(tmpdir(), "clovy-icon-"));
   try {
     const result = spawnSync(
       tauriBinary(),
@@ -193,18 +219,34 @@ function generateThemedIcons(presets) {
   const written = new Set();
 
   for (const { id, value } of presets) {
-    const light = shiftLightness(value, LIGHT_OFFSET);
-    const dark = shiftLightness(value, DARK_OFFSET);
-    const svg = template.replaceAll("{{ACCENT_LIGHT}}", light).replaceAll("{{ACCENT_DARK}}", dark);
+    const light = scaleLightness(value, LIGHT_FACTOR);
+    const dark = scaleLightness(value, DARK_FACTOR);
+    const mark = clovyMarkPalette(id, value);
+    const replacements = {
+      "{{ACCENT_LIGHT}}": light,
+      "{{ACCENT_DARK}}": dark,
+      "{{MARK_TOP}}": mark.top,
+      "{{MARK_HIGH}}": mark.high,
+      "{{MARK_MID}}": mark.mid,
+      "{{MARK_BOTTOM}}": mark.bottom,
+      "{{MARK_STROKE_TOP}}": mark.strokeTop,
+      "{{MARK_STROKE_BOTTOM}}": mark.strokeBottom,
+    };
+    let svg = template;
+    for (const [placeholder, color] of Object.entries(replacements)) {
+      svg = svg.replaceAll(placeholder, color);
+    }
 
-    const svgDir = mkdtempSync(join(tmpdir(), "june-themed-svg-"));
+    const svgDir = mkdtempSync(join(tmpdir(), "clovy-themed-svg-"));
     const svgFile = join(svgDir, `icon-${id}.svg`);
     const destPng = join(THEMED_DIR, `icon-${id}.png`);
     try {
       writeFileSync(svgFile, svg);
       renderSvgToPng(svgFile, destPng, THEMED_SIZE);
       written.add(`icon-${id}.png`);
-      console.log(`Themed dock icon: icon-${id}.png  (${value} -> ${light} / ${dark})`);
+      console.log(
+        `Themed dock icon: icon-${id}.png  (tile ${light} / ${dark}; mark ${mark.top} / ${mark.bottom})`,
+      );
     } finally {
       rmSync(svgDir, { recursive: true, force: true });
     }
@@ -262,4 +304,6 @@ function main() {
   console.log("Icons regenerated.");
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-description = "Versioned wire contract for the June companion"
+description = "Versioned wire contract for the Clovy Companion"
 
 [dependencies]
 base64 = "0.22"

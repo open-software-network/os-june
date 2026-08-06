@@ -26,28 +26,28 @@ const PERMISSION_COPY: Record<
   }
 > = {
   work: {
-    subtitle: "This lets June take meeting notes, hear dictation, and type for you.",
+    subtitle: "This lets Clovy take meeting notes, hear dictation, and type for you.",
     microphone: "Hears your dictation and the meetings you choose to record.",
     accessibility: "Puts your words where you're typing, in any app.",
     systemAudio: "Hears the other people on calls so your meeting notes include everyone.",
   },
   personal: {
-    subtitle: "This lets June hear voice notes, type for you, and capture a call when you choose.",
+    subtitle: "This lets Clovy hear voice notes, type for you, and capture a call when you choose.",
     microphone: "Hears voice notes, reflections, and anything you'd rather say than type.",
     accessibility: "Puts dictated messages and notes into other apps.",
-    systemAudio: "Only used when you ask June to capture a call.",
+    systemAudio: "Only used when you ask Clovy to capture a call.",
   },
   thinking: {
-    subtitle: "This lets June hear rough ideas, type drafts, and capture a conversation.",
+    subtitle: "This lets Clovy hear rough ideas, type drafts, and capture a conversation.",
     microphone: "Hears you talk through an idea or dictate a draft.",
     accessibility: "Puts your spoken draft into the app you're working in.",
-    systemAudio: "Only used when you ask June to capture a call.",
+    systemAudio: "Only used when you ask Clovy to capture a call.",
   },
   play: {
-    subtitle: "This lets June hear your ideas, type for you, and capture a role-play.",
+    subtitle: "This lets Clovy hear your ideas, type for you, and capture a role-play.",
     microphone: "Hears characters, dialogue, and stories you'd rather speak aloud.",
     accessibility: "Puts dialogue and ideas into the app you're using.",
-    systemAudio: "Only used when you ask June to capture a call.",
+    systemAudio: "Only used when you ask Clovy to capture a call.",
   },
 };
 
@@ -118,7 +118,7 @@ export function PermissionsStep({
   // macOS < 14.2 (or a missing capture helper) can never grant; the row
   // explains itself and stays out of the Continue gate.
   const systemAudioUnsupported = systemAudioStatus === "unsupported";
-  // Granted, but the helper cannot capture until June restarts. Onboarding has
+  // Granted, but the helper cannot capture until Clovy restarts. Onboarding has
   // nothing left to ask for, so the row explains itself and clears the gate
   // too. It is not marked granted: the source does not work yet.
   const systemAudioUnavailable = systemAudioStatus === "unavailable";
@@ -164,7 +164,7 @@ export function PermissionsStep({
 
   return (
     <StepCard
-      title="Let June listen and type"
+      title="Let Clovy listen and type"
       subtitle={
         macLikePlatform
           ? copy.subtitle
@@ -188,8 +188,8 @@ export function PermissionsStep({
               ? "No microphone found. Connect one, choose it in Windows sound settings, then try again."
               : micDenied
                 ? macLikePlatform
-                  ? "Turned off in System Settings. Flip the toggle and June will notice."
-                  : "Turned off in Windows settings. Flip the toggle and June will notice."
+                  ? "Turned off in System Settings. Flip the toggle and Clovy will notice."
+                  : "Turned off in Windows settings. Flip the toggle and Clovy will notice."
                 : copy.microphone
           }
           onAllow={
@@ -224,11 +224,11 @@ export function PermissionsStep({
               title="System audio"
               detail={
                 systemAudioDenied
-                  ? "Turned off in System Settings. Flip the toggle and June will notice."
+                  ? "Turned off in System Settings. Flip the toggle and Clovy will notice."
                   : systemAudioUnsupported
                     ? "Needs macOS 14.2 or later."
                     : systemAudioUnavailable
-                      ? "Allowed. Restart June to finish turning it on."
+                      ? "Allowed. Restart Clovy to finish turning it on."
                       : systemAudioStatus === "probing"
                         ? "Waiting for macOS. Approve the prompt when it appears."
                         : copy.systemAudio

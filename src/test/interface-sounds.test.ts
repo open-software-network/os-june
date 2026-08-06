@@ -18,28 +18,30 @@ describe("interface sound coordination", () => {
       paused: boolean;
       play: ReturnType<typeof vi.fn>;
     }> = [];
-    globalThis.Audio = vi.fn().mockImplementation(() => ({
-      cloneNode: vi.fn(() => {
-        const playback = {
-          listeners: new Map<string, () => void>(),
-          currentTime: 0,
-          pause: vi.fn(() => {
-            playback.paused = true;
-          }),
-          paused: false,
-          play: vi.fn().mockResolvedValue(undefined),
-          volume: 1,
-          addEventListener: vi.fn((event: string, listener: () => void) => {
-            playback.listeners.set(event, listener);
-          }),
-        };
-        playbackElements.push(playback);
-        return playback;
-      }),
-      load: vi.fn(),
-      preload: "",
-      volume: 1,
-    })) as unknown as typeof Audio;
+    globalThis.Audio = vi.fn(function AudioMock() {
+      return {
+        cloneNode: vi.fn(() => {
+          const playback = {
+            listeners: new Map<string, () => void>(),
+            currentTime: 0,
+            pause: vi.fn(() => {
+              playback.paused = true;
+            }),
+            paused: false,
+            play: vi.fn().mockResolvedValue(undefined),
+            volume: 1,
+            addEventListener: vi.fn((event: string, listener: () => void) => {
+              playback.listeners.set(event, listener);
+            }),
+          };
+          playbackElements.push(playback);
+          return playback;
+        }),
+        load: vi.fn(),
+        preload: "",
+        volume: 1,
+      };
+    }) as unknown as typeof Audio;
     return playbackElements;
   }
 

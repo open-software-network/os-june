@@ -1149,7 +1149,7 @@ async fn await_authorization_code(
 }
 
 // Branded loopback success page for the dev-only sign-in loopback: the shared
-// template from connectors/oauth.rs (embedded fonts, baked clay tokens, the
+// template from connectors/oauth.rs (embedded fonts, baked sage tokens, the
 // welcome-surface look) with sign-in copy.
 #[cfg(debug_assertions)]
 use std::sync::LazyLock;
@@ -1157,7 +1157,7 @@ use std::sync::LazyLock;
 static SUCCESS_BODY: LazyLock<String> = LazyLock::new(|| {
     crate::connectors::oauth::success_page(
         "Signed in",
-        "Signed in to June",
+        "Signed in to Clovy",
         "You can close this tab and return to the app.",
     )
 });

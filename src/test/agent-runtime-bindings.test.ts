@@ -12,7 +12,7 @@ import { agentRuntimeBindings } from "../lib/tauri";
 describe("agent runtime Tauri bindings", () => {
   beforeEach(() => invoke.mockReset());
 
-  it("uses the June-owned session and run commands", async () => {
+  it("uses the Clovy-owned session and run commands", async () => {
     invoke.mockResolvedValue(undefined);
 
     await agentRuntimeBindings.listSessions();

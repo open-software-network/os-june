@@ -31,13 +31,13 @@ tracked as its own slice.
 
 ## Problem statement
 
-June's agent can search the web and fetch a single page as markdown, but it
+Clovy's agent can search the web and fetch a single page as markdown, but it
 cannot operate anything. It cannot open a live page, keep page state, click a
 control, fill a form, take a screenshot, or use a site the user is signed in
-to. On the desktop it cannot touch other applications at all. Users hand June
+to. On the desktop it cannot touch other applications at all. Users hand Clovy
 a task and then do the interactive web or app work themselves. Assistant
-products in June's category ship both capabilities, and the Plugins area
-(JUN-275) needs launch plugins that show June acting, not just reading.
+products in Clovy's category ship both capabilities, and the Plugins area
+(JUN-275) needs launch plugins that show Clovy acting, not just reading.
 
 ## Solution
 
@@ -46,58 +46,58 @@ capability. A plugin tile here is not a catalog install. Computer use is
 managed from its Plugins tile; capability-specific in-chat requests and the
 Browser use Settings toggle set their corresponding stored grants.
 
-**Browser use (v1).** The user connects once by installing the June extension
-in their own Chromium-family browser. June then works in visibly marked tabs
+**Browser use (v1).** The user connects once by installing the Clovy extension
+in their own Chromium-family browser. Clovy then works in visibly marked tabs
 it opens itself, with the user's signed-in sessions available, and pauses for
 approval before any consequential action (submit, send, publish, purchase,
-delete). The user can hand June a specific open tab, approve all actions on
+delete). The user can hand Clovy a specific open tab, approve all actions on
 one site for one task, and stop or disconnect at any time. Sandboxed routines
-get a separate, anonymous, June-managed headless browser that reaches the
+get a separate, anonymous, Clovy-managed headless browser that reaches the
 public web only.
 
-**Computer use (phase 2).** June operates Mac apps in the background without
+**Computer use (phase 2).** Clovy operates Mac apps in the background without
 stealing the cursor, keyboard focus, or the active Space, using a pinned macOS
-driver implementation behind a June-bundled, signed helper and native policy
+driver implementation behind a Clovy-bundled, signed helper and native policy
 broker. The first access to each verified app requires one authorization for
-the active task, and the capability requires a vision-capable model. June can
+the active task, and the capability requires a vision-capable model. Clovy can
 open a missing app by display name. A parked window is added automatically to
-June's current Stage Manager group after that app authorization.
+Clovy's current Stage Manager group after that app authorization.
 
 ## User stories
 
-1. As a June user, I want Browser use and Computer use as tiles in the
+1. As a Clovy user, I want Browser use and Computer use as tiles in the
    Plugins area, so that I discover and enable capabilities where I expect
    them.
-2. As a June user, I want connecting Browser use to walk me through
-   installing the June extension, so that setup is one guided flow.
-3. As a June user, I want the agent to ask for browser access in chat when it
+2. As a Clovy user, I want connecting Browser use to walk me through
+   installing the Clovy extension, so that setup is one guided flow.
+3. As a Clovy user, I want the agent to ask for browser access in chat when it
    needs it, so that I can grant the capability at the moment of need.
-4. As a June user, I want June to work in its own visibly marked tabs, so
+4. As a Clovy user, I want Clovy to work in its own visibly marked tabs, so
    that I always know which tabs belong to the agent.
-5. As a June user, I want my signed-in sessions available in June's task
+5. As a Clovy user, I want my signed-in sessions available in Clovy's task
    tabs, so that the agent can act on my sites without re-authentication.
-6. As a June user, I want to hand June a specific open tab, so that it can
+6. As a Clovy user, I want to hand Clovy a specific open tab, so that it can
    help with the page I am already on.
-7. As a June user, I want June never to read or act on my other open tabs,
+7. As a Clovy user, I want Clovy never to read or act on my other open tabs,
    so that my own work stays mine.
-8. As a June user, I want an approval card before June submits, sends,
+8. As a Clovy user, I want an approval card before Clovy submits, sends,
    publishes, purchases, or deletes anything, so that nothing consequential
    happens without me.
-9. As a June user, I want an "approve all on this site for this task"
+9. As a Clovy user, I want an "approve all on this site for this task"
    choice, so that a multi-step flow on one site does not stop on every
    click.
-10. As a June user, I want June to never type into password, one-time code,
+10. As a Clovy user, I want Clovy to never type into password, one-time code,
     or payment fields, so that my credentials stay mine even mid-task.
-11. As a June user, I want a visible indicator that cannot be faked while
+11. As a Clovy user, I want a visible indicator that cannot be faked while
     the agent drives my browser, so that I can always tell automation is
     active.
-12. As a June user, I want to stop the agent's browsing instantly, so that I
+12. As a Clovy user, I want to stop the agent's browsing instantly, so that I
     stay in control.
-13. As a June user, I want disconnecting the plugin to revoke everything, so
+13. As a Clovy user, I want disconnecting the plugin to revoke everything, so
     that off means off.
-14. As a June user, I want screenshots the agent took shown in chat, so that
+14. As a Clovy user, I want screenshots the agent took shown in chat, so that
     I can verify what it saw and did.
-15. As a June user, I want the consent copy to say what page content leaves
+15. As a Clovy user, I want the consent copy to say what page content leaves
     my device for inference, so that my decision is informed.
 16. As a routine author, I want my scheduled routine to browse public pages,
     so that background jobs can collect what a one-shot fetch cannot.
@@ -105,23 +105,23 @@ June's current Stage Manager group after that app authorization.
     ephemeral, so that unattended jobs never carry my sessions.
 18. As a routine author, I want a clear failure message when no compatible
     browser is installed, so that I know how to fix the job.
-19. As a June user, I want computer use to operate apps without stealing my
+19. As a Clovy user, I want computer use to operate apps without stealing my
     cursor or focus, so that the agent and I can co-work on one machine.
-20. As a June user, I want every desktop action the agent takes to require
+20. As a Clovy user, I want every desktop action the agent takes to require
     my approval, so that background control never surprises me.
-21. As a June user, I want a clear notice when my model cannot drive
+21. As a Clovy user, I want a clear notice when my model cannot drive
     computer use, so that I know to switch to a vision-capable model.
-22. As a June user, I want macOS permission prompts explained before they
+22. As a Clovy user, I want macOS permission prompts explained before they
     appear, so that Accessibility and Screen recording requests are not
     alarming.
-23. As a June developer, I want to load the extension unpacked with a stable
+23. As a Clovy developer, I want to load the extension unpacked with a stable
     id, so that local testing never waits on the store.
-24. As a June user, I want June to open the requested Mac app when needed, so
+24. As a Clovy user, I want Clovy to open the requested Mac app when needed, so
     that a desktop task does not depend on me preparing its window first.
-25. As a Stage Manager user, I want June to recognize a parked thumbnail and
+25. As a Stage Manager user, I want Clovy to recognize a parked thumbnail and
     offer to bring that exact window forward, so that it never mistakes the
     shelf preview for my document.
-26. As a June developer, I want the extension and app to negotiate protocol
+26. As a Clovy developer, I want the extension and app to negotiate protocol
     versions on connect, so that a store-updated extension against an older
     app fails cleanly with an update prompt instead of misbehaving.
 
@@ -131,7 +131,7 @@ June's current Stage Manager group after that app authorization.
 
 - One stored Browser access grant with three fronts: the Plugins tile, a
   Settings toggle, and an in-chat request card (the agent emits a request
-  token on its own line; June strips it and renders the card, the shipped
+  token on its own line; Clovy strips it and renders the card, the shipped
   Agent CLI access pattern).
 - The `june_browser` MCP server is app-owned and internal: listed with the
   other internal servers so users cannot edit or remove it, and its config
@@ -152,7 +152,7 @@ June's current Stage Manager group after that app authorization.
   native-messaging disconnect is the extension's own signal to detach from
   all tabs and clear task state.
 - The upstream runtime's own browser and computer-use toolsets stay disabled
-  regardless of the grant; June exposes capability only through its own
+  regardless of the grant; Clovy exposes capability only through its own
   contract.
 
 ### One tool contract, two transports
@@ -172,7 +172,7 @@ June's current Stage Manager group after that app authorization.
   | Interaction | `click`, `fill`, `press` |
   | Tabs | `list_tabs`, `open_tab`, `switch_tab`, `close_tab`, `accept_shared_tab` |
 
-  Verb first, matching every other internal June MCP server
+  Verb first, matching every other internal Clovy MCP server
   (`start_recording`, `generate_image`, `search_threads`, `get_meeting_note`).
   A tool declared here but not yet implemented fails cleanly; it never
   silently no-ops.
@@ -185,7 +185,7 @@ June's current Stage Manager group after that app authorization.
 ### Attended track (the extension)
 
 - A TypeScript MV3 extension drives the user's own Chromium-family browser.
-  It acts only in task-owned tabs it creates (kept in a June-labeled tab
+  It acts only in task-owned tabs it creates (kept in a Clovy-labeled tab
   group) and in tabs the user explicitly shares; pre-existing tabs are
   otherwise untouchable.
 - Page actions run over per-tab debugger control: trusted input events,
@@ -222,7 +222,7 @@ June's current Stage Manager group after that app authorization.
   code grants nothing, and redeeming consumes it.
 - User gestures that break the markings end ownership immediately: closing
   a task tab, detaching its debugger (for example from the debugging
-  banner's cancel action), renaming the June group, or dragging a task tab
+  banner's cancel action), renaming the Clovy group, or dragging a task tab
   out of it. The extension detaches, every later command against that tab
   fails as an explicit ownership error, and a shared tab's release is
   reported to the broker at once. The extension never re-attaches to a tab
@@ -260,13 +260,13 @@ user-visible. Each rule below is a testable commitment.
   new pairing with empty state; automation never resumes silently on a
   fresh connection.
 - Session-restored tabs are orphaned, never re-adopted. After a browser
-  restart, restored task tabs can still carry the June group label, but
+  restart, restored task tabs can still carry the Clovy group label, but
   the extension's ownership registry is empty and it must not attach to
   them. v1 leaves closing them to the user.
 - An extension update lands mid-session on the store's schedule, not
-  June's. The update reloads the extension, which is transport loss under
+  Clovy's. The update reloads the extension, which is transport loss under
   the rule above: the active task fails safely, and pairing resumes only
-  after the version handshake passes. June prefers a failed task over
+  after the version handshake passes. Clovy prefers a failed task over
   continued control after an unattended update.
 - Parked approvals die with their tab. A consequential action waiting on
   an approval card is bound to its tab; if that tab leaves the session
@@ -286,7 +286,7 @@ user-visible. Each rule below is a testable commitment.
 - The extension lives in this repository as its own package, built with the
   existing toolchain; CI builds the store zip.
 - Published on the Chrome Web Store under the Open Software verified
-  publisher account with the listing name June. The privacy policy and the
+  publisher account with the listing name Clovy. The privacy policy and the
   debugger-permission justification ship with the listing. Store review
   latency gates only public release: development and dogfooding load the
   built extension unpacked, and a pinned manifest key keeps the extension id
@@ -309,7 +309,7 @@ user-visible. Each rule below is a testable commitment.
 ### Computer use (phase 2)
 
 - Productize the pinned runtime's macOS capture and input implementation behind
-  June's private helper and Rust policy broker. The runtime receives only the
+  Clovy's private helper and Rust policy broker. The runtime receives only the
   single app-owned Computer use action surface, never the upstream registry or
   helper transport.
 - Bundle a pinned, signed cua-driver as an app resource and point the
@@ -317,7 +317,7 @@ user-visible. Each rule below is a testable commitment.
   upstream network installer never runs.
 - TCC onboarding (Accessibility, Screen recording) follows the dictation
   helper pattern: bundle-scoped, prompting variant, polled re-checks.
-- First app access parks in Rust and surfaces as a native June authorization
+- First app access parks in Rust and surfaces as a native Clovy authorization
   card. The agent invokes the operation immediately and never asks for a
   textual approval. Authorization clears when the task ends.
 - App lifecycle is narrow: background launch accepts only an app display name;
@@ -342,7 +342,7 @@ and are recorded here because they are release-gating and no slice owned them:
   the extension must not silently take routines down with it, and the reverse.
 - **The capability logs nothing about what it saw.** No URLs, page text,
   screenshots, or field values in telemetry or logs. What a browsing session
-  touched is exactly the material the user is trusting June with, and a log
+  touched is exactly the material the user is trusting Clovy with, and a log
   line is a copy of it outside the boundary the rest of this PRD builds.
 - **The broker records outcomes; the model does not get to grade itself.** A
   task's declared outcome is recorded by the broker before execution and
@@ -444,7 +444,7 @@ decision, not silent drift in either direction.
   only store listing is the Chrome Web Store. Decide the Edge install
   path (installing from the Chrome Web Store versus a separate Edge
   Add-ons listing) before Edge support is claimed anywhere user-facing.
-- **Multiple app instances.** Two running June instances (for example a
+- **Multiple app instances.** Two running Clovy instances (for example a
   stable and an rc build) race on the same host manifest and connection
   descriptor. Decide the v1 behavior: refuse a second pairing,
   last-writer-wins, or per-channel manifests.

@@ -105,7 +105,7 @@ const TIER_LABELS: Record<FundingTier, string> = {
 };
 
 /** Miniature of the OS Accounts portal's engraved-metal tier card (the
- * portal renders it at bank-card size with a WebGL mark; this is the
+ * portal renders it at bank-card size with a dimensional mark; this is the
  * CSS-only slab at glyph scale). Decorative — the adjacent text carries the
  * meaning. Shared by every credits surface (notice, chip, failed-note
  * banner, in-transcript stopped-turn card). */
@@ -152,7 +152,7 @@ export function FundingNotice({ account, onRefresh, textFundingContext, active =
 
   const copy: NoticeCopy = billingRecovery
     ? {
-        body: "Your payment needs attention. Update billing to keep using June.",
+        body: "Your payment needs attention. Update billing to keep using Clovy.",
         cta: "Manage billing",
         waiting: "Waiting for your billing update",
         reopen: "Reopen billing",
@@ -167,13 +167,13 @@ export function FundingNotice({ account, onRefresh, textFundingContext, active =
         }
       : maxTopUpRequired
         ? {
-            body: "Your credit balance is below zero. Top up to keep using June.",
+            body: "Your credit balance is below zero. Top up to keep using Clovy.",
             cta: "Top up credits",
             waiting: "Waiting for your top-up",
             reopen: "Reopen account portal",
           }
         : {
-            body: "Your starter credits are used up. Upgrade to keep using June.",
+            body: "Your starter credits are used up. Upgrade to keep using Clovy.",
             cta: "Upgrade to Pro",
             waiting: "Waiting for your upgrade",
             reopen: "Reopen checkout",
@@ -394,7 +394,7 @@ export function FundingNotice({ account, onRefresh, textFundingContext, active =
               : openedPortal
                 ? copy.waiting
                 : autoVeniceRecovery
-                  ? "Auto can route beyond Venice, so it uses June credits. Your Venice API key applies only when you select a Venice model."
+                  ? "Auto can route beyond Venice, so it uses Clovy credits. Your Venice API key applies only when you select a Venice model."
                   : copy.body}
       </p>
       <div className="funding-notice-actions">

@@ -24,8 +24,19 @@ const COLOR_GROUPS: { label: string; names: string[] }[] = [
       "--muted-foreground",
       "--body-copy",
       "--spinner-neutral",
-      "--primary",
-      "--primary-foreground",
+    ],
+  },
+  {
+    label: "Accent state",
+    names: ["--primary", "--primary-foreground"],
+  },
+  {
+    label: "Primary actions",
+    names: [
+      "--primary-action-background",
+      "--primary-action-background-hover",
+      "--primary-action-border",
+      "--primary-action-foreground",
     ],
   },
   {
@@ -44,6 +55,7 @@ const COLOR_GROUPS: { label: string; names: string[] }[] = [
     label: "Brand and derived tints",
     names: [
       "--brand",
+      "--brand-bright",
       "--brand-wash",
       "--brand-tint",
       "--brand-tint-strong",

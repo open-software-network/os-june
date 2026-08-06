@@ -23,7 +23,7 @@ wrong deal-stage update or private transcript disclosure.
 
 ## Product promise
 
-Connect one Pipedrive company, choose pipelines, and turn a June meeting into a
+Connect one Pipedrive company, choose pipelines, and turn a Clovy meeting into a
 reviewed note, activity, or selected deal update.
 
 ## V1 experience
@@ -43,7 +43,7 @@ reviewed note, activity, or selected deal update.
 - Metadata-first search and bounded record reads, with non-deal records
   reachable only through a current association to an allowed deal.
 - Approved note/activity create and reviewed deal updates.
-- Live fetch and bounded polling while June is awake.
+- Live fetch and bounded polling while Clovy is awake.
 
 ### Later
 
@@ -65,9 +65,9 @@ requires public HTTPS and belongs to away mode. Pipeline and property
 allowlists are enforced in Rust beyond provider permissions.
 
 CRM content is untrusted. Persons, organizations, activities, and notes are not
-pipeline records, so June returns them only when a live provider association
+pipeline records, so Clovy returns them only when a live provider association
 connects them to a deal currently in an allowed pipeline. Approval names
-company, pipeline, records, field diff, and June-originated content.
+company, pipeline, records, field diff, and Clovy-originated content.
 
 ## Business model
 

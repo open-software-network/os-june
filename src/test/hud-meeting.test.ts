@@ -1206,7 +1206,7 @@ describe("meeting detection HUD", () => {
     expect(document.querySelector("#hud-error-text")).toHaveTextContent("");
   });
 
-  it("hides when a Hey June prompt starts an agent session", async () => {
+  it("hides when a Hey Clovy prompt starts an agent session", async () => {
     vi.useFakeTimers();
     await loadHud();
     await emit("dictation-event", { type: "finalizing_transcript" });

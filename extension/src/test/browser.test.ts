@@ -542,12 +542,12 @@ describe("attended reference actions", () => {
           tab_id: 10,
           ref: "e0:n20",
           expected: element,
-          text: "June input",
+          text: "Clovy input",
         }),
       ),
     ).resolves.toMatchObject({ response: { success: true, data: { epoch: 1 } } });
     expect(sendCommand).toHaveBeenCalledWith({ tabId: 10 }, "Input.insertText", {
-      text: "June input",
+      text: "Clovy input",
     });
     const actionDeclaration = sendCommand.mock.calls.find(
       (call) =>

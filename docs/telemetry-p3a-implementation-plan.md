@@ -1,4 +1,4 @@
-# June P3A — implementation plan
+# Clovy P3A — implementation plan
 
 > Engineering companion to [`telemetry-p3a-prd.md`](./telemetry-p3a-prd.md).
 > Read the PRD first; its "What is never collected" section is a hard
@@ -16,10 +16,10 @@
 │                    ▼                              │
 │   one reporter ──► one POST per event increment   │
 │     (serialized, bounded retry backoff)            │
-│                 user-authenticated to June API    │
+│                 user-authenticated to Clovy API    │
 └────────────────────┬──────────────────────────────┘
                      ▼
-        June API  POST /v1/p3a/reports   (TEE, attested)
+        Clovy API  POST /v1/p3a/reports   (TEE, attested)
           validate against catalog, discard user id
                      │ forward to OS Accounts with service token
                      ▼
@@ -38,10 +38,10 @@ Three properties fall out of this shape:
   no field a transcript could travel in. `#[serde(deny_unknown_fields)]`
   on the server closes the other direction.
 - **Identity stripped at ingestion.** The desktop uses the existing user
-  token only so June API can reject unauthenticated writes. The token is not
+  token only so Clovy API can reject unauthenticated writes. The token is not
   part of the report schema, is not forwarded to OS Accounts telemetry
   storage, and is not stored as telemetry data.
-- **Nothing durable exists but aggregates.** June API is already a
+- **Nothing durable exists but aggregates.** Clovy API is already a
   stateless proxy; OS Accounts stores only `(question, epoch, platform,
   version, bucket) -> count` in telemetry aggregate tables that are not
   joined to OS Accounts users, wallets, balances, or subscriptions. Desktop
@@ -52,9 +52,9 @@ Three properties fall out of this shape:
 Brave layers STAR/Constellation threshold encryption on top so that even
 their server can't read an answer unless >= 50 identical answers exist.
 That is the right end state, but it needs a randomness server, threshold
-aggregator, and epoch key infrastructure — disproportionate at June's
+aggregator, and epoch key infrastructure — disproportionate at Clovy's
 scale. Our interim equivalent: validation and forwarding run inside the
-same Intel TDX TEE as June API, so "validate, forward, discard" is part of
+same Intel TDX TEE as Clovy API, so "validate, forward, discard" is part of
 the attested image users can already verify via `/verify`. Durable aggregate
 counters live in OS Accounts, where the telemetry schema stores only
 aggregate cells. Constellation-style encryption is Phase 4, gated on volume
@@ -154,7 +154,7 @@ catalog CI test green.
   Reports still include an ISO week so OS Accounts can aggregate by reporting
   period, but no precise event timestamp is sent.
 - Transport uses `june_api.rs`'s authenticated JSON helper. This protects the
-  public June API route from unauthenticated writes while keeping user identity
+  public Clovy API route from unauthenticated writes while keeping user identity
   out of the telemetry report and out of the OS Accounts aggregate write.
 - Wire format:
 
@@ -165,10 +165,10 @@ POST {JUNE_API_URL}/v1/p3a/reports
 ```
 
 - Kill switches: HTTP 410 per question → mark retired locally; global
-  `p3a.enabled=false` served from June API config → client stops sending
+  `p3a.enabled=false` served from Clovy API config → client stops sending
   entirely (checked once per epoch).
 
-### June API: ingestion (mirrors the issue-reports pipeline end to end)
+### Clovy API: ingestion (mirrors the issue-reports pipeline end to end)
 
 Per house style (seven-crate split, `ApiResponse<T>` envelope, figment
 config, no breaking `/v1/*` changes — additive only):
@@ -180,7 +180,7 @@ config, no breaking `/v1/*` changes — additive only):
   `authenticated_user`, drops the identity, rejects unknown question ids or
   out-of-range buckets with 422, and returns the standard `ApiResponse<T>`
   envelope.
-- `crates/services`: `P3aReportService` owns the June-side question catalog
+- `crates/services`: `P3aReportService` owns the Clovy-side question catalog
   and validation.
 - `crates/providers`: `OsAccountsP3aSink` forwards to OS Accounts with
   `JUNE__OS_ACCOUNTS__P3A_INGEST_TOKEN`. The sink must not forward an OS
@@ -191,7 +191,7 @@ config, no breaking `/v1/*` changes — additive only):
 - Migration: `p3a_aggregates (question_id TEXT, epoch TEXT, platform TEXT,
   version_series TEXT, bucket SMALLINT, count BIGINT, PRIMARY KEY (...))`
   with snake_case + CHECK constraints per house style.
-- Ingest endpoint (service credential auth, June API is the only caller):
+- Ingest endpoint (service credential auth, Clovy API is the only caller):
   `INSERT ... ON CONFLICT ... SET count = count + 1`. The request is the
   entire retention of the raw report. This endpoint must not resolve,
   create, or join an OS Accounts user, wallet, balance, or subscription.
@@ -199,7 +199,7 @@ config, no breaking `/v1/*` changes — additive only):
   views) and a nightly prune of epochs older than 12 months.
 
 **Exit criteria:** end-to-end rstest + wiremock integration tests (house
-style: real Postgres for OS Accounts, wiremock for June API's sink);
+style: real Postgres for OS Accounts, wiremock for Clovy API's sink);
 manual verification that a consenting debug build produces one aggregate
 increment per recorded event and a non-consenting build produces zero.
 
@@ -209,7 +209,7 @@ Question definitions graduate from compiled-in constants to a served
 catalog, following the `/v1/models` pattern (server definitions override
 local defaults at boot):
 
-- `GET /v1/p3a/questions` on June API, defined in `config.toml`, figment-typed.
+- `GET /v1/p3a/questions` on Clovy API, defined in `config.toml`, figment-typed.
 - Client fetches at startup, intersects with its compiled enum: the server
   can **retire or re-bucket** questions without a desktop release, but can
   never introduce a question the shipped binary doesn't know — new
@@ -239,17 +239,17 @@ now; the wire format's `schema` field exists so this can version cleanly.
 | Consent gating | wiremock: zero requests when disabled; counters wiped on disable |
 | Content firewall | type-level (struct has no string content fields) + serde reject tests for extra fields |
 | Catalog/doc parity | CI test: enum ⇄ `telemetry-questions.md` |
-| June API handler | HTTP boundary test: 200 happy path; 401 missing user auth; 422 unknown question or bad bucket; body-limit |
+| Clovy API handler | HTTP boundary test: 200 happy path; 401 missing user auth; 422 unknown question or bad bucket; body-limit |
 | Sink | wiremock OS Accounts: forward shape, drop-on-failure, no retry storm |
 | OS Accounts | real-Postgres repo tests: upsert increment, prune job, k-suppression view |
-| Release gate | debug-build manual run: observe requests with mitmproxy; confirm user auth appears only on the Desktop to June API hop and is not forwarded to OS Accounts telemetry storage |
+| Release gate | debug-build manual run: observe requests with mitmproxy; confirm user auth appears only on the Desktop to Clovy API hop and is not forwarded to OS Accounts telemetry storage |
 
 ## Sequencing and estimate
 
 | Phase | Scope | Estimate |
 |---|---|---|
 | 0 | consent flag + UI + catalog + docs | ~3-4 days |
-| 1 | client pipeline + June API endpoint + OS Accounts aggregates + dashboards | ~1.5-2 weeks |
+| 1 | client pipeline + Clovy API endpoint + OS Accounts aggregates + dashboards | ~1.5-2 weeks |
 | 2 | remote catalog | ~2-3 days |
 | 3 | public roll-up | ~2 days, quarterly thereafter |
 

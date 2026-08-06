@@ -55,12 +55,12 @@ const PROVIDER_NAMES = {
 } satisfies Record<ConnectorProvider, string>;
 
 /** One-line capability blurb shown while a provider is not connected: what
- * connecting it lets June do, in the provider directory row. */
+ * connecting it lets Clovy do, in the provider directory row. */
 const PROVIDER_BLURBS = {
   google: "Mail and calendar for briefings, triage, and meeting prep.",
   linear: "Workspace-wide access through Linear's official MCP server.",
   github:
-    "Read issues, pull requests, and code in the repositories chosen when you install the GitHub App. June allows drafting issues and comments with your approval. Repository access is managed on GitHub, not here.",
+    "Read issues, pull requests, and code in the repositories chosen when you install the GitHub App. Clovy allows drafting issues and comments with your approval. Repository access is managed on GitHub, not here.",
 } satisfies Record<OAuthConnectorProvider, string>;
 
 const NOTION_CONNECTOR_BLURB =
@@ -80,7 +80,7 @@ const LINEAR_FULL_ACCESS_BUNDLES = [
 ] as const satisfies readonly ConnectorScopeBundle[];
 
 const NOTION_CONNECT_DIALOG_DESCRIPTION =
-  "You'll sign in to Notion and approve June's access in your browser. June reads pages and workspace content for briefs and search, and creates or updates pages only with your approval.";
+  "You'll sign in to Notion and approve Clovy's access in your browser. Clovy reads pages and workspace content for briefs and search, and creates or updates pages only with your approval.";
 
 const NOTION_CONNECT_DIALOG_TITLE = "Connect Notion";
 
@@ -187,7 +187,7 @@ function NotionConnectorRow({
       statusTone: "warning",
     },
     unavailable: {
-      subtitle: "June could not confirm the Notion connection. Try again in a moment.",
+      subtitle: "Clovy could not confirm the Notion connection. Try again in a moment.",
       statusLabel: "Status unavailable",
       statusTone: "warning",
     },
@@ -338,14 +338,14 @@ function obsidianStatusMeta(status: ObsidianStatus | null) {
   return { label: "Connected", tone: "ok" } as const;
 }
 
-/** The connected row's one-liner: who is connected, then what June may do. */
+/** The connected row's one-liner: who is connected, then what Clovy may do. */
 function accountSubtitle(
   policy: NonNullable<ReturnType<typeof useConnectorPolicy>["policy"]>,
   account: ConnectorAccount,
 ): string {
   if (account.provider === "linear") {
     if (account.status === "unavailable") {
-      return `${accountDisplayName(account)} · June could not confirm Linear MCP access.`;
+      return `${accountDisplayName(account)} · Clovy could not confirm Linear MCP access.`;
     }
     if (account.status === "reconnect_required" || linearNeedsScopeReconnect(policy, account)) {
       return `${accountDisplayName(account)} · Reconnect to enable workspace-wide Linear MCP access.`;
@@ -369,8 +369,8 @@ function connectDescription(
   const isLinear = provider === "linear";
   const noun = isLinear ? "workspace" : "account";
   const lead = target
-    ? `Add to what June may do with ${accountDisplayName(target)}.`
-    : `Pick what June may do with this ${noun}.`;
+    ? `Add to what Clovy may do with ${accountDisplayName(target)}.`
+    : `Pick what Clovy may do with this ${noun}.`;
   let contentPhrase: string;
   if (provider === "google") {
     contentPhrase = "selected mail or calendar content";
@@ -438,7 +438,7 @@ export function ConnectorsSection({
   const [reconnectingId, setReconnectingId] = useState<string | null>(null);
   const [disconnectTarget, setDisconnectTarget] = useState<ConnectorAccount | null>(null);
   // Revoke defaults ON: disconnecting without it leaves the grant alive at
-  // the provider AND deletes June's copy of its tokens, so June can never
+  // the provider AND deletes Clovy's copy of its tokens, so Clovy can never
   // revoke it afterward - the user is left cleaning up orphaned
   // authorizations in the provider's own settings. Opting out stays
   // available for a deliberate reconnect-soon disconnect.
@@ -520,7 +520,7 @@ export function ConnectorsSection({
       scopes: input.scopes,
       loginHint: input.loginHint,
     });
-    // The June-owned runtime derives managed Linear MCP availability from
+    // The Clovy-owned runtime derives managed Linear MCP availability from
     // current connector state for every run. Other providers retain their
     // existing apply behavior until their migrations are handled separately.
     if (input.provider !== "linear") await connectorsApplyRuntime();
@@ -781,7 +781,7 @@ export function ConnectorsSection({
       setDisconnectTarget(null);
       if (outcome?.providerRevocationConfirmed === false) {
         toast.warning(
-          `Disconnected ${accountDisplayName(account)} locally. June could not confirm revocation with ${PROVIDER_NAMES[account.provider]}; you can remove June in ${PROVIDER_NAMES[account.provider]} settings.`,
+          `Disconnected ${accountDisplayName(account)} locally. Clovy could not confirm revocation with ${PROVIDER_NAMES[account.provider]}; you can remove Clovy in ${PROVIDER_NAMES[account.provider]} settings.`,
         );
       } else {
         toast.success(`Disconnected ${accountDisplayName(account)}`);
@@ -1097,7 +1097,7 @@ export function ConnectorsSection({
           // the page; the code display and link are the fallback.
           <div className="github-device-code-panel">
             <p className="github-device-code-label">
-              Enter this code at github.com/login/device to approve June
+              Enter this code at github.com/login/device to approve Clovy
             </p>
             <div className="github-device-code-row">
               <span className="github-device-code-value">{githubDeviceCode.userCode}</span>
@@ -1151,7 +1151,7 @@ export function ConnectorsSection({
           if (!disconnecting) setDisconnectTarget(null);
         }}
         title={`Disconnect ${disconnectTarget ? accountDisplayName(disconnectTarget) : ""}?`}
-        description="June stops using this account and removes its tokens from your Keychain. Routines that rely on it will fail until you reconnect."
+        description="Clovy stops using this account and removes its tokens from your Keychain. Routines that rely on it will fail until you reconnect."
         footer={
           <>
             <button
@@ -1181,7 +1181,7 @@ export function ConnectorsSection({
             disabled={disconnecting}
             onChange={(event) => setRevoke(event.currentTarget.checked)}
           />
-          Also revoke June's access with{" "}
+          Also revoke Clovy's access with{" "}
           {disconnectTarget ? PROVIDER_NAMES[disconnectTarget.provider] : "the provider"}
         </label>
       </Dialog>

@@ -61,7 +61,7 @@ export function AreaStep({ onContinue }: { onContinue: (area: OnboardingArea) =>
       className="onboarding-card-moods onboarding-card-areas"
     >
       <fieldset className="onboarding-mood-grid onboarding-area-grid">
-        <legend className="visually-hidden">Choose where June should help first</legend>
+        <legend className="visually-hidden">Choose where Clovy should help first</legend>
         {ONBOARDING_AREAS.map((area) => {
           const active = area === selected;
           const { label, description, icon: Icon } = AREA_PRESENTATION[area];

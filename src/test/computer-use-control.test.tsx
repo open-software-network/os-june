@@ -61,7 +61,7 @@ afterEach(() => {
 });
 
 describe("ComputerUseControl", () => {
-  it("enables the June grant without prompting for macOS access", async () => {
+  it("enables the Clovy grant without prompting for macOS access", async () => {
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
     const toggle = await screen.findByRole("switch", { name: "Enable Computer use" });
 
@@ -86,7 +86,7 @@ describe("ComputerUseControl", () => {
         Boolean(
           element?.tagName === "P" &&
             element.textContent?.includes(
-              "Open System Settings, find June Computer Use Driver, and turn it on.",
+              "Open System Settings, find Clovy Computer Use Driver, and turn it on.",
             ),
         ),
       ),
@@ -111,13 +111,13 @@ describe("ComputerUseControl", () => {
 
     expect(await screen.findByText("Step 2 of 2")).toBeInTheDocument();
     expect(screen.getByText("Allow Screen recording")).toBeInTheDocument();
-    expect(screen.getByText(/assigns Screen recording to June itself/)).toBeInTheDocument();
+    expect(screen.getByText(/assigns Screen recording to Clovy itself/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: "Drag June to the open System Settings list",
+        name: "Drag Clovy to the open System Settings list",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Drag June below/)).toBeInTheDocument();
+    expect(screen.getByText(/Drag Clovy below/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Open Screen recording settings" }));
     expect(tauriMocks.computerUseRequestPermissions).toHaveBeenCalledTimes(1);
     expect(tauriMocks.openPrivacySettings).toHaveBeenCalledWith("screenRecording");
@@ -343,7 +343,7 @@ describe("ComputerUseControl", () => {
     expect(await screen.findByText("Driver is not in the list?")).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
-        name: "Drag June Computer Use Driver to the open System Settings list",
+        name: "Drag Clovy Computer Use Driver to the open System Settings list",
       }),
     ).toBeInTheDocument();
     expect(screen.getByText(/Drag the helper below/)).toBeInTheDocument();
@@ -358,7 +358,7 @@ describe("ComputerUseControl", () => {
     );
 
     await screen.findByRole("button", {
-      name: "Drag June Computer Use Driver to the open System Settings list",
+      name: "Drag Clovy Computer Use Driver to the open System Settings list",
     });
     await waitFor(() =>
       expect(tauriMocks.setComputerUsePermissionDragBounds).toHaveBeenCalledWith(
@@ -375,7 +375,7 @@ describe("ComputerUseControl", () => {
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
 
     await screen.findByRole("button", {
-      name: "Drag June to the open System Settings list",
+      name: "Drag Clovy to the open System Settings list",
     });
     await waitFor(() =>
       expect(tauriMocks.setComputerUsePermissionDragBounds).toHaveBeenCalledWith(
@@ -460,7 +460,7 @@ describe("ComputerUseControl", () => {
         grantEnabled: false,
         driverAvailable: false,
         state: "rollout_disabled",
-        error: "Computer use is temporarily unavailable for this June or macOS version.",
+        error: "Computer use is temporarily unavailable for this Clovy or macOS version.",
       }),
     );
     render(<ComputerUseControl onOpenModels={vi.fn()} onOpenBilling={vi.fn()} />);
@@ -468,7 +468,7 @@ describe("ComputerUseControl", () => {
     expect(await screen.findByRole("switch", { name: "Enable Computer use" })).toBeDisabled();
     expect(screen.getAllByText("Temporarily unavailable")).toHaveLength(2);
     expect(
-      screen.getAllByText(/temporarily unavailable for this June or macOS version/),
+      screen.getAllByText(/temporarily unavailable for this Clovy or macOS version/),
     ).toHaveLength(1);
     expect(screen.queryByText("Bundled driver unavailable")).not.toBeInTheDocument();
   });

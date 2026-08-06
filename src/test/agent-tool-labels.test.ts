@@ -18,7 +18,7 @@ describe("toolActivityLabel", () => {
   });
 
   it("labels common web and file tools by intent", () => {
-    expect(toolActivityLabel("web.run", { search_query: [{ q: "June status" }] })).toBe(
+    expect(toolActivityLabel("web.run", { search_query: [{ q: "Clovy status" }] })).toBe(
       "Searching web",
     );
     expect(toolActivityLabel("fetch_url", { url: "https://example.com" })).toBe("Browsing");
@@ -35,7 +35,7 @@ describe("toolActivityLabel", () => {
     expect(toolActivityLabel("june_video.animate_image")).toBe("Working with video");
   });
 
-  it("labels June's private desktop tool as Computer use", () => {
+  it("labels Clovy's private desktop tool as Computer use", () => {
     expect(toolActivityLabel("mcp__june_computer_use__computer_use")).toBe("Computer use");
     expect(toolActivityLabel("june_computer_use.computer_use")).toBe("Computer use");
     expect(toolActivityLabel("computer_user_lookup")).toBe("Computer user lookup");

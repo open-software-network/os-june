@@ -1,16 +1,16 @@
 ---
 name: june-obsidian
-description: Work with the Obsidian vault currently selected in June.
+description: Work with the Obsidian vault currently selected in Clovy.
 platforms: [linux, macos, windows]
 ---
 
-# June Obsidian vault
+# Clovy Obsidian vault
 
 Use this skill for Obsidian note work. Before every distinct Obsidian task, call
 `get_obsidian_vault` to discover the current vault.
 
 - If `connected` is false, tell the user that no Obsidian vault is connected in
-  June. Do not guess a default path.
+  Clovy. Do not guess a default path.
 - If `available` is false, tell the user that the connected vault is currently
   unavailable. Do not infer or reconstruct its absolute path.
 - If a vault path is returned, it is current discovery only, not authorization.

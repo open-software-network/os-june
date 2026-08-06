@@ -77,17 +77,28 @@ describe("Home polish styles", () => {
     expect(cells).toContain("vertical-align: top;");
   });
 
-  it("lets the small Home character acknowledge hover with a wink", () => {
-    const character = cssRuleFor(".agent-home-listening");
-    const wink = cssRuleFor(
-      ".agent-home-listening:hover .june-bloom-wink,\n.agent-home-greeting-mark:hover .june-bloom-wink",
-    );
+  it("lets the living Home mark move its body while keeping pine eyes", () => {
+    const body = cssRuleFor(".clovy-alive-body");
+    const sheen = cssRuleFor(".clovy-alive-sheen");
+    const eyes = cssRuleFor(".clovy-alive-eye");
 
-    expect(character).toContain("pointer-events: auto;");
-    expect(wink).toContain("opacity: 1;");
-    expect(appCss).toContain(
-      "animation: june-bloom-hover-eyes-wink calc(var(--t-slow) * 2) step-end 1;",
-    );
+    expect(body).toContain("transform-box: fill-box;");
+    expect(body).toContain("transform-origin: 50% 55%;");
+    expect(sheen).toContain("opacity: 0.16;");
+    expect(eyes).toContain("fill: var(--clovy-pine);");
+  });
+
+  it("contains the new-session tint inside a broad bottom-rising falloff", () => {
+    const glow = cssRuleFor(".agent-workspace::before");
+    const activeGlow = cssRuleFor('.agent-workspace[data-hero="true"]::before');
+
+    expect(glow).toContain("background: linear-gradient(");
+    expect(glow).toContain("to bottom");
+    expect(glow).toContain("var(--hero-wash-soft) 42%");
+    expect(glow).toContain("var(--hero-wash) 100%");
+    expect(glow).toContain("mask-image: linear-gradient(");
+    expect(glow).not.toContain("radial-gradient(");
+    expect(activeGlow).toContain("opacity: 1;");
   });
 
   it("drops a composer edge fade immediately when it reaches the visible caret", () => {

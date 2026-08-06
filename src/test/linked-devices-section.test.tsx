@@ -180,7 +180,7 @@ describe("LinkedDevicesSection", () => {
     mocks.listDevices.mockResolvedValue([
       {
         id: "device-1",
-        displayName: "June Companion",
+        displayName: "Clovy Companion",
         linkedAt: "2026-07-28T10:00:00Z",
         capabilities: ["mediaRead"],
       },

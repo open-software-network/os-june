@@ -18,6 +18,6 @@ pub(crate) fn log_skipped_user_venice_key(action: ActionSlug, user_id: &UserId, 
         user_id = %user_id.0,
         action = action.as_str(),
         model = model_id,
-        "skipped June credit metering for user-provided Venice API key"
+        "skipped Clovy credit metering for user-provided Venice API key"
     );
 }

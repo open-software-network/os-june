@@ -1,6 +1,6 @@
-# Contributing to June
+# Contributing to Clovy
 
-Thanks for helping build private AI. June ships near-daily releases and
+Thanks for helping build private AI. Clovy ships near-daily releases and
 development happens in the open, so contributions of every size land fast.
 
 ## Before you start
@@ -8,14 +8,14 @@ development happens in the open, so contributions of every size land fast.
 - [AGENTS.md](AGENTS.md) is the canonical contributor guide. Read it first;
   this page is the short version and defers to it.
 - [CONTEXT.md](CONTEXT.md) is the domain glossary. Using the right names
-  (June, June API, dictation vs note transcription) keeps reviews fast.
+  (Clovy, Clovy API, dictation vs note transcription) keeps reviews fast.
 - [docs/index.md](docs/index.md) maps every architecture doc, ADR, and
   runbook.
 
 ## Ways to contribute
 
 - **Report a bug.** Open a [GitHub issue](https://github.com/open-software-network/os-june/issues/new/choose).
-  You can also report directly from inside June, which attaches diagnostics.
+  You can also report directly from inside Clovy, which attaches diagnostics.
 - **Report a security vulnerability.** Never through a public issue; follow
   [SECURITY.md](SECURITY.md).
 - **Propose a feature.** Open a feature request issue, or discuss it first in
@@ -36,7 +36,7 @@ pnpm tauri:dev
 ```
 
 The env examples default to open source local mode: no account, no billing,
-and a local June API. See [docs/configuration.md](docs/configuration.md) for
+and a local Clovy API. See [docs/configuration.md](docs/configuration.md) for
 the full reference.
 
 ## Before you open a PR
@@ -75,9 +75,9 @@ PR conventions, in brief (details in [AGENTS.md](AGENTS.md)):
 - Attach a screenshot or recording for UI changes.
 - Describe behavior generically; avoid naming or comparing other products in
   PR titles, descriptions, and release notes.
-- Say whether the change needs a June API deploy to work end to end.
+- Say whether the change needs a Clovy API deploy to work end to end.
 
 ## License
 
-June is MIT licensed. By contributing, you agree that your contributions are
+Clovy is MIT licensed. By contributing, you agree that your contributions are
 licensed under the [MIT License](LICENSE).

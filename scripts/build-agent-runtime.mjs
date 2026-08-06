@@ -40,7 +40,7 @@ const output = resolve(
 if (process.env.JUNE_AGENT_RUNTIME_PREBUILT === "1") {
   await verifyChecksum(output);
   await smoke(output);
-  process.stdout.write(`Using prebuilt June agent runtime: ${output}\n`);
+  process.stdout.write(`Using prebuilt Clovy agent runtime: ${output}\n`);
   process.exit(0);
 }
 const hostNode = resolve(args.node ?? process.execPath);
@@ -111,7 +111,7 @@ if (target === "universal-apple-darwin") {
 }
 
 await finalize(output);
-process.stdout.write(`Built June agent runtime: ${output}\n`);
+process.stdout.write(`Built Clovy agent runtime: ${output}\n`);
 
 function parseArgs(raw) {
   const supported = new Set([

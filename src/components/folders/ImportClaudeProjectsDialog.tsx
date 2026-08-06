@@ -91,7 +91,7 @@ export function ImportClaudeProjectsDialog({
       open={open}
       onClose={onClose}
       title="Add projects from Claude Code"
-      description="Choose project folders to add to June. Your files stay where they are."
+      description="Choose project folders to add to Clovy. Your files stay where they are."
       leading={<IconCodeAssistant size={16} />}
       width={600}
       className="claude-projects-dialog"
@@ -142,7 +142,7 @@ export function ImportClaudeProjectsDialog({
             <IconCheckmark2 size={20} />
             <div>
               <strong>Everything is already here</strong>
-              <p>All available Claude Code projects have been added to June.</p>
+              <p>All available Claude Code projects have been added to Clovy.</p>
             </div>
           </div>
         ) : null}

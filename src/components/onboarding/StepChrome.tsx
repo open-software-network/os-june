@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
-import { JuneGlassMark } from "../brand/JuneGlassMark";
+import { ClovyAppTile } from "../brand/ClovyLogo";
 import { BrandPrimaryButton } from "../ui/BrandPrimaryButton";
 
 /**
  * One onboarding screen = one welcome-card: a serif title, at most one muted
  * line, then whatever the step needs. Reuses the sign-in gate chrome so
  * first-run is literally the same surface the rest of the app greets users
- * with — not a separate tour. The June mark introduces the brand on the first
+ * with — not a separate tour. The Clovy mark introduces the brand on the first
  * screen only; after that the type carries it.
  */
 export function StepCard({
@@ -19,7 +19,7 @@ export function StepCard({
 }: {
   title: string;
   subtitle?: ReactNode;
-  /** Show the June mark above the title (the welcome screen). */
+  /** Show the Clovy mark above the title (the welcome screen). */
   mark?: boolean;
   /** Steps with a demo card or timeline get a little more room. */
   wide?: boolean;
@@ -33,11 +33,7 @@ export function StepCard({
         className ? ` ${className}` : ""
       }`}
     >
-      {mark ? (
-        <span className="welcome-mark-glass" aria-hidden>
-          <JuneGlassMark />
-        </span>
-      ) : null}
+      {mark ? <ClovyAppTile className="welcome-brand-mark" /> : null}
       <h1 className="welcome-title">{title}</h1>
       {subtitle ? <p className="welcome-subtitle">{subtitle}</p> : null}
       {children}

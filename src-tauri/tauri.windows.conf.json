@@ -1,4 +1,5 @@
 {
+  "productName": "June",
   "bundle": {
     "publisher": "Open Software Network",
     "targets": ["nsis"],

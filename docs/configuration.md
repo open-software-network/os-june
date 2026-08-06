@@ -1,16 +1,16 @@
 # Configuration reference
 
-June has two independent env surfaces: the **desktop app / client** (repo-root
-`.env`, copied from `.env.example`) and the **June API backend**
+Clovy has two independent env surfaces: the **desktop app / client** (repo-root
+`.env`, copied from `.env.example`) and the **Clovy API backend**
 (`june-api/.env` + `june-api/config.toml`). The client env must never hold a
 server secret — upstream provider keys and the OS Accounts App API key live only
-in June API.
+in Clovy API.
 
 The fully-commented sources of truth are `.env.example`,
 `june-api/.env.example`, and `june-api/config.toml`. This page summarizes them;
 when they disagree, the files win.
 
-## How June API config resolves (Figment)
+## How Clovy API config resolves (Figment)
 
 `AppConfig::default()` ← `config.toml` (ships in the Docker image) ← env vars
 `JUNE__SECTION__FIELD` (a double underscore separates sections; single
@@ -22,7 +22,7 @@ built-in fallback ← `config.toml` ← the **live Venice catalog at boot**.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `JUNE_API_URL` | June API base URL the app calls | `https://june-api.opensoftware.co` in code; `.env` (from `.env.example`) sets `http://127.0.0.1:8080` for local dev |
+| `JUNE_API_URL` | Clovy API base URL the app calls | `https://june-api.opensoftware.co` in code; `.env` (from `.env.example`) sets `http://127.0.0.1:8080` for local dev |
 | `OS_JUNE_LOCAL_DEV` | Use a local bearer token instead of Login with Open Software | `1` (example) |
 | `OS_JUNE_LOCAL_DEV_BEARER_TOKEN` / `_USER_ID` | The local-mode identity | `local-dev-token` / `usr_local_dev` |
 | `OS_ACCOUNTS_URL` / `OS_ACCOUNTS_API_URL` | OS Accounts portal + API (optional in local mode) | unset |
@@ -44,7 +44,7 @@ debug build into the production app data directory and the production
 use debug-only paths with the `-dev` suffix. Other files read directly from the
 raw Tauri app config directory are unaffected.
 
-## June API backend (`june-api/.env`, `JUNE__…`)
+## Clovy API backend (`june-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**
 
@@ -52,7 +52,7 @@ raw Tauri app config directory are unaffected.
 |-----|---------|
 | `JUNE__UPSTREAMS__VENICE__API_KEY` | Venice key (default text / dictation / private transcription) |
 | `JUNE__UPSTREAMS__OPENAI__API_KEY` | OpenAI key (optional; OpenAI ASR only) |
-| `JUNE__OS_ACCOUNTS__APP_API_KEY` | The `osk_` App API key June API uses to authorize/charge |
+| `JUNE__OS_ACCOUNTS__APP_API_KEY` | The `osk_` App API key Clovy API uses to authorize/charge |
 | `JUNE__ISSUE_REPORTS__OS_PLATFORM_API_KEY` | Bot key to file issue reports as os-platform Issues (else log-only) |
 | `JUNE__COMPANION__DATABASE_URL` | Postgres trust-metadata store; required to enable the production companion relay |
 | `JUNE__COMPANION__APNS_PRIVATE_KEY_PEM` | Apple APNs `.p8` key; literal newlines or `\\n` escapes are accepted |
