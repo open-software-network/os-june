@@ -639,7 +639,7 @@ fn terminate_child_and_reap(mut child: Child) -> bool {
         Ok(Some(_)) => true,
         Ok(None) | Err(_) => {
             let _ = thread::Builder::new()
-                .name("june-helper-child-reaper".to_string())
+                .name("clovy-helper-child-reaper".to_string())
                 .spawn(move || {
                     let _ = child.wait();
                 });

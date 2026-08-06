@@ -34,13 +34,13 @@ type AgentAttentionKind = AgentSound | undefined;
 const DEDUPE_WINDOW_MS = 15_000;
 
 type AgentNotificationGlobal = typeof globalThis & {
-  __juneAgentNotificationTimes?: Map<string, number>;
+  __clovyAgentNotificationTimes?: Map<string, number>;
 };
 
 function recentNotificationTimes(now: number) {
   const target = globalThis as AgentNotificationGlobal;
-  target.__juneAgentNotificationTimes ??= new Map<string, number>();
-  const recent = target.__juneAgentNotificationTimes;
+  target.__clovyAgentNotificationTimes ??= new Map<string, number>();
+  const recent = target.__clovyAgentNotificationTimes;
   for (const [key, timestamp] of recent) {
     if (now - timestamp >= DEDUPE_WINDOW_MS) recent.delete(key);
   }

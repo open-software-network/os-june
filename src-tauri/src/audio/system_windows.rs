@@ -56,7 +56,7 @@ impl SystemAudioCapture {
             let stats = Arc::clone(&stats);
             let partial_path = partial_path.clone();
             thread::Builder::new()
-                .name("june-windows-system-audio".to_string())
+                .name("clovy-windows-system-audio".to_string())
                 .spawn(move || {
                     capture_loop(partial_path, stop_requested, paused, stats, startup_sender)
                 })

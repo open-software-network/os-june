@@ -162,6 +162,9 @@ describe("Clovy technical identity", () => {
       computerUse,
       computerUseDriver,
       computerUseSelfTest,
+      systemWindows,
+      managedBrowser,
+      agentNotifications,
       shutdown,
       soundsDemo,
       releaseAge,
@@ -171,6 +174,9 @@ describe("Clovy technical identity", () => {
       read("src-tauri/src/computer_use.rs"),
       read("src-tauri/src/computer_use_driver.rs"),
       read("scripts/computer-use-self-test.mjs"),
+      read("src-tauri/src/audio/system_windows.rs"),
+      read("src-tauri/src/browser/managed.rs"),
+      read("src/lib/agent-notifications.ts"),
       read("src-tauri/src/shutdown.rs"),
       read("src/lib/clovy-sounds-demo.ts"),
       read("scripts/check-pnpm-release-age.py"),
@@ -198,6 +204,18 @@ describe("Clovy technical identity", () => {
     expect(computerUseSelfTest).not.toContain(
       "co.opensoftware.june.computer-use-self-test.${role}",
     );
+    expect(computerUseDriver).toContain("clovy-helper-child-reaper");
+    expect(computerUseDriver).not.toContain("june-helper-child-reaper");
+    expect(systemWindows).toContain("clovy-windows-system-audio");
+    expect(systemWindows).not.toContain("june-windows-system-audio");
+    for (const suffix of ["Epoch", "Observer", "State"]) {
+      expect(managedBrowser).toContain(`__clovySnapshot${suffix}`);
+      expect(managedBrowser).not.toContain(`__juneSnapshot${suffix}`);
+    }
+    expect(managedBrowser).toContain("__clovyMutationVersion");
+    expect(managedBrowser).not.toContain("__juneMutationVersion");
+    expect(agentNotifications).toContain("__clovyAgentNotificationTimes");
+    expect(agentNotifications).not.toContain("__juneAgentNotificationTimes");
     expect(shutdown).toContain('name("clovy-shutdown-supervisor".to_string())');
     expect(shutdown).toContain('name("clovy-child-reaper".to_string())');
     expect(shutdown).not.toContain('name("june-shutdown-');

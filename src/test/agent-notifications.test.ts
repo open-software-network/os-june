@@ -38,9 +38,9 @@ describe("agent notifications", () => {
     vi.clearAllMocks();
     delete (
       globalThis as typeof globalThis & {
-        __juneAgentNotificationTimes?: Map<string, number>;
+        __clovyAgentNotificationTimes?: Map<string, number>;
       }
-    ).__juneAgentNotificationTimes;
+    ).__clovyAgentNotificationTimes;
   });
 
   it("maps attention to sound and native delivery based on what the user can see", () => {
@@ -352,9 +352,9 @@ describe("agent notifications", () => {
       expect(tauriMocks.sendAppNotification).toHaveBeenCalledTimes(2);
       const recent = (
         globalThis as typeof globalThis & {
-          __juneAgentNotificationTimes?: Map<string, number>;
+          __clovyAgentNotificationTimes?: Map<string, number>;
         }
-      ).__juneAgentNotificationTimes;
+      ).__clovyAgentNotificationTimes;
       expect(recent?.size).toBe(1);
     } finally {
       vi.useRealTimers();
