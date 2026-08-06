@@ -1,12 +1,43 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
 async function read(relativePath) {
   return readFile(join(root, relativePath), "utf8");
+}
+
+function shareSessionBridge(source, sessionStorage) {
+  const start = source.indexOf('  var STATE_KEY = "clovy_share_state";');
+  const end = source.indexOf("  // ── PKCE sign-in", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const context = { sessionStorage };
+  runInNewContext(
+    `${source.slice(start, end)}\n` +
+      "globalThis.bridge = { saveState, loadState, saveToken, loadToken, removeToken };",
+    context,
+  );
+  return context.bridge;
+}
+
+function memorySessionStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) {
+      return values.get(key) ?? null;
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+    values,
+  };
 }
 
 function expectCanonicalPreferredAliases(compose) {
@@ -124,6 +155,59 @@ describe("Clovy technical identity", () => {
     expect(sbom.name).toBe("clovy-cua-driver-0.5.0");
   });
 
+  it("uses canonical Clovy names for private runtime and Windows helper concepts", async () => {
+    const [
+      helperProtocol,
+      dictation,
+      computerUse,
+      computerUseDriver,
+      computerUseSelfTest,
+      shutdown,
+      soundsDemo,
+      releaseAge,
+    ] = await Promise.all([
+      read("src-tauri/native/windows-dictation-helper/src/protocol.rs"),
+      read("src-tauri/src/dictation.rs"),
+      read("src-tauri/src/computer_use.rs"),
+      read("src-tauri/src/computer_use_driver.rs"),
+      read("scripts/computer-use-self-test.mjs"),
+      read("src-tauri/src/shutdown.rs"),
+      read("src/lib/clovy-sounds-demo.ts"),
+      read("scripts/check-pnpm-release-age.py"),
+    ]);
+
+    expect(helperProtocol).toContain("pub clovy_process_id");
+    expect(helperProtocol).toContain("pub clovy_window_handle");
+    expect(helperProtocol).toContain('rename = "juneProcessId"');
+    expect(helperProtocol).toContain('rename = "juneWindowHandle"');
+    for (const field of [
+      '"clovyProcessId"',
+      '"clovyWindowHandle"',
+      '"juneProcessId"',
+      '"juneWindowHandle"',
+    ]) {
+      expect(dictation).toContain(field);
+    }
+    expect(computerUse).toContain('format!("clovy-cua-{}", random_id())');
+    expect(computerUse).not.toContain('format!("june-cua-{}", random_id())');
+    for (const source of [computerUse, computerUseDriver]) {
+      expect(source).toContain("clovyComputerUseCapability");
+      expect(source).toContain("juneComputerUseCapability");
+    }
+    expect(computerUseSelfTest).toContain("co.opensoftware.clovy.computer-use-self-test.${role}");
+    expect(computerUseSelfTest).not.toContain(
+      "co.opensoftware.june.computer-use-self-test.${role}",
+    );
+    expect(shutdown).toContain('name("clovy-shutdown-supervisor".to_string())');
+    expect(shutdown).toContain('name("clovy-child-reaper".to_string())');
+    expect(shutdown).not.toContain('name("june-shutdown-');
+    expect(shutdown).not.toContain('name("june-child-reaper"');
+    expect(soundsDemo).toContain("__clovySounds");
+    expect(soundsDemo).not.toContain("__juneSounds");
+    expect(releaseAge).toContain("clovy-pnpm-release-age-check");
+    expect(releaseAge).not.toContain("os-june-pnpm-release-age-check");
+  });
+
   it("keeps rollback-safe bridges for credentials, browser storage, headers, and hosts", async () => {
     const [
       credentials,
@@ -137,6 +221,7 @@ describe("Clovy technical identity", () => {
       backendApi,
       extensionHost,
       extensionProtocol,
+      shareViewer,
     ] = await Promise.all([
       read("src-tauri/src/credential_compat.rs"),
       read("src/lib/storage-compat.ts"),
@@ -149,6 +234,7 @@ describe("Clovy technical identity", () => {
       read("clovy-api/crates/api/src/lib.rs"),
       read("src-tauri/src/extension_host.rs"),
       read("extension/src/protocol.ts"),
+      read("clovy-api/crates/api/src/handlers/share_viewer_page.js"),
     ]);
 
     expect(credentials).toContain("canonical_service");
@@ -169,6 +255,46 @@ describe("Clovy technical identity", () => {
       expect(source).toContain("co.opensoftware.clovy.extension");
       expect(source).toContain("co.opensoftware.june.extension");
     }
+    for (const key of ["state", "token"]) {
+      expect(shareViewer).toContain(`clovy_share_${key}`);
+      expect(shareViewer).toContain(`june_share_${key}`);
+    }
+    expect(shareViewer).toContain("sessionStorage.setItem(LEGACY_STATE_KEY, serialized)");
+    expect(shareViewer).toContain("sessionStorage.setItem(STATE_KEY, serialized)");
+    expect(shareViewer).toContain("sessionStorage.setItem(LEGACY_TOKEN_KEY, token)");
+    expect(shareViewer).toContain("sessionStorage.setItem(TOKEN_KEY, token)");
+    expect(shareViewer).toContain("sessionStorage.removeItem(LEGACY_TOKEN_KEY)");
+    expect(shareViewer).toContain("sessionStorage.removeItem(TOKEN_KEY)");
+  });
+
+  it("reconciles share-viewer state and tokens across deploy and rollback", async () => {
+    const source = await read("clovy-api/crates/api/src/handlers/share_viewer_page.js");
+    const legacyState = JSON.stringify({
+      csrf: "callback-csrf",
+      verifier: "verifier",
+      returnPath: "/s/shr_1",
+      fragment: "invite.key",
+    });
+    const storage = memorySessionStorage({
+      clovy_share_state: JSON.stringify({ csrf: "stale-csrf" }),
+      june_share_state: legacyState,
+      june_share_token: "legacy-token",
+    });
+    const bridge = shareSessionBridge(source, storage);
+
+    expect(JSON.stringify(bridge.loadState("callback-csrf"))).toBe(legacyState);
+    expect(storage.values.get("clovy_share_state")).toBe(legacyState);
+    expect(storage.values.get("june_share_state")).toBe(legacyState);
+    expect(bridge.loadToken()).toBe("legacy-token");
+    expect(storage.values.get("clovy_share_token")).toBe("legacy-token");
+    expect(storage.values.get("june_share_token")).toBe("legacy-token");
+
+    bridge.saveToken("clovy-token");
+    expect(storage.values.get("clovy_share_token")).toBe("clovy-token");
+    expect(storage.values.get("june_share_token")).toBe("clovy-token");
+    bridge.removeToken();
+    expect(storage.values.has("clovy_share_token")).toBe(false);
+    expect(storage.values.has("june_share_token")).toBe(false);
   });
 
   it("keeps runtime, migration, dev-env, and deployment aliases reachable", async () => {

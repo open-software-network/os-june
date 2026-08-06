@@ -358,11 +358,11 @@ where
     F: FnOnce(Option<CleanupOutcome>) + Send + 'static,
 {
     thread::Builder::new()
-        .name("june-shutdown-supervisor".to_string())
+        .name("clovy-shutdown-supervisor".to_string())
         .spawn(move || {
             let (done_tx, done_rx) = mpsc::sync_channel(1);
             let cleanup_spawn = thread::Builder::new()
-                .name("june-shutdown-cleanup".to_string())
+                .name("clovy-shutdown-cleanup".to_string())
                 .spawn(move || {
                     let _ = done_tx.send(cleanup());
                 });
@@ -400,7 +400,7 @@ where
 {
     let (done_tx, done_rx) = mpsc::sync_channel(1);
     let spawned = thread::Builder::new()
-        .name("june-shutdown-cleanup".to_string())
+        .name("clovy-shutdown-cleanup".to_string())
         .spawn(move || {
             let _ = done_tx.send(cleanup());
         })
@@ -529,7 +529,7 @@ pub(crate) fn terminate_child_with(
 
 fn spawn_detached_child_reaper(mut child: Child) {
     if let Err(error) = thread::Builder::new()
-        .name("june-child-reaper".to_string())
+        .name("clovy-child-reaper".to_string())
         .spawn(move || {
             let _ = child.wait();
         })

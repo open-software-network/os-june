@@ -17,14 +17,14 @@ type ClovySoundsDemoCommand =
 
 const HELP = [
   "Clovy sound family:",
-  '  __juneSounds("all")         recording and agent cues in sequence',
-  '  __juneSounds("recording")   start, pause, stop',
-  '  __juneSounds("agent")       ready, needs input',
-  '  __juneSounds("start")       recording started',
-  '  __juneSounds("pause")       recording paused',
-  '  __juneSounds("stop")        recording stopped',
-  '  __juneSounds("ready")       agent run settled',
-  '  __juneSounds("needsInput")  agent needs attention',
+  '  __clovySounds("all")         recording and agent cues in sequence',
+  '  __clovySounds("recording")   start, pause, stop',
+  '  __clovySounds("agent")       ready, needs input',
+  '  __clovySounds("start")       recording started',
+  '  __clovySounds("pause")       recording paused',
+  '  __clovySounds("stop")        recording stopped',
+  '  __clovySounds("ready")       agent run settled',
+  '  __clovySounds("needsInput")  agent needs attention',
 ].join("\n");
 
 const RECORDING_SEQUENCE = [
@@ -91,12 +91,12 @@ export function registerClovySoundsDemo(): ClovySoundsDemoApi {
     }
   };
 
-  (window as unknown as { __juneSounds?: typeof run }).__juneSounds = run;
+  (window as unknown as { __clovySounds?: typeof run }).__clovySounds = run;
 
   return {
     dispose() {
       cancelSequence();
-      (window as unknown as { __juneSounds?: typeof run }).__juneSounds = undefined;
+      (window as unknown as { __clovySounds?: typeof run }).__clovySounds = undefined;
     },
   };
 }

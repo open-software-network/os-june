@@ -80,8 +80,8 @@ struct DelayedClipboardRestore {
 
 struct DirectComposerRequest {
     id: String,
-    june_pid: Option<u32>,
-    june_window_handle: Option<isize>,
+    clovy_pid: Option<u32>,
+    clovy_window_handle: Option<isize>,
     start_target: Option<PinnedTarget>,
 }
 
@@ -229,6 +229,8 @@ impl HelperApp {
     }
 
     fn handle_command(&mut self, command: CommandEnvelope) -> bool {
+        let clovy_process_id = command.resolved_clovy_process_id();
+        let clovy_window_handle = command.resolved_clovy_window_handle();
         match command.command_type.as_str() {
             "ping" => self.writer.emit(simple_event("pong")),
             "get_permission_status"
@@ -281,8 +283,8 @@ impl HelperApp {
             }
             "start_listening" => self.start_listening(
                 command.composer_request_id,
-                command.june_process_id,
-                command.june_window_handle,
+                clovy_process_id,
+                clovy_window_handle,
                 command.take_id,
             ),
             "stop_and_paste" => self.stop_and_paste(command.take_id),
@@ -292,8 +294,8 @@ impl HelperApp {
                 } else {
                     self.start_listening(
                         command.composer_request_id,
-                        command.june_process_id,
-                        command.june_window_handle,
+                        clovy_process_id,
+                        clovy_window_handle,
                         command.take_id,
                     );
                 }
@@ -366,8 +368,8 @@ impl HelperApp {
     fn start_listening(
         &mut self,
         composer_request_id: Option<String>,
-        june_pid: Option<u32>,
-        june_window_handle: Option<isize>,
+        clovy_pid: Option<u32>,
+        clovy_window_handle: Option<isize>,
         requested_take_id: Option<String>,
     ) {
         if !self.can_start_listening(composer_request_id.as_deref()) {
@@ -407,7 +409,8 @@ impl HelperApp {
                 self.active_take_id = Some(take_id.clone());
                 self.pinned_target = None;
                 self.direct_composer_request = composer_request_id.map(|id| {
-                    let verified_start_target = match (june_pid, june_window_handle, start_target) {
+                    let verified_start_target = match (clovy_pid, clovy_window_handle, start_target)
+                    {
                         (Some(pid), Some(hwnd), Some(target))
                             if target.pid() == pid && target.hwnd_value() == hwnd =>
                         {
@@ -417,8 +420,8 @@ impl HelperApp {
                     };
                     DirectComposerRequest {
                         id,
-                        june_pid,
-                        june_window_handle,
+                        clovy_pid,
+                        clovy_window_handle,
                         start_target: verified_start_target,
                     }
                 });
@@ -622,8 +625,8 @@ impl HelperApp {
         if let Some(request) = self.direct_composer_request.take() {
             let exact_request = composer_request_id.as_deref() == Some(request.id.as_str());
             let exact_target = request.start_target.is_some_and(|start_target| {
-                request.june_pid == Some(start_target.pid())
-                    && request.june_window_handle == Some(start_target.hwnd_value())
+                request.clovy_pid == Some(start_target.pid())
+                    && request.clovy_window_handle == Some(start_target.hwnd_value())
                     && start_target.has_exact_identity()
             });
             self.pinned_target = None;
@@ -713,7 +716,9 @@ impl HelperApp {
                 self.writer.emit(with_take_id(
                     error_event(
                         code,
-                        format!("Clovy copied the dictation to the clipboard. {guidance} ({error})"),
+                        format!(
+                            "Clovy copied the dictation to the clipboard. {guidance} ({error})"
+                        ),
                     ),
                     take_id.as_deref(),
                 ));

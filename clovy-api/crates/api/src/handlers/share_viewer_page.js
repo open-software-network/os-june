@@ -77,21 +77,58 @@
   }
 
   // ── Session state (per-tab; nothing persists past the tab) ───────────────
+  var STATE_KEY = "clovy_share_state";
+  var LEGACY_STATE_KEY = "june_share_state";
+  var TOKEN_KEY = "clovy_share_token";
+  var LEGACY_TOKEN_KEY = "june_share_token";
+
   function saveState(state) {
-    sessionStorage.setItem("clovy_share_state", JSON.stringify(state));
+    var serialized = JSON.stringify(state);
+    // Publish the rollback-readable key first so either app version can
+    // finish a PKCE round trip that crosses a deployment or rollback.
+    sessionStorage.setItem(LEGACY_STATE_KEY, serialized);
+    sessionStorage.setItem(STATE_KEY, serialized);
   }
-  function loadState() {
-    try {
-      return JSON.parse(sessionStorage.getItem("clovy_share_state") || "null");
-    } catch (error) {
-      return null;
-    }
+
+  function parseState(value) {
+    if (!value) return null;
+    try { return JSON.parse(value); } catch (error) { return null; }
   }
+
+  function loadState(expectedCsrf) {
+    var legacy = parseState(sessionStorage.getItem(LEGACY_STATE_KEY));
+    var canonical = parseState(sessionStorage.getItem(STATE_KEY));
+    // A rollback can start a newer sign-in using only the legacy key while a
+    // stale canonical value remains. The callback state identifies the exact
+    // request without guessing which copy is newer.
+    var state =
+      (legacy && legacy.csrf === expectedCsrf && legacy) ||
+      (canonical && canonical.csrf === expectedCsrf && canonical) ||
+      null;
+    if (state) saveState(state);
+    return state;
+  }
+
   function saveToken(token) {
-    sessionStorage.setItem("clovy_share_token", token);
+    sessionStorage.setItem(LEGACY_TOKEN_KEY, token);
+    sessionStorage.setItem(TOKEN_KEY, token);
   }
+
   function loadToken() {
-    return sessionStorage.getItem("clovy_share_token") || "";
+    // The legacy side wins when provenance is unknown because a rolled-back
+    // viewer can refresh only that copy. Mirror the selected value so the two
+    // identities converge again on the next Clovy page load.
+    var token =
+      sessionStorage.getItem(LEGACY_TOKEN_KEY) ||
+      sessionStorage.getItem(TOKEN_KEY) ||
+      "";
+    if (token) saveToken(token);
+    return token;
+  }
+
+  function removeToken() {
+    sessionStorage.removeItem(LEGACY_TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
   }
 
   // ── PKCE sign-in ──────────────────────────────────────────────────────────
@@ -122,8 +159,9 @@
   async function completeSignIn() {
     var params = new URLSearchParams(location.search);
     var code = params.get("code") || "";
-    var state = loadState();
-    if (!state || !code || params.get("state") !== state.csrf) {
+    var callbackState = params.get("state") || "";
+    var state = loadState(callbackState);
+    if (!state || !code || callbackState !== state.csrf) {
       showStatus("Sign-in did not complete. Open your share link again.", true);
       return;
     }
@@ -362,7 +400,7 @@
       headers: { authorization: "Bearer " + token },
     });
     if (response.status === 401) {
-      sessionStorage.removeItem("clovy_share_token");
+      removeToken();
       await beginSignIn("/s/" + shareId, fragment);
       return;
     }

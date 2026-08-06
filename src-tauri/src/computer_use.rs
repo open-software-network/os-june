@@ -41,7 +41,9 @@ use tokio::{
     net::{unix::OwnedReadHalf, unix::OwnedWriteHalf, UnixStream},
 };
 
-pub const MCP_SERVER_NAME: &str = "june_computer_use";
+/// Compatibility identity for restored runs created before Computer use moved
+/// from a Clovy-owned MCP server to host tools in ADR-0040.
+pub const LEGACY_MCP_SERVER_NAME: &str = "june_computer_use";
 pub const PROXY_PATH: &str = "/v1/computer-use/action";
 pub const APPROVALS_CHANGED_EVENT: &str = "clovy://computer-use-approvals-changed";
 
@@ -495,7 +497,7 @@ impl DriverClient {
         permission_prompt: Option<DriverPermissionPrompt>,
     ) -> Result<Self, AppError> {
         let capability = random_id();
-        let socket_dir = PathBuf::from("/tmp").join(format!("june-cua-{}", random_id()));
+        let socket_dir = PathBuf::from("/tmp").join(format!("clovy-cua-{}", random_id()));
         std::fs::create_dir(&socket_dir).map_err(|error| {
             AppError::new(
                 "computer_use_driver_start_failed",
@@ -581,7 +583,12 @@ impl DriverClient {
                 json!({
                     "protocolVersion": "2024-11-05",
                     "capabilities": {
-                        "experimental": { "juneComputerUseCapability": capability }
+                        "experimental": {
+                            "clovyComputerUseCapability": capability,
+                            // Compatibility for the released capability field
+                            // during the technical-identity bridge window.
+                            "juneComputerUseCapability": capability
+                        }
                     },
                     "clientInfo": { "name": "Clovy", "version": env!("CARGO_PKG_VERSION") }
                 }),
@@ -977,8 +984,8 @@ fn release_self_test_call_allowed(name: &str, arguments: &Value) -> bool {
     };
     matches!(
         identity.bundle_id.as_str(),
-        "co.opensoftware.june.computer-use-self-test.target"
-            | "co.opensoftware.june.computer-use-self-test.observer"
+        "co.opensoftware.clovy.computer-use-self-test.target"
+            | "co.opensoftware.clovy.computer-use-self-test.observer"
     ) && identity
         .executable_path
         .file_name()
@@ -5514,7 +5521,7 @@ mod tests {
             Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/clovy-computer-use-driver");
         let launch = driver_launch_spec(
             executable,
-            Path::new("/tmp/june-cua-test/driver.sock"),
+            Path::new("/tmp/clovy-cua-test/driver.sock"),
             "a-secret-capability",
             Some(DriverPermissionPrompt::ScreenRecording),
         )

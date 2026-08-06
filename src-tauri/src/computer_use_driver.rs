@@ -687,10 +687,10 @@ extern "C" {
 
 #[cfg(target_os = "macos")]
 fn initialize_capability(params: Option<&Value>) -> Option<&str> {
-    params?
-        .get("capabilities")?
-        .get("experimental")?
-        .get("juneComputerUseCapability")?
+    let experimental = params?.get("capabilities")?.get("experimental")?;
+    experimental
+        .get("clovyComputerUseCapability")
+        .or_else(|| experimental.get("juneComputerUseCapability"))?
         .as_str()
 }
 
@@ -1116,6 +1116,26 @@ where
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initialize_accepts_canonical_and_legacy_capability_fields() {
+        let canonical = json!({
+            "capabilities": {
+                "experimental": {
+                    "clovyComputerUseCapability": "canonical",
+                    "juneComputerUseCapability": "legacy"
+                }
+            }
+        });
+        let legacy = json!({
+            "capabilities": {
+                "experimental": { "juneComputerUseCapability": "legacy" }
+            }
+        });
+
+        assert_eq!(initialize_capability(Some(&canonical)), Some("canonical"));
+        assert_eq!(initialize_capability(Some(&legacy)), Some("legacy"));
+    }
 
     #[test]
     fn stage_join_continues_when_any_native_path_dispatched() {

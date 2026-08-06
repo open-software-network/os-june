@@ -56,6 +56,7 @@ the name used for new source concepts.
 | Browser extension package | `clovy-extension` | Store item and extension ID stay the same |
 | Desktop Rust package and library | `clovy`, `clovy_lib` | Main executable remains `os-june` for updater and installed-path continuity |
 | Windows dictation helper source package | `clovy-windows-dictation-helper` | Bundled executable remains `june-dictation-helper` for installed-path and rollback continuity |
+| Windows helper composer identity | `clovyProcessId`, `clovyWindowHandle` | Desktop sends both field sets and the helper accepts `juneProcessId` / `juneWindowHandle` from released peers |
 | Clovy API source, crates, and binary | `clovy-api/`, `clovy-*`, `clovy-api` | Deployment accepts `june-api` image/service aliases until every environment moves |
 | Companion crates and C ABI | `clovy-companion-*`, `clovy_crypto_*` | Legacy crate consumers and `june_crypto_*` symbols remain forwarding aliases during the bridge |
 | Desktop environment | `CLOVY_API_*`, `OS_CLOVY_*`, `CLOVY_AGENT_RUNTIME_*` | Read June-era variables as lower-precedence fallbacks |
@@ -63,6 +64,7 @@ the name used for new source concepts.
 | Client version headers | `x-clovy-app-version`, `x-clovy-macos-version` | Clients send both; Clovy API accepts both; released fixtures keep the old headers |
 | OS credential services | `co.opensoftware.clovy.*` | Migrate legacy-only values, then dual-write both so an application rollback retains rotated tokens and device identity |
 | Browser storage | `clovy:*` | Migrate legacy-only values, dual-write both keys, and reconcile rollback-side changes from a last-synced marker |
+| Share-viewer tab session | `clovy_share_state`, `clovy_share_token` | Read and dual-write `june_share_state` / `june_share_token`; use callback state to reconcile an in-flight PKCE request across deploy or rollback |
 | Persona settings | `clovy-persona.json` | Dual-write `june-persona.json` and reconcile either side against a last-synced settings marker |
 | Native messaging host | `co.opensoftware.clovy.extension` | Install both host manifests; the extension falls back to the legacy host |
 | OAuth/deep links | `clovy://` | Register and accept `osjune://` until old login clients and callbacks age out |

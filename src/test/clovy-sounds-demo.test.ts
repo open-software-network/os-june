@@ -13,35 +13,35 @@ vi.mock("../lib/recording-sounds", () => ({
 import { registerClovySoundsDemo } from "../lib/clovy-sounds-demo";
 
 type SoundWindow = typeof window & {
-  __juneSounds?: (command?: string) => string;
+  __clovySounds?: (command?: string) => string;
 };
 
 describe("Clovy sound console demo", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
-    (window as SoundWindow).__juneSounds = undefined;
+    (window as SoundWindow).__clovySounds = undefined;
   });
 
   it("prints the sound-family menu when called without a command", () => {
     const api = registerClovySoundsDemo();
 
-    expect((window as SoundWindow).__juneSounds?.()).toContain('__juneSounds("all")');
+    expect((window as SoundWindow).__clovySounds?.()).toContain('__clovySounds("all")');
 
     api.dispose();
-    expect((window as SoundWindow).__juneSounds).toBeUndefined();
+    expect((window as SoundWindow).__clovySounds).toBeUndefined();
   });
 
   it("plays each family on demand", async () => {
     vi.useFakeTimers();
     registerClovySoundsDemo();
 
-    expect((window as SoundWindow).__juneSounds?.("recording")).toContain("recording");
+    expect((window as SoundWindow).__clovySounds?.("recording")).toContain("recording");
     await vi.runAllTimersAsync();
     expect(soundMocks.playRecordingSound.mock.calls).toEqual([["start"], ["pause"], ["stop"]]);
 
     vi.clearAllMocks();
-    expect((window as SoundWindow).__juneSounds?.("agent")).toContain("agent");
+    expect((window as SoundWindow).__clovySounds?.("agent")).toContain("agent");
     await vi.runAllTimersAsync();
     expect(soundMocks.playAgentSound.mock.calls).toEqual([["ready"], ["needsInput"]]);
   });
@@ -53,7 +53,7 @@ describe("Clovy sound console demo", () => {
     soundMocks.playAgentSound.mockImplementation((sound) => order.push(sound));
     registerClovySoundsDemo();
 
-    (window as SoundWindow).__juneSounds?.("all");
+    (window as SoundWindow).__clovySounds?.("all");
     await vi.runAllTimersAsync();
 
     expect(order).toEqual(["start", "pause", "stop", "ready", "needsInput"]);
@@ -63,8 +63,8 @@ describe("Clovy sound console demo", () => {
     vi.useFakeTimers();
     registerClovySoundsDemo();
 
-    (window as SoundWindow).__juneSounds?.("all");
-    (window as SoundWindow).__juneSounds?.("ready");
+    (window as SoundWindow).__clovySounds?.("all");
+    (window as SoundWindow).__clovySounds?.("ready");
     await vi.runAllTimersAsync();
 
     expect(soundMocks.playRecordingSound.mock.calls).toEqual([["start"]]);

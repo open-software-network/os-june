@@ -557,7 +557,7 @@ function makeFixtureApp(tempDir, fixtureExecutable, role) {
 <plist version="1.0"><dict>
 <key>CFBundleDisplayName</key><string>${displayName}</string>
 <key>CFBundleExecutable</key><string>${executableName}</string>
-<key>CFBundleIdentifier</key><string>co.opensoftware.june.computer-use-self-test.${role}</string>
+<key>CFBundleIdentifier</key><string>co.opensoftware.clovy.computer-use-self-test.${role}</string>
 <key>CFBundleName</key><string>${displayName}</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>

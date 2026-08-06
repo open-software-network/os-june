@@ -1693,10 +1693,20 @@ pub fn dictation_helper_command(
         if command.get("composerRequestId").is_some() {
             if let Some(object) = command.as_object_mut() {
                 object.insert(
+                    "clovyProcessId".into(),
+                    serde_json::json!(std::process::id()),
+                );
+                object.insert(
+                    // Compatibility for released Windows helpers.
                     "juneProcessId".into(),
                     serde_json::json!(std::process::id()),
                 );
                 object.insert(
+                    "clovyWindowHandle".into(),
+                    serde_json::json!(webview_window_handle(&window)?),
+                );
+                object.insert(
+                    // Compatibility for released Windows helpers.
                     "juneWindowHandle".into(),
                     serde_json::json!(webview_window_handle(&window)?),
                 );
@@ -3346,10 +3356,20 @@ fn forward_dictation_command(
                     #[cfg(target_os = "windows")]
                     {
                         object.insert(
+                            "clovyProcessId".into(),
+                            serde_json::json!(std::process::id()),
+                        );
+                        object.insert(
+                            // Compatibility for released Windows helpers.
                             "juneProcessId".into(),
                             serde_json::json!(std::process::id()),
                         );
                         object.insert(
+                            "clovyWindowHandle".into(),
+                            serde_json::json!(registration.window_handle),
+                        );
+                        object.insert(
+                            // Compatibility for released Windows helpers.
                             "juneWindowHandle".into(),
                             serde_json::json!(registration.window_handle),
                         );
