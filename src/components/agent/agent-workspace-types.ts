@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { Editor } from "@tiptap/react";
 import type { FundingTier, TextFundingNoticeContext } from "../account/FundingNotice";
 import type { AgentProjectContext } from "../../lib/agent-project-context";
 import type { AgentSessionDto } from "../../lib/agent-runtime-contract";
@@ -50,4 +51,6 @@ export type AgentWorkspaceProps = {
       runVideoSlashCommand: (argument: string, commandText: string) => Promise<void>;
     } | null;
   };
+  /** Test seam for asserting editor selection across parent draft synchronization. */
+  testOnlyComposerReady?: (editor: Editor) => void;
 };

@@ -327,6 +327,7 @@ export function AgentWorkspace({
   projectContext,
   resolveSessionProjectContext,
   creditActionsDisabledReason,
+  testOnlyComposerReady,
 }: AgentWorkspaceProps = {}) {
   const { companionPairingEnabled } = useExperimentalFlags();
   const initialAgentSession = initialSession;
@@ -435,15 +436,25 @@ export function AgentWorkspace({
   safetyModeRef.current = safetyMode;
   const [draft, setDraft] = useState(pendingRequestRef.current?.prompt ?? "");
   const [draftRevision, setDraftRevision] = useState(0);
+  const draftRevisionRef = useRef(0);
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const draftHasContentRef = useRef(Boolean(draft.trim()));
-  const setComposerDraft = useCallback((value: string) => {
+  const publishComposerDraft = useCallback((value: string, sourceRevision?: number) => {
+    if (sourceRevision !== undefined && sourceRevision !== draftRevisionRef.current) return false;
     draftRef.current = value;
     draftHasContentRef.current = Boolean(value.trim());
     setDraft(value);
-    setDraftRevision((revision) => revision + 1);
+    return true;
   }, []);
+  const setComposerDraft = useCallback(
+    (value: string) => {
+      draftRevisionRef.current += 1;
+      publishComposerDraft(value);
+      setDraftRevision(draftRevisionRef.current);
+    },
+    [publishComposerDraft],
+  );
   const [attachments, setAttachments] = useState<string[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
@@ -2244,10 +2255,11 @@ export function AgentWorkspace({
       scrollRef={scrollRef}
       draft={draft}
       draftRevision={draftRevision}
-      setDraft={setComposerDraft}
+      setDraft={publishComposerDraft}
       onDraftContentChange={(hasContent) => {
         draftHasContentRef.current = hasContent;
       }}
+      testOnlyComposerReady={testOnlyComposerReady}
       model={model}
       setModel={(nextModel, nextCostQuality) => {
         const selectedCostQuality =
@@ -2830,6 +2842,7 @@ function AgentComposer({
   draftRevision,
   setDraft,
   onDraftContentChange,
+  testOnlyComposerReady,
   model,
   setModel,
   costQuality,
@@ -2858,8 +2871,9 @@ function AgentComposer({
   scrollRef: RefObject<HTMLDivElement>;
   draft: string;
   draftRevision: number;
-  setDraft: (value: string) => void;
+  setDraft: (value: string, sourceRevision?: number) => boolean;
   onDraftContentChange: (hasContent: boolean) => void;
+  testOnlyComposerReady?: AgentWorkspaceProps["testOnlyComposerReady"];
   model: string;
   setModel: (value: string, costQuality?: number) => void;
   costQuality: number;
@@ -2920,8 +2934,8 @@ function AgentComposer({
       return;
     }
     appliedDraftRevisionRef.current = draftRevision;
-    if (draft === publishedDraftRef.current) return;
     publishedDraftRef.current = draft;
+    setHasEditorContent(Boolean(draft.trim()));
     editorRef.current?.setContent(draft, null, { focus: false });
   }, [draft, draftRevision]);
 
@@ -3035,15 +3049,19 @@ function AgentComposer({
         ) : null}
         <ComposerEditor
           ref={editorRef}
+          changeKey={String(draftRevision)}
           placeholder={hero ? "Ask June anything, run / commands" : "Send a message"}
-          onChange={(text) => {
+          onChange={(text, _category, changeKey) => {
+            const sourceRevision =
+              typeof changeKey === "string" ? Number.parseInt(changeKey, 10) : draftRevision;
+            if (!setDraft(text, sourceRevision)) return;
             publishedDraftRef.current = text;
-            setDraft(text);
           }}
           onContentChange={(hasContent) => {
             setHasEditorContent(hasContent);
             onDraftContentChange(hasContent);
           }}
+          onReady={testOnlyComposerReady}
           onSubmit={() => void onSubmit()}
         />
         <div className="agent-composer-toolbar">

@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, AgentSessionDto } from "../lib/agent-runtime-contract";
 
@@ -2225,6 +2226,60 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(onSessionSelected).toHaveBeenLastCalledWith(newSession);
   });
 
+  it("clears an unpublished draft when an already-fresh session is reset", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.click(composer);
+    await user.type(composer, "Do not leak this draft");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled());
+
+    act(() => {
+      markAgentNewSessionPending();
+      window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT));
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe(""),
+    );
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    });
+    expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe("");
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+  });
+
+  it("preserves the caret when a trailing editor publication catches up", async () => {
+    const user = userEvent.setup();
+    let editor: Editor | undefined;
+    render(<AgentWorkspace testOnlyComposerReady={(next) => (editor = next)} />);
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.click(composer);
+    await user.type(composer, "abcdef");
+    await waitFor(() => expect(editor).toBeDefined());
+    act(() => {
+      editor?.commands.setTextSelection(4);
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    });
+
+    expect(editor?.state.selection.from).toBe(4);
+    act(() => {
+      editor?.commands.insertContent("X");
+    });
+    expect(composer.textContent).toBe("abcXdef");
+    act(() => {
+      expect(editor?.commands.undo()).toBe(true);
+    });
+    expect(composer.textContent).toBe("abcdef");
+    act(() => {
+      expect(editor?.commands.redo()).toBe(true);
+    });
+    expect(composer.textContent).toBe("abcXdef");
+  });
+
   it("shows the first message and thinking before fresh session creation finishes", async () => {
     const user = userEvent.setup();
     let resolveCreate: ((value: AgentSessionDto) => void) | undefined;
@@ -2359,6 +2414,9 @@ describe("AgentWorkspace runtime wiring", () => {
       () =>
         expect(container.querySelector(".agent-user-turn")).toHaveTextContent("Create this slowly"),
       { timeout: 3_000 },
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe(""),
     );
     expect(screen.getByText("Thinking…")).toBeVisible();
 
