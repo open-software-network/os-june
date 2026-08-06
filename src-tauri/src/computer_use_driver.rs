@@ -1169,8 +1169,8 @@ mod tests {
     #[test]
     fn packaged_peer_uses_the_tauri_bundle_executable_name() {
         assert_eq!(
-            packaged_main_executable(std::path::Path::new("/Applications/Clovy.app")),
-            std::path::PathBuf::from("/Applications/Clovy.app/Contents/MacOS/os-june")
+            packaged_main_executable(std::path::Path::new("/Applications/June.app")),
+            std::path::PathBuf::from("/Applications/June.app/Contents/MacOS/os-june")
         );
     }
 

@@ -8,6 +8,10 @@ const iconTemplate = readFileSync(
   resolve(process.cwd(), "src-tauri/icons/themed/_src/icon.template.svg"),
   "utf8",
 );
+const macosConfig = JSON.parse(
+  readFileSync(resolve(process.cwd(), "src-tauri/tauri.macos.conf.json"), "utf8"),
+);
+const macosInfoPlist = readFileSync(resolve(process.cwd(), "src-tauri/Info.plist"), "utf8");
 
 describe("development app identity", () => {
   it("names a Codex issue branch with its issue and harness suffix", () => {
@@ -41,6 +45,14 @@ describe("development app identity", () => {
       productName: "Clovy",
       identifier: "co.opensoftware.june",
     });
+  });
+});
+
+describe("macOS release identity", () => {
+  it("keeps the shipped app path while presenting the Clovy display name", () => {
+    expect(macosConfig.productName).toBe("June");
+    expect(macosConfig.bundle.macOS.bundleName).toBe("Clovy");
+    expect(macosInfoPlist).toContain("<key>CFBundleDisplayName</key>\n  <string>Clovy</string>");
   });
 });
 

@@ -36,9 +36,9 @@ renaming could affect compatibility. This includes, without limitation:
   and package-manager coordinates;
 - the `june-api/` source path, `june-*` backend crates, `june` server binary,
   service hostnames, container coordinates, and API routes;
-- bundle identifiers, extension and native-host identifiers, Keychain service
-  names, operating-system permission identities, installer paths, and
-  registered URL schemes;
+- bundle identifiers, installed application bundle paths, extension and
+  native-host identifiers, Keychain service names, operating-system permission
+  identities, installer paths, and registered URL schemes;
 - environment variables such as `JUNE_API_*`, `JUNE__*`, and `OS_JUNE_*`;
 - headers such as `x-june-app-version` and `x-june-macos-version`;
 - persisted database names, tables, migration markers, local-storage keys,
