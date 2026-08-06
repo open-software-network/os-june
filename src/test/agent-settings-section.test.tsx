@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   agentHudHide: vi.fn(),
   agentHudShow: vi.fn(),
   emit: vi.fn().mockResolvedValue(undefined),
-  junePersona: vi.fn(),
+  clovyPersona: vi.fn(),
   listAgentSkills: vi.fn(),
   setClovyPersona: vi.fn(),
 }));
@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("../lib/tauri", () => ({
   agentHudHide: mocks.agentHudHide,
   agentHudShow: mocks.agentHudShow,
-  junePersona: mocks.junePersona,
+  clovyPersona: mocks.clovyPersona,
   listAgentSkills: mocks.listAgentSkills,
   readAgentSkill: vi.fn(),
   setAgentSkillEnabled: vi.fn(),
@@ -34,7 +34,7 @@ describe("AgentSettingsSection", () => {
     vi.clearAllMocks();
     localStorage.clear();
     mocks.listAgentSkills.mockResolvedValue([]);
-    mocks.junePersona.mockResolvedValue({
+    mocks.clovyPersona.mockResolvedValue({
       schemaVersion: 1,
       area: "personal",
       voice: 80,

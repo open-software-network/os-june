@@ -39,7 +39,7 @@
 - Modify `Makefile`: expose the exact release benchmark invocation as `benchmark-note-transcription-latency`.
 - Create `docs/qa/jun-334-note-transcription-latency.md`: record baseline identity, overlay identity, machine context, raw benchmark JSON, medians, gate calculations, structural proof, UI bound, and after results.
 - Modify `docs/index.md`: index the new QA evidence document.
-- Do not modify `src-tauri/src/audio/turns.rs`, `src/components/note-editor/NoteEditor.tsx`, `src/app/App.tsx`, or `june-api/`; existing primitives and contracts are sufficient.
+- Do not modify `src-tauri/src/audio/turns.rs`, `src/components/note-editor/NoteEditor.tsx`, `src/app/App.tsx`, or `clovy-api/`; existing primitives and contracts are sufficient.
 
 The measured overlay commit `68642f61` used the historical
 `src-tauri/src/commands/transcription_benchmark.rs` path,
@@ -400,7 +400,7 @@ async fn handle_fake_request(mut stream: TcpStream, events: RequestEvents) {
     stream.shutdown().await.expect("close response");
 }
 
-pub(super) async fn spawn_fake_june_api(
+pub(super) async fn spawn_fake_clovy_api(
     events: RequestEvents,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback API");
@@ -416,7 +416,7 @@ pub(super) async fn spawn_fake_june_api(
 
 - [ ] **Step 5: Add one measured command-layer iteration**
 
-The iteration must create a note, recording session, pending artifacts, and public-field `FinishedRecording`; spawn the loopback server; set `JUNE_API_URL` to that server; register `BenchmarkObserver`; and start `BenchmarkClock` immediately before the existing three-argument `finish_recording_session` call. The server and observer are ready before `clock.start()`, so bind/setup time is not included in handoff latency.
+The iteration must create a note, recording session, pending artifacts, and public-field `FinishedRecording`; spawn the loopback server; set `CLOVY_API_URL` to that server; register `BenchmarkObserver`; and start `BenchmarkClock` immediately before the existing three-argument `finish_recording_session` call. The server and observer are ready before `clock.start()`, so bind/setup time is not included in handoff latency.
 
 Use a case-scaled hard timeout rather than a performance assertion disguised as a 30-second timeout:
 
@@ -486,7 +486,7 @@ async fn benchmark_post_finalization_note_transcription_latency() {
         .into_iter()
         .map(|case| (case, prepare_case_fixtures(root.path(), case)))
         .collect::<Vec<_>>();
-    let previous = ["JUNE_API_URL", "OS_JUNE_LOCAL_DEV", "OS_JUNE_LOCAL_DEV_BEARER_TOKEN"]
+    let previous = ["CLOVY_API_URL", "OS_JUNE_LOCAL_DEV", "OS_JUNE_LOCAL_DEV_BEARER_TOKEN"]
         .map(|name| (name, std::env::var_os(name)));
     std::env::set_var("OS_JUNE_LOCAL_DEV", "1");
     std::env::set_var("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "benchmark-token");
@@ -1721,7 +1721,7 @@ Use the `repo-review` skill with base `origin/main`. Run Standards, Spec, and ad
 git diff --check origin/main...HEAD
 git diff --stat origin/main...HEAD
 git status --short
-rg -n "benchmark-token|OS_JUNE_LOCAL_DEV_BEARER_TOKEN|JUNE_API_URL" src-tauri/src/commands/note_transcription_benchmark.rs
+rg -n "benchmark-token|OS_JUNE_LOCAL_DEV_BEARER_TOKEN|CLOVY_API_URL" src-tauri/src/commands/note_transcription_benchmark.rs
 ```
 
 Expected: clean diff check, expected files only, clean worktree, and only the fixed non-secret benchmark token/env variable names in test code.

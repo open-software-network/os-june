@@ -5,17 +5,17 @@ import {
   dispatchClovyHomeThreadChanged,
   forgetClovyHomeStoredSessionId,
   isClovyHomeStartTaskTool,
-  JUNE_HOME_DIRECT_TURNS_STORAGE_KEY,
-  JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY,
-  LEGACY_JUNE_HOME_DIRECT_TURNS_STORAGE_KEY,
-  LEGACY_JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY,
+  CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY,
+  CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY,
+  LEGACY_CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY,
+  LEGACY_CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY,
   readClovyHomeStoredSessionId,
   resolveClovyHomeThreadSessionId,
   stripClovyHomeContextFromPreview,
   type ClovyHomeConversationContext,
   type ClovyHomeTaskRequest,
   writeClovyHomeStoredSessionId,
-} from "../../lib/june-home";
+} from "../../lib/clovy-home";
 import type { ClovyHomeChatResponse } from "../../lib/tauri";
 
 export type HomeTaskHandoff = ClovyHomeTaskRequest & {
@@ -29,12 +29,12 @@ export type HomeTaskHandoff = ClovyHomeTaskRequest & {
 };
 
 export const HOME_DEMO_SEEDED_EVENT = "june:agent:home-demo-seeded";
-const HOME_DEMO_BACKUP_STORAGE_KEY = "june:home:demo-backup:v3";
-const LEGACY_HOME_DEMO_BACKUP_STORAGE_KEY = "june.home.demoBackup.v3";
+const HOME_DEMO_BACKUP_STORAGE_KEY = "clovy:home:demo-backup:v3";
+const LEGACY_HOME_DEMO_BACKUP_STORAGE_KEY = "clovy.home.demoBackup.v3";
 
 const LEGACY_HOME_STORAGE_KEYS: Partial<Record<string, string>> = {
-  [JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY]: LEGACY_JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY,
-  [JUNE_HOME_DIRECT_TURNS_STORAGE_KEY]: LEGACY_JUNE_HOME_DIRECT_TURNS_STORAGE_KEY,
+  [CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY]: LEGACY_CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY,
+  [CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY]: LEGACY_CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY,
   [HOME_DEMO_BACKUP_STORAGE_KEY]: LEGACY_HOME_DEMO_BACKUP_STORAGE_KEY,
 };
 
@@ -103,14 +103,14 @@ export function readHomeDirectTurns(storedSessionId: string | undefined): AgentC
     ? resolveClovyHomeThreadSessionId(storedSessionId)
     : undefined;
   if (!activeSessionId) return [];
-  const turns = readRecord(JUNE_HOME_DIRECT_TURNS_STORAGE_KEY)[activeSessionId];
+  const turns = readRecord(CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY)[activeSessionId];
   return Array.isArray(turns) ? turns.filter(validHomeTurn) : [];
 }
 
 export function persistHomeDirectTurns(storedSessionId: string, turns: AgentChatTurn[]) {
   const activeSessionId = resolveClovyHomeThreadSessionId(storedSessionId);
   if (!activeSessionId) return;
-  const records = readRecord(JUNE_HOME_DIRECT_TURNS_STORAGE_KEY);
+  const records = readRecord(CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY);
   // The relationship thread is intentionally long-lived. Keep all turns while
   // storage permits it, then retain the deepest viable recent tail.
   const candidates = [turns, turns.slice(-2000), turns.slice(-1000), turns.slice(-400)];
@@ -120,7 +120,7 @@ export function persistHomeDirectTurns(storedSessionId: string, turns: AgentChat
     attemptedLengths.add(candidate.length);
     try {
       window.localStorage.setItem(
-        JUNE_HOME_DIRECT_TURNS_STORAGE_KEY,
+        CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY,
         JSON.stringify({ ...records, [activeSessionId]: candidate }),
       );
       dispatchClovyHomeThreadChanged(activeSessionId);
@@ -151,7 +151,7 @@ export function readHomeTaskHandoffs(storedSessionId: string | undefined): HomeT
     ? resolveClovyHomeThreadSessionId(storedSessionId)
     : undefined;
   if (!activeSessionId) return [];
-  const values = readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY)[activeSessionId];
+  const values = readRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY)[activeSessionId];
   if (!Array.isArray(values)) return [];
   return values
     .map((value) => {
@@ -186,7 +186,7 @@ export function readHomeTaskHandoffs(storedSessionId: string | undefined): HomeT
 export function persistHomeTaskHandoffs(storedSessionId: string, handoffs: HomeTaskHandoff[]) {
   const activeSessionId = resolveClovyHomeThreadSessionId(storedSessionId);
   if (!activeSessionId) return;
-  const records = readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY);
+  const records = readRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY);
   // Handoffs back every visible task card in the long-lived transcript. Keep
   // the full set when storage permits, then degrade in lockstep-sized tails
   // instead of silently dropping every card after the newest 24.
@@ -197,7 +197,7 @@ export function persistHomeTaskHandoffs(storedSessionId: string, handoffs: HomeT
     attemptedLengths.add(candidate.length);
     try {
       window.localStorage.setItem(
-        JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY,
+        CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY,
         JSON.stringify({ ...records, [activeSessionId]: candidate }),
       );
       dispatchClovyHomeThreadChanged(activeSessionId);
@@ -726,7 +726,7 @@ function demoTaskTurn(id: string, createdAt: string): AgentChatTurn {
       {
         type: "tool",
         id,
-        name: "mcp_june_home_start_task",
+        name: "mcp_clovy_home_start_task",
         text: "",
         status: "complete",
       },
@@ -826,8 +826,8 @@ Anything after a table or code block keeps rendering in the same response.`,
       error: "The session could not be created. Please try again.",
     },
   ];
-  writeRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY, {
-    ...readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY),
+  writeRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY, {
+    ...readRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY),
     [storedSessionId]: handoffs,
   });
   window.dispatchEvent(new CustomEvent(HOME_DEMO_SEEDED_EVENT));
@@ -838,14 +838,14 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
     if (mode === false) {
       const snapshot = homeDemoSnapshot ?? readDemoSnapshot();
       if (!snapshot) return "Home demo is already off.";
-      const direct = readRecord(JUNE_HOME_DIRECT_TURNS_STORAGE_KEY);
-      const handoffs = readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY);
+      const direct = readRecord(CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY);
+      const handoffs = readRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY);
       if (snapshot.directTurns === undefined) delete direct[snapshot.demoSessionId];
       else direct[snapshot.demoSessionId] = snapshot.directTurns;
       if (snapshot.handoffs === undefined) delete handoffs[snapshot.demoSessionId];
       else handoffs[snapshot.demoSessionId] = snapshot.handoffs;
-      writeRecord(JUNE_HOME_DIRECT_TURNS_STORAGE_KEY, direct);
-      writeRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY, handoffs);
+      writeRecord(CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY, direct);
+      writeRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY, handoffs);
       if (snapshot.sessionId) {
         writeClovyHomeStoredSessionId(snapshot.profile, snapshot.sessionId);
       } else {
@@ -869,8 +869,8 @@ if (import.meta.env.DEV && typeof window !== "undefined") {
         profile,
         sessionId,
         demoSessionId,
-        directTurns: readRecord(JUNE_HOME_DIRECT_TURNS_STORAGE_KEY)[demoSessionId],
-        handoffs: readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY)[demoSessionId],
+        directTurns: readRecord(CLOVY_HOME_DIRECT_TURNS_STORAGE_KEY)[demoSessionId],
+        handoffs: readRecord(CLOVY_HOME_TASK_HANDOFFS_STORAGE_KEY)[demoSessionId],
       };
       window.localStorage.setItem(HOME_DEMO_BACKUP_STORAGE_KEY, JSON.stringify(homeDemoSnapshot));
     }

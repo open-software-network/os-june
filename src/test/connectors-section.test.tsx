@@ -137,7 +137,7 @@ beforeEach(() => {
   mocks.extensionPairingStatus.mockResolvedValue({ paired: false, listenerRunning: true });
   mocks.registerBrowserExtensionHost.mockResolvedValue({
     manifestPath: "/tmp/co.opensoftware.june.extension.json",
-    shimPath: "/tmp/june-nm-shim",
+    shimPath: "/tmp/clovy-nm-shim",
   });
   mocks.browserTransportPolicy.mockResolvedValue({
     attendedEnabled: true,

@@ -111,8 +111,8 @@ verifiable.
    confidential VM on Phala Cloud and publishes three useful anchors:
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
-   - **Image:** [`build-june-api.yml`](.github/workflows/build-june-api.yml)
-     publishes [`ghcr.io/open-software-network/june-api`](https://github.com/open-software-network/os-june/pkgs/container/june-api);
+   - **Image:** [`build-clovy-api.yml`](.github/workflows/build-clovy-api.yml)
+     publishes [`ghcr.io/open-software-network/clovy-api`](https://github.com/open-software-network/os-june/pkgs/container/clovy-api);
      deploys pin immutable per-commit tags recorded as signed `deploy/<env>/<sha>` git tags.
    - **Attestation:** the [Phala Trust Center report](https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54)
      reports evidence for the image running inside the TEE.
@@ -151,7 +151,7 @@ powers its metered AI calls.
 ```text
 src/         React and TypeScript frontend
 src-tauri/   Tauri v2 Rust desktop backend and native helpers
-june-api/    Clovy API: models, transcription, generation, and billing
+clovy-api/    Clovy API: models, transcription, generation, and billing
 docs/        Architecture notes, ADRs, subsystem guides, and runbooks
 spec/        Enforceable coding rules
 specs/       Feature specs, plans, and validation notes
@@ -171,15 +171,15 @@ pinned in `package.json`.
 git clone https://github.com/open-software-network/os-june
 cd os-june
 cp .env.example .env
-cp june-api/.env.example june-api/.env
-# Edit june-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+cp clovy-api/.env.example clovy-api/.env
+# Edit clovy-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
 
 The example env files default to open source local mode: no OS Accounts login,
 no billing, and a local Clovy API authenticated by a shared bearer token.
-Provider keys belong only in `june-api/.env`, never in the root desktop
+Provider keys belong only in `clovy-api/.env`, never in the root desktop
 `.env`. A Venice API key is enough for transcription, generation, and
 dictation cleanup.
 
@@ -202,7 +202,7 @@ pnpm check         # lint and format (Biome)
 pnpm typecheck
 pnpm test          # frontend (Vitest)
 pnpm test:rust     # desktop Rust
-pnpm test:june-api # Clovy API
+pnpm test:clovy-api # Clovy API
 ```
 
 `make verify` mirrors CI. Start with [CONTRIBUTING.md](CONTRIBUTING.md), then

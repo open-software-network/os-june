@@ -31,6 +31,14 @@ export type PairingTransition = {
 
 export const initialPairingState: PairingState = { status: "disconnected" };
 
+export function shouldTryNextNativeHost(
+  state: PairingState,
+  currentIndex: number,
+  hostCount: number,
+): boolean {
+  return state.status === "handshaking" && currentIndex + 1 < hostCount;
+}
+
 function incompatibleRemedy(appProtocolVersion?: number): IncompatibleRemedy {
   if (appProtocolVersion === undefined || appProtocolVersion === PROTOCOL_VERSION) {
     return "updateBoth";

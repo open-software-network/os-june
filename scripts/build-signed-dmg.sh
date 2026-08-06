@@ -163,17 +163,17 @@ for architecture in arm64 x64; do
     tar -xzf "$archive"
   )
 done
-export JUNE_AGENT_RUNTIME_TARGET="universal-apple-darwin"
-export JUNE_AGENT_RUNTIME_NODE_ARM64="$node_download_dir/node-v${node_version}-darwin-arm64/bin/node"
-export JUNE_AGENT_RUNTIME_NODE_X64="$node_download_dir/node-v${node_version}-darwin-x64/bin/node"
+export CLOVY_AGENT_RUNTIME_TARGET="universal-apple-darwin"
+export CLOVY_AGENT_RUNTIME_NODE_ARM64="$node_download_dir/node-v${node_version}-darwin-arm64/bin/node"
+export CLOVY_AGENT_RUNTIME_NODE_X64="$node_download_dir/node-v${node_version}-darwin-x64/bin/node"
 pnpm agent-runtime:build
 node scripts/build-agent-runtime.mjs
 runtime_smoke_dir="$TEMP_DIR/June agent runtime smoke"
 mkdir -p "$runtime_smoke_dir"
-cp .tauri-agent-runtime/june-agent-runtime "$runtime_smoke_dir/june-agent-runtime"
-node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/june-agent-runtime" --smoke-arch arm64
-node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/june-agent-runtime" --smoke-arch x86_64
-export JUNE_AGENT_RUNTIME_PREBUILT=1
+cp .tauri-agent-runtime/clovy-agent-runtime "$runtime_smoke_dir/clovy-agent-runtime"
+node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/clovy-agent-runtime" --smoke-arch arm64
+node scripts/build-agent-runtime.mjs --smoke "$runtime_smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
+export CLOVY_AGENT_RUNTIME_PREBUILT=1
 # Build the nested helper for the same universal target as the Tauri app before
 # the generic before-build hook runs. The preparation stamp lets that hook reuse
 # the universal release helper instead of replacing it with the runner's slice.
@@ -214,12 +214,12 @@ pnpm tauri build --bundles app,dmg --target "$computer_use_target" "${tauri_buil
 # Validate the copy inside the signed app, not the pre-bundle staging resource.
 # Hosted staging runners run the deterministic contract gate; a pre-granted
 # desktop release runner can opt into the live TCC/capture/background-action
-# fixture with JUNE_COMPUTER_USE_LIVE_SELF_TEST=1.
+# fixture with CLOVY_COMPUTER_USE_LIVE_SELF_TEST=1.
 computer_use_self_test_args=()
 if [[ -n "$computer_use_target" ]]; then
   computer_use_self_test_args+=(--target "$computer_use_target")
 fi
-if [[ "${JUNE_COMPUTER_USE_LIVE_SELF_TEST:-0}" == "1" ]]; then
+if [[ "${CLOVY_COMPUTER_USE_LIVE_SELF_TEST:-0}" == "1" ]]; then
   computer_use_self_test_args+=(--live)
 fi
 ./scripts/computer-use-release-self-test.sh "${computer_use_self_test_args[@]}"
@@ -234,7 +234,7 @@ if [[ "${#apps[@]}" -ne 1 ]]; then
   exit 1
 fi
 app="${apps[0]}"
-runtime="$app/Contents/Resources/native/bin/june-agent-runtime"
+runtime="$app/Contents/Resources/native/bin/clovy-agent-runtime"
 runtime_checksum="$runtime.sha256"
 [[ -x "$runtime" ]]
 [[ -s "$runtime_checksum" ]]
@@ -250,9 +250,9 @@ if find "$app/Contents/Resources" \( -iname '*hermes*' -o -iname 'python.exe' -o
 fi
 packaged_runtime_smoke_dir="$TEMP_DIR/June packaged runtime smoke"
 mkdir -p "$packaged_runtime_smoke_dir"
-cp "$runtime" "$packaged_runtime_smoke_dir/june-agent-runtime"
-node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/june-agent-runtime" --smoke-arch arm64
-node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/june-agent-runtime" --smoke-arch x86_64
+cp "$runtime" "$packaged_runtime_smoke_dir/clovy-agent-runtime"
+node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/clovy-agent-runtime" --smoke-arch arm64
+node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
 codesign --verify --deep --strict --verbose=2 "$app"
 
 dmgs=(

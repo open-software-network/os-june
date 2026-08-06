@@ -135,7 +135,7 @@ export function prepareProjectPrompt(
   };
 }
 
-const SIGNATURES_STORAGE_KEY = "june.project-context.signatures";
+const SIGNATURES_STORAGE_KEY = "clovy.project-context.signatures";
 const DETAILED_SIGNATURES_MAX_ENTRIES = 500;
 
 /** Compact replacement for an older detailed signature. It preserves the

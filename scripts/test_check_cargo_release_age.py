@@ -17,7 +17,7 @@ class CheckCargoReleaseAgeTests(unittest.TestCase):
         completed = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
         with patch.object(MODULE.subprocess, "run", return_value=completed) as run:
             count = MODULE.verify_manifests_locked(
-                ["june-api/Cargo.toml", "src-tauri/Cargo.toml"]
+                ["clovy-api/Cargo.toml", "src-tauri/Cargo.toml"]
             )
         self.assertEqual(count, 2)
         self.assertEqual(run.call_count, 2)

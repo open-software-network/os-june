@@ -1,4 +1,4 @@
-export const AGENT_SOUNDS_ENABLED_KEY = "june:agent-sounds:enabled";
+export const AGENT_SOUNDS_ENABLED_KEY = "clovy:agent-sounds:enabled";
 export const AGENT_SOUNDS_CHANGED_EVENT = "june:agent-sounds:changed";
 
 export type AgentSoundsChangedDetail = {

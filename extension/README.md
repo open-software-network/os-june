@@ -21,7 +21,7 @@ closed, when the task ends, the share is revoked, or the broker disconnects.
    (port + per-run token) into its app data dir.
 2. In Clovy's settings, "Set up browser extension" writes the Chrome native
    messaging host manifest, which pins this extension's id and points at the
-   `june-nm-shim` binary.
+   `clovy-nm-shim` binary.
 3. The extension's background worker calls `chrome.runtime.connectNative`;
    Chrome spawns the shim, which authenticates to the listener and relays
    frames both ways.
@@ -32,9 +32,9 @@ closed, when the task ends, the share is revoked, or the broker disconnects.
 ## Develop
 
 ```sh
-pnpm --filter june-extension build   # writes dist/
-pnpm --filter june-extension test    # vitest
-pnpm --filter june-extension typecheck
+pnpm --filter clovy-extension build   # writes dist/
+pnpm --filter clovy-extension test    # vitest
+pnpm --filter clovy-extension typecheck
 ```
 
 Load it unpacked: run the Clovy app once (dev build is fine), click "Set up

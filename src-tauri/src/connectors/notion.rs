@@ -2836,8 +2836,10 @@ fn now_unix() -> i64 {
 mod store {
     use super::*;
 
-    const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.notion-hosted-mcp";
-    const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.notion-hosted-mcp";
+    const KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy.notion-hosted-mcp";
+    const DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy-dev.notion-hosted-mcp";
+    const LEGACY_KEYCHAIN_SERVICE: &str = "co.opensoftware.june.notion-hosted-mcp";
+    const LEGACY_DEV_KEYCHAIN_SERVICE: &str = "co.opensoftware.june-dev.notion-hosted-mcp";
 
     pub async fn store(tokens: &StoredNotionConnection) -> Result<(), AppError> {
         let json = serde_json::to_string(tokens)
@@ -2855,10 +2857,14 @@ mod store {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     async fn store_platform(json: String) -> Result<(), AppError> {
-        let service = keychain_service().to_string();
+        let (service, legacy_service) = keychain_services();
         tokio::task::spawn_blocking(move || {
-            keyring::Entry::new(&service, NOTION_ACCOUNT_ID)
-                .and_then(|entry| entry.set_password(&json))
+            crate::credential_compat::set_password(
+                service,
+                legacy_service,
+                NOTION_ACCOUNT_ID,
+                &json,
+            )
         })
         .await
         .map_err(|e| AppError::new("notion_keychain_write_failed", e.to_string()))?
@@ -2875,18 +2881,13 @@ mod store {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     async fn load_platform() -> Result<Option<StoredNotionConnection>, AppError> {
-        let service = keychain_service().to_string();
+        let (service, legacy_service) = keychain_services();
         let raw = tokio::task::spawn_blocking(move || {
-            match keyring::Entry::new(&service, NOTION_ACCOUNT_ID)
-                .and_then(|entry| entry.get_password())
-            {
-                Ok(raw) => Ok(Some(raw)),
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(AppError::new("notion_keychain_read_failed", e.to_string())),
-            }
+            crate::credential_compat::get_password(service, legacy_service, NOTION_ACCOUNT_ID)
         })
         .await
-        .map_err(|e| AppError::new("notion_keychain_read_failed", e.to_string()))??;
+        .map_err(|e| AppError::new("notion_keychain_read_failed", e.to_string()))?
+        .map_err(|e| AppError::new("notion_keychain_read_failed", e.to_string()))?;
         let Some(raw) = raw else {
             return Ok(None);
         };
@@ -2907,20 +2908,13 @@ mod store {
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     async fn delete_platform() -> Result<(), AppError> {
-        let service = keychain_service().to_string();
+        let (service, legacy_service) = keychain_services();
         tokio::task::spawn_blocking(move || {
-            match keyring::Entry::new(&service, NOTION_ACCOUNT_ID)
-                .and_then(|entry| entry.delete_credential())
-            {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(e) => Err(AppError::new(
-                    "notion_keychain_delete_failed",
-                    e.to_string(),
-                )),
-            }
+            crate::credential_compat::delete_password(service, legacy_service, NOTION_ACCOUNT_ID)
         })
         .await
         .map_err(|e| AppError::new("notion_keychain_delete_failed", e.to_string()))?
+        .map_err(|e| AppError::new("notion_keychain_delete_failed", e.to_string()))
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2929,11 +2923,11 @@ mod store {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn keychain_service() -> &'static str {
+    fn keychain_services() -> (&'static str, &'static str) {
         if cfg!(debug_assertions) {
-            DEV_KEYCHAIN_SERVICE
+            (DEV_KEYCHAIN_SERVICE, LEGACY_DEV_KEYCHAIN_SERVICE)
         } else {
-            KEYCHAIN_SERVICE
+            (KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE)
         }
     }
 }

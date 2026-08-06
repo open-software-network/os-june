@@ -29,8 +29,8 @@ Follow [docs/development.md](docs/development.md). The short version:
 
 ```sh
 cp .env.example .env
-cp june-api/.env.example june-api/.env
-# Edit june-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
+cp clovy-api/.env.example clovy-api/.env
+# Edit clovy-api/.env and set JUNE__UPSTREAMS__VENICE__API_KEY.
 pnpm install
 pnpm tauri:dev
 ```
@@ -48,7 +48,7 @@ make verify
 ```
 
 Or individually: `pnpm check`, `pnpm typecheck`, `pnpm test`,
-`pnpm test:rust`, `pnpm test:june-api`.
+`pnpm test:rust`, `pnpm test:clovy-api`.
 
 Frontend typecheck/tests and `src-tauri/` macOS Rust checks are local by default
 on PRs to avoid paying for repeated hosted runners while a branch is still

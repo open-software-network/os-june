@@ -1,6 +1,6 @@
 use crate::{app_paths, db::repositories::Repositories, domain::types::AppError};
 use chrono::{DateTime, SecondsFormat, Utc};
-use june_companion_protocol::{
+use clovy_companion_protocol::{
     AttachmentReference, AttachmentSource, BrowseEntry, BrowseEntryKind, BrowseFile, BrowseRoot,
     Page, PageRequest, UploadBeginRequest, UploadChunkRequest, UploadProgress, MAX_BROWSE_ROOTS,
     MAX_PAGE_SIZE, MAX_UPLOAD_BYTES,
@@ -1732,7 +1732,7 @@ fn upload_io_error(_error: std::io::Error) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use june_companion_protocol::{MAX_PAGE_CURSOR_BYTES, MAX_RELATIVE_PATH_BYTES};
+    use clovy_companion_protocol::{MAX_PAGE_CURSOR_BYTES, MAX_RELATIVE_PATH_BYTES};
     use sqlx_sqlite::SqlitePoolOptions;
 
     async fn test_repositories() -> Repositories {

@@ -344,7 +344,7 @@ async fn revoke_item_share(
 }
 
 async fn delete_remote_share_or_accept_missing(share_id: &str) -> Result<(), AppError> {
-    match crate::june_api::share_delete(share_id).await {
+    match crate::clovy_api::share_delete(share_id).await {
         Ok(()) => Ok(()),
         // `share_not_found` is deliberately ambiguous for non-enumeration. For
         // deletion, either meaning is terminal for this local profile: the
@@ -928,7 +928,7 @@ pub async fn suggest_agent_session_title(
     request: SuggestAgentSessionTitleRequest,
 ) -> Result<SuggestAgentSessionTitleResponse, AppError> {
     let title =
-        crate::june_api::suggest_agent_session_title(&request.prompt, request.response.as_deref())
+        crate::clovy_api::suggest_agent_session_title(&request.prompt, request.response.as_deref())
             .await?;
     Ok(SuggestAgentSessionTitleResponse { title })
 }
@@ -955,7 +955,7 @@ pub async fn submit_issue_report(
             }
         }
     };
-    crate::june_api::submit_issue_report(&request, &app_version, diagnostics.as_deref()).await
+    crate::clovy_api::submit_issue_report(&request, &app_version, diagnostics.as_deref()).await
 }
 
 async fn issue_report_agent_diagnostics(
@@ -1016,7 +1016,7 @@ pub async fn explain_agent_approval(
     request: ExplainAgentApprovalRequest,
 ) -> Result<ExplainAgentApprovalResponse, AppError> {
     let explanation =
-        crate::june_api::explain_agent_approval(&request.description, request.command.as_deref())
+        crate::clovy_api::explain_agent_approval(&request.description, request.command.as_deref())
             .await?;
     Ok(ExplainAgentApprovalResponse { explanation })
 }
@@ -1089,21 +1089,21 @@ pub async fn check_recording_source_readiness(
         .map_err(|error| AppError::new("readiness_check_failed", error.to_string()))
 }
 
-/// Opens the june-api `/verify` page (enclave attestation, routing,
+/// Opens the clovy-api `/verify` page (enclave attestation, routing,
 /// retention) in the default browser. Must route through Rust: the webview
 /// installs no new-window handler, so `target="_blank"` anchors are silently
 /// dropped — same reason the accounts portal links go through a command.
 #[tauri::command]
-pub fn june_open_verify_page() -> Result<(), AppError> {
-    crate::os_accounts::open_in_browser(&crate::june_api::verify_url())
+pub fn clovy_open_verify_page() -> Result<(), AppError> {
+    crate::os_accounts::open_in_browser(&crate::clovy_api::verify_url())
 }
 
-const JUNE_COMMUNITY_URL: &str = "https://t.me/osjune";
+const CLOVY_COMMUNITY_URL: &str = "https://t.me/osjune";
 
 /// Opens the Clovy Telegram community in the default browser.
 #[tauri::command]
-pub fn june_open_community_page() -> Result<(), AppError> {
-    crate::os_accounts::open_in_browser(JUNE_COMMUNITY_URL)
+pub fn clovy_open_community_page() -> Result<(), AppError> {
+    crate::os_accounts::open_in_browser(CLOVY_COMMUNITY_URL)
 }
 
 /// Opens an arbitrary external link in the default browser. This is the
@@ -1113,7 +1113,7 @@ pub fn june_open_community_page() -> Result<(), AppError> {
 /// Scheme-checked to http/https so a crafted href can't reach other URL
 /// handlers (file:, tel:, custom schemes) through the OS opener.
 #[tauri::command]
-pub fn june_open_external_url(url: String) -> Result<(), AppError> {
+pub fn clovy_open_external_url(url: String) -> Result<(), AppError> {
     let scheme_ok = {
         let lower = url.trim_start().to_ascii_lowercase();
         lower.starts_with("https://") || lower.starts_with("http://")
@@ -1125,6 +1125,21 @@ pub fn june_open_external_url(url: String) -> Result<(), AppError> {
         ));
     }
     crate::os_accounts::open_in_browser(url.trim())
+}
+
+#[tauri::command]
+pub fn june_open_verify_page() -> Result<(), AppError> {
+    clovy_open_verify_page()
+}
+
+#[tauri::command]
+pub fn june_open_community_page() -> Result<(), AppError> {
+    clovy_open_community_page()
+}
+
+#[tauri::command]
+pub fn june_open_external_url(url: String) -> Result<(), AppError> {
+    clovy_open_external_url(url)
 }
 
 #[tauri::command]
@@ -3009,35 +3024,35 @@ fn wav_duration_ms(path: &Path) -> Option<i64> {
 }
 
 // ---- Private sharing (JUN-308) -----------------------------------------
-// Thin proxies to the june-api /v1/shares endpoints plus the local key
+// Thin proxies to the clovy-api /v1/shares endpoints plus the local key
 // store. All crypto happens in the webview; these commands only move
 // ciphertext, envelopes, metadata, and locally persisted key bytes.
 
 #[tauri::command]
 pub async fn share_create(request: ShareCreateRequest) -> Result<ShareCreatedDto, AppError> {
-    crate::june_api::share_create(&request).await
+    crate::clovy_api::share_create(&request).await
 }
 
 #[tauri::command]
 pub async fn share_list() -> Result<Vec<ShareSummaryDto>, AppError> {
-    crate::june_api::share_list().await
+    crate::clovy_api::share_list().await
 }
 
 #[tauri::command]
 pub async fn share_get(request: ShareGetRequest) -> Result<ShareDto, AppError> {
-    crate::june_api::share_get(&request.share_id).await
+    crate::clovy_api::share_get(&request.share_id).await
 }
 
 #[tauri::command]
 pub async fn share_add_invites(
     request: ShareAddInvitesRequest,
 ) -> Result<ShareInvitesAddedDto, AppError> {
-    crate::june_api::share_add_invites(&request.share_id, &request.invites).await
+    crate::clovy_api::share_add_invites(&request.share_id, &request.invites).await
 }
 
 #[tauri::command]
 pub async fn share_revoke_invite(request: ShareRevokeInviteRequest) -> Result<(), AppError> {
-    crate::june_api::share_revoke_invite(&request.share_id, &request.invite_id).await
+    crate::clovy_api::share_revoke_invite(&request.share_id, &request.invite_id).await
 }
 
 #[tauri::command]
@@ -3121,7 +3136,7 @@ pub async fn share_invite_keys_get(
 /// (including the key-carrying fragment, which must never reach Rust logs).
 #[tauri::command]
 pub fn get_share_base_url() -> Result<String, AppError> {
-    Ok(crate::june_api::share_base_url())
+    Ok(crate::clovy_api::share_base_url())
 }
 
 fn decode_share_key_b64(value: &str) -> Result<Vec<u8>, AppError> {

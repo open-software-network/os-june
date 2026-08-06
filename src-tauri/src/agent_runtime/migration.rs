@@ -19,7 +19,7 @@ use std::{
 };
 use thiserror::Error;
 
-const MIGRATION_KEY: &str = "hermes-to-june-agent-runtime-v2";
+const MIGRATION_KEY: &str = "hermes-to-clovy-agent-runtime-v2";
 const HERMES_GATEWAY_LAUNCHD_LABEL: &str = "ai.hermes.gateway";
 const LEGACY_GATEWAY_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LEGACY_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;

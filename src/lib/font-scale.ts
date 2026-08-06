@@ -28,7 +28,7 @@ export const FONT_SCALE_PRESETS: {
   { id: "larger", label: "Larger", value: 1.2 },
 ];
 
-const STORAGE_KEY = "os-june:font-scale";
+const STORAGE_KEY = "os-clovy:font-scale";
 export const FONT_SCALE_CHANGED_EVENT = "june://font-scale-change";
 export const DEFAULT_FONT_SCALE: FontScaleId = "default";
 let sessionFontScale: FontScaleId = DEFAULT_FONT_SCALE;

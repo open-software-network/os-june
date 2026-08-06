@@ -735,6 +735,89 @@ dependencies = [
 ]
 
 [[package]]
+name = "clovy"
+version = "0.0.39"
+dependencies = [
+ "anyhow",
+ "apple-metal",
+ "base64 0.22.1",
+ "block2 0.6.2",
+ "chrono",
+ "chrono-tz",
+ "clovy-companion-crypto",
+ "clovy-companion-protocol",
+ "core-foundation 0.10.1",
+ "cpal",
+ "cua-driver-core",
+ "dotenvy",
+ "dunce",
+ "futures-core",
+ "futures-util",
+ "hound",
+ "imagesize",
+ "keyring",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "platform-macos",
+ "qrcode",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "rustfft",
+ "security-framework 3.7.0",
+ "semver",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "sqlx-core",
+ "sqlx-sqlite",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-notification",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "window-vibrancy",
+ "windows 0.61.3",
+ "zeroize",
+ "zip",
+]
+
+[[package]]
+name = "clovy-companion-crypto"
+version = "0.1.0"
+dependencies = [
+ "snow",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "clovy-companion-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "combine"
 version = "4.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2623,26 +2706,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "june-companion-crypto"
-version = "0.1.0"
-dependencies = [
- "snow",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "june-companion-protocol"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3509,69 +3572,6 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
-]
-
-[[package]]
-name = "os-june"
-version = "0.0.39"
-dependencies = [
- "anyhow",
- "apple-metal",
- "base64 0.22.1",
- "block2 0.6.2",
- "chrono",
- "chrono-tz",
- "core-foundation 0.10.1",
- "cpal",
- "cua-driver-core",
- "dotenvy",
- "dunce",
- "futures-core",
- "futures-util",
- "hound",
- "imagesize",
- "june-companion-crypto",
- "june-companion-protocol",
- "keyring",
- "libc",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "platform-macos",
- "qrcode",
- "rand 0.8.6",
- "reqwest 0.12.28",
- "rustfft",
- "security-framework 3.7.0",
- "semver",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2",
- "sqlx-core",
- "sqlx-sqlite",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-notification",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite 0.29.0",
- "tracing",
- "url",
- "urlencoding",
- "uuid",
- "window-vibrancy",
- "windows 0.61.3",
- "zeroize",
- "zip",
 ]
 
 [[package]]

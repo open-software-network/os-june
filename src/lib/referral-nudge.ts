@@ -26,7 +26,7 @@ export type ReferralNudgeMoment = "meetings" | "agent" | "dictation" | "feedback
 /** Dispatched on window when a moment fires and the caps permit showing. */
 export const REFERRAL_NUDGE_EVENT = "june:referral-nudge";
 
-export const REFERRAL_NUDGE_STORAGE_KEY = "june.referralNudge";
+export const REFERRAL_NUDGE_STORAGE_KEY = "clovy.referralNudge";
 
 export const REFERRAL_NUDGE_NOTE_THRESHOLD = 5;
 export const REFERRAL_NUDGE_DICTATION_THRESHOLD = 25;

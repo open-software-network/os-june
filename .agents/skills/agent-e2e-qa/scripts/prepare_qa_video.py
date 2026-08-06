@@ -220,7 +220,7 @@ def load_os_platform_key(root: pathlib.Path) -> str | None:
         if value:
             return value.strip()
 
-    env_file = root / "june-api" / ".env"
+    env_file = root / "clovy-api" / ".env"
     if not env_file.exists():
         return None
 

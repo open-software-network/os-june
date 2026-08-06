@@ -8,7 +8,7 @@ build/
 src-tauri/.tauri.dev.generated.json
 
 target/
-june-api/target/
+clovy-api/target/
 debug/
 release/
 .tauri-helper/
@@ -49,7 +49,7 @@ CLAUDE.local.md
 
 # Ephemeral Phala CVM state (holds a per-run bearer token; mode 600).
 # The glob also covers write_state's atomic-rename temps (.json.XXXXXX).
-.ephemeral-june-api.json*
+.ephemeral-clovy-api.json*
 
 # Local agent working files: task briefs and review/report scratch
 .briefs

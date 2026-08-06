@@ -27,7 +27,7 @@ fn main() {
                 .build()
                 .expect("Computer use self-test runtime should start");
             if let Err(error) =
-                runtime.block_on(os_june_lib::computer_use::run_release_self_test_host(
+                runtime.block_on(clovy_lib::computer_use::run_release_self_test_host(
                     std::path::PathBuf::from(driver),
                     permission_prompt,
                 ))
@@ -38,5 +38,5 @@ fn main() {
             return;
         }
     }
-    os_june_lib::run();
+    clovy_lib::run();
 }

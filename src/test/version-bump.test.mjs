@@ -17,7 +17,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "unchanged"
 
 [[package]]
-name = "os-june"
+name = "clovy"
 version = "0.1.0"
 dependencies = [
  "dependency",
@@ -25,10 +25,10 @@ dependencies = [
 `;
 
 const files = {
-  tauriConf: '{\n  "productName": "June",\n  "version": "0.1.0"\n}\n',
-  cargoToml: '[package]\nname = "os-june"\nversion = "0.1.0"\n',
+  tauriConf: '{\n  "productName": "Clovy",\n  "version": "0.1.0"\n}\n',
+  cargoToml: '[package]\nname = "clovy"\nversion = "0.1.0"\n',
   cargoLock,
-  packageJson: '{\n  "name": "os-june",\n  "version": "0.1.0"\n}\n',
+  packageJson: '{\n  "name": "clovy",\n  "version": "0.1.0"\n}\n',
 };
 
 describe("validateRequestedVersion", () => {
@@ -97,16 +97,16 @@ describe("readCurrentVersion", () => {
 describe("currentVersionFromCargoToml", () => {
   it("reads the [package] version, not another table's version", () => {
     const cargo =
-      '[workspace.package]\nversion = "9.9.9"\n\n[package]\nname = "os-june"\nversion = "0.1.0"\n';
+      '[workspace.package]\nversion = "9.9.9"\n\n[package]\nname = "clovy"\nversion = "0.1.0"\n';
     expect(currentVersionFromCargoToml(cargo)).toBe("0.1.0");
   });
 
   it("bumps the [package] version while leaving other tables untouched", () => {
     const cargo =
-      '[workspace.package]\nversion = "9.9.9"\n\n[package]\nname = "os-june"\nversion = "0.1.0"\n';
+      '[workspace.package]\nversion = "9.9.9"\n\n[package]\nname = "clovy"\nversion = "0.1.0"\n';
     const next = bumpVersionContents({ ...files, cargoToml: cargo }, "0.2.0");
     expect(next.cargoToml).toContain('[workspace.package]\nversion = "9.9.9"');
-    expect(next.cargoToml).toContain('[package]\nname = "os-june"\nversion = "0.2.0"');
+    expect(next.cargoToml).toContain('[package]\nname = "clovy"\nversion = "0.2.0"');
   });
 });
 
@@ -115,14 +115,14 @@ describe("currentVersionFromCargoLock", () => {
     expect(currentVersionFromCargoLock(cargoLock)).toBe("0.1.0");
   });
 
-  it("fails when the os-june package is missing", () => {
+  it("fails when the clovy package is missing", () => {
     expect(() =>
-      currentVersionFromCargoLock(cargoLock.replace('name = "os-june"', 'name = "other"')),
+      currentVersionFromCargoLock(cargoLock.replace('name = "clovy"', 'name = "other"')),
     ).toThrow("Could not find");
   });
 
-  it("fails when the os-june package is duplicated", () => {
-    const duplicate = `${cargoLock}\n[[package]]\nname = "os-june"\nversion = "0.1.0"\n`;
+  it("fails when the clovy package is duplicated", () => {
+    const duplicate = `${cargoLock}\n[[package]]\nname = "clovy"\nversion = "0.1.0"\n`;
     expect(() => currentVersionFromCargoLock(duplicate)).toThrow("multiple");
   });
 
@@ -130,14 +130,14 @@ describe("currentVersionFromCargoLock", () => {
     ["missing", cargoLock.replace('version = "0.1.0"\n', "")],
     ["malformed", cargoLock.replace('version = "0.1.0"', "version = 0.1.0")],
     ["duplicate", cargoLock.replace('version = "0.1.0"', 'version = "0.1.0"\nversion = "0.1.0"')],
-  ])("fails on a %s os-june version field", (_name, lock) => {
+  ])("fails on a %s clovy version field", (_name, lock) => {
     expect(() => currentVersionFromCargoLock(lock)).toThrow();
   });
 
-  it.each(["source", "checksum"])("rejects an os-june package with a %s field", (field) => {
+  it.each(["source", "checksum"])("rejects a clovy package with a %s field", (field) => {
     const lock = cargoLock.replace(
-      'name = "os-june"\n',
-      `name = "os-june"\n${field} = "registry identity"\n`,
+      'name = "clovy"\n',
+      `name = "clovy"\n${field} = "registry identity"\n`,
     );
     expect(() => currentVersionFromCargoLock(lock)).toThrow(`contains a ${field} field`);
   });

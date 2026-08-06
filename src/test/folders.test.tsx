@@ -52,7 +52,7 @@ describe("folders UI", () => {
     (window as unknown as { __sidebarStates?: (show?: boolean) => string }).__sidebarStates?.(
       false,
     );
-    window.localStorage.removeItem("june:pinned-agent-session-ids");
+    window.localStorage.removeItem("clovy:pinned-agent-session-ids");
     agentMocks.listAgentSessions.mockResolvedValue([]);
     agentMocks.deleteAgentSession.mockResolvedValue(undefined);
   });
@@ -262,7 +262,7 @@ describe("folders UI", () => {
         "Fetch os platform issues",
       ),
     ).toBeInTheDocument();
-    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe('["session-1"]');
+    expect(window.localStorage.getItem("clovy:pinned-agent-session-ids")).toBe('["session-1"]');
 
     await user.click(
       within(screen.getByRole("region", { name: "Pinned agent sessions" })).getByRole("button", {
@@ -272,7 +272,7 @@ describe("folders UI", () => {
     await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
 
     expect(screen.queryByRole("region", { name: "Pinned agent sessions" })).toBeNull();
-    expect(window.localStorage.getItem("june:pinned-agent-session-ids")).toBe("[]");
+    expect(window.localStorage.getItem("clovy:pinned-agent-session-ids")).toBe("[]");
   });
 
   it("repositions a portaled session menu when the viewport changes", async () => {

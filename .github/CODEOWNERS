@@ -18,8 +18,8 @@ src-tauri/capabilities/ @junhohong
 src-tauri/Entitlements.plist @junhohong
 src-tauri/native/ @junhohong
 
-june-api/ @junhohong
-june-api/Cargo.toml @junhohong
-june-api/Cargo.lock @junhohong
-june-api/Dockerfile @junhohong
-june-api/config.toml @junhohong
+clovy-api/ @junhohong
+clovy-api/Cargo.toml @junhohong
+clovy-api/Cargo.lock @junhohong
+clovy-api/Dockerfile @junhohong
+clovy-api/config.toml @junhohong

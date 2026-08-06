@@ -2431,7 +2431,7 @@ input:focus-visible,
 .agent-thinking[data-variant="typing-bubble"] .agent-typing-dots > span {
   opacity: 0.12;
   filter: blur(var(--home-typing-blur));
-  animation: june-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
+  animation: clovy-home-typing-breath var(--home-typing-breath-dur) var(--ease-in-out) infinite;
   transform: none;
 }
 
@@ -2446,7 +2446,7 @@ input:focus-visible,
 /* Each dot drifts between a blurred haze and a brief moment of focus, so the
  * passage between states is where the softness lives — thought resolving,
  * not a cursor blinking. */
-@keyframes june-home-typing-breath {
+@keyframes clovy-home-typing-breath {
   0%,
   100% {
     opacity: 0.12;
@@ -2643,11 +2643,11 @@ input:focus-visible,
 }
 
 .agent-home-nudges-idle button {
-  animation: june-home-chip-in var(--t-slow) var(--ease-out) both;
+  animation: clovy-home-chip-in var(--t-slow) var(--ease-out) both;
   animation-delay: calc(var(--chip-i, 0) * var(--t-fast));
 }
 
-@keyframes june-home-chip-in {
+@keyframes clovy-home-chip-in {
   from {
     opacity: 0;
     transform: translateY(var(--sp-2));

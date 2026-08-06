@@ -7,13 +7,13 @@
  */
 
 const ONBOARDING_VERSION = 8;
-const COMPLETED_KEY = "june.onboarding.completedVersion";
-const RESUME_KEY = "june.onboarding.resumeStep";
-const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
-const AREA_KEY = "june.onboarding.area";
-const MOOD_KEY = "june.onboarding.mood";
-const USE_CASES_KEY = "june.onboarding.useCases";
-const CUSTOM_USE_CASE_KEY = "june.onboarding.customUseCase";
+const COMPLETED_KEY = "clovy.onboarding.completedVersion";
+const RESUME_KEY = "clovy.onboarding.resumeStep";
+const AGENT_ACK_KEY = "clovy.agent.riskAcknowledged";
+const AREA_KEY = "clovy.onboarding.area";
+const MOOD_KEY = "clovy.onboarding.mood";
+const USE_CASES_KEY = "clovy.onboarding.useCases";
+const CUSTOM_USE_CASE_KEY = "clovy.onboarding.customUseCase";
 const ONBOARDING_BROADCAST_CHANNEL = "june.onboarding";
 
 export const ONBOARDING_COMPLETED_EVENT = "june:onboarding-completed";

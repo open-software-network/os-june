@@ -3,8 +3,8 @@
 How the engineering skills should consume this repo's domain documentation.
 
 This is a **single-context** repo: one glossary covers the React frontend
-(`src/`), the Tauri shell (`src-tauri/`), and the june-api backend
-(`june-api/`). There is no `CONTEXT-MAP.md`.
+(`src/`), the Tauri shell (`src-tauri/`), and the clovy-api backend
+(`clovy-api/`). There is no `CONTEXT-MAP.md`.
 
 ## Before exploring, read these
 

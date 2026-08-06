@@ -10,6 +10,7 @@ import { initBrand } from "./lib/brand";
 import { initFontScale, installFontScaleShortcuts } from "./lib/font-scale";
 import { installExternalLinkOpener } from "./lib/external-links";
 import { initializeExperimentalFlags } from "./lib/experimental-flags";
+import { installStorageCompatibilityBridge } from "./lib/storage-compat";
 import { isMacLikePlatform, isWindowsPlatform } from "./lib/platform";
 import {
   prefetchRemainingWorkspacesAfterPaint,
@@ -20,14 +21,20 @@ import "./styles/app.css";
 declare global {
   interface Window {
     /** Devtools-console testing hooks; not referenced by app code. */
+    clovy?: { replayOnboarding: typeof replayOnboarding };
+    /** June-era alias retained for existing development links and notes. */
     june?: { replayOnboarding: typeof replayOnboarding };
   }
 }
 
-// `june.replayOnboarding()` in the webview console re-runs the wizard;
+// `clovy.replayOnboarding()` in the webview console re-runs the wizard;
 // pass a step id ("permissions", "mood", ...) to land on that step.
+installStorageCompatibilityBridge();
+
 if (import.meta.env.DEV) {
-  window.june = { replayOnboarding };
+  const devtools = { replayOnboarding };
+  window.clovy = devtools;
+  window.june = devtools;
 }
 
 initTheme();

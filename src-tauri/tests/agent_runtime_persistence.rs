@@ -1,8 +1,8 @@
-use os_june_lib::agent_runtime::{
+use clovy_lib::agent_runtime::{
     import_legacy_agent_state, legacy_import_completed, AgentItemPayload, AgentRepository,
     LegacyImportOptions, MessagePayload, ToolPayload,
 };
-use os_june_lib::db::migrations::run_migrations;
+use clovy_lib::db::migrations::run_migrations;
 use sqlx::{query::query, row::Row};
 use sqlx_sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
@@ -25,7 +25,7 @@ async fn user_sessions_are_created_in_the_active_data_partition_atomically() {
         .create_session_in_profile(
             "Private chat",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
             "private",
         )
@@ -49,7 +49,7 @@ async fn run_configuration_and_streamed_reasoning_survive_resume_and_hydration()
         .create_session(
             "Durable run",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -105,7 +105,7 @@ async fn streamed_assistant_text_survives_mid_run_hydration_without_duplicates()
         .create_session(
             "Visible active run",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -168,7 +168,7 @@ async fn completed_assistant_text_moves_behind_the_tools_that_produced_it() {
         .create_session(
             "Tool ordering",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -279,7 +279,7 @@ async fn compaction_replaces_old_items_with_one_ordered_visible_summary() {
         .create_session(
             "Compaction",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -376,7 +376,7 @@ async fn run_skills_are_deduplicated_and_persisted_for_retry_and_resume() {
         .create_session(
             "Skills",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -415,7 +415,7 @@ async fn resumed_run_rebases_process_local_event_sequence() {
         .create_session(
             "Resume",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -471,7 +471,7 @@ async fn restart_interrupts_ordinary_active_runs_but_preserves_waiting_state() {
         .create_session(
             "Running",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await
@@ -484,7 +484,7 @@ async fn restart_interrupts_ordinary_active_runs_but_preserves_waiting_state() {
         .create_session(
             "Waiting",
             "private-auto",
-            os_june_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
             None,
         )
         .await

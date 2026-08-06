@@ -159,7 +159,7 @@ export function fromBase64Url(value: string): Uint8Array {
 
 /**
  * Standard (padded) base64. The share API's `*B64` fields (ciphertext, IVs,
- * envelopes) use this alphabet, because june-api decodes them with the
+ * envelopes) use this alphabet, because clovy-api decodes them with the
  * standard base64 decoder. base64url is reserved for the URL fragment, which
  * must stay URL-safe.
  */

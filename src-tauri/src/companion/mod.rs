@@ -8,8 +8,8 @@ use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
     Engine as _,
 };
-use june_companion_crypto::{generate_identity, KEY_BYTES};
-use june_companion_protocol::{
+use clovy_companion_crypto::{generate_identity, KEY_BYTES};
+use clovy_companion_protocol::{
     AgentStatus, Body, Capability, ComputerUseApprovalDecision, ComputerUseApprovalRequest,
     ComputerUseApprovalStatus, ComputerUseApprovalStatusEvent, Event, Frame, MediaChunk,
     ResultPayload, SessionModelSelection, COMPUTER_USE_APPROVAL_TTL_MS,
@@ -35,7 +35,8 @@ use uuid::Uuid;
 
 pub use controller::{frontend_response, Controller, ControllerOutcome, FrontendIntent};
 
-const KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
+const KEYCHAIN_SERVICE: &str = "co.opensoftware.clovy.companion.desktop.identity";
+const LEGACY_KEYCHAIN_SERVICE: &str = "co.opensoftware.june.companion.desktop.identity";
 const PAIRING_RELAY_READY_TIMEOUT: Duration = Duration::from_secs(10);
 const ACCOUNT_ACTIVITY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 const COMPUTER_USE_APPROVAL_EXPIRY_RETRY_ATTEMPTS: usize = 8;
@@ -376,7 +377,7 @@ pub async fn companion_begin_pairing(
         },
     )?;
     let wire = PairingQrWirePayload {
-        version: june_companion_protocol::PROTOCOL_VERSION,
+        version: clovy_companion_protocol::PROTOCOL_VERSION,
         pairing_id: status.pairing_id,
         pairing_secret: URL_SAFE_NO_PAD.encode(secret),
         relay_url: relay_websocket_url(),
@@ -824,7 +825,7 @@ pub async fn companion_consume_attachments(
     reference_ids: Vec<Uuid>,
 ) -> Result<(), AppError> {
     ensure_companion_pairing_enabled(&runtime)?;
-    if reference_ids.len() > june_companion_protocol::MAX_ATTACHMENT_REFERENCES {
+    if reference_ids.len() > clovy_companion_protocol::MAX_ATTACHMENT_REFERENCES {
         return Err(AppError::new(
             "companion_attachment_invalid",
             "Too many companion attachments were selected.",
@@ -2188,7 +2189,7 @@ fn normalized_device_name(value: &str) -> Option<String> {
 }
 
 fn relay_websocket_url() -> String {
-    let base = crate::june_api::june_api_url();
+    let base = crate::clovy_api::clovy_api_url();
     let base = base
         .strip_prefix("https://")
         .map(|rest| format!("wss://{rest}"))
@@ -2222,7 +2223,7 @@ where
     T: DeserializeOwned,
     F: Fn(&reqwest::Client, String, String) -> reqwest::RequestBuilder,
 {
-    let url = format!("{}{}", crate::june_api::june_api_url(), path);
+    let url = format!("{}{}", crate::clovy_api::clovy_api_url(), path);
     let client = companion_http_client()?;
     let mut token = crate::os_accounts::access_token().await?;
     for attempt in 0..2 {
@@ -2270,7 +2271,7 @@ where
 fn companion_http_client() -> Result<reqwest::Client, AppError> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
-        .default_headers(crate::june_api::app_version_headers())
+        .default_headers(crate::clovy_api::app_version_headers())
         .build()
         .map_err(|_| {
             AppError::new(
@@ -2282,9 +2283,13 @@ fn companion_http_client() -> Result<reqwest::Client, AppError> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn load_identity(account_user_id: &str) -> Result<Option<StoredIdentity>, AppError> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id)
-        .map_err(|_| AppError::new("companion_keychain_unavailable", "Keychain is unavailable."))?;
-    if let Ok(encoded) = entry.get_password() {
+    let encoded = crate::credential_compat::get_password(
+        KEYCHAIN_SERVICE,
+        LEGACY_KEYCHAIN_SERVICE,
+        account_user_id,
+    )
+    .map_err(|_| AppError::new("companion_keychain_unavailable", "Keychain is unavailable."))?;
+    if let Some(encoded) = encoded {
         if let Ok(identity) = serde_json::from_str::<StoredIdentity>(&encoded) {
             if identity.account_user_id == account_user_id
                 && identity.private_key().is_ok()
@@ -2302,8 +2307,6 @@ fn load_or_create_identity(account_user_id: &str) -> Result<StoredIdentity, AppE
     if let Some(identity) = load_identity(account_user_id)? {
         return Ok(identity);
     }
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id)
-        .map_err(|_| AppError::new("companion_keychain_unavailable", "Keychain is unavailable."))?;
     let generated = generate_identity().map_err(|_| {
         AppError::new(
             "companion_identity_failed",
@@ -2322,7 +2325,13 @@ fn load_or_create_identity(account_user_id: &str) -> Result<StoredIdentity, AppE
             "A companion identity could not be stored.",
         )
     })?;
-    entry.set_password(&encoded).map_err(|_| {
+    crate::credential_compat::set_password(
+        KEYCHAIN_SERVICE,
+        LEGACY_KEYCHAIN_SERVICE,
+        account_user_id,
+        &encoded,
+    )
+    .map_err(|_| {
         AppError::new(
             "companion_keychain_unavailable",
             "The companion identity could not be saved to Keychain.",
@@ -2333,9 +2342,11 @@ fn load_or_create_identity(account_user_id: &str) -> Result<StoredIdentity, AppE
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn remove_identity(account_user_id: &str) {
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, account_user_id) {
-        let _ = entry.delete_credential();
-    }
+    let _ = crate::credential_compat::delete_password(
+        KEYCHAIN_SERVICE,
+        LEGACY_KEYCHAIN_SERVICE,
+        account_user_id,
+    );
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -2790,7 +2801,7 @@ mod tests {
     fn manual_pairing_code_contains_the_same_bootstrap_payload_as_the_qr() {
         let pairing_id = Uuid::new_v4();
         let wire = PairingQrWirePayload {
-            version: june_companion_protocol::PROTOCOL_VERSION,
+            version: clovy_companion_protocol::PROTOCOL_VERSION,
             pairing_id,
             pairing_secret: URL_SAFE_NO_PAD.encode([7_u8; KEY_BYTES]),
             relay_url: "wss://api.example.test/v1/companion/relay".to_string(),

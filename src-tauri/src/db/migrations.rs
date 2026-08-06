@@ -1431,7 +1431,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 async fn migrate_legacy_companion_reservations(
     pool: &SqlitePool,
 ) -> Result<(), sqlx::error::Error> {
-    use june_companion_protocol::{FailureCode, ResultPayload};
+    use clovy_companion_protocol::{FailureCode, ResultPayload};
 
     let rows = query(
         "SELECT device_id, operation_id, response
@@ -1445,7 +1445,7 @@ async fn migrate_legacy_companion_reservations(
     for row in rows {
         let encoded: Vec<u8> = row.get("response");
         let Ok(mut response) =
-            serde_json::from_slice::<june_companion_protocol::Response>(&encoded)
+            serde_json::from_slice::<clovy_companion_protocol::Response>(&encoded)
         else {
             continue;
         };

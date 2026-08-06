@@ -1,8 +1,8 @@
 # Clovy Companion architecture
 
 Clovy Companion is a native SwiftUI iOS/iPadOS application in
-`native-ios/` in the `june-companion-app` repo
-(github.com/open-software-network/june-companion-app). XcodeGen creates the
+`native-ios/` in the `clovy-companion-app` repo
+(github.com/open-software-network/clovy-companion-app). XcodeGen creates the
 checked-in Xcode project there.
 It is not a Tauri target and contains no WebView.
 

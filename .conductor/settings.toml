@@ -8,13 +8,13 @@
 [scripts]
 # pnpm is the repo's declared package manager (pinned by the packageManager
 # field in package.json).
-# Installs the front-end deps; the Rust crates (src-tauri, june-api) compile
+# Installs the front-end deps; the Rust crates (src-tauri, clovy-api) compile
 # on the first `tauri:dev` run. The .env files live in the root checkout and
 # are symlinked into each workspace so updates do not drift.
-setup = "mkdir -p june-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && ln -sf \"$CONDUCTOR_ROOT_PATH/june-api/.env\" june-api/.env; fi && pnpm install --frozen-lockfile"
+setup = "mkdir -p clovy-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && ln -sf \"$CONDUCTOR_ROOT_PATH/clovy-api/.env\" clovy-api/.env; fi && pnpm install --frozen-lockfile"
 
 # Launch the Tauri desktop app in dev (migrated verbatim from conductor.json).
-# `tauri:dev` also starts the june-api backend via the beforeDevCommand hook.
+# `tauri:dev` also starts the clovy-api backend via the beforeDevCommand hook.
 # The Vite dev server binds a fixed strictPort (127.0.0.1:1421, hardcoded in
 # both vite.config.ts and tauri.conf.json's devUrl), so the port is NOT
 # CONDUCTOR_PORT-configurable — leaving it fixed is intentional.
@@ -27,4 +27,4 @@ run_mode = "nonconcurrent"
 
 # On archive, reclaim the large regenerable Rust build caches (gitignored and
 # rebuilt on the next dev run). `|| true` keeps archiving from ever failing.
-archive = "rm -rf src-tauri/target june-api/target || true"
+archive = "rm -rf src-tauri/target clovy-api/target || true"

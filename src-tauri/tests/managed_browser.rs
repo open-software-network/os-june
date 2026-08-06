@@ -20,9 +20,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use os_june_lib::browser::managed::{start_managed_session, ManagedSessionConfig};
-use os_june_lib::browser::policy::{PolicyConfig, Resolver};
-use os_june_lib::browser::BoxFuture;
+use clovy_lib::browser::managed::{start_managed_session, ManagedSessionConfig};
+use clovy_lib::browser::policy::{PolicyConfig, Resolver};
+use clovy_lib::browser::BoxFuture;
 
 /// Serialize real-browser tests even when the test runner uses its default
 /// parallelism. Production caps managed sessions at two, and overlapping
@@ -133,7 +133,7 @@ peer.createOffer().then(offer => peer.setLocalDescription(offer));\
 
 async fn start_fixture_session(
     artifacts: &std::path::Path,
-) -> Arc<os_june_lib::browser::managed::ManagedBrowserSession> {
+) -> Arc<clovy_lib::browser::managed::ManagedBrowserSession> {
     let fixture_addr = spawn_fixture_server().await;
     let config = ManagedSessionConfig {
         artifacts_root: artifacts.to_path_buf(),
@@ -150,7 +150,7 @@ async fn start_fixture_session(
 async fn start_webrtc_fixture_session(
     artifacts: &std::path::Path,
     udp_probe: SocketAddr,
-) -> Arc<os_june_lib::browser::managed::ManagedBrowserSession> {
+) -> Arc<clovy_lib::browser::managed::ManagedBrowserSession> {
     let fixture_addr = spawn_fixture_server_with_webrtc_probe(Some(udp_probe)).await;
     let config = ManagedSessionConfig {
         artifacts_root: artifacts.to_path_buf(),

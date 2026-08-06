@@ -416,9 +416,9 @@ function recordingSession(overrides: Partial<RecordingSessionDto> = {}): Recordi
 describe("App shortcuts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    window.localStorage.setItem("june:active-agent-profile", "default");
-    window.localStorage.removeItem("june:agent:last-open-session");
-    window.localStorage.removeItem("june.agent.sessionModels");
+    window.localStorage.setItem("clovy:active-agent-profile", "default");
+    window.localStorage.removeItem("clovy:agent:last-open-session");
+    window.localStorage.removeItem("clovy.agent.sessionModels");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
     mocks.readPendingMeetingStartRequest.mockImplementation(
@@ -711,7 +711,7 @@ describe("App shortcuts", () => {
       settings: { generationModel: "zai-org-glm-5-2", costQuality: 100 },
     });
     window.localStorage.setItem(
-      "june.agent.sessionModels",
+      "clovy.agent.sessionModels",
       JSON.stringify({ [session.id]: "__june_auto_generation__:20" }),
     );
     render(<App />);
@@ -758,7 +758,7 @@ describe("App shortcuts", () => {
         },
       }),
     );
-    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({
+    expect(JSON.parse(window.localStorage.getItem("clovy.agent.sessionModels") ?? "{}")).toEqual({
       [session.id]: "kimi-k2-6",
     });
     expect(mocks.startAgentRun).not.toHaveBeenCalled();
@@ -867,7 +867,7 @@ describe("App shortcuts", () => {
         }),
       ),
     );
-    expect(window.localStorage.getItem("june.agent.sessionModels")).toBeNull();
+    expect(window.localStorage.getItem("clovy.agent.sessionModels")).toBeNull();
   });
 
   it("pages companion agent messages backward from the newest turns", async () => {
@@ -1365,7 +1365,9 @@ describe("App shortcuts", () => {
         }),
       ),
     );
-    expect(JSON.parse(window.localStorage.getItem("june.agent.sessionModels") ?? "{}")).toEqual({});
+    expect(JSON.parse(window.localStorage.getItem("clovy.agent.sessionModels") ?? "{}")).toEqual(
+      {},
+    );
   });
 
   it("reports acceptance when attachment cleanup fails after run dispatch", async () => {
@@ -2645,7 +2647,7 @@ describe("App shortcuts", () => {
       preview: "Stored session preview",
       last_active: now,
     };
-    window.localStorage.setItem("june:agent:last-open-session", staleSession.id);
+    window.localStorage.setItem("clovy:agent:last-open-session", staleSession.id);
     mocks.listAgentSessions.mockResolvedValue([staleSession]);
     const sessionStorageSetItem = window.sessionStorage.setItem.bind(window.sessionStorage);
     const sessionStorageSetItemSpy = vi
@@ -2679,7 +2681,7 @@ describe("App shortcuts", () => {
       await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
     } finally {
       sessionStorageSetItemSpy.mockRestore();
-      window.localStorage.removeItem("june:agent:last-open-session");
+      window.localStorage.removeItem("clovy:agent:last-open-session");
       restoreNavigator();
     }
   });

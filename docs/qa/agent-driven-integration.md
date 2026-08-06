@@ -11,7 +11,7 @@ have proven useful in repeated agent runs.
 This gives June three QA layers:
 
 1. Deterministic CI for contracts and logic: `pnpm test`, `pnpm test:rust`,
-   `pnpm test:june-api`, and targeted Rust or Vitest suites.
+   `pnpm test:clovy-api`, and targeted Rust or Vitest suites.
 2. Agent-driven live QA for product workflows: `$agent-e2e-qa` starts the app,
    chooses Browser, Chrome, or Computer Use, records and compresses the
    walkthrough as video when possible, then reports pass/fail evidence.
@@ -51,7 +51,7 @@ screenshots or logs, and clear gaps for anything that was blocked.
 ## Repo-specific runbook
 
 Default local data mode should avoid live OS Accounts unless the flow under test
-is specifically account or billing QA. `.env.example` and `june-api/.env.example`
+is specifically account or billing QA. `.env.example` and `clovy-api/.env.example`
 support local development with `OS_JUNE_LOCAL_DEV=1` and `local-dev-token`.
 
 Use these entry points:

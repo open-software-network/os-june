@@ -1,7 +1,7 @@
 # Clovy Companion protocol
 
-The shared crate is `crates/june-companion-protocol`; desktop and iOS crypto
-use `crates/june-companion-crypto`.
+The shared crate is `crates/clovy-companion-protocol`; desktop and iOS crypto
+use `crates/clovy-companion-crypto`.
 
 ## Envelope and bounds
 

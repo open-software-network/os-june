@@ -43,7 +43,7 @@ Create or confirm these before cutting the first Windows release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_JUNE_API_URL`.
+  `PRODUCTION_CLOVY_API_URL`.
 Keep the Authenticode certificate separate from the Tauri updater key. The
 certificate establishes the Windows publisher signature. The updater key signs
 the update artifact that Tauri verifies before installation.
@@ -81,7 +81,7 @@ The Windows workflow performs the release steps in order:
 4. Verifies release `vX.Y.Z` and its existing `latest.json` exist in
    `open-software-network/os-june-releases`.
 5. Runs `pnpm typecheck` and `pnpm test`.
-6. Builds the Node 24 agent runtime as `june-agent-runtime.exe`, writes its
+6. Builds the Node 24 agent runtime as `clovy-agent-runtime.exe`, writes its
    SHA-256 checksum, and runs a startup smoke test from a path with spaces.
 7. Authenticode-signs the agent runtime executable and verifies its signature.
 8. Builds and signs the Windows dictation helper, then builds the Windows NSIS

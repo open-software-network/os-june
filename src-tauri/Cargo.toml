@@ -1,17 +1,17 @@
 [package]
-name = "os-june"
+name = "clovy"
 version = "0.0.39"
 description = "Clovy"
 authors = ["Open Software Network"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.80.0"
-# Two binaries below; `cargo run` (tauri dev via scripts/cargo-os-june-runner.sh)
+# Two binaries below; `cargo run` (tauri dev via scripts/cargo-clovy-runner.sh)
 # must keep launching the app.
 default-run = "os-june"
 
 [lib]
-name = "os_june_lib"
+name = "clovy_lib"
 crate-type = ["rlib"]
 
 [[bin]]
@@ -22,12 +22,12 @@ path = "src/main.rs"
 # Not auto-bundled: scripts/bundle-nm-shim.sh copies and signs it into
 # .tauri-helper/ before bundling (see tauri.macos.conf.json).
 [[bin]]
-name = "june-nm-shim"
-path = "src/bin/june_nm_shim.rs"
+name = "clovy-nm-shim"
+path = "src/bin/clovy_nm_shim.rs"
 required-features = ["helper-binaries"]
 
 [[bin]]
-name = "june-computer-use-driver"
+name = "clovy-computer-use-driver"
 path = "src/computer_use_driver.rs"
 required-features = ["helper-binaries"]
 
@@ -60,8 +60,8 @@ libc = "0.2"
 # Strips the Windows `\\?\` verbatim path prefix canonicalize() adds so it
 # never leaks into config.yaml or the UI. No-op on non-Windows.
 dunce = "1.0"
-june-companion-crypto = { path = "../crates/june-companion-crypto" }
-june-companion-protocol = { path = "../crates/june-companion-protocol" }
+clovy-companion-crypto = { path = "../crates/clovy-companion-crypto" }
+clovy-companion-protocol = { path = "../crates/clovy-companion-protocol" }
 rand = "0.8"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }

@@ -9,7 +9,7 @@
  * title suggester decides whether a loaded title is replaceable.
  */
 
-const STORAGE_KEY = "june.agent.manuallyTitledSessions";
+const STORAGE_KEY = "clovy.agent.manuallyTitledSessions";
 let volatileStore: Record<string, AgentSessionSettledTitleKind> = {};
 
 export type AgentSessionSettledTitleKind = "manual" | "exchange" | "rejected" | "rejected-final";

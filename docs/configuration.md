@@ -2,12 +2,12 @@
 
 Clovy has two independent env surfaces: the **desktop app / client** (repo-root
 `.env`, copied from `.env.example`) and the **Clovy API backend**
-(`june-api/.env` + `june-api/config.toml`). The client env must never hold a
+(`clovy-api/.env` + `clovy-api/config.toml`). The client env must never hold a
 server secret — upstream provider keys and the OS Accounts App API key live only
 in Clovy API.
 
 The fully-commented sources of truth are `.env.example`,
-`june-api/.env.example`, and `june-api/config.toml`. This page summarizes them;
+`clovy-api/.env.example`, and `clovy-api/config.toml`. This page summarizes them;
 when they disagree, the files win.
 
 ## How Clovy API config resolves (Figment)
@@ -22,7 +22,7 @@ built-in fallback ← `config.toml` ← the **live Venice catalog at boot**.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `JUNE_API_URL` | Clovy API base URL the app calls | `https://june-api.opensoftware.co` in code; `.env` (from `.env.example`) sets `http://127.0.0.1:8080` for local dev |
+| `CLOVY_API_URL` | Clovy API base URL the app calls | `https://june-api.opensoftware.co` in code; `.env` (from `.env.example`) sets `http://127.0.0.1:8080` for local dev |
 | `OS_JUNE_LOCAL_DEV` | Use a local bearer token instead of Login with Open Software | `1` (example) |
 | `OS_JUNE_LOCAL_DEV_BEARER_TOKEN` / `_USER_ID` | The local-mode identity | `local-dev-token` / `usr_local_dev` |
 | `OS_ACCOUNTS_URL` / `OS_ACCOUNTS_API_URL` | OS Accounts portal + API (optional in local mode) | unset |
@@ -44,7 +44,7 @@ debug build into the production app data directory and the production
 use debug-only paths with the `-dev` suffix. Other files read directly from the
 raw Tauri app config directory are unaffected.
 
-## Clovy API backend (`june-api/.env`, `JUNE__…`)
+## Clovy API backend (`clovy-api/.env`, `JUNE__…`)
 
 **Secrets — env only, never in `config.toml` or the client `.env`:**
 
@@ -67,7 +67,7 @@ Companion APNs configuration also needs
 `JUNE__COMPANION__APNS_PRODUCTION`. If any APNs value is missing, relay and
 foreground reconnect still work but background wake hints are disabled.
 
-## Backend knobs (`june-api/config.toml`)
+## Backend knobs (`clovy-api/config.toml`)
 
 - **Server:** `request_timeout_secs` 600, `max_audio_bytes` 25 MiB, `max_json_bytes` 512 KiB, `max_agent_chat_bytes` 12 MiB (dedicated `/v1/chat/completions` cap, aligned with the desktop proxy and sized for a 1M-token context window; must be ≥ the 12 MiB proxy cap), `max_issue_report_bytes` 301 MiB total (one 300 MiB os-platform attachment plus multipart overhead), `max_image_edit_bytes` sized for a 50 MiB source image after base64 expansion.
 - **Metering estimate:** `flat_estimate_credits` 250 — the flat credit Hold per metered action; skips per-request estimation.

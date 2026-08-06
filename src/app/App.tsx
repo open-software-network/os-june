@@ -81,7 +81,7 @@ import {
   loadSessionModels,
   rememberSessionModel,
 } from "../lib/agent-session-models";
-import { readClovyHomeStoredSessionId, writeClovyHomeStoredSessionId } from "../lib/june-home";
+import { readClovyHomeStoredSessionId, writeClovyHomeStoredSessionId } from "../lib/clovy-home";
 import type { AgentSessionDto } from "../lib/agent-runtime-contract";
 import {
   COMPLETED_DEMO_SESSION_PREFIX,

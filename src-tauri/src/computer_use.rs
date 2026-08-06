@@ -937,7 +937,7 @@ fn release_self_test_driver_path_allowed(path: &Path) -> bool {
                 .join("June Computer Use Driver.app")
                 .join("Contents")
                 .join("MacOS")
-                .join("june-computer-use-driver")
+                .join("clovy-computer-use-driver")
         })
     } else {
         std::env::current_exe().ok().and_then(|current| {
@@ -950,7 +950,7 @@ fn release_self_test_driver_path_allowed(path: &Path) -> bool {
                     .join("June Computer Use Driver.app")
                     .join("Contents")
                     .join("MacOS")
-                    .join("june-computer-use-driver"),
+                    .join("clovy-computer-use-driver"),
             )
         })
     };
@@ -1063,15 +1063,15 @@ fn driver_launch_spec(
         "-n".to_string(),
         "-g".to_string(),
         "--env".to_string(),
-        format!("JUNE_COMPUTER_USE_SOCKET={socket}"),
+        format!("CLOVY_COMPUTER_USE_SOCKET={socket}"),
         "--env".to_string(),
-        format!("JUNE_COMPUTER_USE_HELPER_CAPABILITY={capability}"),
+        format!("CLOVY_COMPUTER_USE_HELPER_CAPABILITY={capability}"),
     ];
     if let Some(prompt) = permission_prompt {
         args.extend([
             "--env".to_string(),
             format!(
-                "JUNE_COMPUTER_USE_PERMISSION_PROMPT={}",
+                "CLOVY_COMPUTER_USE_PERMISSION_PROMPT={}",
                 prompt.as_env_value()
             ),
         ]);
@@ -1167,10 +1167,10 @@ fn should_scrub_driver_env(name: &OsStr) -> bool {
     let name = name.to_string_lossy();
     name.starts_with("CUA_DRIVER_RS_")
         || name.starts_with("JUNE_CUA_DRIVER")
-        || name == "JUNE_COMPUTER_USE_BACKEND"
-        || name == "JUNE_COMPUTER_USE_HELPER_CAPABILITY"
-        || name == "JUNE_COMPUTER_USE_PERMISSION_PROMPT"
-        || name == "JUNE_COMPUTER_USE_SOCKET"
+        || name == "CLOVY_COMPUTER_USE_BACKEND"
+        || name == "CLOVY_COMPUTER_USE_HELPER_CAPABILITY"
+        || name == "CLOVY_COMPUTER_USE_PERMISSION_PROMPT"
+        || name == "CLOVY_COMPUTER_USE_SOCKET"
         || matches!(
             name.as_ref(),
             "HTTP_PROXY"
@@ -1608,7 +1608,7 @@ async fn driver_version(path: &Path) -> Result<String, AppError> {
     let pin = driver_pin();
     if fields.as_slice()
         == [
-            "june-computer-use-driver",
+            "clovy-computer-use-driver",
             pin.version.as_str(),
             pin.source_commit.as_str(),
         ]
@@ -1698,7 +1698,7 @@ async fn rollout_gate() -> RolloutGate {
     let cache = ROLLOUT_GATE.get_or_init(|| Mutex::new(None));
     let refresh = ROLLOUT_REFRESH.get_or_init(|| AsyncMutex::new(()));
     rollout_gate_with_fetch(cache, refresh, || async {
-        crate::june_api::computer_use_rollout(macos_version().await).await
+        crate::clovy_api::computer_use_rollout(macos_version().await).await
     })
     .await
 }
@@ -1721,7 +1721,7 @@ async fn rollout_gate_with_fetch<F, Fut>(
 ) -> RolloutGate
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<crate::june_api::ComputerUseRolloutDto, AppError>>,
+    Fut: Future<Output = Result<crate::clovy_api::ComputerUseRolloutDto, AppError>>,
 {
     if let Some(gate) = fresh_rollout_gate(cache) {
         return gate;
@@ -5486,7 +5486,7 @@ mod tests {
     #[test]
     fn permission_drag_publishes_the_bundle_owned_by_each_permission() {
         let driver =
-            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/june-computer-use-driver");
+            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/clovy-computer-use-driver");
         let host = Path::new("/Applications/June.app/Contents/MacOS/os-june");
         assert_eq!(
             permission_drag_bundle_path(
@@ -5510,7 +5510,7 @@ mod tests {
     #[test]
     fn driver_launch_uses_launch_services_and_the_helper_bundle() {
         let executable =
-            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/june-computer-use-driver");
+            Path::new("/tmp/June Computer Use Driver.app/Contents/MacOS/clovy-computer-use-driver");
         let launch = driver_launch_spec(
             executable,
             Path::new("/tmp/june-cua-test/driver.sock"),
@@ -5529,7 +5529,7 @@ mod tests {
         assert!(launch
             .args
             .iter()
-            .any(|arg| { arg == "JUNE_COMPUTER_USE_PERMISSION_PROMPT=screen-recording" }));
+            .any(|arg| { arg == "CLOVY_COMPUTER_USE_PERMISSION_PROMPT=screen-recording" }));
     }
 
     #[test]
@@ -5698,7 +5698,7 @@ mod tests {
                 rollout_gate_with_fetch(&cache, &refresh, || async move {
                     fetch_count.fetch_add(1, Ordering::SeqCst);
                     tokio::time::sleep(Duration::from_millis(20)).await;
-                    Ok(crate::june_api::ComputerUseRolloutDto {
+                    Ok(crate::clovy_api::ComputerUseRolloutDto {
                         enabled: true,
                         reason: None,
                         cache_ttl_seconds: 300,
@@ -5745,7 +5745,7 @@ mod tests {
             "CUA_DRIVER_RS_FUTURE_ESCAPE",
             "JUNE_CUA_DRIVER_CMD",
             "JUNE_CUA_DRIVER_VERSION",
-            "JUNE_COMPUTER_USE_BACKEND",
+            "CLOVY_COMPUTER_USE_BACKEND",
             "HTTPS_PROXY",
         ] {
             assert!(should_scrub_driver_env(OsStr::new(name)), "{name}");

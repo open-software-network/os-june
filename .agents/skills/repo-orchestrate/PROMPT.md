@@ -31,7 +31,7 @@ to end, with these headless adaptations:
   your report (and PR body, if publishing).
 - Work in a fresh worktree at {{REPO_ROOT}}/.worktrees/<branch>,
   branched from {{BASE}} (fetch first). Copy {{REPO_ROOT}}/.env and
-  {{REPO_ROOT}}/june-api/.env into it if they exist. Run
+  {{REPO_ROOT}}/clovy-api/.env into it if they exist. Run
   `pnpm install --frozen-lockfile`.
 - Implement following the repo's patterns (AGENTS.md and everything it
   points to). For bulk scoped work you may sub-delegate via the repo-delegate

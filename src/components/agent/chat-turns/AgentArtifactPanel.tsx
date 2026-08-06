@@ -119,7 +119,7 @@ type AgentArtifactPreview =
 // roughly half the window), remembered across sessions. The live value is
 // the --agent-files-w custom property on .app-shell, which the panel, the
 // main card's margin, and the composer all share.
-const AGENT_FILES_WIDTH_KEY = "june:agent:files-panel-width";
+const AGENT_FILES_WIDTH_KEY = "clovy:agent:files-panel-width";
 const FILES_PANEL_MIN_W = 300;
 const FILES_PANEL_MAX_W = 600;
 

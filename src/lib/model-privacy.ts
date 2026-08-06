@@ -80,7 +80,7 @@ export function modelAvailableForMode(
  * `modelSupportsTools`: key off the authoritative capability flag on
  * `capabilities` only, never `traits`. Venice's backend emits a capability
  * string only when its boolean is true (`collect_capability_names` in
- * june-api), so `capabilities` reliably lists genuine vision support. `traits`
+ * clovy-api), so `capabilities` reliably lists genuine vision support. `traits`
  * is descriptive/marketing text (e.g. "multimodal") that conflates image
  * OUTPUT with image INPUT — matching it would let the image-attach fallback
  * switch to a model that can't actually read the image. The capability name

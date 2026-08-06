@@ -1,7 +1,7 @@
 use super::{
     finish_recording_session_with_timing,
     note_transcription_benchmark::{
-        benchmark_repositories, spawn_fake_june_api, BenchmarkClock, RequestEvents,
+        benchmark_repositories, spawn_fake_clovy_api, BenchmarkClock, RequestEvents,
     },
 };
 use crate::{
@@ -244,7 +244,7 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
     let clock = BenchmarkClock::default();
     clock.start();
     let events = RequestEvents::new(clock);
-    let (address, api_handle) = spawn_fake_june_api(events).await;
+    let (address, api_handle) = spawn_fake_clovy_api(events).await;
     let executable = std::env::current_exe().expect("timing test executable");
     let output = tokio::task::spawn_blocking(move || {
         Command::new(executable)
@@ -255,7 +255,7 @@ async fn done_origin_checkpoints_are_monotonic_and_single_shot() {
                 "--test-threads=1",
             ])
             .env(TIMING_TEST_CHILD_ENV, "1")
-            .env("JUNE_API_URL", format!("http://{address}"))
+            .env("CLOVY_API_URL", format!("http://{address}"))
             .env("OS_JUNE_LOCAL_DEV", "1")
             .env("OS_JUNE_LOCAL_DEV_BEARER_TOKEN", "timing-test-token")
             .output()

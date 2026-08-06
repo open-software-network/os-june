@@ -5,6 +5,9 @@ import process from "node:process";
 
 export const STABLE_PROVENANCE_SCHEMA_VERSION = 1;
 export const STABLE_ASSET_NAMES = [
+  "Clovy_universal.dmg",
+  "Clovy_universal.app.tar.gz",
+  "Clovy_universal.app.tar.gz.sig",
   "June_universal.dmg",
   "June_aarch64.dmg",
   "June_universal.app.tar.gz",

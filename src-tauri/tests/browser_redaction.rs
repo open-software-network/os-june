@@ -14,7 +14,7 @@ fn native_messaging_shim_failure_writes_no_browser_content_to_stderr() {
     std::fs::write(data_dir.join("extension-host.json"), browser_content)
         .expect("malformed descriptor");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_june-nm-shim"))
+    let output = Command::new(env!("CARGO_BIN_EXE_clovy-nm-shim"))
         .env("HOME", home.path())
         .env("OS_JUNE_USE_PROD_DATA_DIR", "1")
         .stdin(Stdio::null())
@@ -23,7 +23,7 @@ fn native_messaging_shim_failure_writes_no_browser_content_to_stderr() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stderr.is_empty(), "shim stderr must remain empty");
-    let frame = os_june_lib::extension_host::read_frame(&mut output.stdout.as_slice())
+    let frame = clovy_lib::extension_host::read_frame(&mut output.stdout.as_slice())
         .expect("read shim error frame")
         .expect("shim error frame");
     assert_eq!(frame["code"], "app_unreachable");

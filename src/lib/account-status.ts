@@ -124,7 +124,8 @@ export function useAccountStatus(options: UseAccountStatusOptions = {}): UseAcco
 
 function browserOnboardingDemoEnabled() {
   if (!import.meta.env.DEV || typeof window === "undefined") return false;
-  return new URLSearchParams(window.location.search).get("juneDemoAccount") === "1";
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("clovyDemoAccount") ?? params.get("juneDemoAccount")) === "1";
 }
 
 function messageFromError(err: unknown) {

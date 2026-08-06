@@ -354,13 +354,13 @@ describe("agent HUD", () => {
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("true");
-    expect(localStorage.getItem("june:agent-hud:expanded")).toBe("true");
+    expect(localStorage.getItem("clovy:agent-hud:expanded")).toBe("true");
 
     pillElement().dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true }));
     await flushPromises();
 
     expect(hudElement().dataset.expanded).toBe("false");
-    expect(localStorage.getItem("june:agent-hud:expanded")).toBe("false");
+    expect(localStorage.getItem("clovy:agent-hud:expanded")).toBe("false");
   });
 
   it("does not re-show the native window when expanding an already visible HUD", async () => {
@@ -681,7 +681,7 @@ describe("agent HUD", () => {
     hideHudButton().click();
     await flushPromises();
 
-    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("clovy:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
@@ -711,7 +711,7 @@ describe("agent HUD", () => {
     hideHudButton().click();
     await flushPromises();
 
-    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("clovy:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.invoke).toHaveBeenCalledWith("agent_hud_hide");
   });
@@ -1071,7 +1071,7 @@ describe("agent HUD", () => {
     await vi.dynamicImportSettled();
     await flushPromises();
 
-    expect(localStorage.getItem("june:agent-hud:enabled")).toBe("false");
+    expect(localStorage.getItem("clovy:agent-hud:enabled")).toBe("false");
     expect(hudElement().dataset.visible).toBe("false");
     expect(mocks.emit).toHaveBeenCalledWith(AGENT_HUD_VISIBILITY_CHANGED_EVENT, {
       enabled: false,

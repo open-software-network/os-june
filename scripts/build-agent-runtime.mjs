@@ -32,12 +32,15 @@ if (args.verify) {
   process.exit(0);
 }
 
-const target = args.target ?? process.env.JUNE_AGENT_RUNTIME_TARGET ?? defaultTarget();
+const target =
+  args.target ??
+  compatibleEnv("CLOVY_AGENT_RUNTIME_TARGET", "JUNE_AGENT_RUNTIME_TARGET") ??
+  defaultTarget();
 const output = resolve(
   args.output ??
-    join(bundleRoot, target === "windows" ? "june-agent-runtime.exe" : "june-agent-runtime"),
+    join(bundleRoot, target === "windows" ? "clovy-agent-runtime.exe" : "clovy-agent-runtime"),
 );
-if (process.env.JUNE_AGENT_RUNTIME_PREBUILT === "1") {
+if (compatibleEnv("CLOVY_AGENT_RUNTIME_PREBUILT", "JUNE_AGENT_RUNTIME_PREBUILT") === "1") {
   await verifyChecksum(output);
   await smoke(output);
   process.stdout.write(`Using prebuilt Clovy agent runtime: ${output}\n`);
@@ -77,19 +80,25 @@ if (target === "universal-apple-darwin") {
   if (process.platform !== "darwin") {
     fail("A universal macOS SEA must be assembled on macOS");
   }
-  const x64Node = resolve(args.nodeX64 ?? process.env.JUNE_AGENT_RUNTIME_NODE_X64 ?? "");
-  if (!args.nodeX64 && !process.env.JUNE_AGENT_RUNTIME_NODE_X64) {
-    fail("Set JUNE_AGENT_RUNTIME_NODE_X64 to an x64 Node 24 executable");
+  const configuredX64Node = compatibleEnv(
+    "CLOVY_AGENT_RUNTIME_NODE_X64",
+    "JUNE_AGENT_RUNTIME_NODE_X64",
+  );
+  const x64Node = resolve(args.nodeX64 ?? configuredX64Node ?? "");
+  if (!args.nodeX64 && !configuredX64Node) {
+    fail("Set CLOVY_AGENT_RUNTIME_NODE_X64 to an x64 Node 24 executable");
   }
   await assertFile(x64Node, "The x64 Node executable does not exist");
   const arm64Node = resolve(
-    args.nodeArm64 ?? process.env.JUNE_AGENT_RUNTIME_NODE_ARM64 ?? hostNode,
+    args.nodeArm64 ??
+      compatibleEnv("CLOVY_AGENT_RUNTIME_NODE_ARM64", "JUNE_AGENT_RUNTIME_NODE_ARM64") ??
+      hostNode,
   );
   await assertFile(arm64Node, "The arm64 Node executable does not exist");
   assertMachArchitecture(x64Node, "x86_64");
   assertMachArchitecture(arm64Node, "arm64");
-  const arm64Output = join(workRoot, "june-agent-runtime-arm64");
-  const x64Output = join(workRoot, "june-agent-runtime-x64");
+  const arm64Output = join(workRoot, "clovy-agent-runtime-arm64");
+  const x64Output = join(workRoot, "clovy-agent-runtime-x64");
   await inject(arm64Node, arm64Output, blob, true);
   await inject(x64Node, x64Output, blob, true);
   run("lipo", ["-create", arm64Output, x64Output, "-output", output]);
@@ -152,6 +161,10 @@ function defaultTarget() {
   if (process.platform === "darwin") return "macos";
   if (process.platform === "win32") return "windows";
   fail(`SEA packaging is not supported on ${process.platform}`);
+}
+
+function compatibleEnv(canonical, legacy) {
+  return process.env[canonical] ?? process.env[legacy];
 }
 
 async function inject(nodeBinary, destination, blobPath, macos) {

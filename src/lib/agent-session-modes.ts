@@ -11,7 +11,7 @@
  * for the session bar's badge.
  */
 
-const STORAGE_KEY = "june.agent.unrestrictedSessions";
+const STORAGE_KEY = "clovy.agent.unrestrictedSessions";
 
 function readStore(): Record<string, true> {
   try {

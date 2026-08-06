@@ -65,7 +65,7 @@ output, and battery verdicts are the evidence.
 - Worktrees go under `<repo>/.worktrees/<branch>` — inside the
   workspace so the Codex sandbox can write them (sibling `../` paths are
   outside the sandbox), per repo-build-pr's worktree strategy.
-- The orchestrator must copy `.env` + `june-api/.env` from the main checkout
+- The orchestrator must copy `.env` + `clovy-api/.env` from the main checkout
   into its worktree (repo-build-pr worktree strategy) — gitignored, so the
   sandbox can read them; keep secrets you can't lose out of delegated repos.
 - Cross-harness review still applies one level down: the orchestrator

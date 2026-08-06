@@ -1,17 +1,17 @@
-use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
-use os_june_lib::audio::turns::{
+use clovy_lib::audio::turns::{
     coalesce_turns_for_transcription, detect_turns, normalize_wav_for_transcription,
     write_turn_wav, AudioTurn, DetectionSource,
 };
-use os_june_lib::audio::validation::{
+use clovy_lib::audio::validation::{
     source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
 };
-use os_june_lib::domain::processing::{
+use clovy_lib::domain::processing::{
     build_dictionary_context, build_transcription_context, coalesce_source_transcripts,
     labeled_transcript_from_sources, merge_transcription_context, valid_sources_for_processing,
     SourceTranscriptInput,
 };
-use os_june_lib::domain::types::{DictionaryEntryDto, RecordingSource};
+use clovy_lib::domain::types::{DictionaryEntryDto, RecordingSource};
+use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;

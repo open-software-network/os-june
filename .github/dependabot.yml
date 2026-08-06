@@ -30,7 +30,7 @@ updates:
     open-pull-requests-limit: 10
 
   - package-ecosystem: cargo
-    directory: /june-api
+    directory: /clovy-api
     schedule:
       interval: weekly
       day: monday

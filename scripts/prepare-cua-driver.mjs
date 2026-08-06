@@ -192,7 +192,7 @@ function helperVersion(file) {
   const result = spawnSync(file, ["--version"], { encoding: "utf8" });
   if (result.status !== 0) return {};
   const match = `${result.stdout}\n${result.stderr}`.match(
-    /june-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
+    /clovy-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
   );
   return { version: match?.[1], commit: match?.[2] };
 }

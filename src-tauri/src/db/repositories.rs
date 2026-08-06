@@ -8825,7 +8825,7 @@ mod tests {
 
     #[tokio::test]
     async fn companion_legacy_mutation_reservations_migrate_to_outcome_unknown() {
-        use june_companion_protocol::{
+        use clovy_companion_protocol::{
             Capability, FailureCode, ProtocolFailure, Response, ResultPayload,
         };
 

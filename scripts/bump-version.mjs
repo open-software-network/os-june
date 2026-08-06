@@ -124,35 +124,35 @@ function cargoLockField(contents, table, field) {
   };
 }
 
-function osJuneCargoLockPackage(contents) {
+function clovyCargoLockPackage(contents) {
   const matches = [];
   for (const table of cargoLockPackageTables(contents)) {
     const name = cargoLockField(contents, table, "name");
     if (name.count !== 1 || name.malformed) continue;
-    if (name.value === "os-june") matches.push(table);
+    if (name.value === "clovy") matches.push(table);
   }
 
   if (matches.length === 0) {
-    throw new Error('Could not find a [[package]] named "os-june" in Cargo.lock.');
+    throw new Error('Could not find a [[package]] named "clovy" in Cargo.lock.');
   }
   if (matches.length > 1) {
-    throw new Error('Found multiple [[package]] tables named "os-june" in Cargo.lock.');
+    throw new Error('Found multiple [[package]] tables named "clovy" in Cargo.lock.');
   }
 
   const table = matches[0];
   const version = cargoLockField(contents, table, "version");
   if (version.count !== 1) {
     throw new Error(
-      `The Cargo.lock [[package]] named "os-june" must contain exactly one version field (found ${version.count}).`,
+      `The Cargo.lock [[package]] named "clovy" must contain exactly one version field (found ${version.count}).`,
     );
   }
   if (version.malformed) {
-    throw new Error('The Cargo.lock [[package]] named "os-june" has a malformed version field.');
+    throw new Error('The Cargo.lock [[package]] named "clovy" has a malformed version field.');
   }
   for (const field of ["source", "checksum"]) {
     if (cargoLockField(contents, table, field).count > 0) {
       throw new Error(
-        `The Cargo.lock [[package]] named "os-june" unexpectedly contains a ${field} field.`,
+        `The Cargo.lock [[package]] named "clovy" unexpectedly contains a ${field} field.`,
       );
     }
   }
@@ -160,7 +160,7 @@ function osJuneCargoLockPackage(contents) {
 }
 
 export function currentVersionFromCargoLock(contents) {
-  return osJuneCargoLockPackage(contents).value;
+  return clovyCargoLockPackage(contents).value;
 }
 
 // The four version-bearing files must already agree before a bump — otherwise
@@ -197,7 +197,7 @@ function replaceCargoPackageVersion(contents, requestedVersion) {
 }
 
 function replaceCargoLockPackageVersion(contents, requestedVersion) {
-  const version = osJuneCargoLockPackage(contents);
+  const version = clovyCargoLockPackage(contents);
   return `${contents.slice(0, version.valueStart)}${requestedVersion}${contents.slice(version.valueEnd)}`;
 }
 

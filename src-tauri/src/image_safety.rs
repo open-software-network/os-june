@@ -77,7 +77,7 @@ pub async fn image_prompt_may_be_explicit(
     request: ImagePromptScreenRequest,
 ) -> ImagePromptScreenResponse {
     screen_image_prompt(&request.prompt, |prompt| async move {
-        crate::june_api::classify_image_prompt_explicit(&prompt).await
+        crate::clovy_api::classify_image_prompt_explicit(&prompt).await
     })
     .await
 }

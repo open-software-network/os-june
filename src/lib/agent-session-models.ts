@@ -6,7 +6,7 @@
  * restart cannot snap the picker back to the model used by the previous run.
  */
 
-const STORAGE_KEY = "june.agent.sessionModels";
+const STORAGE_KEY = "clovy.agent.sessionModels";
 export const AGENT_SESSION_MODEL_CHANGED_EVENT = "june:agent:session-model-changed";
 
 export type AgentSessionModelChangedDetail = {

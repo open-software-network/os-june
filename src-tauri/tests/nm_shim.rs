@@ -7,7 +7,7 @@ use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use os_june_lib::extension_host::{encode_frame, read_frame, shim, write_frame, PROTOCOL_VERSION};
+use clovy_lib::extension_host::{encode_frame, read_frame, shim, write_frame, PROTOCOL_VERSION};
 use serde_json::json;
 
 /// `shim::relay` takes ownership of the Chrome-side writer on the calling

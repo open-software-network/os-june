@@ -2,7 +2,7 @@
 
 Clovy is an on-device **identity** client of OS Accounts (Login with Open
 Software). Metering (authorize/charge) is server-side in Clovy API, not here —
-see [june-api-prd.md](june-api-prd.md). Implementation lives in
+see [clovy-api-prd.md](clovy-api-prd.md). Implementation lives in
 `src-tauri/src/os_accounts.rs`; env vars are in [configuration.md](configuration.md).
 
 ## Flow (production)

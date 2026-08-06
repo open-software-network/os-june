@@ -33,7 +33,7 @@ function videoModel({
 // default, a photorealistic option, and a higher-detail option — rather than
 // the full compatible catalog. Three hard constraints govern any entry; a model
 // that breaks the first two fails at generation time, not here:
-//   1. It must be priced in june-api's `video_pricing` map (ADR 0015): that map
+//   1. It must be priced in clovy-api's `video_pricing` map (ADR 0015): that map
 //      doubles as the allowlist, and an unlisted model is rejected
 //      `model_not_priced`. Keep these ids in sync with that map AND with
 //      `KNOWN_VIDEO_MODELS` in src-tauri/src/providers/mod.rs.

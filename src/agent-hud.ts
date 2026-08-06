@@ -44,6 +44,9 @@ import {
 } from "./lib/tauri";
 import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import "./styles/agent-hud.css";
+import { installStorageCompatibilityBridge } from "./lib/storage-compat";
+
+installStorageCompatibilityBridge();
 
 const lifecycle = createHudLifecycle();
 
@@ -69,7 +72,7 @@ type HudEntry = {
   storedSessionId?: string;
 };
 
-const EXPANDED_KEY = "june:agent-hud:expanded";
+const EXPANDED_KEY = "clovy:agent-hud:expanded";
 // Emitted by the native panel (agent_hud.rs) when it swallows a right- or
 // ctrl-click so the WKWebView never raises its own context menu. Keep this in
 // sync with AGENT_HUD_CONTEXT_MENU_EVENT in agent_hud.rs.

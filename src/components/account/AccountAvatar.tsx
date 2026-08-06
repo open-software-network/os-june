@@ -4,8 +4,8 @@ import { ACCOUNT_AVATAR_CHANGED_EVENT } from "../../lib/events";
 import { osAccountsSetAvatarSeed } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 
-const ACCOUNT_AVATAR_VARIANT_STORAGE_PREFIX = "june:account-avatar-variant:";
-const ACCOUNT_AVATAR_PENDING_STORAGE_PREFIX = "june:account-avatar-pending:";
+const ACCOUNT_AVATAR_VARIANT_STORAGE_PREFIX = "clovy:account-avatar-variant:";
+const ACCOUNT_AVATAR_PENDING_STORAGE_PREFIX = "clovy:account-avatar-pending:";
 
 type AccountAvatarStyle = CSSProperties & {
   "--avatar-cloud-x": string;

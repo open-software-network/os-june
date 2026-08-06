@@ -1,10 +1,10 @@
-use hound::{SampleFormat, WavSpec, WavWriter};
-use os_june_lib::{
+use clovy_lib::{
     audio::validation::{
         source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
     },
     domain::types::{AudioValidationDto, RecordingSource},
 };
+use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::Path;
 use tempfile::tempdir;
 

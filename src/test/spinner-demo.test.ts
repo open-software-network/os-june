@@ -33,7 +33,7 @@ describe("spinner demo", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
-    localStorage.setItem("june:agent-hud:enabled", "false");
+    localStorage.setItem("clovy:agent-hud:enabled", "false");
     win.__agentGallery = vi.fn(() => "gallery");
     win.__agentHud = vi.fn(() => "hud");
     win.__sidebarStates = vi.fn(() => "sidebar");

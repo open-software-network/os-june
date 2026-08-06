@@ -1,12 +1,12 @@
 #[cfg(target_os = "windows")]
 use crate::audio::turns::normalize_wav_for_transcription;
+use crate::clovy_api::{
+    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
+    TranscriptionProviderResult,
+};
 use crate::domain::{
     processing::{build_dictionary_context, merge_transcription_context},
     types::{AppError, ListDictationHistoryResponse},
-};
-use crate::june_api::{
-    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
-    TranscriptionProviderResult,
 };
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use chrono::Utc;
@@ -45,7 +45,7 @@ const DICTATION_CLEANUP_MAX_TIMEOUT_MS: u64 = 60_000;
 /// hold (`cleanup_hold_ttl_seconds`, 30s): a response that arrives after its
 /// hold expired could paste text whose charge no longer settles. The overall
 /// budget above spans multiple sequential chunk requests; this cap bounds
-/// each one. Keep in sync with the june-api config default.
+/// each one. Keep in sync with the clovy-api config default.
 const DICTATION_CLEANUP_REQUEST_MAX_TIMEOUT_MS: u64 = 30_000;
 /// Above this size, cleanup runs chunked. Measured against the production
 /// prompt (JUN-212): the cleanup model punctuates ~800-byte passages of

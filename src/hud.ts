@@ -23,6 +23,9 @@ import { installNativeContextMenuGuard } from "./lib/native-context-menu";
 import { subscribeBrand } from "./lib/brand";
 import { createHudLifecycle } from "./lib/hud-lifecycle";
 import "./styles/hud.css";
+import { installStorageCompatibilityBridge } from "./lib/storage-compat";
+
+installStorageCompatibilityBridge();
 
 const lifecycle = createHudLifecycle();
 

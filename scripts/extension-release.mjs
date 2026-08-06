@@ -5,7 +5,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 
 export const EXTENSION_RELEASE_SCHEMA_VERSION = 1;
-export const EXTENSION_PACKAGE_NAME = "June-extension.zip";
+export const EXTENSION_PACKAGE_NAME = "Clovy-extension.zip";
 export const EXTENSION_METADATA_NAME = "extension-build.json";
 export const EXTENSION_FINGERPRINT_METHOD = "normalized-dist-v1";
 
@@ -194,7 +194,7 @@ export async function verifyRcReleaseAssets({
   const metadata = await readMetadata(metadataPath, { channel: "rc" });
   assertRcCorrelation(metadata, desktopVersion, sourceCommit);
   if (metadata.release.required) {
-    assert(packagePath, "Extension RC metadata requires June-extension.zip.");
+    assert(packagePath, "Extension RC metadata requires Clovy-extension.zip.");
     assert(
       (await hashFile(packagePath)) === metadata.release.packageSha256,
       "Extension RC package hash does not match its metadata.",

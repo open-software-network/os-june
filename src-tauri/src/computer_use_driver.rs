@@ -120,7 +120,7 @@ const ALLOWED_TOOLS: &[&str] = &[
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.as_slice() == ["--version"] {
-        println!("june-computer-use-driver {UPSTREAM_VERSION} {UPSTREAM_COMMIT}");
+        println!("clovy-computer-use-driver {UPSTREAM_VERSION} {UPSTREAM_COMMIT}");
         return;
     }
     let result = match args.as_slice() {
@@ -151,7 +151,7 @@ async fn serve_stdio() -> anyhow::Result<()> {
 #[cfg(target_os = "macos")]
 async fn serve_daemon() -> anyhow::Result<()> {
     isolate_process_group()?;
-    let socket_path = std::env::var("JUNE_COMPUTER_USE_SOCKET")
+    let socket_path = std::env::var("CLOVY_COMPUTER_USE_SOCKET")
         .map(PathBuf::from)
         .map_err(|_| anyhow::anyhow!("the private Clovy socket is missing"))?;
     if !socket_path.is_absolute() {
@@ -183,7 +183,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn request_startup_permission() {
-    match std::env::var("JUNE_COMPUTER_USE_PERMISSION_PROMPT").as_deref() {
+    match std::env::var("CLOVY_COMPUTER_USE_PERMISSION_PROMPT").as_deref() {
         Ok("accessibility") => {
             let _ = platform_macos::permissions::status::request_accessibility();
         }
@@ -696,7 +696,7 @@ fn initialize_capability(params: Option<&Value>) -> Option<&str> {
 
 #[cfg(target_os = "macos")]
 fn valid_capability(candidate: &str) -> bool {
-    let expected = std::env::var("JUNE_COMPUTER_USE_HELPER_CAPABILITY").unwrap_or_default();
+    let expected = std::env::var("CLOVY_COMPUTER_USE_HELPER_CAPABILITY").unwrap_or_default();
     if expected.len() < 32 || candidate.len() != expected.len() {
         return false;
     }

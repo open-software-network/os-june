@@ -596,7 +596,7 @@ async fn generate_video(context: &ToolContext, arguments: &Value) -> Result<Valu
             }
         };
         match result {
-            crate::june_api::VideoStatusDto::Processing { .. } => {
+            crate::clovy_api::VideoStatusDto::Processing { .. } => {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
                     _ = &mut cancelled.receiver => {
@@ -604,10 +604,10 @@ async fn generate_video(context: &ToolContext, arguments: &Value) -> Result<Valu
                     }
                 }
             }
-            crate::june_api::VideoStatusDto::Failed { reason } => {
+            crate::clovy_api::VideoStatusDto::Failed { reason } => {
                 return Err(AppError::new("video_generation_failed", reason));
             }
-            crate::june_api::VideoStatusDto::Completed {
+            crate::clovy_api::VideoStatusDto::Completed {
                 path,
                 mime_type,
                 model,
@@ -647,7 +647,7 @@ async fn generate_video(context: &ToolContext, arguments: &Value) -> Result<Valu
 async fn persist_generated_image(
     context: &ToolContext,
     prompt: &str,
-    generated: crate::june_api::GeneratedImageDto,
+    generated: crate::clovy_api::GeneratedImageDto,
 ) -> Result<Value, AppError> {
     let bytes = BASE64
         .decode(&generated.image_base64)
@@ -751,7 +751,7 @@ fn optional_nonempty_string(arguments: &Value, key: &str) -> Result<Option<Strin
 
 async fn web(context: &ToolContext, path: &str, arguments: &Value) -> Result<Value, AppError> {
     let request = web_request(arguments, context.call_id.as_deref());
-    let response = crate::june_api::forward_web_request(path, &request).await?;
+    let response = crate::clovy_api::forward_web_request(path, &request).await?;
     if response.status >= 400 {
         return Err(AppError::new(
             "agent_web_failed",

@@ -136,7 +136,7 @@ function validateBundle() {
     );
   }
   const version = run(executable, ["--version"]).combined.match(
-    /june-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
+    /clovy-computer-use-driver\s+([^\s]+)\s+([0-9a-f]{40})/,
   );
   if (version?.[1] !== pin.version || version?.[2] !== pin.sourceCommit) {
     throw new Error(
@@ -252,7 +252,7 @@ function validateDirectLaunchRefusal() {
     timeout: 10_000,
     env: {
       ...driverEnvironment(),
-      JUNE_COMPUTER_USE_HELPER_CAPABILITY: "a".repeat(64),
+      CLOVY_COMPUTER_USE_HELPER_CAPABILITY: "a".repeat(64),
     },
   });
   const output = `${direct.stdout || ""}\n${direct.stderr || ""}`;
@@ -690,7 +690,7 @@ function driverEnvironment() {
     if (
       name.startsWith("CUA_DRIVER_RS_") ||
       name.startsWith("JUNE_CUA_DRIVER") ||
-      name === "JUNE_COMPUTER_USE_BACKEND" ||
+      name === "CLOVY_COMPUTER_USE_BACKEND" ||
       ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"].includes(
         name,
       )

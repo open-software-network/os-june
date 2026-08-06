@@ -43,7 +43,7 @@ Create or confirm these before cutting the first updater release:
   password-protected, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
 - Production runtime secrets: `PRODUCTION_OS_ACCOUNTS_URL`,
   `PRODUCTION_OS_ACCOUNTS_API_URL`, `PRODUCTION_OS_ACCOUNTS_CLIENT_ID`, and
-  `PRODUCTION_JUNE_API_URL`.
+  `PRODUCTION_CLOVY_API_URL`.
 - Slack incoming-webhook secret: `SLACK_WEBHOOK_URL`, configured for the release
   announcements channel. An absent or failing webhook warns but does not fail an
   otherwise successful RC build.
@@ -216,7 +216,7 @@ plutil -extract CFBundleURLTypes xml1 -o - "$APP/Contents/Info.plist"
 lipo -archs "$APP/Contents/MacOS/os-june"
 lipo -archs "$APP/Contents/Resources/native/bin/June Dictation Helper.app/Contents/MacOS/june-dictation-helper"
 lipo -archs "$APP/Contents/Resources/native/bin/June.app/Contents/MacOS/june-system-audio-recorder"
-RUNTIME="$APP/Contents/Resources/native/bin/june-agent-runtime"
+RUNTIME="$APP/Contents/Resources/native/bin/clovy-agent-runtime"
 test "$(shasum -a 256 "$RUNTIME" | awk '{print $1}')" = "$(cat "$RUNTIME.sha256")"
 codesign --verify --strict --verbose=2 "$RUNTIME"
 /usr/bin/arch -arm64 "$RUNTIME"
@@ -244,7 +244,7 @@ Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
 still granted after relaunch. During the relaunch, confirm the app remains
 responsive after the command is accepted: the main event loop must return in
 under one second while bounded child cleanup continues off-thread. For the
-forced-child check, stop the tracked `june-agent-runtime` process with
+forced-child check, stop the tracked `clovy-agent-runtime` process with
 `kill -STOP <pid>` before accepting the update and confirm Clovy still
 relaunches after kill escalation or the five-second aggregate deadline instead
 of showing a permanent beachball.

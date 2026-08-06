@@ -173,13 +173,6 @@ fn env_or_build_trimmed(key: &str, build_value: Option<&'static str>) -> String 
     }
 }
 
-pub(crate) fn env_truthy(key: &str) -> bool {
-    matches!(
-        env_trimmed(key).to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes" | "on"
-    )
-}
-
 /// Cryptographically-random base64url string of `bytes` entropy. Mirrors
 /// `oauth::random_b64url`; used to mint autonomy grant tokens (never a
 /// time/counter source).

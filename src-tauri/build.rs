@@ -14,7 +14,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_ID");
     println!("cargo:rerun-if-env-changed=GOOGLE_OAUTH_CLIENT_SECRET");
-    println!("cargo:rerun-if-env-changed=JUNE_API_URL");
+    println!("cargo:rerun-if-env-changed=CLOVY_API_URL");
     if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("macos") {
         println!("cargo:rustc-link-lib=framework=AVFoundation");
         link_swift_runtime();
@@ -133,7 +133,7 @@ fn prepare_computer_use_driver() {
     let executable = app_dir
         .join("Contents")
         .join("MacOS")
-        .join("june-computer-use-driver");
+        .join("clovy-computer-use-driver");
     let stamp = app_dir
         .join("Contents")
         .join("Resources")
@@ -203,7 +203,7 @@ fn verify_computer_use_driver_source(
     assert_eq!(
         fields.as_slice(),
         [
-            "june-computer-use-driver",
+            "clovy-computer-use-driver",
             expected_version,
             expected_commit
         ],
@@ -320,7 +320,7 @@ fn ensure_nm_shim_placeholder() {
     else {
         return;
     };
-    let shim = helper_dir.join("june-nm-shim");
+    let shim = helper_dir.join("clovy-nm-shim");
     if shim.exists() {
         return;
     }
@@ -356,9 +356,9 @@ fn ensure_agent_runtime_placeholder() {
         return;
     }
     let executable = if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("windows") {
-        runtime_dir.join("june-agent-runtime.exe")
+        runtime_dir.join("clovy-agent-runtime.exe")
     } else {
-        runtime_dir.join("june-agent-runtime")
+        runtime_dir.join("clovy-agent-runtime")
     };
     if !executable.exists() {
         if let Err(error) = std::fs::write(

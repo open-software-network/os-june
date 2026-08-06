@@ -12,7 +12,7 @@
 
 A timeboxed spike answering one phase-2 question for **Computer use** (see
 [browser-computer-use-prd.md](browser-computer-use-prd.md) "Computer use (phase
-2)" and [ADR-0017](adr/0017-browser-use-via-june-extension.md)): when June
+2)" and [ADR-0017](adr/0017-browser-use-via-clovy-extension.md)): when June
 bundles a pinned, signed **cua-driver** as an app resource, do the driver's
 private-interface lookups work under the app's Seatbelt profile, or must the
 Rust broker run it outside the write jail, as the **dictation helper**

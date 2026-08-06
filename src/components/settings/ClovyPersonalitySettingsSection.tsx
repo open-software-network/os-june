@@ -8,7 +8,7 @@ import {
   type OnboardingArea,
   type OnboardingMood,
 } from "../../lib/onboarding";
-import { junePersona, setClovyPersona } from "../../lib/tauri";
+import { clovyPersona, setClovyPersona } from "../../lib/tauri";
 import {
   OnboardingCharacter,
   ONBOARDING_MOOD_PRESENTATION,
@@ -47,7 +47,7 @@ export function ClovyPersonalitySettingsSection() {
     setError(undefined);
     if (loadAttempt > 0) setStatus(undefined);
 
-    void junePersona()
+    void clovyPersona()
       .then((persona) => {
         if (cancelled) return;
         const loadedMood = closestOnboardingMood(persona);

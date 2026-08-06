@@ -12,7 +12,7 @@ import type {
   StartAgentRunRequest,
 } from "./agent-runtime-contract";
 import { parseDictationHelperEvent } from "./dictation-events";
-import { juneHomeProfileRemovalPlan, reconcileClovyHomeProfileRemoval } from "./june-home";
+import { clovyHomeProfileRemovalPlan, reconcileClovyHomeProfileRemoval } from "./clovy-home";
 
 // Re-exported so modules that build their own command calls route through the
 // same `invoke` as the rest of the app's bindings.
@@ -53,17 +53,17 @@ export type ClovyPersonaSettings = {
   humor: number;
 };
 
-export async function junePersona() {
-  return invoke<ClovyPersonaSettings>("june_persona");
+export async function clovyPersona() {
+  return invoke<ClovyPersonaSettings>("clovy_persona");
 }
 
 export async function setClovyPersona(request: Omit<ClovyPersonaSettings, "schemaVersion">) {
-  return invoke<ClovyPersonaSettings>("set_june_persona", { request });
+  return invoke<ClovyPersonaSettings>("set_clovy_persona", { request });
 }
 
 /** Lightweight private conversation path for Home. Concrete work is returned
  * as a structured handoff and continues in a normal Clovy agent session. */
-export async function juneHomeChat(
+export async function clovyHomeChat(
   messages: ClovyHomeChatMessage[],
   options: ClovyHomeChatOptions = {},
 ) {
@@ -71,7 +71,7 @@ export async function juneHomeChat(
   onEvent.onmessage = (event) => {
     if (event.event === "delta") options.onDelta?.(event.data.content);
   };
-  return invoke<ClovyHomeChatResponse>("june_home_chat", {
+  return invoke<ClovyHomeChatResponse>("clovy_home_chat", {
     request: {
       profile: options.profile,
       ...(options.historyContext ? { historyContext: options.historyContext } : {}),
@@ -771,19 +771,19 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
-export const JUNE_COMMUNITY_URL = "https://t.me/osjune";
+export const CLOVY_COMMUNITY_URL = "https://t.me/osjune";
 
-/** Opens the june-api /verify page (attestation, routing, retention) in
+/** Opens the clovy-api /verify page (attestation, routing, retention) in
  * the default browser. Routed through Rust because the webview drops
  * target="_blank" anchors. */
-export async function juneOpenVerifyPage() {
-  return invoke<void>("june_open_verify_page");
+export async function clovyOpenVerifyPage() {
+  return invoke<void>("clovy_open_verify_page");
 }
 
 /** Opens the Clovy community in the default browser. Routed through Rust for
  * the same target="_blank" reliability reason as the verify page. */
-export async function juneOpenCommunityPage() {
-  return invoke<void>("june_open_community_page");
+export async function clovyOpenCommunityPage() {
+  return invoke<void>("clovy_open_community_page");
 }
 
 export async function createNote(folderId?: string) {
@@ -857,7 +857,7 @@ export async function profileDataSummary(profile: string) {
 }
 
 export async function moveProfileDataToDefault(profile: string) {
-  const { redundantSessionId } = juneHomeProfileRemovalPlan(profile, "move");
+  const { redundantSessionId } = clovyHomeProfileRemovalPlan(profile, "move");
   await invoke<void>("move_profile_data_to_default", { profile, redundantSessionId });
   reconcileClovyHomeProfileRemoval(profile, "move");
 }

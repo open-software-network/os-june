@@ -1802,7 +1802,7 @@ describe("notes recording reliability", () => {
           },
     );
     mocks.retryProcessing.mockRejectedValue({
-      code: "june_api_response_invalid",
+      code: "clovy_api_response_invalid",
       message: "The processing service returned an invalid response.",
     });
 

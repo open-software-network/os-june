@@ -5,7 +5,7 @@ import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconSparkle } from "central-icons/IconSparkle";
 import { IconTelegram } from "central-icons/IconTelegram";
 import { fallbackDictationCapabilities } from "../../../lib/platform";
-import { juneOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
+import { clovyOpenCommunityPage, osAccountsCancelLogin, osAccountsLogin } from "../../../lib/tauri";
 import type { AccountStatus } from "../../../lib/tauri";
 import { OsMark } from "../../account/AccountGate";
 import { OnboardingPrimaryButton, StepCard } from "../StepChrome";
@@ -129,7 +129,7 @@ export function SignInStep({
         <button
           type="button"
           className="onboarding-community-link"
-          onClick={() => void juneOpenCommunityPage().catch(() => undefined)}
+          onClick={() => void clovyOpenCommunityPage().catch(() => undefined)}
         >
           <IconTelegram size={16} aria-hidden />
           <span>Join the Clovy community on Telegram</span>

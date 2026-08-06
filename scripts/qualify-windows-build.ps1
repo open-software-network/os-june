@@ -77,10 +77,10 @@ foreach ($tool in @("git", "but", "node", "pnpm", "rustc", "cargo")) {
 New-Item -ItemType Directory -Force -Path $caller, $EvidenceDirectory | Out-Null
 
 $originalPath = $env:PATH
-$hadPrebuilt = Test-Path Env:JUNE_AGENT_RUNTIME_PREBUILT
-$originalPrebuilt = if ($hadPrebuilt) { (Get-Item Env:JUNE_AGENT_RUNTIME_PREBUILT).Value } else { $null }
-$hadTarget = Test-Path Env:JUNE_AGENT_RUNTIME_TARGET
-$originalTarget = if ($hadTarget) { (Get-Item Env:JUNE_AGENT_RUNTIME_TARGET).Value } else { $null }
+$hadPrebuilt = Test-Path Env:CLOVY_AGENT_RUNTIME_PREBUILT
+$originalPrebuilt = if ($hadPrebuilt) { (Get-Item Env:CLOVY_AGENT_RUNTIME_PREBUILT).Value } else { $null }
+$hadTarget = Test-Path Env:CLOVY_AGENT_RUNTIME_TARGET
+$originalTarget = if ($hadTarget) { (Get-Item Env:CLOVY_AGENT_RUNTIME_TARGET).Value } else { $null }
 $hadCertificatePassword = Test-Path Env:WINDOWS_CERTIFICATE_PASSWORD
 $originalCertificatePassword = if ($hadCertificatePassword) {
   (Get-Item Env:WINDOWS_CERTIFICATE_PASSWORD).Value
@@ -182,10 +182,10 @@ function Assert-WorkspaceMatchesExpectedCommit {
 
 function Restore-Environment {
   $env:PATH = $originalPath
-  if ($hadPrebuilt) { $env:JUNE_AGENT_RUNTIME_PREBUILT = $originalPrebuilt }
-  else { Remove-Item Env:JUNE_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
-  if ($hadTarget) { $env:JUNE_AGENT_RUNTIME_TARGET = $originalTarget }
-  else { Remove-Item Env:JUNE_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
+  if ($hadPrebuilt) { $env:CLOVY_AGENT_RUNTIME_PREBUILT = $originalPrebuilt }
+  else { Remove-Item Env:CLOVY_AGENT_RUNTIME_PREBUILT -ErrorAction SilentlyContinue }
+  if ($hadTarget) { $env:CLOVY_AGENT_RUNTIME_TARGET = $originalTarget }
+  else { Remove-Item Env:CLOVY_AGENT_RUNTIME_TARGET -ErrorAction SilentlyContinue }
   if ($hadCertificatePassword) { $env:WINDOWS_CERTIFICATE_PASSWORD = $originalCertificatePassword }
   else { Remove-Item Env:WINDOWS_CERTIFICATE_PASSWORD -ErrorAction SilentlyContinue }
 }
@@ -278,8 +278,8 @@ try {
   & $sevenZip | Select-String "^7-Zip " | Select-Object -First 1
 
   Remove-Item Env:WINDOWS_CERTIFICATE_PASSWORD -ErrorAction SilentlyContinue
-  $env:JUNE_AGENT_RUNTIME_PREBUILT = "qualification-sentinel-prebuilt"
-  $env:JUNE_AGENT_RUNTIME_TARGET = "qualification-sentinel-target"
+  $env:CLOVY_AGENT_RUNTIME_PREBUILT = "qualification-sentinel-prebuilt"
+  $env:CLOVY_AGENT_RUNTIME_TARGET = "qualification-sentinel-target"
   Set-Location -LiteralPath $caller
 
   Write-Host "=== First full builder run ==="
@@ -288,8 +288,8 @@ try {
   $result.firstInBuilderVerifier = $true
   $result.firstPathRestored = $env:PATH -ceq $originalPath
   $result.firstJuneEnvironmentRestored =
-    $env:JUNE_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
-    $env:JUNE_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
+    $env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
+    $env:CLOVY_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
   if (-not $result.firstPathRestored) { throw "First builder did not restore PATH exactly." }
   if (-not $result.firstJuneEnvironmentRestored) { throw "First builder did not restore June environment exactly." }
 
@@ -307,8 +307,8 @@ try {
   $result.secondInBuilderVerifier = $true
   $result.secondPathRestored = $env:PATH -ceq $originalPath
   $result.secondJuneEnvironmentRestored =
-    $env:JUNE_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
-    $env:JUNE_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
+    $env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq "qualification-sentinel-prebuilt" -and
+    $env:CLOVY_AGENT_RUNTIME_TARGET -ceq "qualification-sentinel-target"
   if (-not $result.secondPathRestored) { throw "Second builder did not restore PATH exactly." }
   if (-not $result.secondJuneEnvironmentRestored) { throw "Second builder did not restore June environment exactly." }
 
@@ -329,10 +329,10 @@ finally {
     Restore-Environment
     $result.finalPathRestored = $env:PATH -ceq $originalPath
     $result.finalJuneEnvironmentRestored =
-      ((Test-Path Env:JUNE_AGENT_RUNTIME_PREBUILT) -eq $hadPrebuilt) -and
-      ((-not $hadPrebuilt) -or ($env:JUNE_AGENT_RUNTIME_PREBUILT -ceq $originalPrebuilt)) -and
-      ((Test-Path Env:JUNE_AGENT_RUNTIME_TARGET) -eq $hadTarget) -and
-      ((-not $hadTarget) -or ($env:JUNE_AGENT_RUNTIME_TARGET -ceq $originalTarget))
+      ((Test-Path Env:CLOVY_AGENT_RUNTIME_PREBUILT) -eq $hadPrebuilt) -and
+      ((-not $hadPrebuilt) -or ($env:CLOVY_AGENT_RUNTIME_PREBUILT -ceq $originalPrebuilt)) -and
+      ((Test-Path Env:CLOVY_AGENT_RUNTIME_TARGET) -eq $hadTarget) -and
+      ((-not $hadTarget) -or ($env:CLOVY_AGENT_RUNTIME_TARGET -ceq $originalTarget))
     $result.finalCertificateEnvironmentRestored =
       ((Test-Path Env:WINDOWS_CERTIFICATE_PASSWORD) -eq $hadCertificatePassword) -and
       ((-not $hadCertificatePassword) -or ($env:WINDOWS_CERTIFICATE_PASSWORD -ceq $originalCertificatePassword))

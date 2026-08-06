@@ -38,7 +38,7 @@ import {
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { rememberSessionModel } from "../lib/agent-session-models";
-import { readClovyHomeStoredSessionId, writeClovyHomeStoredSessionId } from "../lib/june-home";
+import { readClovyHomeStoredSessionId, writeClovyHomeStoredSessionId } from "../lib/clovy-home";
 import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
 const session: AgentSessionDto = {
@@ -389,7 +389,7 @@ describe("AgentWorkspace runtime wiring", () => {
           effectiveSettings: { veniceApiKeyConfigured: false },
         };
       }
-      if (command === "june_home_chat") {
+      if (command === "clovy_home_chat") {
         return {
           task: {
             title: "Wine research",
@@ -427,7 +427,7 @@ describe("AgentWorkspace runtime wiring", () => {
 
     expect(await screen.findByText("Got it.")).toBeVisible();
     expect(
-      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+      mocks.invoke.mock.calls.filter(([command]) => command === "clovy_home_chat"),
     ).toHaveLength(1);
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
@@ -439,7 +439,7 @@ describe("AgentWorkspace runtime wiring", () => {
 
     expect(await screen.findByText("Hey! What can I help with?")).toBeVisible();
     expect(
-      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+      mocks.invoke.mock.calls.filter(([command]) => command === "clovy_home_chat"),
     ).toHaveLength(1);
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
@@ -451,7 +451,7 @@ describe("AgentWorkspace runtime wiring", () => {
 
     await waitFor(() => expect(screen.getAllByText("Hey! What can I help with?")).toHaveLength(2));
     expect(
-      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+      mocks.invoke.mock.calls.filter(([command]) => command === "clovy_home_chat"),
     ).toHaveLength(1);
     expect(
       mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
@@ -469,7 +469,7 @@ describe("AgentWorkspace runtime wiring", () => {
       mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run"),
     ).toHaveLength(1);
     expect(
-      mocks.invoke.mock.calls.filter(([command]) => command === "june_home_chat"),
+      mocks.invoke.mock.calls.filter(([command]) => command === "clovy_home_chat"),
     ).toHaveLength(2);
   });
 
@@ -515,7 +515,7 @@ describe("AgentWorkspace runtime wiring", () => {
       if (command === "list_venice_models") {
         return { mode: "generation", selectedModel: "fast", modelType: "text", models: [] };
       }
-      if (command === "june_home_chat") return pendingHome;
+      if (command === "clovy_home_chat") return pendingHome;
       return undefined;
     });
 
@@ -524,7 +524,7 @@ describe("AgentWorkspace runtime wiring", () => {
     await user.type(composer, "First message");
     await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
-      expect(mocks.invoke).toHaveBeenCalledWith("june_home_chat", expect.anything()),
+      expect(mocks.invoke).toHaveBeenCalledWith("clovy_home_chat", expect.anything()),
     );
     const activeComposer = screen.getByRole("textbox", { name: "Message Clovy" });
     activeComposer.textContent = "New draft";
@@ -1300,7 +1300,7 @@ describe("AgentWorkspace runtime wiring", () => {
     );
     await waitFor(() => {
       const stored = JSON.parse(
-        window.localStorage.getItem("june.agent.queuedFollowUps") ?? "{}",
+        window.localStorage.getItem("clovy.agent.queuedFollowUps") ?? "{}",
       ) as Record<string, { messageId?: string; prompt?: string; attachments?: string[] }>;
       expect(stored[session.id]).toMatchObject({
         messageId: secondMessageId,
@@ -1570,7 +1570,7 @@ describe("AgentWorkspace runtime wiring", () => {
           text: "Latest live correction",
         });
         const stored = JSON.parse(
-          window.localStorage.getItem("june.agent.queuedFollowUps") ?? "{}",
+          window.localStorage.getItem("clovy.agent.queuedFollowUps") ?? "{}",
         ) as Record<string, { prompt?: string; attachments?: string[] }>;
         expect(stored[session.id]).toMatchObject({
           prompt: "Latest live correction",

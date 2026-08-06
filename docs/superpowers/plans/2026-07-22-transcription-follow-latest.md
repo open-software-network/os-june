@@ -21,7 +21,7 @@
 - Use smooth scrolling unless `prefers-reduced-motion: reduce` matches, in which case use `auto`.
 - Saved-audio Turns remain authoritative. This change must not alter preview coalescing, preview reconciliation, event filtering, persistence, polling, billing, or recording state.
 - Do not add a “Latest” button in this pass.
-- Do not modify `NoteEditor.tsx`, `app.css`, Rust, or `june-api/`; the existing component tree and styles are sufficient.
+- Do not modify `NoteEditor.tsx`, `app.css`, Rust, or `clovy-api/`; the existing component tree and styles are sufficient.
 - Follow test-driven development: observe each focused test fail for the intended missing behavior before implementing it.
 
 ---

@@ -61,8 +61,8 @@ pub struct AgentRuntimeHost {
 }
 
 struct ModelStream {
-    response: crate::june_api::AgentChatCompletionsResponse,
-    route: crate::june_api::AgentModelRouteMetadata,
+    response: crate::clovy_api::AgentChatCompletionsResponse,
+    route: crate::clovy_api::AgentModelRouteMetadata,
     buffer: Vec<u8>,
     done: bool,
     run_id: String,
@@ -624,7 +624,7 @@ async fn handle_runtime_request(
                     AppError::new("agent_connector_response_invalid", error.to_string())
                 });
             }
-            if name == "__june_model_chat_completions" {
+            if name == "__clovy_model_chat_completions" {
                 if !model_scopes.lock().await.contains(&frame.run_id) {
                     return Err(AppError::new(
                         "agent_model_scope_inactive",
@@ -649,7 +649,7 @@ async fn handle_runtime_request(
                     ));
                 }
                 let response = tokio::select! {
-                    response = crate::june_api::proxy_agent_chat_completions(request) => response?,
+                    response = crate::clovy_api::proxy_agent_chat_completions(request) => response?,
                     _ = cancelled.cancelled() => {
                         return Err(AppError::new(
                             "agent_model_scope_cancelled",
@@ -1255,9 +1255,9 @@ fn resolve_runtime_command(app: &AppHandle) -> Result<(PathBuf, Vec<PathBuf>), A
         ));
     }
     let name = if cfg!(target_os = "windows") {
-        "june-agent-runtime.exe"
+        "clovy-agent-runtime.exe"
     } else {
-        "june-agent-runtime"
+        "clovy-agent-runtime"
     };
     let executable = app
         .path()

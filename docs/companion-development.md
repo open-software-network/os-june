@@ -6,7 +6,7 @@ Use Rust with `aarch64-apple-ios-sim`, Xcode 26, and XcodeGen 2.45.4 or newer.
 The native app has no Node, Metro, React Native, or CocoaPods dependency.
 Local Clovy API permits the in-memory relay; restart loses links.
 
-The `june-companion-app` repository and `JuneCompanion` Xcode project, target,
+The `clovy-companion-app` repository and `JuneCompanion` Xcode project, target,
 and scheme names are retained technical identities under
 [ADR-0054](adr/0054-clovy-presentation-retains-june-era-technical-identities.md).
 
@@ -18,7 +18,7 @@ copied.
 ## Run
 
 ```sh
-cd ../june-companion-app/native-ios  # the mobile app lives in the june-companion-app repo
+cd ../clovy-companion-app/native-ios  # the mobile app lives in the clovy-companion-app repo
 xcodegen generate
 open JuneCompanion.xcodeproj
 ```
@@ -41,17 +41,17 @@ expiry and explicit Desktop approval are the authorization backstops.
 ## Verify
 
 ```sh
-cd ../june-companion-app/native-ios  # the mobile app lives in the june-companion-app repo
+cd ../clovy-companion-app/native-ios  # the mobile app lives in the clovy-companion-app repo
 xcodegen generate
 xcodebuild -project JuneCompanion.xcodeproj -scheme JuneCompanion \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.5' test
 xcodebuild -project JuneCompanion.xcodeproj -scheme JuneCompanion \
   -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5),OS=26.5' build
-cargo test --manifest-path crates/june-companion-protocol/Cargo.toml
-cargo test --manifest-path crates/june-companion-crypto/Cargo.toml
+cargo test --manifest-path crates/clovy-companion-protocol/Cargo.toml
+cargo test --manifest-path crates/clovy-companion-crypto/Cargo.toml
 pnpm typecheck
 pnpm test:rust
-pnpm test:june-api
+pnpm test:clovy-api
 ```
 
 Build both an iPhone and iPad simulator destination with `xcodebuild` and take
