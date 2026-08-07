@@ -316,8 +316,9 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
       .filter((item) => item.kind === "tool_result")
       .map((item) => toolCallKey(item.runId, item.callId)),
   );
+  const runIdsByItemId = new Map(orderedItems.map((item) => [item.id, item.runId]));
 
-  return orderedItems
+  const turns = orderedItems
     .filter(
       (item) =>
         item.kind !== "tool_call" || !settledToolCalls.has(toolCallKey(item.runId, item.callId)),
@@ -388,8 +389,9 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
               },
             ],
           };
-        case "tool_result":
-          if (!item.isError && generatedImagePart(item.output)) {
+        case "tool_result": {
+          const image = item.isError ? undefined : generatedImagePart(item.output);
+          if (image) {
             return {
               ...base,
               role: "assistant",
@@ -401,11 +403,12 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
                   text: readableValue(item.output),
                   status: "complete",
                 },
-                generatedImagePart(item.output)!,
+                image,
               ],
             };
           }
-          if (!item.isError && generatedVideoPart(item.output)) {
+          const video = item.isError ? undefined : generatedVideoPart(item.output);
+          if (video) {
             return {
               ...base,
               role: "assistant",
@@ -417,7 +420,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
                   text: readableValue(item.output),
                   status: "complete",
                 },
-                generatedVideoPart(item.output)!,
+                video,
               ],
             };
           }
@@ -434,6 +437,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
               },
             ],
           };
+        }
         case "interruption":
           return {
             ...base,
@@ -476,6 +480,76 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
           return assertNever(item);
       }
     });
+
+  return coalesceAgentActivityTurns(
+    turns.map((turn) => ({ runId: runIdsByItemId.get(turn.id), turn })),
+  );
+}
+
+type AgentRunTurn = {
+  runId?: string;
+  turn: AgentChatTurn;
+};
+
+/**
+ * Presents consecutive reasoning, tool, and interruption items from one agent
+ * run as a single activity cluster. The latest item owns the cluster identity
+ * and timestamp; when a visible assistant output follows, it owns the combined
+ * turn instead. User/system turns, visible outputs, and run changes remain
+ * boundaries.
+ */
+function coalesceAgentActivityTurns(items: AgentRunTurn[]): AgentChatTurn[] {
+  const turns: AgentChatTurn[] = [];
+  let pending: AgentRunTurn | undefined;
+
+  const flushPending = () => {
+    if (!pending) return;
+    turns.push(pending.turn);
+    pending = undefined;
+  };
+
+  for (const item of items) {
+    if (isInternalAgentActivity(item.turn)) {
+      if (pending && pending.runId === item.runId) {
+        pending = {
+          ...item,
+          turn: { ...item.turn, parts: [...pending.turn.parts, ...item.turn.parts] },
+        };
+      } else {
+        flushPending();
+        pending = item;
+      }
+      continue;
+    }
+
+    if (pending && item.turn.role === "assistant" && pending.runId === item.runId) {
+      turns.push({ ...item.turn, parts: [...pending.turn.parts, ...item.turn.parts] });
+      pending = undefined;
+      continue;
+    }
+
+    flushPending();
+    turns.push(item.turn);
+  }
+
+  flushPending();
+  return turns;
+}
+
+function isInternalAgentActivity(turn: AgentChatTurn) {
+  return (
+    turn.role === "assistant" &&
+    turn.parts.length > 0 &&
+    turn.parts.every(
+      (part) =>
+        part.type === "reasoning" ||
+        part.type === "tool" ||
+        part.type === "approval" ||
+        part.type === "clarify" ||
+        part.type === "sudo" ||
+        part.type === "secret",
+    )
+  );
 }
 
 function generatedImagePart(output: unknown): AgentChatPart | undefined {

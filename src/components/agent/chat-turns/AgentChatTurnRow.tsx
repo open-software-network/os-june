@@ -160,25 +160,88 @@ export function AgentChatTurnRow({
     if (part.status === "running") return false;
     return part.media === "image" ? !hasGeneratedImage : !hasGeneratedVideo;
   });
+  const visibleToolPartSet = new Set(visibleToolParts);
+  const visibleToolStacks = new Map<string, typeof visibleToolParts>();
+  let visibleToolStack: typeof visibleToolParts | undefined;
+  for (const part of turn.parts) {
+    if (part.type !== "tool" || !visibleToolPartSet.has(part)) {
+      visibleToolStack = undefined;
+      continue;
+    }
+    if (visibleToolStack) {
+      visibleToolStack.push(part);
+      continue;
+    }
+    visibleToolStack = [part];
+    visibleToolStacks.set(part.id, visibleToolStack);
+  }
+  const reasoningGroups = new Map<
+    Extract<AgentChatPart, { type: "reasoning" }>,
+    { parts: typeof reasoningParts; completedKey: string; startIndex: number }
+  >();
+  let reasoningGroup:
+    | { parts: typeof reasoningParts; completedKey: string; startIndex: number }
+    | undefined;
+  for (const [index, part] of turn.parts.entries()) {
+    if (part.type !== "reasoning") {
+      reasoningGroup = undefined;
+      continue;
+    }
+    if (reasoningGroup) {
+      reasoningGroup.parts.push(part);
+      continue;
+    }
+    reasoningGroup = {
+      parts: [part],
+      completedKey:
+        reasoningGroups.size === 0
+          ? `turn:${turn.id}:thinking`
+          : `turn:${turn.id}:thinking:${index}`,
+      startIndex: index,
+    };
+    reasoningGroups.set(part, reasoningGroup);
+  }
   // The disclosure owns internal reasoning only. Tool/action rows stay visible
   // outside it so users can see what June is doing without expanding Thought;
   // a running media tool is represented by its canvas instead, just above.
   const thinkingRunning = reasoningParts.some((part) => part.status === "running");
-  const completedThinkingKey = `turn:${turn.id}:thinking`;
-  const thinkingKey =
-    thinkingRunning && activeThinkingKey ? activeThinkingKey : completedThinkingKey;
+  const runningReasoningGroup = [...reasoningGroups.values()].find((group) =>
+    group.parts.some((part) => part.status === "running"),
+  );
+  const lastRunningCompletedKeyRef = useRef(
+    runningReasoningGroup?.completedKey ?? `turn:${turn.id}:thinking`,
+  );
+  if (runningReasoningGroup) {
+    lastRunningCompletedKeyRef.current = runningReasoningGroup.completedKey;
+  }
+  const completedThinkingKey = lastRunningCompletedKeyRef.current;
   const wasThinkingRunningRef = useRef(thinkingRunning);
   const carriedOpen =
     !thinkingRunning &&
     wasThinkingRunningRef.current &&
     activeThinkingKey !== undefined &&
     thinkingOpen(activeThinkingKey);
-  const thinkingIsOpen = thinkingOpen(thinkingKey) || carriedOpen;
   const [copied, setCopied] = useState(false);
   const [dismissedAccessRequestCards, setDismissedAccessRequestCards] = useState<
     ReadonlySet<string>
   >(() => new Set());
   const copyResetTimerRef = useRef<number | undefined>(undefined);
+
+  function renderReasoningGroup(part: Extract<AgentChatPart, { type: "reasoning" }>) {
+    const group = reasoningGroups.get(part);
+    if (!group) return null;
+    const running = group.parts.some((reasoningPart) => reasoningPart.status === "running");
+    const key = running && activeThinkingKey ? activeThinkingKey : group.completedKey;
+    return (
+      <AgentThinkingGroup
+        key={`${turn.id}:reasoning:${group.startIndex}`}
+        reasoning={group.parts}
+        running={running}
+        open={thinkingOpen(key) || (carriedOpen && group.completedKey === completedThinkingKey)}
+        onOpenChange={(open) => onThinkingOpenChange(key, open)}
+      />
+    );
+  }
 
   useEffect(() => {
     const wasRunning = wasThinkingRunningRef.current;
@@ -434,15 +497,6 @@ export function AgentChatTurnRow({
           hasActionCard ? " agent-assistant-turn-body-action-card" : ""
         }`}
       >
-        {reasoningParts.length > 0 ? (
-          <AgentThinkingGroup
-            reasoning={reasoningParts}
-            running={thinkingRunning}
-            open={thinkingIsOpen}
-            onOpenChange={(open) => onThinkingOpenChange(thinkingKey, open)}
-          />
-        ) : null}
-        {visibleToolParts.length > 0 ? <AgentToolStack parts={visibleToolParts} /> : null}
         {runningMediaTools.map((tool) =>
           tool.media === "image" ? (
             <AgentGeneratedImage
@@ -457,7 +511,16 @@ export function AgentChatTurnRow({
           ),
         )}
         {turn.parts.map((part, index) =>
-          part.type === "text" ? (
+          part.type === "reasoning" ? (
+            renderReasoningGroup(part)
+          ) : part.type === "tool" ? (
+            visibleToolStacks.has(part.id) ? (
+              <AgentToolStack
+                key={`${turn.id}:tools:${part.id}`}
+                parts={visibleToolStacks.get(part.id) ?? []}
+              />
+            ) : null
+          ) : part.type === "text" ? (
             hasAgentCliAccessRequest(part.text) || hasBrowserAccessRequest(part.text) ? (
               // June's soul emits a literal token to request the Agent CLI
               // access or Browser use setting; each token renders as an
