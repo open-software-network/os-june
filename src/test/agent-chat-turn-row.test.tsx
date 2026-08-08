@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AgentChatTurnRow } from "../components/agent/chat-turns/AgentChatTurnRow";
 import type { AgentChatTurn } from "../lib/agent-chat-runtime";
@@ -120,5 +120,58 @@ describe("AgentChatTurnRow", () => {
       "run_shell",
     ]);
     expect(container.querySelectorAll(".agent-turn-timestamp")).toHaveLength(1);
+  });
+
+  it("keeps disclosure state keyed to the first activity item as newer ids arrive", () => {
+    const openKeys = new Set<string>();
+    const onThinkingOpenChange = vi.fn((key: string, open: boolean) => {
+      if (open) openKeys.add(key);
+      else openKeys.delete(key);
+    });
+    const baseTurn: AgentChatTurn = {
+      id: "tool-result-2",
+      renderId: "reasoning-1",
+      role: "assistant",
+      createdAt: "2026-08-07T21:00:04Z",
+      status: "complete",
+      parts: [{ type: "reasoning", text: "Inspect the file", status: "complete" }],
+    };
+    const props = {
+      approvalSubmitting: {},
+      clarifySubmitting: {},
+      sudoSubmitting: {},
+      secretSubmitting: {},
+      thinkingOpen: (key: string) => openKeys.has(key),
+      onThinkingOpenChange,
+      onApproval: vi.fn(),
+      onClarify: vi.fn(),
+      onSudo: vi.fn(),
+      onSecret: vi.fn(),
+    };
+    const { container, rerender } = render(<AgentChatTurnRow {...props} turn={baseTurn} />);
+
+    const disclosure = container.querySelector(".agent-reasoning") as HTMLDetailsElement | null;
+    expect(disclosure).not.toBeNull();
+    if (disclosure) {
+      disclosure.open = true;
+      fireEvent(disclosure, new Event("toggle"));
+    }
+    expect(onThinkingOpenChange).toHaveBeenLastCalledWith("turn:reasoning-1:thinking", true);
+
+    rerender(
+      <AgentChatTurnRow
+        {...props}
+        turn={{
+          ...baseTurn,
+          id: "message-1",
+          parts: [
+            ...baseTurn.parts,
+            { type: "text", text: "The file is ready.", status: "complete" },
+          ],
+        }}
+      />,
+    );
+
+    expect(container.querySelector(".agent-reasoning")?.hasAttribute("open")).toBe(true);
   });
 });

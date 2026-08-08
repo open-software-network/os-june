@@ -123,6 +123,8 @@ export type AgentChatPart =
 
 export type AgentChatTurn = {
   id: string;
+  /** Stable React/presentation identity when a live activity cluster adopts newer item ids. */
+  renderId?: string;
   branchMessageId?: string;
   role: "user" | "assistant" | "system";
   createdAt: string;

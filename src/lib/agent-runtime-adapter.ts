@@ -493,10 +493,11 @@ type AgentRunTurn = {
 
 /**
  * Presents consecutive reasoning, tool, and interruption items from one agent
- * run as a single activity cluster. The latest item owns the cluster identity
- * and timestamp; when a visible assistant output follows, it owns the combined
- * turn instead. User/system turns, visible outputs, and run changes remain
- * boundaries.
+ * run as a single activity cluster. The latest item owns the actionable turn
+ * identity and timestamp, while renderId preserves the first item's stable
+ * presentation identity. When a visible assistant output follows, it owns the
+ * actionable turn instead. User/system turns, visible outputs, and run changes
+ * remain boundaries.
  */
 function coalesceAgentActivityTurns(items: AgentRunTurn[]): AgentChatTurn[] {
   const turns: AgentChatTurn[] = [];
@@ -513,7 +514,11 @@ function coalesceAgentActivityTurns(items: AgentRunTurn[]): AgentChatTurn[] {
       if (pending && pending.runId === item.runId) {
         pending = {
           ...item,
-          turn: { ...item.turn, parts: [...pending.turn.parts, ...item.turn.parts] },
+          turn: {
+            ...item.turn,
+            renderId: pending.turn.renderId ?? pending.turn.id,
+            parts: [...pending.turn.parts, ...item.turn.parts],
+          },
         };
       } else {
         flushPending();
@@ -523,7 +528,11 @@ function coalesceAgentActivityTurns(items: AgentRunTurn[]): AgentChatTurn[] {
     }
 
     if (pending && item.turn.role === "assistant" && pending.runId === item.runId) {
-      turns.push({ ...item.turn, parts: [...pending.turn.parts, ...item.turn.parts] });
+      turns.push({
+        ...item.turn,
+        renderId: pending.turn.renderId ?? pending.turn.id,
+        parts: [...pending.turn.parts, ...item.turn.parts],
+      });
       pending = undefined;
       continue;
     }
