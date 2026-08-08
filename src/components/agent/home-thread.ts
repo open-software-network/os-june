@@ -189,7 +189,9 @@ export function readAllHomeTaskHandoffAttachments(): string[] {
     if (!Array.isArray(handoffs)) continue;
     for (const value of handoffs) {
       if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      const paths = (value as Record<string, unknown>).attachments;
+      const handoff = value as Record<string, unknown>;
+      if (handoff.status !== "starting" && handoff.status !== "failed") continue;
+      const paths = handoff.attachments;
       if (!Array.isArray(paths)) continue;
       attachments.push(...paths.filter((path): path is string => typeof path === "string"));
     }
