@@ -183,6 +183,20 @@ export function readHomeTaskHandoffs(storedSessionId: string | undefined): HomeT
     });
 }
 
+export function readAllHomeTaskHandoffAttachments(): string[] {
+  const attachments: string[] = [];
+  for (const handoffs of Object.values(readRecord(JUNE_HOME_TASK_HANDOFFS_STORAGE_KEY))) {
+    if (!Array.isArray(handoffs)) continue;
+    for (const value of handoffs) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const paths = (value as Record<string, unknown>).attachments;
+      if (!Array.isArray(paths)) continue;
+      attachments.push(...paths.filter((path): path is string => typeof path === "string"));
+    }
+  }
+  return attachments;
+}
+
 export function persistHomeTaskHandoffs(storedSessionId: string, handoffs: HomeTaskHandoff[]) {
   const activeSessionId = resolveJuneHomeThreadSessionId(storedSessionId);
   if (!activeSessionId) return;

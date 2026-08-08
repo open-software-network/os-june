@@ -275,6 +275,489 @@ describe("AgentWorkspace runtime wiring", () => {
     }
   });
 
+  it("renders selected files with the canonical attachment tile and removes them", async () => {
+    const user = userEvent.setup();
+    const filename = "ChatGPT Image Aug 6, 2026, 01_10_40 PM.png";
+    mocks.openDialog.mockResolvedValue([`/tmp/${filename}`]);
+
+    render(<AgentWorkspace />);
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+
+    const name = await screen.findByText(filename);
+    const tile = name.closest(".agent-attachment-chip");
+    expect(tile).not.toBeNull();
+    expect(tile).toHaveAttribute("data-kind", "file");
+    expect(within(tile as HTMLElement).getByText("PNG")).toBeVisible();
+    expect(tile?.closest(".agent-composer-box")).toHaveAttribute("data-stacked", "true");
+
+    await user.click(screen.getByRole("button", { name: `Remove ${filename}` }));
+    expect(screen.queryByText(filename)).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toBeVisible();
+  });
+
+  it("keeps unknown attachment extensions lowercase", async () => {
+    const user = userEvent.setup();
+    mocks.openDialog.mockResolvedValue(["/tmp/model.BLeNd"]);
+
+    render(<AgentWorkspace />);
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+
+    const name = await screen.findByText("model.BLeNd");
+    const tile = name.closest(".agent-attachment-chip");
+    expect(within(tile as HTMLElement).getByText("blend")).toBeVisible();
+    expect(within(tile as HTMLElement).queryByText("BLEND")).not.toBeInTheDocument();
+  });
+
+  it("stages a dropped PDF and forwards its staged path to the agent run", async () => {
+    const stagedPath = "/tmp/june-agent-attachment-staging/drop-1/brief.pdf";
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return Promise.resolve(stagedPath);
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+    const pdf = new File(["%PDF-1.7"], "brief.pdf", { type: "application/pdf" });
+    fireEvent.drop(form as HTMLFormElement, { dataTransfer: { files: [pdf] } });
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "stage_agent_attachment_bytes",
+        expect.any(Uint8Array),
+        { headers: { "x-file-name": "brief.pdf" } },
+      ),
+    );
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({ attachments: [stagedPath] }),
+      }),
+    );
+    expect(mocks.invoke).toHaveBeenCalledWith("discard_staged_agent_attachments", {
+      request: { paths: [stagedPath] },
+    });
+  });
+
+  it("requires resubmitting after a dropped file finishes staging", async () => {
+    const stagedPath = "/tmp/june-agent-attachment-staging/drop-wait/brief.pdf";
+    let resolveStage!: (path: string) => void;
+    const stage = new Promise<string>((resolve) => {
+      resolveStage = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return stage;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(
+      await screen.findByText("Wait for files to finish attaching, then send again."),
+    ).toBeVisible();
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "start_agent_run")).toBe(false);
+
+    await act(async () => resolveStage(stagedPath));
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
+        request: expect.objectContaining({ attachments: [stagedPath] }),
+      }),
+    );
+  });
+
+  it("protects live queued and Home handoff paths before staging a new drop", async () => {
+    const currentPath = "/tmp/current.pdf";
+    const queuedPath = "/tmp/june-agent-attachment-staging/queued/queued.pdf";
+    const homePath = "/tmp/june-agent-attachment-staging/home/handoff.pdf";
+    const stagedPath = "/tmp/june-agent-attachment-staging/new/new.pdf";
+    saveQueuedAgentFollowUps({
+      [newSession.id]: {
+        messageId: "queued-other-session",
+        prompt: "Use queued file",
+        attachments: [queuedPath],
+        model: "fast",
+        thinkingLevel: "medium",
+      },
+    });
+    window.localStorage.setItem(
+      "june:home:task-handoffs:v1",
+      JSON.stringify({
+        "home-other-session": [
+          {
+            id: "home-task-protected",
+            title: "Protected task",
+            prompt: "Use Home file",
+            status: "failed",
+            attachments: [homePath],
+          },
+        ],
+      }),
+    );
+    mocks.openDialog.mockResolvedValue([currentPath]);
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return Promise.resolve(stagedPath);
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["new"], "new.pdf")] },
+    });
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("prune_staged_agent_attachments", {
+        request: {
+          protectedPaths: expect.arrayContaining([currentPath, queuedPath, homePath]),
+        },
+      }),
+    );
+    expect(await screen.findByText("new.pdf")).toBeVisible();
+  });
+
+  it("protects attachments leased by an in-flight submission before another drop", async () => {
+    const submittedPath = "/tmp/june-agent-attachment-staging/submitted/brief.pdf";
+    const secondPath = "/tmp/june-agent-attachment-staging/second/notes.pdf";
+    let resolveSkills!: (skills: []) => void;
+    const skills = new Promise<[]>((resolve) => {
+      resolveSkills = resolve;
+    });
+    let stagedCount = 0;
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") {
+        stagedCount += 1;
+        return Promise.resolve(stagedCount === 1 ? submittedPath : secondPath);
+      }
+      if (command === "list_agent_skills") return skills;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["brief"], "brief.pdf")] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke.mock.calls.some(([command]) => command === "list_agent_skills")).toBe(
+        true,
+      ),
+    );
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["notes"], "notes.pdf")] },
+    });
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("prune_staged_agent_attachments", {
+        request: { protectedPaths: expect.arrayContaining([submittedPath]) },
+      }),
+    );
+    await act(async () => resolveSkills([]));
+  });
+
+  it("shows a retry error when another drop arrives during staging", async () => {
+    let resolveStage!: (path: string) => void;
+    const stage = new Promise<string>((resolve) => {
+      resolveStage = resolve;
+    });
+    let stageCalls = 0;
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") {
+        stageCalls += 1;
+        return stage;
+      }
+      return defaultInvoke?.(command, args);
+    });
+    render(<AgentWorkspace initialSession={session} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["first"], "first.pdf")] },
+    });
+    await waitFor(() => expect(stageCalls).toBe(1));
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["second"], "second.pdf")] },
+    });
+
+    expect(
+      await screen.findByText(
+        "Wait for the current files to finish attaching, then drop these files again.",
+      ),
+    ).toBeVisible();
+    expect(stageCalls).toBe(1);
+    await act(async () => resolveStage("/tmp/june-agent-attachment-staging/first/first.pdf"));
+  });
+
+  it("discards a late dropped-file result after starting a new session", async () => {
+    const stagedPath = "/tmp/june-agent-attachment-staging/drop-late/brief.pdf";
+    let resolveStage!: (path: string) => void;
+    const stage = new Promise<string>((resolve) => {
+      resolveStage = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return stage;
+      return defaultInvoke?.(command, args);
+    });
+    render(<AgentWorkspace initialSession={session} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    await waitFor(() =>
+      expect(
+        mocks.invoke.mock.calls.some(([command]) => command === "stage_agent_attachment_bytes"),
+      ).toBe(true),
+    );
+    act(() => window.dispatchEvent(new CustomEvent(AGENT_NEW_SESSION_EVENT)));
+    await act(async () => resolveStage(stagedPath));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("discard_staged_agent_attachments", {
+        request: { paths: [stagedPath] },
+      }),
+    );
+    expect(screen.queryByText("brief.pdf")).not.toBeInTheDocument();
+  });
+
+  it("blocks Home submission while a dropped file is still staging", async () => {
+    const homeSession: AgentSessionDto = {
+      ...session,
+      id: "home-staging-session",
+      title: "Home",
+    };
+    let resolveStage!: (path: string) => void;
+    const stage = new Promise<string>((resolve) => {
+      resolveStage = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return stage;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace homeMode initialSession={homeSession} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(
+      await screen.findByText("Wait for files to finish attaching, then send again."),
+    ).toBeVisible();
+    expect(mocks.invoke.mock.calls.some(([command]) => command === "create_agent_session")).toBe(
+      false,
+    );
+    await act(async () => resolveStage("/tmp/june-agent-attachment-staging/home/brief.pdf"));
+  });
+
+  it("restores a dropped Home attachment when initial session creation fails", async () => {
+    const stagedPath = "/tmp/june-agent-attachment-staging/home-failed/brief.pdf";
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "stage_agent_attachment_bytes") return Promise.resolve(stagedPath);
+      if (command === "create_agent_session") {
+        return Promise.reject(new Error("Home session creation failed"));
+      }
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace homeMode />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("Home session creation failed")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "Review this brief",
+    );
+    expect(screen.getByText("brief.pdf")).toBeVisible();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("discard_staged_agent_attachments", {
+      request: { paths: [stagedPath] },
+    });
+  });
+
+  it("keeps an earlier unsent Home message while blocking another submission", async () => {
+    const firstPath = "/tmp/june-agent-attachment-staging/home-first/first.pdf";
+    const secondPath = "/tmp/june-agent-attachment-staging/home-second/second.pdf";
+    const thirdPath = "/tmp/june-agent-attachment-staging/home-third/third.pdf";
+    let rejectCreate!: (error: Error) => void;
+    const create = new Promise<AgentSessionDto>((_, reject) => {
+      rejectCreate = reject;
+    });
+    let stagedCount = 0;
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "stage_agent_attachment_bytes") {
+        stagedCount += 1;
+        return Promise.resolve(
+          stagedCount === 1 ? firstPath : stagedCount === 2 ? secondPath : thirdPath,
+        );
+      }
+      if (command === "create_agent_session") return create;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    render(<AgentWorkspace homeMode />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["first"], "first.pdf")] },
+    });
+    expect(await screen.findByText("first.pdf")).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "First request");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["second"], "second.pdf")] },
+    });
+    expect(await screen.findByText("second.pdf")).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Second request");
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(
+      await screen.findByText("Wait for Home to finish starting, then send again."),
+    ).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "Second request",
+    );
+    expect(within(form as HTMLFormElement).getByText("second.pdf")).toBeVisible();
+
+    await act(async () => rejectCreate(new Error("Home session creation failed")));
+
+    expect(await screen.findByText("Unsent Home message")).toBeVisible();
+    expect(screen.getByText("First request")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "Second request",
+    );
+    expect(within(form as HTMLFormElement).getByText("second.pdf")).toBeVisible();
+    expect(within(form as HTMLFormElement).queryByText("first.pdf")).not.toBeInTheDocument();
+
+    fireEvent.submit(form as HTMLFormElement);
+    expect(
+      await screen.findByText("Retry or discard the unsent Home message before sending another."),
+    ).toBeVisible();
+    expect(
+      mocks.invoke.mock.calls.filter(([command]) => command === "create_agent_session"),
+    ).toHaveLength(1);
+    expect(screen.getByText("First request")).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "Second request",
+    );
+    expect(within(form as HTMLFormElement).getByText("second.pdf")).toBeVisible();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["third"], "third.pdf")] },
+    });
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("prune_staged_agent_attachments", {
+        request: { protectedPaths: expect.arrayContaining([firstPath, secondPath]) },
+      }),
+    );
+    expect(await screen.findByText("third.pdf")).toBeVisible();
+
+    await user.clear(screen.getByRole("textbox", { name: "Message June" }));
+    await user.click(screen.getByRole("button", { name: "Remove second.pdf" }));
+    await user.click(screen.getByRole("button", { name: "Remove third.pdf" }));
+    const retry = screen.getByRole("button", { name: "Retry unsent Home message" });
+    expect(retry).toBeEnabled();
+    await user.click(retry);
+    expect(screen.queryByText("Unsent Home message")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+      "First request",
+    );
+    expect(within(form as HTMLFormElement).getByText("first.pdf")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  it("discards live composer paths and invalidates an in-flight drop on unmount", async () => {
+    const currentPath = "/tmp/june-agent-attachment-staging/current/brief.pdf";
+    const latePath = "/tmp/june-agent-attachment-staging/late/notes.pdf";
+    let resolveLateStage!: (path: string) => void;
+    const lateStage = new Promise<string>((resolve) => {
+      resolveLateStage = resolve;
+    });
+    let stageCount = 0;
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") {
+        return stageCount++ === 0 ? Promise.resolve(currentPath) : lateStage;
+      }
+      return defaultInvoke?.(command, args);
+    });
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["notes"], "notes.pdf")] },
+    });
+    await waitFor(() => expect(stageCount).toBe(2));
+
+    view.unmount();
+    expect(mocks.invoke).toHaveBeenCalledWith("discard_staged_agent_attachments", {
+      request: { paths: [currentPath] },
+    });
+    await act(async () => resolveLateStage(latePath));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("discard_staged_agent_attachments", {
+        request: { paths: [latePath] },
+      }),
+    );
+  });
+
   it("hands Home attachments to a focused June runtime session with send-time profile", async () => {
     const user = userEvent.setup();
     const homeSession: AgentSessionDto = {
@@ -2318,6 +2801,43 @@ describe("AgentWorkspace runtime wiring", () => {
     );
     expect(laterComposer).toHaveTextContent("Later draft");
     expect(screen.getByText("later.pdf")).toBeVisible();
+    expect(screen.queryByText("Unsent message")).not.toBeInTheDocument();
+  });
+
+  it("discards staged attachments when an unsent message is explicitly discarded", async () => {
+    const stagedPath = "/tmp/june-agent-attachment-staging/recoverable/brief.pdf";
+    let rejectCreate!: (error: Error) => void;
+    const create = new Promise<AgentSessionDto>((_, reject) => {
+      rejectCreate = reject;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "stage_agent_attachment_bytes") return Promise.resolve(stagedPath);
+      if (command === "create_agent_session") return create;
+      return defaultInvoke?.(command, args);
+    });
+    mocks.openDialog.mockResolvedValue(["/tmp/later.pdf"]);
+    const user = userEvent.setup();
+    render(<AgentWorkspace />);
+    const form = document.querySelector<HTMLFormElement>(".agent-composer");
+    expect(form).not.toBeNull();
+
+    fireEvent.drop(form as HTMLFormElement, {
+      dataTransfer: { files: [new File(["%PDF-1.7"], "brief.pdf")] },
+    });
+    expect(await screen.findByText("brief.pdf")).toBeVisible();
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Review this brief");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await user.type(screen.getByRole("textbox", { name: "Message June" }), "Keep this newer draft");
+    await user.click(screen.getByRole("button", { name: "Add files or notes" }));
+    await user.click(screen.getByRole("menuitem", { name: "Attach files" }));
+    await act(async () => rejectCreate(new Error("session creation failed")));
+    expect(await screen.findByText("Unsent message")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Discard unsent message" }));
+    expect(mocks.invoke).toHaveBeenCalledWith("discard_staged_agent_attachments", {
+      request: { paths: [stagedPath] },
+    });
     expect(screen.queryByText("Unsent message")).not.toBeInTheDocument();
   });
 

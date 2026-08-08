@@ -15,6 +15,7 @@ import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import {
   type CSSProperties,
+  type DragEvent,
   Fragment,
   type FormEvent,
   type RefObject,
@@ -43,6 +44,7 @@ import type {
   AgentSessionDto,
   ResolveAgentInterruptionRequest,
 } from "../../lib/agent-runtime-contract";
+import { stageDroppedAgentFiles } from "../../lib/agent-file-drop";
 import {
   agentRuntimeBindings,
   companionCompleteFrontendRequest,
@@ -51,12 +53,14 @@ import {
   type CompanionAgentStatus,
   type CompanionFrontendRequest,
   assignSessionToProfile,
+  discardStagedAgentAttachments,
   downloadAgentArtifact,
   dictationHelperCommand,
   juneHomeChat,
   type JuneHomeChatResponse,
   listVeniceModels,
   providerModelSettings,
+  pruneStagedAgentAttachments,
   setCostQuality as setProviderCostQuality,
   type VeniceModelDto,
 } from "../../lib/tauri";
@@ -120,6 +124,7 @@ import {
   unrestrictedAcknowledged,
 } from "./agent-workspace-config";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer/ComposerEditor";
+import { AgentAttachmentTile } from "./composer/AgentAttachmentTile";
 import { agentComposerClearance } from "./composer/layout";
 import {
   ComposerModelPicker,
@@ -177,6 +182,7 @@ import {
   markHomeTaskHandoffActive,
   persistHomeDirectTurns,
   persistHomeTaskHandoffs,
+  readAllHomeTaskHandoffAttachments,
   readHomeDirectTurns,
   readHomeTaskHandoffs,
   recoverInterruptedHomeTaskHandoffs,
@@ -447,8 +453,45 @@ export function AgentWorkspace({
   const [attachments, setAttachments] = useState<string[]>([]);
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
+  const attachmentGenerationRef = useRef(0);
+  const dropOwnerRef = useRef<string>();
+  const inFlightAttachmentLeasesRef = useRef(new Map<string, string[]>());
+  const [attaching, setAttaching] = useState(false);
+  const setComposerAttachments = useCallback(
+    (update: string[] | ((current: string[]) => string[])) => {
+      const next = typeof update === "function" ? update(attachmentsRef.current) : update;
+      attachmentsRef.current = next;
+      setAttachments(next);
+    },
+    [],
+  );
+  const abandonComposerAttachments = useCallback(() => {
+    attachmentGenerationRef.current += 1;
+    dropOwnerRef.current = undefined;
+    setAttaching(false);
+    const paths = attachmentsRef.current;
+    attachmentsRef.current = [];
+    setAttachments([]);
+    if (paths.length > 0) {
+      void discardStagedAgentAttachments(paths).catch(() => undefined);
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      attachmentGenerationRef.current += 1;
+      dropOwnerRef.current = undefined;
+      const paths = attachmentsRef.current;
+      attachmentsRef.current = [];
+      if (paths.length > 0) {
+        void discardStagedAgentAttachments(paths).catch(() => undefined);
+      }
+    },
+    [],
+  );
   const [queuedFollowUps, setQueuedFollowUpsState] =
     useState<QueuedAgentFollowUps>(loadQueuedAgentFollowUps);
+  const queuedFollowUpsRef = useRef(queuedFollowUps);
+  queuedFollowUpsRef.current = queuedFollowUps;
   const attemptedQueuedMessageIdsRef = useRef(new Set<string>());
   const [failedQueuedMessageIds, setFailedQueuedMessageIds] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -457,6 +500,7 @@ export function AgentWorkspace({
     (update: (current: QueuedAgentFollowUps) => QueuedAgentFollowUps) => {
       setQueuedFollowUpsState((current) => {
         const next = update(current);
+        queuedFollowUpsRef.current = next;
         if (next !== current) saveQueuedAgentFollowUps(next);
         return next;
       });
@@ -479,7 +523,20 @@ export function AgentWorkspace({
     model: string;
     thinkingLevel: ThinkingLevel;
   }>();
+  const recoverableSubmissionRef = useRef(recoverableSubmission);
+  recoverableSubmissionRef.current = recoverableSubmission;
   const recoverableSubmissionSnapshotRef = useRef<typeof recoverableSubmission>();
+  const [recoverableHomeSubmission, setRecoverableHomeSubmissionState] = useState<{
+    id: string;
+    prompt: string;
+    attachments: string[];
+  }>();
+  const recoverableHomeSubmissionRef = useRef(recoverableHomeSubmission);
+  recoverableHomeSubmissionRef.current = recoverableHomeSubmission;
+  const setRecoverableHomeSubmission = useCallback((value: typeof recoverableHomeSubmission) => {
+    recoverableHomeSubmissionRef.current = value;
+    setRecoverableHomeSubmissionState(value);
+  }, []);
   const [pendingInitialTurn, setPendingInitialTurn] = useState<{
     prompt: string;
     storedSessionId?: string;
@@ -535,6 +592,7 @@ export function AgentWorkspace({
   const [homeStreamingReply, setHomeStreamingReply] = useState<AgentChatTurn | null>(null);
   const [homeDirectPendingCount, setHomeDirectPendingCount] = useState(0);
   const homeSessionPromiseRef = useRef<Promise<string> | null>(null);
+  const [homeSessionCreating, setHomeSessionCreating] = useState(false);
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
 
   useEffect(() => {
@@ -551,6 +609,7 @@ export function AgentWorkspace({
       setHydratedSelectionId(undefined);
       pendingSessionCreationRef.current = undefined;
       submissionOwnerRef.current = undefined;
+      abandonComposerAttachments();
       setSelectedId(undefined);
       selectedIdRef.current = undefined;
       setNewSessionMode(true);
@@ -560,13 +619,12 @@ export function AgentWorkspace({
       setShareUrl(undefined);
       setThinkingLevel(loadThinkingLevel());
       setComposerDraft(request?.prompt ?? "");
-      setAttachments([]);
       setPendingInitialTurn(undefined);
       setSubmitting(false);
       setError(undefined);
       onSessionSelected?.(undefined);
     },
-    [onSessionSelected, setComposerDraft],
+    [abandonComposerAttachments, onSessionSelected, setComposerDraft],
   );
 
   const applyCostQuality = useCallback((value: number) => {
@@ -804,6 +862,7 @@ export function AgentWorkspace({
       pendingSessionCreationRef.current = undefined;
       submissionOwnerRef.current = undefined;
       setSubmitting(false);
+      abandonComposerAttachments();
     }
     setPendingInitialTurn((current) =>
       current && current.storedSessionId !== nextId ? undefined : current,
@@ -826,7 +885,14 @@ export function AgentWorkspace({
       if (homeMode && selectedIdRef.current !== nextId) return;
       setError(messageFromError(cause));
     });
-  }, [applySessionModel, homeMode, hydrate, initialSession?.id, initialSessionId]);
+  }, [
+    abandonComposerAttachments,
+    applySessionModel,
+    homeMode,
+    hydrate,
+    initialSession?.id,
+    initialSessionId,
+  ]);
 
   useEffect(() => {
     const handleNewSession = (event: Event) => {
@@ -1217,6 +1283,10 @@ export function AgentWorkspace({
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (dropOwnerRef.current) {
+      setError("Wait for files to finish attaching, then send again.");
+      return;
+    }
     const queuedSubmission = queuedSubmissionSnapshotRef.current;
     const clearQueuedSubmissionAttempt = () => {
       queuedSubmissionSnapshotRef.current = undefined;
@@ -1239,7 +1309,7 @@ export function AgentWorkspace({
       return;
     }
     if (running) {
-      const submittedAttachments = queuedSubmission?.attachments ?? attachments;
+      const submittedAttachments = queuedSubmission?.attachments ?? attachmentsRef.current;
       const submittedModel = queuedSubmission?.model ?? agentRunModelId(model, costQuality);
       const submittedThinkingLevel = queuedSubmission?.thinkingLevel ?? thinkingLevel;
       clearQueuedSubmissionAttempt();
@@ -1259,7 +1329,7 @@ export function AgentWorkspace({
         }),
       }));
       setComposerDraft("");
-      setAttachments([]);
+      setComposerAttachments([]);
       requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
@@ -1313,7 +1383,10 @@ export function AgentWorkspace({
     const optimisticId = `optimistic:${crypto.randomUUID()}`;
     const optimisticCreatedAt = new Date().toISOString();
     const attachedPaths =
-      queuedSnapshot?.attachments ?? recoveredSnapshot?.attachments ?? attachments;
+      queuedSnapshot?.attachments ?? recoveredSnapshot?.attachments ?? attachmentsRef.current;
+    if (attachedPaths.length > 0) {
+      inFlightAttachmentLeasesRef.current.set(submissionId, [...new Set(attachedPaths)]);
+    }
     if (creatingSession) {
       pendingSessionCreationRef.current = creationRequestId;
       setPendingInitialTurn({
@@ -1337,7 +1410,7 @@ export function AgentWorkspace({
       });
       if (submissionOwnerRef.current === submissionId && !recoveredSnapshot) {
         setComposerDraft("");
-        setAttachments([]);
+        setComposerAttachments([]);
       }
     }
     try {
@@ -1411,7 +1484,7 @@ export function AgentWorkspace({
         submissionOwnerRef.current === submissionId
       ) {
         setComposerDraft("");
-        setAttachments([]);
+        setComposerAttachments([]);
       }
       const enabledSkillIds = (await agentRuntimeBindings.listSkills())
         .filter((skill) => skill.enabled)
@@ -1430,6 +1503,8 @@ export function AgentWorkspace({
         enabledSkillIds,
         attachments: attachedPaths,
       });
+      void discardStagedAgentAttachments(attachedPaths).catch(() => undefined);
+      inFlightAttachmentLeasesRef.current.delete(submissionId);
       if (queuedSnapshot) {
         attemptedQueuedMessageIdsRef.current.delete(queuedSnapshot.messageId);
         setFailedQueuedMessageIds((current) => {
@@ -1478,13 +1553,25 @@ export function AgentWorkspace({
       if (queuedSnapshot) {
         setFailedQueuedMessageIds((current) => new Set([...current, queuedSnapshot.messageId]));
       }
-      if (submissionOwnerRef.current !== submissionId) return;
+      if (submissionOwnerRef.current !== submissionId) {
+        inFlightAttachmentLeasesRef.current.delete(submissionId);
+        if (!queuedSnapshot && !recoveredSnapshot) {
+          void discardStagedAgentAttachments(attachedPaths).catch(() => undefined);
+        }
+        return;
+      }
       submissionOwnerRef.current = undefined;
       setSubmitting(false);
       const operationIsVisible = creationRequestId
         ? pendingSessionCreationRef.current === creationRequestId
         : selectedIdRef.current === selectedSession?.id;
-      if (!operationIsVisible) return;
+      if (!operationIsVisible) {
+        inFlightAttachmentLeasesRef.current.delete(submissionId);
+        if (!queuedSnapshot && !recoveredSnapshot) {
+          void discardStagedAgentAttachments(attachedPaths).catch(() => undefined);
+        }
+        return;
+      }
       if (creatingSession && !selectedIdRef.current) {
         pendingSessionCreationRef.current = undefined;
         setPendingInitialTurn(undefined);
@@ -1502,9 +1589,10 @@ export function AgentWorkspace({
           setRecoverableSubmission(failedSubmission);
         } else {
           setComposerDraft(prompt);
-          setAttachments(attachedPaths);
+          setComposerAttachments(attachedPaths);
         }
       }
+      inFlightAttachmentLeasesRef.current.delete(submissionId);
       setError(messageFromError(cause));
     }
   }
@@ -1535,10 +1623,14 @@ export function AgentWorkspace({
         return createdSession.id;
       });
     homeSessionPromiseRef.current = creation;
+    setHomeSessionCreating(true);
     try {
       return await creation;
     } finally {
-      if (homeSessionPromiseRef.current === creation) homeSessionPromiseRef.current = null;
+      if (homeSessionPromiseRef.current === creation) {
+        homeSessionPromiseRef.current = null;
+        setHomeSessionCreating(false);
+      }
     }
   }
 
@@ -1636,6 +1728,7 @@ export function AgentWorkspace({
         enabledSkillIds,
         attachments: taskAttachments,
       });
+      void discardStagedAgentAttachments(taskAttachments).catch(() => undefined);
       updateHandoff({ status: "running", storedSessionId: focusedSession.id });
       void refreshSessions().catch(() => undefined);
     } catch (cause) {
@@ -1676,6 +1769,18 @@ export function AgentWorkspace({
 
   async function submitHomeMessage(event?: FormEvent) {
     event?.preventDefault();
+    if (recoverableHomeSubmissionRef.current) {
+      setError("Retry or discard the unsent Home message before sending another.");
+      return;
+    }
+    if (dropOwnerRef.current) {
+      setError("Wait for files to finish attaching, then send again.");
+      return;
+    }
+    if (!selectedIdRef.current && homeSessionPromiseRef.current) {
+      setError("Wait for Home to finish starting, then send again.");
+      return;
+    }
     const message = draftRef.current.trim();
     if (!message || submitting || textActionsDisabledReason) return;
     if (Array.from(message).length > 64_000) {
@@ -1683,9 +1788,14 @@ export function AgentWorkspace({
       return;
     }
     const profile = getCurrentDataPartitionName();
-    const messageAttachments = attachments;
+    const messageAttachments = attachmentsRef.current;
+    const attachmentLeaseId = `home:${crypto.randomUUID()}`;
+    if (messageAttachments.length > 0) {
+      inFlightAttachmentLeasesRef.current.set(attachmentLeaseId, [...new Set(messageAttachments)]);
+    }
+    const messageAttachmentGeneration = attachmentGenerationRef.current;
     setComposerDraft("");
-    setAttachments([]);
+    setComposerAttachments([]);
     setHomeDirectPendingCount((count) => count + 1);
 
     let storedSessionId: string | undefined;
@@ -1767,7 +1877,7 @@ export function AgentWorkspace({
           profile,
           messageAttachments,
           userTurn.id,
-        );
+        ).finally(() => inFlightAttachmentLeasesRef.current.delete(attachmentLeaseId));
         setError(undefined);
         return;
       }
@@ -1876,7 +1986,21 @@ export function AgentWorkspace({
       // The persisted user bubble is the durable retry record. Never remove it
       // when a newer draft exists or when this workspace unmounted while the
       // request was in flight. Restore the text only when the composer is free.
-      if (!draftHasContentRef.current) setComposerDraft(message);
+      if (attachmentGenerationRef.current === messageAttachmentGeneration) {
+        if (draftHasContentRef.current || attachmentsRef.current.length > 0) {
+          setRecoverableHomeSubmission({
+            id: attachmentLeaseId,
+            prompt: message,
+            attachments: messageAttachments,
+          });
+        } else {
+          setComposerDraft(message);
+          setComposerAttachments(messageAttachments);
+        }
+      } else if (messageAttachments.length > 0) {
+        void discardStagedAgentAttachments(messageAttachments).catch(() => undefined);
+      }
+      inFlightAttachmentLeasesRef.current.delete(attachmentLeaseId);
       setError(messageFromError(cause));
     } finally {
       setHomeDirectPendingCount((count) => Math.max(0, count - 1));
@@ -2042,6 +2166,7 @@ export function AgentWorkspace({
     setError(undefined);
     try {
       const branch = await agentRuntimeBindings.branchSession(selectedId, itemId);
+      abandonComposerAttachments();
       setSessions((current) => [branch, ...current.filter((item) => item.id !== branch.id)]);
       setSelectedId(branch.id);
       selectedIdRef.current = branch.id;
@@ -2058,7 +2183,56 @@ export function AgentWorkspace({
     const selected = await openFileDialog({ multiple: true, title: "Attach files" });
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
-    setAttachments((current) => [...new Set([...current, ...paths])].slice(0, 8));
+    setComposerAttachments((current) => [...new Set([...current, ...paths])].slice(0, 8));
+  }
+
+  async function addDroppedAttachments(files: File[]) {
+    if (dropOwnerRef.current) {
+      setError("Wait for the current files to finish attaching, then drop these files again.");
+      return;
+    }
+    const owner = crypto.randomUUID();
+    const generation = attachmentGenerationRef.current;
+    dropOwnerRef.current = owner;
+    setAttaching(true);
+    try {
+      const protectedPaths = [
+        ...attachmentsRef.current,
+        ...Object.values(queuedFollowUpsRef.current).flatMap((followUp) => followUp.attachments),
+        ...(recoverableSubmissionRef.current?.attachments ?? []),
+        ...(recoverableHomeSubmissionRef.current?.attachments ?? []),
+        ...readAllHomeTaskHandoffAttachments(),
+        ...[...inFlightAttachmentLeasesRef.current.values()].flat(),
+      ];
+      await pruneStagedAgentAttachments([...new Set(protectedPaths)]);
+      if (attachmentGenerationRef.current !== generation || dropOwnerRef.current !== owner) return;
+      const paths = await stageDroppedAgentFiles(files, attachmentsRef.current.length);
+      if (attachmentGenerationRef.current !== generation || dropOwnerRef.current !== owner) {
+        void discardStagedAgentAttachments(paths).catch(() => undefined);
+        return;
+      }
+      if (attachmentsRef.current.length + paths.length > 8) {
+        void discardStagedAgentAttachments(paths).catch(() => undefined);
+        setError("You can attach up to 8 files at a time.");
+        return;
+      }
+      setComposerAttachments((current) => [...new Set([...current, ...paths])]);
+      setError(undefined);
+    } catch (cause) {
+      if (attachmentGenerationRef.current === generation && dropOwnerRef.current === owner) {
+        setError(messageFromError(cause));
+      }
+    } finally {
+      if (dropOwnerRef.current === owner) {
+        dropOwnerRef.current = undefined;
+        setAttaching(false);
+      }
+    }
+  }
+
+  function removeAttachment(path: string) {
+    setComposerAttachments((current) => current.filter((item) => item !== path));
+    void discardStagedAgentAttachments([path]).catch(() => undefined);
   }
 
   async function startDictation() {
@@ -2094,6 +2268,7 @@ export function AgentWorkspace({
       delete next[selectedId];
       return next;
     });
+    abandonComposerAttachments();
     setSelectedId(undefined);
     setProjection(createAgentRuntimeProjection());
     setArtifacts([]);
@@ -2231,7 +2406,52 @@ export function AgentWorkspace({
         <button
           type="button"
           aria-label="Discard unsent message"
-          onClick={() => setRecoverableSubmission(undefined)}
+          onClick={() => {
+            if (recoverableSubmissionSnapshotRef.current?.id === recoverableSubmission.id) {
+              recoverableSubmissionSnapshotRef.current = undefined;
+            }
+            void discardStagedAgentAttachments(recoverableSubmission.attachments).catch(
+              () => undefined,
+            );
+            setRecoverableSubmission(undefined);
+          }}
+        >
+          <IconCrossSmall size={12} aria-hidden />
+        </button>
+      </span>
+    </div>
+  ) : null;
+  const recoverableHomeSubmissionRow = recoverableHomeSubmission ? (
+    <div className="agent-follow-up-row" role="status">
+      <span className="agent-follow-up-copy">
+        <span className="agent-follow-up-announcement">Unsent Home message</span>
+        <span className="agent-follow-up-text">{recoverableHomeSubmission.prompt}</span>
+      </span>
+      <span className="agent-follow-up-actions">
+        <button
+          type="button"
+          aria-label="Retry unsent Home message"
+          disabled={
+            homeSessionCreating || Boolean(draftRef.current.trim()) || attachments.length > 0
+          }
+          onClick={() => {
+            setComposerDraft(recoverableHomeSubmission.prompt);
+            setComposerAttachments(recoverableHomeSubmission.attachments);
+            setRecoverableHomeSubmission(undefined);
+            setError(undefined);
+          }}
+        >
+          <IconArrowRotateClockwise size={12} aria-hidden />
+        </button>
+        <button
+          type="button"
+          aria-label="Discard unsent Home message"
+          onClick={() => {
+            void discardStagedAgentAttachments(recoverableHomeSubmission.attachments).catch(
+              () => undefined,
+            );
+            setRecoverableHomeSubmission(undefined);
+          }}
         >
           <IconCrossSmall size={12} aria-hidden />
         </button>
@@ -2280,7 +2500,8 @@ export function AgentWorkspace({
       safetyMode={safetyMode}
       setSafetyMode={setSafetyMode}
       attachments={attachments}
-      setAttachments={setAttachments}
+      onDropAttachments={addDroppedAttachments}
+      onRemoveAttachment={removeAttachment}
       onPickAttachments={pickAttachments}
       onDictate={startDictation}
       onSubmit={homeMode ? submitHomeMessage : submit}
@@ -2288,7 +2509,10 @@ export function AgentWorkspace({
       running={running}
       waiting={waiting}
       stopping={stoppingRunId === projection.run?.id}
-      submitting={submitting}
+      submitting={
+        submitting || (homeMode && (homeSessionCreating || Boolean(recoverableHomeSubmission)))
+      }
+      attaching={attaching}
       disabledReason={textActionsDisabledReason}
       notice={!heroMode ? error : undefined}
       hero={heroMode}
@@ -2425,6 +2649,7 @@ export function AgentWorkspace({
                   visible={!homeStreamingReply && homeDirectPendingCount > 0}
                 />
               </div>
+              {recoverableHomeSubmissionRow}
               {composer}
             </main>
           </div>
@@ -2560,6 +2785,15 @@ export function AgentWorkspace({
                       }
                       onClick={() => {
                         if (!selectedId) return;
+                        if (
+                          queuedSubmissionSnapshotRef.current?.messageId ===
+                          queuedFollowUp.messageId
+                        ) {
+                          queuedSubmissionSnapshotRef.current = undefined;
+                        }
+                        void discardStagedAgentAttachments(queuedFollowUp.attachments).catch(
+                          () => undefined,
+                        );
                         attemptedQueuedMessageIdsRef.current.delete(queuedFollowUp.messageId);
                         setFailedQueuedMessageIds((current) => {
                           if (!current.has(queuedFollowUp.messageId)) return current;
@@ -2840,7 +3074,8 @@ function AgentComposer({
   safetyMode,
   setSafetyMode,
   attachments,
-  setAttachments,
+  onDropAttachments,
+  onRemoveAttachment,
   onPickAttachments,
   onDictate,
   onSubmit,
@@ -2849,6 +3084,7 @@ function AgentComposer({
   waiting,
   stopping,
   submitting,
+  attaching,
   disabledReason,
   notice,
   hero = false,
@@ -2870,7 +3106,8 @@ function AgentComposer({
   safetyMode: AgentSafetyMode;
   setSafetyMode: (value: AgentSafetyMode) => void;
   attachments: string[];
-  setAttachments: (value: string[]) => void;
+  onDropAttachments: (files: File[]) => Promise<void>;
+  onRemoveAttachment: (path: string) => void;
   onPickAttachments: () => Promise<void>;
   onDictate: () => Promise<void>;
   onSubmit: (event?: FormEvent) => Promise<void>;
@@ -2879,6 +3116,7 @@ function AgentComposer({
   waiting: boolean;
   stopping: boolean;
   submitting: boolean;
+  attaching: boolean;
   disabledReason?: string;
   notice?: string;
   hero?: boolean;
@@ -2898,6 +3136,7 @@ function AgentComposer({
   const modelRootSearchRef = useRef<HTMLInputElement>(null);
   const [safetyOpen, setSafetyOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [dropActive, setDropActive] = useState(false);
   const [confirmUnrestricted, setConfirmUnrestricted] = useState(false);
   const attachTriggerRef = useRef<HTMLButtonElement>(null);
   const attachMenuRef = useRef<HTMLDivElement>(null);
@@ -2991,16 +3230,33 @@ function AgentComposer({
     editorRef.current?.setContent(next, null, { focus: true });
   }
 
+  function handleDragOver(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  }
+
+  function handleDrop(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDropActive(false);
+    void onDropAttachments(Array.from(event.dataTransfer.files));
+  }
+
   return (
     <form
       ref={formRef}
       className="agent-composer"
       data-hero={hero ? "true" : undefined}
+      data-drop-active={dropActive ? "true" : undefined}
       onSubmit={(event) => {
         event.preventDefault();
         if (editorRef.current?.flushPendingChange() === false) return;
         void onSubmit(event);
       }}
+      onDragOver={handleDragOver}
+      onDragEnter={() => setDropActive(true)}
+      onDragLeave={() => setDropActive(false)}
+      onDrop={handleDrop}
     >
       {hero ? null : (
         <AgentScrollToLatestButton
@@ -3015,22 +3271,19 @@ function AgentComposer({
           {notice}
         </div>
       ) : null}
-      <div className="agent-composer-box">
+      <div className="agent-composer-box" data-stacked={attachments.length ? "true" : undefined}>
         {attachments.length ? (
           <div className="agent-composer-attachments">
-            {attachments.map((path) => (
-              <span key={path} className="agent-attachment-tile">
-                <IconFileText size={16} />
-                <span>{path.split(/[\\/]/).pop() || path}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove ${path.split(/[\\/]/).pop() || path}`}
-                  onClick={() => setAttachments(attachments.filter((item) => item !== path))}
-                >
-                  <IconCrossSmall size={12} aria-hidden />
-                </button>
-              </span>
-            ))}
+            {attachments.map((path) => {
+              const name = path.split(/[\\/]/).pop() || path;
+              return (
+                <AgentAttachmentTile
+                  key={path}
+                  name={name}
+                  onRemove={() => onRemoveAttachment(path)}
+                />
+              );
+            })}
           </div>
         ) : null}
         <ComposerEditor
@@ -3120,6 +3373,8 @@ function AgentComposer({
                     type="submit"
                     className="agent-composer-send"
                     aria-label="Steer active run"
+                    disabled={attaching}
+                    title={attaching ? "Wait for files to finish attaching" : undefined}
                   >
                     <IconArrowUp size={18} />
                   </button>
@@ -3149,8 +3404,8 @@ function AgentComposer({
                 type="submit"
                 className="agent-composer-send"
                 aria-label="Send message"
-                disabled={submitting || !hasEditorContent || Boolean(disabledReason)}
-                title={disabledReason}
+                disabled={submitting || attaching || !hasEditorContent || Boolean(disabledReason)}
+                title={attaching ? "Wait for files to finish attaching" : disabledReason}
               >
                 {submitting ? <Spinner /> : <IconArrowUp size={18} />}
               </button>

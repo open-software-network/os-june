@@ -3,7 +3,6 @@ import { IconArrowUp } from "central-icons/IconArrowUp";
 import { IconArrowUpRight } from "central-icons/IconArrowUpRight";
 import { IconChecklist } from "central-icons/IconChecklist";
 import { IconCrossMedium } from "central-icons/IconCrossMedium";
-import { IconCrossSmall } from "central-icons/IconCrossSmall";
 import { IconEmail1Sparkle } from "central-icons/IconEmail1Sparkle";
 import { IconFileSparkle } from "central-icons/IconFileSparkle";
 import { IconFlag1 } from "central-icons/IconFlag1";
@@ -27,8 +26,8 @@ import {
   providerModelSettings,
   type VeniceModelDto,
 } from "../../lib/tauri";
-import { FileTypeIcon } from "../agent/FileTypeIcon";
 import { MarkdownContent } from "../agent/MarkdownContent";
+import { AgentAttachmentTile } from "../agent/composer/AgentAttachmentTile";
 import { ComposerEditor, type ComposerEditorHandle } from "../agent/composer/ComposerEditor";
 import { UpstreamProviderFailureNoticePart } from "../agent/chat-turns/RunNotices";
 import {
@@ -519,25 +518,15 @@ export function NoteChatPanel({
             {attachments.length ? (
               <div className="agent-composer-attachments">
                 {attachments.map((attachment) => (
-                  <span
+                  <AgentAttachmentTile
                     key={attachment.id}
-                    className="agent-attachment-chip"
-                    title={attachment.name}
-                  >
-                    <FileTypeIcon name={attachment.name} size={14} />
-                    <span className="agent-attachment-name">{attachment.name}</span>
-                    <button
-                      type="button"
-                      aria-label={`Remove ${attachment.name}`}
-                      onClick={() =>
-                        setAttachments((current) =>
-                          current.filter((item) => item.id !== attachment.id),
-                        )
-                      }
-                    >
-                      <IconCrossSmall size={12} />
-                    </button>
-                  </span>
+                    name={attachment.name}
+                    onRemove={() =>
+                      setAttachments((current) =>
+                        current.filter((item) => item.id !== attachment.id),
+                      )
+                    }
+                  />
                 ))}
               </div>
             ) : null}
