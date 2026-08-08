@@ -467,11 +467,11 @@ export function NoteChatPanel({
             <div className="note-chat-thread">
               {turns.map((turn) =>
                 turn.role === "user" ? (
-                  <div key={turn.id} className="note-chat-turn-user">
+                  <div key={turn.renderId ?? turn.id} className="note-chat-turn-user">
                     {userTurnText(turn)}
                   </div>
                 ) : (
-                  <div key={turn.id} className="note-chat-turn-assistant">
+                  <div key={turn.renderId ?? turn.id} className="note-chat-turn-assistant">
                     {turn.parts.map((part, index) =>
                       assistantPartNode(
                         part,
