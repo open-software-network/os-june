@@ -93,6 +93,11 @@ import {
   rememberSessionModel,
 } from "../../lib/agent-session-models";
 import {
+  clearAgentSessionDraft,
+  readAgentSessionDraft,
+  writeAgentSessionDraft,
+} from "../../lib/agent-session-drafts";
+import {
   forgetSessionThinkingLevel,
   loadSessionThinkingLevels,
   loadThinkingLevel,
@@ -444,9 +449,12 @@ export function AgentWorkspace({
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const draftHasContentRef = useRef(Boolean(draft.trim()));
-  const setComposerDraft = useCallback((value: string) => {
+  const setComposerDraft = useCallback((value: string, options?: { persist?: boolean }) => {
     draftRef.current = value;
     draftHasContentRef.current = Boolean(value.trim());
+    if (options?.persist !== false && selectedIdRef.current) {
+      writeAgentSessionDraft(selectedIdRef.current, value);
+    }
     setDraft(value);
     setDraftRevision((revision) => revision + 1);
   }, []);
@@ -854,6 +862,22 @@ export function AgentWorkspace({
       })
       .catch(() => setVeniceApiKeyConfigured(false));
   }, [homeMode, initialAgentSession, initialSessionId, refreshSessions]);
+
+  const pendingDraftTakesPriorityRef = useRef(Boolean(pendingRequestRef.current?.prompt));
+  useEffect(() => {
+    if (!selectedId) return;
+    // A request that opens a new session deliberately pre-fills the composer;
+    // do not let a stale session draft replace that navigation intent.
+    if (pendingDraftTakesPriorityRef.current) {
+      pendingDraftTakesPriorityRef.current = false;
+      return;
+    }
+    // The first session id is assigned while its initial send is still in
+    // flight. Its composer may already contain a follow-up, which is not a
+    // stored draft to restore over.
+    if (pendingSessionCreationRef.current) return;
+    setComposerDraft(readAgentSessionDraft(selectedId) ?? "", { persist: false });
+  }, [selectedId, setComposerDraft]);
 
   useEffect(() => {
     const nextId = initialSession?.id ?? initialSessionId;
@@ -1328,8 +1352,9 @@ export function AgentWorkspace({
           steering: "pending",
         }),
       }));
-      setComposerDraft("");
+      setComposerDraft("", { persist: false });
       setComposerAttachments([]);
+      clearAgentSessionDraft(ownerSessionId, prompt);
       requestSubmittedMessageScroll();
       if (projection.run) {
         const activeRunId = projection.run.id;
@@ -1409,7 +1434,7 @@ export function AgentWorkspace({
         },
       });
       if (submissionOwnerRef.current === submissionId && !recoveredSnapshot) {
-        setComposerDraft("");
+        setComposerDraft("", { persist: false });
         setComposerAttachments([]);
       }
     }
@@ -1441,6 +1466,7 @@ export function AgentWorkspace({
         if (shouldPresentCreatedSession) {
           setSelectedId(createdSession.id);
           selectedIdRef.current = createdSession.id;
+          writeAgentSessionDraft(createdSession.id, draftRef.current);
           setNewSessionMode(false);
           setPendingInitialTurn((current) =>
             current ? { ...current, storedSessionId: createdSession.id } : current,
@@ -1483,7 +1509,7 @@ export function AgentWorkspace({
         !creatingSession &&
         submissionOwnerRef.current === submissionId
       ) {
-        setComposerDraft("");
+        setComposerDraft("", { persist: false });
         setComposerAttachments([]);
       }
       const enabledSkillIds = (await agentRuntimeBindings.listSkills())
@@ -1504,6 +1530,7 @@ export function AgentWorkspace({
         attachments: attachedPaths,
       });
       void discardStagedAgentAttachments(attachedPaths).catch(() => undefined);
+      clearAgentSessionDraft(activeSession.id, prompt);
       inFlightAttachmentLeasesRef.current.delete(submissionId);
       if (queuedSnapshot) {
         attemptedQueuedMessageIdsRef.current.delete(queuedSnapshot.messageId);
@@ -1794,7 +1821,7 @@ export function AgentWorkspace({
       inFlightAttachmentLeasesRef.current.set(attachmentLeaseId, [...new Set(messageAttachments)]);
     }
     const messageAttachmentGeneration = attachmentGenerationRef.current;
-    setComposerDraft("");
+    setComposerDraft("", { persist: false });
     setComposerAttachments([]);
     setHomeDirectPendingCount((count) => count + 1);
 
@@ -1828,6 +1855,7 @@ export function AgentWorkspace({
       const greetingReply = homeConversationGreetingReply(message);
       const directConversationReply = acknowledgesTaskHandoff ? "Got it." : greetingReply;
       commitHomeDirectTurns(storedSessionId, [...priorDirectTurns, userTurn]);
+      clearAgentSessionDraft(storedSessionId, message);
       requestSubmittedMessageScroll();
 
       if (directConversationReply && messageAttachments.length === 0) {
@@ -2262,6 +2290,7 @@ export function AgentWorkspace({
     forgetSessionThinkingLevel(selectedId);
     forgetSessionModel(selectedId);
     forgetLastOpenSessionId(selectedId);
+    clearAgentSessionDraft(selectedId);
     updateQueuedFollowUps((current) => {
       if (!(selectedId in current)) return current;
       const next = { ...current };
@@ -2465,6 +2494,12 @@ export function AgentWorkspace({
       draft={draft}
       draftRevision={draftRevision}
       setDraft={setComposerDraft}
+      draftSessionId={selectedId}
+      onPendingDraftPersist={(text, sessionId) => {
+        const ownerSessionId =
+          sessionId ?? (pendingSessionCreationRef.current ? selectedIdRef.current : undefined);
+        if (ownerSessionId) writeAgentSessionDraft(ownerSessionId, text);
+      }}
       onDraftContentChange={(hasContent) => {
         draftHasContentRef.current = hasContent;
       }}
@@ -3063,6 +3098,8 @@ function AgentComposer({
   draft,
   draftRevision,
   setDraft,
+  draftSessionId,
+  onPendingDraftPersist,
   onDraftContentChange,
   model,
   setModel,
@@ -3095,6 +3132,8 @@ function AgentComposer({
   draft: string;
   draftRevision: number;
   setDraft: (value: string) => void;
+  draftSessionId?: string;
+  onPendingDraftPersist: (text: string, sessionId: string | null | undefined) => void;
   onDraftContentChange: (hasContent: boolean) => void;
   model: string;
   setModel: (value: string, costQuality?: number) => void;
@@ -3163,6 +3202,17 @@ function AgentComposer({
     publishedDraftRef.current = draft;
     editorRef.current?.setContent(draft, null, { focus: false });
   }, [draft, draftRevision]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the session key intentionally schedules the previous editor's cleanup.
+  useEffect(
+    () => () => {
+      // Session changes keep the composer component mounted. Flush the old
+      // editor document under its captured session key before the destination
+      // draft replaces it.
+      editorRef.current?.flushPendingChange({ persistWithoutRender: true });
+    },
+    [draftSessionId],
+  );
 
   useEffect(() => {
     if (!modelOpen && !safetyOpen && !attachOpen) return;
@@ -3289,9 +3339,14 @@ function AgentComposer({
         <ComposerEditor
           ref={editorRef}
           placeholder={hero ? "Ask June anything, run / commands" : "Send a message"}
+          changeKey={draftSessionId}
           onChange={(text) => {
             publishedDraftRef.current = text;
             setDraft(text);
+          }}
+          onPendingChangePersist={(text, _category, sessionId) => {
+            publishedDraftRef.current = text;
+            onPendingDraftPersist(text, sessionId);
           }}
           onContentChange={(hasContent) => {
             setHasEditorContent(hasContent);

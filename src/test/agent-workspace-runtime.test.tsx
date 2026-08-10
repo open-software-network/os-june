@@ -38,6 +38,10 @@ import {
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { rememberSessionModel } from "../lib/agent-session-models";
+import {
+  readAgentSessionDraft,
+  resetAgentSessionDraftsForTests,
+} from "../lib/agent-session-drafts";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
@@ -109,6 +113,7 @@ function mockAgentLayoutBounds() {
 
 describe("AgentWorkspace runtime wiring", () => {
   beforeEach(() => {
+    resetAgentSessionDraftsForTests();
     resetCurrentDataPartitionForTests();
     window.localStorage.clear();
     mocks.runtimeListener = undefined;
@@ -210,6 +215,65 @@ describe("AgentWorkspace runtime wiring", () => {
   it("reserves the overlap between the transcript and fixed composer", () => {
     expect(agentComposerClearance(800, 620)).toBe(180);
     expect(agentComposerClearance(600, 620)).toBe(0);
+  });
+
+  it("keeps pending serialized drafts isolated by stored session through an immediate switch", async () => {
+    const user = userEvent.setup();
+    const draft = 'Review @note:note-7 ("Research")';
+    const { rerender } = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, draft);
+    // Do not wait for ComposerEditor's 75ms trailing publish: switching must
+    // preserve the live document using its teardown persistence callback.
+    rerender(<AgentWorkspace initialSession={newSession} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe("");
+    });
+
+    rerender(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(readAgentSessionDraft(session.id)).toBe(draft);
+    });
+  });
+
+  it("persists a pending draft when the workspace unmounts before the editor debounce", async () => {
+    const user = userEvent.setup();
+    const draft = "Keep this unfinished message";
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, draft);
+    view.unmount();
+
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe(draft);
+    });
+  });
+
+  it("does not restore a session draft after its message is accepted", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Send this message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "start_agent_run",
+        expect.objectContaining({
+          request: expect.objectContaining({ prompt: "Send this message" }),
+        }),
+      );
+      expect(readAgentSessionDraft(session.id)).toBeUndefined();
+    });
+
+    view.unmount();
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe("");
+    });
   });
 
   it("reserves the fixed composer before Home has a persisted session", async () => {
@@ -2749,6 +2813,7 @@ describe("AgentWorkspace runtime wiring", () => {
     );
     expect(screen.getByRole("button", { name: "Session actions" })).toBeVisible();
     expect(followUpComposer).toHaveTextContent("Follow-up draft");
+    expect(readAgentSessionDraft(newSession.id)).toBe("Follow-up draft");
     rerender(<AgentWorkspace initialSession={newSession} onSessionSelected={onSessionSelected} />);
     await waitFor(() =>
       expect(container.querySelector(".agent-user-turn")).toHaveTextContent("Fresh request"),
