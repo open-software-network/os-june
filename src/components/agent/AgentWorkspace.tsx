@@ -127,6 +127,7 @@ import { AgentSessionBar } from "./chat-turns/AgentSessionBar";
 import { AgentThinking } from "./AgentThinking";
 import {
   advanceHeroGreeting,
+  AGENT_DELETE_SESSION_EVENT,
   AGENT_NEW_SESSION_EVENT,
   AGENT_SHORTCUTS,
   rememberUnrestrictedAcknowledged,
@@ -607,6 +608,7 @@ export function AgentWorkspace({
   const [homeStreamingReply, setHomeStreamingReply] = useState<AgentChatTurn | null>(null);
   const [homeDirectPendingCount, setHomeDirectPendingCount] = useState(0);
   const homeSessionPromiseRef = useRef<Promise<string> | null>(null);
+  const homeSessionCreationDraftOwnerRef = useRef<string>();
   const [homeSessionCreating, setHomeSessionCreating] = useState(false);
   const handledHomeTaskToolCallsRef = useRef(new Set<string>());
 
@@ -934,6 +936,17 @@ export function AgentWorkspace({
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
     return () => window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
   }, [startNewSession]);
+
+  useEffect(() => {
+    const handleDeletedSession = (event: Event) => {
+      const storedSessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      if (!storedSessionId) return;
+      deletedStoredSessionIdsRef.current.add(storedSessionId);
+      clearAgentSessionDraft(storedSessionId);
+    };
+    window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeletedSession);
+    return () => window.removeEventListener(AGENT_DELETE_SESSION_EVENT, handleDeletedSession);
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -1663,6 +1676,9 @@ export function AgentWorkspace({
     if (selected) return selected;
     if (homeSessionPromiseRef.current) return homeSessionPromiseRef.current;
 
+    const draftOwnerId = crypto.randomUUID();
+    homeSessionCreationDraftOwnerRef.current = draftOwnerId;
+    creationDraftDestinationsRef.current.set(draftOwnerId, undefined);
     const creation = agentRuntimeBindings
       .createSession({
         title: "Home",
@@ -1671,6 +1687,8 @@ export function AgentWorkspace({
         profile: getCurrentDataPartitionName(),
       })
       .then((createdSession) => {
+        creationDraftDestinationsRef.current.set(draftOwnerId, createdSession.id);
+        transferPendingAgentSessionDraft(draftOwnerId, createdSession.id);
         setSelectedId(createdSession.id);
         selectedIdRef.current = createdSession.id;
         setNewSessionMode(false);
@@ -1682,6 +1700,11 @@ export function AgentWorkspace({
         rememberSessionThinkingLevel(createdSession.id, "instant");
         onHomeSessionCreated?.(createdSession.id);
         return createdSession.id;
+      })
+      .catch((cause) => {
+        clearPendingAgentSessionDraft(draftOwnerId);
+        creationDraftDestinationsRef.current.set(draftOwnerId, null);
+        throw cause;
       });
     homeSessionPromiseRef.current = creation;
     setHomeSessionCreating(true);
@@ -1690,6 +1713,9 @@ export function AgentWorkspace({
     } finally {
       if (homeSessionPromiseRef.current === creation) {
         homeSessionPromiseRef.current = null;
+        if (homeSessionCreationDraftOwnerRef.current === draftOwnerId) {
+          homeSessionCreationDraftOwnerRef.current = undefined;
+        }
         setHomeSessionCreating(false);
       }
     }
@@ -2530,6 +2556,26 @@ export function AgentWorkspace({
       </span>
     </div>
   ) : null;
+  function persistComposerDraftForOwner(text: string, draftOwnerId?: string | null) {
+    if (!draftOwnerId) return;
+    if (creationDraftDestinationsRef.current.has(draftOwnerId)) {
+      const destinationStoredSessionId = creationDraftDestinationsRef.current.get(draftOwnerId);
+      if (destinationStoredSessionId) {
+        if (!deletedStoredSessionIdsRef.current.has(destinationStoredSessionId)) {
+          writeAgentSessionDraft(destinationStoredSessionId, text);
+        }
+      } else if (destinationStoredSessionId === undefined) {
+        writePendingAgentSessionDraft(draftOwnerId, text);
+      }
+      return;
+    }
+    if (!deletedStoredSessionIdsRef.current.has(draftOwnerId)) {
+      writeAgentSessionDraft(draftOwnerId, text);
+    }
+  }
+
+  const draftOwnerId =
+    selectedId ?? pendingSessionCreationRef.current ?? homeSessionCreationDraftOwnerRef.current;
   const composer = (
     <AgentComposer
       formRef={composerRef}
@@ -2537,24 +2583,18 @@ export function AgentWorkspace({
       draft={draft}
       draftRevision={draftRevision}
       setDraft={setComposerDraft}
-      draftOwnerId={selectedId ?? pendingSessionCreationRef.current}
-      onPendingDraftPersist={(text, draftOwnerId) => {
-        if (!draftOwnerId) return;
-        if (creationDraftDestinationsRef.current.has(draftOwnerId)) {
-          const destinationStoredSessionId = creationDraftDestinationsRef.current.get(draftOwnerId);
-          if (destinationStoredSessionId) {
-            if (!deletedStoredSessionIdsRef.current.has(destinationStoredSessionId)) {
-              writeAgentSessionDraft(destinationStoredSessionId, text);
-            }
-          } else if (destinationStoredSessionId === undefined) {
-            writePendingAgentSessionDraft(draftOwnerId, text);
-          }
-          return;
-        }
-        if (!deletedStoredSessionIdsRef.current.has(draftOwnerId)) {
-          writeAgentSessionDraft(draftOwnerId, text);
+      draftOwnerId={draftOwnerId}
+      onEditorDraftChange={(text, changedDraftOwnerId) => {
+        persistComposerDraftForOwner(text, changedDraftOwnerId);
+        const currentDraftOwnerId =
+          selectedIdRef.current ??
+          pendingSessionCreationRef.current ??
+          homeSessionCreationDraftOwnerRef.current;
+        if (changedDraftOwnerId === currentDraftOwnerId) {
+          setComposerDraft(text, { persist: false });
         }
       }}
+      onPendingDraftPersist={persistComposerDraftForOwner}
       onDraftContentChange={(hasContent) => {
         draftHasContentRef.current = hasContent;
       }}
@@ -3154,6 +3194,7 @@ function AgentComposer({
   draftRevision,
   setDraft,
   draftOwnerId,
+  onEditorDraftChange,
   onPendingDraftPersist,
   onDraftContentChange,
   model,
@@ -3188,6 +3229,7 @@ function AgentComposer({
   draftRevision: number;
   setDraft: (value: string) => void;
   draftOwnerId?: string;
+  onEditorDraftChange: (text: string, draftOwnerId: string | null | undefined) => void;
   onPendingDraftPersist: (text: string, draftOwnerId: string | null | undefined) => void;
   onDraftContentChange: (hasContent: boolean) => void;
   model: string;
@@ -3395,9 +3437,9 @@ function AgentComposer({
           ref={editorRef}
           placeholder={hero ? "Ask June anything, run / commands" : "Send a message"}
           changeKey={draftOwnerId}
-          onChange={(text) => {
+          onChange={(text, _category, changedDraftOwnerId) => {
             publishedDraftRef.current = text;
-            setDraft(text);
+            onEditorDraftChange(text, changedDraftOwnerId);
           }}
           onPendingChangePersist={(text, _category, changedDraftOwnerId) => {
             publishedDraftRef.current = text;

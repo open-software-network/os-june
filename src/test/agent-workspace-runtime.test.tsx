@@ -32,7 +32,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openDialog }));
 import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import { agentComposerClearance } from "../components/agent/composer/layout";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
+import { AGENT_DELETE_SESSION_EVENT, AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
@@ -335,6 +335,7 @@ describe("AgentWorkspace runtime wiring", () => {
     );
     const followUpComposer = screen.getByRole("textbox", { name: "Message June" });
     await user.type(followUpComposer, "Keep this follow-up");
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
     view.unmount();
 
     await act(async () => resolveCreate?.(newSession));
@@ -347,6 +348,67 @@ describe("AgentWorkspace runtime wiring", () => {
         "Keep this follow-up",
       ),
     );
+  });
+
+  it("transfers a first Home follow-up after its editor publishes normally", async () => {
+    const homeSession: AgentSessionDto = {
+      ...session,
+      id: "home-first-session",
+      title: "Home",
+      workspacePath: "/tmp/home-first-session",
+    };
+    let resolveCreate: ((value: AgentSessionDto) => void) | undefined;
+    const pendingCreate = new Promise<AgentSessionDto>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "create_agent_session") return pendingCreate;
+      if (command === "june_home_chat") return Promise.resolve({ reply: "Working on it." });
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace homeMode />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "First Home message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", expect.anything()),
+    );
+    await user.type(screen.getByRole("textbox"), "Keep this Home follow-up");
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    view.unmount();
+
+    await act(async () => resolveCreate?.(homeSession));
+    render(<AgentWorkspace homeMode initialSession={homeSession} />);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Keep this Home follow-up",
+      ),
+    );
+  });
+
+  it("clears and fences drafts deleted by another session surface", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Published draft");
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Published draft"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, { detail: { sessionId: session.id } }),
+      );
+    });
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+
+    composer.textContent = "Late pending draft";
+    fireEvent.input(composer);
+    view.unmount();
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
   });
 
   it("does not re-cache a pending draft after its stored session is deleted", async () => {
