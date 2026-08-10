@@ -7,7 +7,7 @@ import {
 import { assignSessionToFolder } from "../lib/tauri";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
-import { clearAgentSessionDraft } from "../lib/agent-session-drafts";
+import { invalidateAgentSessionDraft } from "../lib/agent-session-drafts";
 import { updateMenuBarSessionStatus } from "./app-effects/update-ui";
 import type { UseAgentSessionSyncDependencies } from "./use-agent-session-sync-types";
 
@@ -110,7 +110,7 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
       const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
       const storedSessionId = detail?.sessionId;
       if (!storedSessionId) return;
-      clearAgentSessionDraft(storedSessionId);
+      invalidateAgentSessionDraft(storedSessionId);
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
         (session) => session.id !== storedSessionId,
       );

@@ -10,6 +10,7 @@ type AgentSessionDraft = {
 
 const draftsByStoredSessionId = new Map<string, AgentSessionDraft>();
 const draftsByCreationRequestId = new Map<string, AgentSessionDraft>();
+const invalidatedStoredSessionIds = new Set<string>();
 let nextRevision = 0;
 
 function snapshot(text: string): AgentSessionDraft {
@@ -25,7 +26,7 @@ export function readAgentSessionDraftRevision(storedSessionId: string): number |
 }
 
 export function writeAgentSessionDraft(storedSessionId: string, draft: string) {
-  if (!storedSessionId) return;
+  if (!storedSessionId || invalidatedStoredSessionIds.has(storedSessionId)) return;
   if (draft.length === 0) {
     draftsByStoredSessionId.delete(storedSessionId);
     return;
@@ -48,7 +49,7 @@ export function transferPendingAgentSessionDraft(
 ): boolean {
   const pending = draftsByCreationRequestId.get(creationRequestId);
   draftsByCreationRequestId.delete(creationRequestId);
-  if (!pending) return false;
+  if (!pending || invalidatedStoredSessionIds.has(storedSessionId)) return false;
   draftsByStoredSessionId.set(storedSessionId, pending);
   return true;
 }
@@ -57,7 +58,8 @@ export function clearPendingAgentSessionDraft(creationRequestId: string) {
   draftsByCreationRequestId.delete(creationRequestId);
 }
 
-export function clearAgentSessionDraft(storedSessionId: string) {
+export function invalidateAgentSessionDraft(storedSessionId: string) {
+  invalidatedStoredSessionIds.add(storedSessionId);
   draftsByStoredSessionId.delete(storedSessionId);
 }
 
@@ -71,5 +73,6 @@ export function clearAgentSessionDraftRevision(storedSessionId: string, revision
 export function resetAgentSessionDraftsForTests() {
   draftsByStoredSessionId.clear();
   draftsByCreationRequestId.clear();
+  invalidatedStoredSessionIds.clear();
   nextRevision = 0;
 }
