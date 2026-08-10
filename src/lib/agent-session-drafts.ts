@@ -3,27 +3,73 @@
  * Keep this process-local: drafts can contain sensitive material and should
  * not survive an app restart.
  */
-const draftsBySessionId = new Map<string, string>();
+type AgentSessionDraft = {
+  revision: number;
+  text: string;
+};
 
-export function readAgentSessionDraft(sessionId: string): string | undefined {
-  return draftsBySessionId.get(sessionId);
+const draftsByStoredSessionId = new Map<string, AgentSessionDraft>();
+const draftsByCreationRequestId = new Map<string, AgentSessionDraft>();
+let nextRevision = 0;
+
+function snapshot(text: string): AgentSessionDraft {
+  return { revision: ++nextRevision, text };
 }
 
-export function writeAgentSessionDraft(sessionId: string, draft: string) {
-  if (!sessionId) return;
+export function readAgentSessionDraft(storedSessionId: string): string | undefined {
+  return draftsByStoredSessionId.get(storedSessionId)?.text;
+}
+
+export function readAgentSessionDraftRevision(storedSessionId: string): number | undefined {
+  return draftsByStoredSessionId.get(storedSessionId)?.revision;
+}
+
+export function writeAgentSessionDraft(storedSessionId: string, draft: string) {
+  if (!storedSessionId) return;
   if (draft.length === 0) {
-    draftsBySessionId.delete(sessionId);
+    draftsByStoredSessionId.delete(storedSessionId);
     return;
   }
-  draftsBySessionId.set(sessionId, draft);
+  draftsByStoredSessionId.set(storedSessionId, snapshot(draft));
 }
 
-export function clearAgentSessionDraft(sessionId: string, expectedDraft?: string) {
-  if (expectedDraft !== undefined && draftsBySessionId.get(sessionId) !== expectedDraft) return;
-  draftsBySessionId.delete(sessionId);
+export function writePendingAgentSessionDraft(creationRequestId: string, draft: string) {
+  if (!creationRequestId) return;
+  if (draft.length === 0) {
+    draftsByCreationRequestId.delete(creationRequestId);
+    return;
+  }
+  draftsByCreationRequestId.set(creationRequestId, snapshot(draft));
 }
 
-/** Test-only reset because workspace tests intentionally reuse session ids. */
+export function transferPendingAgentSessionDraft(
+  creationRequestId: string,
+  storedSessionId: string,
+): boolean {
+  const pending = draftsByCreationRequestId.get(creationRequestId);
+  draftsByCreationRequestId.delete(creationRequestId);
+  if (!pending) return false;
+  draftsByStoredSessionId.set(storedSessionId, pending);
+  return true;
+}
+
+export function clearPendingAgentSessionDraft(creationRequestId: string) {
+  draftsByCreationRequestId.delete(creationRequestId);
+}
+
+export function clearAgentSessionDraft(storedSessionId: string) {
+  draftsByStoredSessionId.delete(storedSessionId);
+}
+
+export function clearAgentSessionDraftRevision(storedSessionId: string, revision?: number) {
+  if (revision === undefined) return;
+  if (draftsByStoredSessionId.get(storedSessionId)?.revision !== revision) return;
+  draftsByStoredSessionId.delete(storedSessionId);
+}
+
+/** Test-only reset because workspace tests intentionally reuse stored session ids. */
 export function resetAgentSessionDraftsForTests() {
-  draftsBySessionId.clear();
+  draftsByStoredSessionId.clear();
+  draftsByCreationRequestId.clear();
+  nextRevision = 0;
 }

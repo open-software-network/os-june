@@ -276,6 +276,98 @@ describe("AgentWorkspace runtime wiring", () => {
     });
   });
 
+  it("keeps a newer same-text draft when an older send finishes", async () => {
+    let resolveStart: ((value: unknown) => void) | undefined;
+    const pendingStart = new Promise((resolve) => {
+      resolveStart = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "start_agent_run") return pendingStart;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Same message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    await waitFor(() => expect(composer.textContent).toBe(""));
+    await user.type(composer, "Same message");
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Same message"));
+
+    await act(async () => {
+      resolveStart?.({
+        id: "run-same-message",
+        sessionId: session.id,
+        status: "running",
+        model: "fast",
+      });
+    });
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Same message"));
+
+    view.unmount();
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Same message"));
+  });
+
+  it("transfers a fresh-session follow-up when navigation unmounts the workspace", async () => {
+    let resolveCreate: ((value: AgentSessionDto) => void) | undefined;
+    const pendingCreate = new Promise<AgentSessionDto>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "create_agent_session") return pendingCreate;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Start a fresh session");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", expect.anything()),
+    );
+    const followUpComposer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(followUpComposer, "Keep this follow-up");
+    view.unmount();
+
+    await act(async () => resolveCreate?.(newSession));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    render(<AgentWorkspace initialSession={newSession} />);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Keep this follow-up",
+      ),
+    );
+  });
+
+  it("does not re-cache a pending draft after its stored session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+
+    composer.textContent = "Delete this pending draft";
+    fireEvent.input(composer);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("delete_agent_session", {
+        sessionId: session.id,
+      }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+  });
+
   it("reserves the fixed composer before Home has a persisted session", async () => {
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "list_agent_sessions") return Promise.resolve([]);
