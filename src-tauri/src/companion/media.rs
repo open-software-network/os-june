@@ -673,6 +673,7 @@ mod tests {
             action: "generate_image".to_string(),
             path: "/tmp/artifact".to_string(),
             original_path: None,
+            display_name: None,
             mime_type: Some(media_type.to_string()),
             size_bytes: Some(1),
             available: true,

@@ -1330,6 +1330,23 @@ const MIGRATIONS: &[Migration] = &[
             "../../migrations/033_linear_managed_mcp.sql"
         ))],
     },
+    Migration {
+        version: 50,
+        name: "agent_artifact_display_names",
+        requirements: &[SchemaRequirement::Column {
+            table: "agent_artifacts",
+            column: "display_name",
+        }],
+        steps: &[
+            MigrationStep::EnsureColumns {
+                table: "agent_artifacts",
+                columns: AGENT_ARTIFACT_DISPLAY_NAME_COLUMN,
+            },
+            MigrationStep::Sql(include_str!(
+                "../../migrations/034_agent_artifact_display_names.sql"
+            )),
+        ],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1347,6 +1364,10 @@ const COMPANION_ACCOUNT_USER_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
 const COMPANION_OPERATION_STATE_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "operation_state",
     definition: "TEXT NOT NULL DEFAULT 'completed'",
+}];
+const AGENT_ARTIFACT_DISPLAY_NAME_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "display_name",
+    definition: "TEXT",
 }];
 
 struct AppliedMigration {
@@ -2324,9 +2345,83 @@ mod tests {
                 (47, "companion_computer_use_approval_audit".to_string()),
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
+                (50, "agent_artifact_display_names".to_string()),
             ]
         );
         assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn artifact_display_name_survives_message_compaction() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..49])
+            .await
+            .expect("schema before artifact display names");
+        query(
+            "INSERT INTO agent_sessions (
+                id, title, status, model, safety_mode, source, created_at, updated_at
+             ) VALUES ('session', 'title', 'idle', 'auto', 'sandboxed', 'user', 'now', 'now')",
+        )
+        .execute(&pool)
+        .await
+        .expect("agent session");
+        let path = "/workspace/attachments/1fb34e2e-e4e7-45d7-b538-a87aefa4c8e4-9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf";
+        let display_name = "9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf";
+        let payload = serde_json::json!({
+            "role": "user",
+            "content": "Review this",
+            "attachments": [{
+                "id": "attachment",
+                "name": display_name,
+                "path": path,
+                "mimeType": "application/pdf",
+                "sizeBytes": 42,
+                "available": true,
+                "createdAt": "now"
+            }]
+        })
+        .to_string();
+        query(
+            "INSERT INTO agent_items (
+                id, session_id, sequence, kind, payload_json, created_at
+             ) VALUES ('message', 'session', 1, 'user_message', ?, 'now')",
+        )
+        .bind(payload)
+        .execute(&pool)
+        .await
+        .expect("agent message");
+        query(
+            "INSERT INTO agent_artifacts (
+                id, session_id, item_id, provenance, action, path, original_path,
+                mime_type, size_bytes, available, created_at
+             ) VALUES (
+                'artifact', 'session', 'message', 'attachment', 'imported', ?,
+                '/tmp/companion/content', 'application/pdf', 42, 1, 'now'
+             )",
+        )
+        .bind(path)
+        .execute(&pool)
+        .await
+        .expect("agent artifact");
+
+        run_migrations(&pool)
+            .await
+            .expect("artifact display-name migration");
+        query("DELETE FROM agent_items WHERE id = 'message'")
+            .execute(&pool)
+            .await
+            .expect("compact message");
+        let artifact =
+            query("SELECT item_id, display_name FROM agent_artifacts WHERE id = 'artifact'")
+                .fetch_one(&pool)
+                .await
+                .expect("persisted artifact");
+
+        assert_eq!(artifact.get::<Option<String>, _>("item_id"), None);
+        assert_eq!(
+            artifact.get::<Option<String>, _>("display_name").as_deref(),
+            Some(display_name)
+        );
     }
 
     #[tokio::test]
@@ -2570,6 +2665,7 @@ mod tests {
                 (47, "companion_computer_use_approval_audit".to_string()),
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
+                (50, "agent_artifact_display_names".to_string()),
             ]
         );
 

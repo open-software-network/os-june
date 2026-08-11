@@ -118,7 +118,6 @@ import {
 } from "../../lib/agent-project-context";
 import { AgentChatTurnRow } from "./chat-turns/AgentChatTurnRow";
 import {
-  AgentArtifactList,
   AgentArtifactPanel,
   type AgentArtifact,
   type AgentArtifactPanelState,
@@ -2747,6 +2746,7 @@ export function AgentWorkspace({
                         onSecret={(part, secret) =>
                           void respondToSecret(part.runId, part.id, secret)
                         }
+                        onOpenArtifact={openArtifact}
                         homeTaskHandoff={homeHandoffsByTurnId.get(turn.id)}
                         onOpenHomeTaskSession={onOpenHomeTaskSession}
                         onRetryHomeTask={retryHomeTask}
@@ -2863,6 +2863,7 @@ export function AgentWorkspace({
                     }
                     onSudo={() => undefined}
                     onSecret={(part, secret) => void respondToSecret(part.runId, part.id, secret)}
+                    onOpenArtifact={openArtifact}
                     onRetryUpstreamFailure={(turnId) => void retryFailure(turnId)}
                     onBranch={(itemId) => void branchFrom(itemId)}
                     branching={branchingItemId === turn.id}
@@ -2870,11 +2871,6 @@ export function AgentWorkspace({
                     upstreamFailureRetryDisabled={running || waiting || submitting}
                   />
                 ))}
-                <AgentArtifactList
-                  artifacts={renderedArtifacts}
-                  onOpen={openArtifact}
-                  onDownload={(artifact) => void downloadArtifact(artifact)}
-                />
                 <AgentThinking
                   visible={(running || submitting) && visibleTurns.at(-1)?.role === "user"}
                 />
