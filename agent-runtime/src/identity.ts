@@ -116,6 +116,9 @@ function identityReply(input: string): string | undefined {
   while (namedStart < namedEnd && LEADING_CONVERSATIONAL_FILLERS.has(words[namedStart] ?? "")) {
     namedStart += 1;
   }
+  if (namedStart < namedEnd && ["clovy", "june"].includes(words[namedStart] ?? "")) {
+    namedStart += 1;
+  }
   while (namedEnd > namedStart && words[namedEnd - 1] === "please") namedEnd -= 1;
   const namedQuestion = words.slice(namedStart, namedEnd).join(" ");
   if (LEGACY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_LEGACY_NAME_REPLY;

@@ -2058,6 +2058,9 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
     {
         named_start += 1;
     }
+    if named_start < named_end && matches!(words[named_start], "clovy" | "june") {
+        named_start += 1;
+    }
     while named_end > named_start && words[named_end - 1] == "please" {
         named_end -= 1;
     }
@@ -4768,6 +4771,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "what is june",
             "Who is June?",
             "Hey, are you June?",
+            "Hey June, are you June?",
+            "Clovy, what is June?",
             "What is Ｊｕｎｅ?",
         ] {
             assert_eq!(clovy_identity_reply(message), Some(CLOVY_LEGACY_NAME_REPLY));

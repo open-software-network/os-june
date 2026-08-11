@@ -33,7 +33,7 @@ test("answers the legacy June name as Clovy without calling a model", async () =
       instructions: "Answer the user.",
       workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
-      input: "what is june",
+      input: "Clovy, what is June?",
       history: [],
       tools: [],
       skills: [],
@@ -56,7 +56,7 @@ test("answers the legacy June name as Clovy without calling a model", async () =
   assert.deepEqual(
     result.history.slice(-2).map((item) => ({ role: item.role, text: item.text })),
     [
-      { role: "user", text: "what is june" },
+      { role: "user", text: "Clovy, what is June?" },
       {
         role: "assistant",
         text: "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
