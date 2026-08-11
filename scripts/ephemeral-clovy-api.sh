@@ -302,7 +302,7 @@ cmd_down() {
     # A reservation that never reached the deploy: nothing exists to delete.
     rm -f "$STATE_FILE"
     echo "Dropped an empty reservation; no CVM was created."
-    down_remaining_legacy_state
+    down_remaining_legacy_state || return $?
     return 0
   fi
 
