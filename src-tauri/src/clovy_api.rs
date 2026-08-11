@@ -2089,9 +2089,20 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
     let named_question = words[named_start..named_end].join(" ");
     if matches!(
         named_question.as_str(),
-        "are you june"
+        "are you called june"
+            | "are you june"
+            | "can i call you june"
+            | "did you go by june"
+            | "do you call yourself june"
+            | "do you go by june"
+            | "have you ever been called june"
             | "is june your name"
             | "is your name june"
+            | "should i call you june"
+            | "was clovy called june"
+            | "was your name june"
+            | "were you called june"
+            | "were you june"
             | "what is june"
             | "whats june"
             | "who is june"
@@ -4797,6 +4808,11 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Hey June, are you June?",
             "Clovy, what is June?",
             "What is Ｊｕｎｅ?",
+            "Are you called June?",
+            "Do you go by June?",
+            "Have you ever been called June?",
+            "Should I call you June?",
+            "Was your name June?",
         ] {
             assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
         }

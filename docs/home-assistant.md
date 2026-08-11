@@ -35,7 +35,7 @@ contract or an ADR.
 
 ## Home conversation paths
 
-Ordinary text-only Home turns use the lightweight native `june_home_chat` path.
+Ordinary text-only Home turns use the lightweight native `clovy_home_chat` path.
 It sends a compact relationship prompt and one structured `start_task` tool,
 which avoids loading the full agent prompt and tool catalog for a short
 conversation. Its speed-first route is internal and does not read or mutate
@@ -118,6 +118,20 @@ receives the user's current request and attachments, but not the lightweight
 path's full local history. Do not describe the entire visible Home transcript
 as shared semantic context until this boundary has a retrieval or summary
 contract.
+
+## Identity compatibility
+
+Clovy is the only assistant identity presented in Home and focused sessions.
+Text-only questions that use the former product name as an assistant name are
+accepted as compatibility input and receive the same concise Clovy identity
+reply as any other identity question. Replies never explain, repeat, or present
+the former name as a product, assistant, persona, or identity.
+
+The direct matcher does not claim an identity question when an attachment is
+present because the name may refer to content in that attachment. Those turns
+continue through the normal model path under the same Clovy-only identity
+instruction. The app invokes `clovy_home_chat`; `june_home_chat` remains only as
+a Tauri command alias for released callers.
 
 ## Structured task handoff
 

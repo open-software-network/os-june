@@ -3,9 +3,20 @@ import type { EngineResult, RunStartParams } from "./types.js";
 export const CLOVY_IDENTITY_REPLY = "I'm Clovy, your personal AI assistant.";
 
 const LEGACY_NAME_QUESTIONS = new Set([
+  "are you called june",
   "are you june",
+  "can i call you june",
+  "did you go by june",
+  "do you call yourself june",
+  "do you go by june",
+  "have you ever been called june",
   "is june your name",
   "is your name june",
+  "should i call you june",
+  "was clovy called june",
+  "was your name june",
+  "were you called june",
+  "were you june",
   "what is june",
   "whats june",
   "who is june",
