@@ -13,7 +13,7 @@ const AUTO_RUN_MODEL = "__june_auto_generation__:73";
 const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
 const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
-test("answers general identity questions as Clovy without calling a model", async () => {
+test("answers the legacy June name as Clovy without calling a model", async () => {
   let hostCalls = 0;
   const engine = new OpenAIAgentsEngine(async () => {
     hostCalls += 1;
@@ -33,7 +33,7 @@ test("answers general identity questions as Clovy without calling a model", asyn
       instructions: "Answer the user.",
       workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
-      input: "Hi, who r u?",
+      input: "what is june",
       history: [],
       tools: [],
       skills: [],
@@ -41,16 +41,26 @@ test("answers general identity questions as Clovy without calling a model", asyn
     },
   });
 
-  assert.equal(result.finalOutput, "I'm Clovy, your personal AI assistant.");
+  assert.equal(
+    result.finalOutput,
+    "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+  );
   assert.equal(hostCalls, 0);
   assert.deepEqual(events, [
-    { type: "message.delta", delta: "I'm Clovy, your personal AI assistant." },
+    {
+      type: "message.delta",
+      delta:
+        "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+    },
   ]);
   assert.deepEqual(
     result.history.slice(-2).map((item) => ({ role: item.role, text: item.text })),
     [
-      { role: "user", text: "Hi, who r u?" },
-      { role: "assistant", text: "I'm Clovy, your personal AI assistant." },
+      { role: "user", text: "what is june" },
+      {
+        role: "assistant",
+        text: "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+      },
     ],
   );
   assert.deepEqual(result.usage, {});
