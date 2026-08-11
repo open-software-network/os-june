@@ -112,6 +112,13 @@ read_state() {
   jq -r --arg key "$1" '.[$key] // empty' "$STATE_FILE"
 }
 
+down_remaining_legacy_state() {
+  if [[ -e "$LEGACY_STATE_FILE" || -L "$LEGACY_STATE_FILE" ]]; then
+    migrate_legacy_state_file
+    cmd_down
+  fi
+}
+
 # Tri-state existence probe via the /apps listing (same shape the CI
 # phala-deploy action uses): "listed", "absent" (the API answered and does
 # not know the name), or "ambiguous" (probe failed / non-JSON).
@@ -295,6 +302,7 @@ cmd_down() {
     # A reservation that never reached the deploy: nothing exists to delete.
     rm -f "$STATE_FILE"
     echo "Dropped an empty reservation; no CVM was created."
+    down_remaining_legacy_state
     return 0
   fi
 
@@ -342,10 +350,7 @@ cmd_down() {
   # A buggy compatibility-window checkout could have created a canonical CVM
   # while a legacy one was still recorded. One explicit `down` must tear down
   # both so the older billed instance is not silently left running.
-  if [[ -e "$LEGACY_STATE_FILE" || -L "$LEGACY_STATE_FILE" ]]; then
-    migrate_legacy_state_file
-    cmd_down
-  fi
+  down_remaining_legacy_state
 }
 
 cmd_dev() {

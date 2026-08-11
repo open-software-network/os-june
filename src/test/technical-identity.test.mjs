@@ -770,5 +770,6 @@ describe("Clovy technical identity", () => {
     expect(ephemeralApi).toContain('rm -f "$LEGACY_STATE_FILE"');
     expect(ephemeralApi.indexOf("migrate_legacy_state_file\n\ncase")).toBeGreaterThan(-1);
     expect(ephemeralApi).toContain("until both recorded CVMs are torn down.");
+    expect(ephemeralApi.match(/down_remaining_legacy_state/g)).toHaveLength(3);
   });
 });
