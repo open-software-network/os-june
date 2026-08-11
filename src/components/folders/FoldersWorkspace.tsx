@@ -29,7 +29,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { NOTE_DND_MIME } from "../../lib/dnd";
+import { LEGACY_NOTE_DND_MIME, NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
 import { useForcedEmptyStates } from "../../lib/empty-states-demo";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
@@ -411,7 +411,7 @@ function FolderCard({
   function hasNoteData(event: DragEvent<HTMLElement>) {
     const types = event.dataTransfer.types;
     for (let i = 0; i < types.length; i += 1) {
-      if (types[i] === NOTE_DND_MIME) return true;
+      if (types[i] === NOTE_DND_MIME || types[i] === LEGACY_NOTE_DND_MIME) return true;
     }
     return false;
   }
@@ -469,7 +469,9 @@ function FolderCard({
       onDrop={(event) => {
         if (!hasNoteData(event)) return;
         event.preventDefault();
-        const noteId = event.dataTransfer.getData(NOTE_DND_MIME);
+        const noteId =
+          event.dataTransfer.getData(NOTE_DND_MIME) ||
+          event.dataTransfer.getData(LEGACY_NOTE_DND_MIME);
         resetDropState();
         if (noteId) onDropNote(noteId);
       }}

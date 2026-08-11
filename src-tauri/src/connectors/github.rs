@@ -33,7 +33,7 @@ const DEVICE_CODE_ENDPOINT: &str = "https://github.com/login/device/code";
 const TOKEN_ENDPOINT: &str = "https://github.com/login/oauth/access_token";
 /// GitHub requires a User-Agent header on every API call; mirror the shared
 /// http_client's value.
-const GITHUB_USER_AGENT: &str = "os-june/0.1";
+const GITHUB_USER_AGENT: &str = "clovy/0.1";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 
 /// For GitHub Apps that do not expire user tokens: store a far-future expiry

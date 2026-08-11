@@ -110,7 +110,7 @@ describe("agent follow-up queue", () => {
 
   it("ignores malformed stored entries", () => {
     window.localStorage.setItem(
-      "june.agent.queuedFollowUps",
+      "clovy.agent.queuedFollowUps",
       JSON.stringify({ valid: queued["session-1"], invalid: { prompt: 42 } }),
     );
     expect(loadQueuedAgentFollowUps()).toEqual({

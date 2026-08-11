@@ -478,7 +478,7 @@ fn default_local_dev_viewer_user_id() -> String {
 }
 
 fn default_local_dev_viewer_email() -> String {
-    "viewer@localdev.june".to_string()
+    "viewer@localdev.clovy".to_string()
 }
 
 fn default_local_dev_bearer_token() -> String {

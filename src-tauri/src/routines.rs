@@ -981,7 +981,7 @@ pub(crate) async fn routine_browser_access_set(
             .clone()
             .unwrap_or_else(|| RoutineBrowserGrantRecord {
                 job_id: job_id.to_string(),
-                server_name: format!("june_browser_routine_{}", Uuid::new_v4().simple()),
+                server_name: format!("clovy_browser_routine_{}", Uuid::new_v4().simple()),
                 token: Uuid::new_v4().to_string(),
                 enabled: true,
             });

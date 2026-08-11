@@ -81,6 +81,8 @@
       "assetProtocol": {
         "enable": true,
         "scope": [
+          "$TEMP/clovy-dictation-*.m4a",
+          "$TEMP/clovy-dictation-*.wav",
           "$TEMP/os-june-dictation-*.m4a",
           "$TEMP/os-june-dictation-*.wav"
         ]

@@ -37,7 +37,7 @@ describe("agent session model drafts", () => {
 
   it("ignores corrupt and empty values", () => {
     window.localStorage.setItem(
-      "june.agent.sessionModels",
+      "clovy.agent.sessionModels",
       JSON.stringify({ valid: "fast", empty: "", invalid: 42 }),
     );
     expect(loadSessionModels()).toEqual({ valid: "fast" });

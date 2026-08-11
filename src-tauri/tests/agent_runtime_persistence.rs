@@ -408,6 +408,110 @@ async fn run_skills_are_deduplicated_and_persisted_for_retry_and_resume() {
 }
 
 #[tokio::test]
+async fn obsidian_run_skill_ids_are_canonical_in_memory_and_additive_on_disk() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool.clone());
+    let session = repository
+        .create_session(
+            "Obsidian skills",
+            "private-auto",
+            clovy_lib::agent_runtime::AgentSafetyMode::Sandboxed,
+            None,
+        )
+        .await
+        .expect("session");
+    let run = repository
+        .create_run(&session.id, "private-auto", None)
+        .await
+        .expect("run");
+
+    repository
+        .set_run_enabled_skills(&run.id, &["clovy-obsidian".to_string()])
+        .await
+        .expect("persist canonical skill");
+
+    let stored: String = query("SELECT enabled_skills_json FROM agent_runs WHERE id = ?")
+        .bind(&run.id)
+        .fetch_one(&pool)
+        .await
+        .expect("stored skills")
+        .get("enabled_skills_json");
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&stored).expect("stored skill ids"),
+        vec!["clovy-obsidian".to_string(), "june-obsidian".to_string()]
+    );
+    assert_eq!(
+        repository
+            .run_enabled_skills(&run.id)
+            .await
+            .expect("current skill ids"),
+        vec!["clovy-obsidian".to_string()]
+    );
+
+    query("UPDATE agent_runs SET enabled_skills_json = ? WHERE id = ?")
+        .bind(r#"["june-obsidian"]"#)
+        .bind(&run.id)
+        .execute(&pool)
+        .await
+        .expect("simulate legacy run");
+    assert_eq!(
+        repository
+            .run_enabled_skills(&run.id)
+            .await
+            .expect("migrate legacy run"),
+        vec!["clovy-obsidian".to_string()]
+    );
+    let migrated: String = query("SELECT enabled_skills_json FROM agent_runs WHERE id = ?")
+        .bind(&run.id)
+        .fetch_one(&pool)
+        .await
+        .expect("migrated skills")
+        .get("enabled_skills_json");
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&migrated).expect("migrated skill ids"),
+        vec!["clovy-obsidian".to_string(), "june-obsidian".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn legacy_obsidian_disabled_setting_wins_and_canonical_changes_dual_write() {
+    let pool = memory_database().await;
+    let repository = AgentRepository::new(pool.clone());
+    query("INSERT INTO agent_skill_settings(skill_id, enabled, managed, updated_at) VALUES (?, 1, 1, 'canonical-time'), (?, 0, 1, 'legacy-time')")
+        .bind("clovy-obsidian")
+        .bind("june-obsidian")
+        .execute(&pool)
+        .await
+        .expect("divergent settings");
+
+    let settings = repository.skills().await.expect("reconciled settings");
+    for skill_id in ["clovy-obsidian", "june-obsidian"] {
+        let setting = settings
+            .iter()
+            .find(|setting| setting.id == skill_id)
+            .expect("skill setting");
+        assert!(!setting.enabled, "legacy disabled state must be preserved");
+    }
+
+    let canonical = repository
+        .set_skill_enabled("clovy-obsidian", true, true)
+        .await
+        .expect("enable canonical skill");
+    assert_eq!(canonical.id, "clovy-obsidian");
+    assert!(canonical.enabled);
+    let settings = repository.skills().await.expect("dual-written settings");
+    for skill_id in ["clovy-obsidian", "june-obsidian"] {
+        assert!(
+            settings
+                .iter()
+                .find(|setting| setting.id == skill_id)
+                .expect("skill setting")
+                .enabled
+        );
+    }
+}
+
+#[tokio::test]
 async fn resumed_run_rebases_process_local_event_sequence() {
     let pool = memory_database().await;
     let repository = AgentRepository::new(pool);

@@ -196,7 +196,7 @@ vi.mock("../lib/tauri", () => ({
   // these tests focused on the meetings surfaces.
   hermesBridgeStatus: vi.fn(async () => ({ running: false })),
   listAgentTasks: vi.fn(async () => ({ items: [] })),
-  juneVerifyUrl: vi.fn(async () => ""),
+  clovyOpenVerifyPage: vi.fn(async () => ""),
   providerModelSettings: vi.fn(async () => ({
     settings: { generationModel: "" },
   })),

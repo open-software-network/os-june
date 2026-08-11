@@ -78,7 +78,7 @@ Copy the `providers/mod.rs` persisted-settings pattern exactly:
     "off means off" is one transaction, not two steps.
 - Consent lives Rust-side (not localStorage) because the sender is Rust
   and must not depend on a webview being open; frontend mirrors it via the
-  command + a `june:p3a` CustomEvent, same pattern as
+  command + a `clovy:p3a` CustomEvent, same pattern as
   `src/lib/rampart-privacy.ts`.
 
 ### Desktop: question catalog as code

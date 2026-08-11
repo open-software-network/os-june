@@ -136,7 +136,7 @@ beforeEach(() => {
   mocks.connectorsSetSelectedTeams.mockResolvedValue(linearAccount());
   mocks.extensionPairingStatus.mockResolvedValue({ paired: false, listenerRunning: true });
   mocks.registerBrowserExtensionHost.mockResolvedValue({
-    manifestPath: "/tmp/co.opensoftware.june.extension.json",
+    manifestPath: "/tmp/co.opensoftware.clovy.extension.json",
     shimPath: "/tmp/clovy-nm-shim",
   });
   mocks.browserTransportPolicy.mockResolvedValue({

@@ -693,8 +693,7 @@ fn init_tracing() {
     let _ = tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "june=info,clovy_api=info,clovy_services=info,clovy_providers=info,tower_http=info"
-                    .into()
+                "clovy_api=info,clovy_services=info,clovy_providers=info,tower_http=info".into()
             }),
         )
         .with(tracing_subscriber::fmt::layer().json())

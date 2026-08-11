@@ -256,7 +256,7 @@ fn read_legacy_mcp(path: &Path, errors: &mut Vec<String>) -> LegacyMcpImport {
             let retained_ids: BTreeSet<String> = imported
                 .definitions
                 .iter()
-                .filter(|definition| !is_june_owned_mcp_server(&definition.name))
+                .filter(|definition| !is_legacy_june_owned_mcp_server(&definition.name))
                 .map(|definition| definition.id.clone())
                 .collect();
             imported
@@ -281,7 +281,7 @@ fn read_legacy_mcp(path: &Path, errors: &mut Vec<String>) -> LegacyMcpImport {
     }
 }
 
-fn is_june_owned_mcp_server(name: &str) -> bool {
+fn is_legacy_june_owned_mcp_server(name: &str) -> bool {
     name.starts_with("june_")
         || matches!(
             name,

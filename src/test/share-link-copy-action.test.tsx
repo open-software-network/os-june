@@ -21,7 +21,7 @@ describe("ShareLinkCopyAction", () => {
           { label: "Meeting notes" },
           {
             label: "Weekly sync",
-            action: <ShareLinkCopyAction url="https://june.test/s/shr_1#link.key" />,
+            action: <ShareLinkCopyAction url="https://clovy.test/s/shr_1#link.key" />,
           },
         ]}
       />,
@@ -42,7 +42,7 @@ describe("ShareLinkCopyAction", () => {
         await Promise.resolve();
       });
 
-      expect(mocks.writeClipboardText).toHaveBeenCalledWith("https://june.test/s/shr_1#link.key");
+      expect(mocks.writeClipboardText).toHaveBeenCalledWith("https://clovy.test/s/shr_1#link.key");
       expect(copyButton).toHaveAccessibleName("Share link copied");
       expect(iconSwap).toHaveAttribute("data-state", "b");
       expect(screen.getByRole("tooltip")).toHaveTextContent("Copied");

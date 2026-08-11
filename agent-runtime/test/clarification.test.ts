@@ -26,7 +26,7 @@ test("maps request_clarification approval pauses to structured clarification int
     name: "request_clarification",
     arguments: JSON.stringify({
       question: "Which project should I update?",
-      choices: ["June", "Accounts"],
+      choices: ["Clovy", "Accounts"],
     }),
   });
   assert.deepEqual(interruption, {
@@ -35,10 +35,10 @@ test("maps request_clarification approval pauses to structured clarification int
     toolName: "request_clarification",
     arguments: {
       question: "Which project should I update?",
-      choices: ["June", "Accounts"],
+      choices: ["Clovy", "Accounts"],
     },
     question: "Which project should I update?",
-    choices: ["June", "Accounts"],
+    choices: ["Clovy", "Accounts"],
   });
 });
 

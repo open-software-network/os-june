@@ -9,6 +9,7 @@ pub mod persona;
 pub mod protocol;
 pub mod repository;
 pub mod secrets;
+pub(crate) mod skill_identity;
 pub mod tools;
 
 pub use domain::*;

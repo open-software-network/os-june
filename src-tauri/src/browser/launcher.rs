@@ -133,7 +133,7 @@ fn which_in_path(name: &str) -> Option<PathBuf> {
 /// [`sweep_profiles_root`]) so a crash that skipped Drop never leaves a stale
 /// profile behind on the next run.
 pub fn profiles_root() -> PathBuf {
-    std::env::temp_dir().join("co.opensoftware.june.browser-profiles")
+    std::env::temp_dir().join("co.opensoftware.clovy.browser-profiles")
 }
 
 /// Best-effort delete of everything under [`profiles_root`]. Called once at app
@@ -141,6 +141,7 @@ pub fn profiles_root() -> PathBuf {
 /// is already the desired state).
 pub fn sweep_profiles_root() {
     sweep_profiles_root_at(&profiles_root());
+    sweep_profiles_root_at(&std::env::temp_dir().join("co.opensoftware.june.browser-profiles"));
 }
 
 pub(super) fn sweep_profiles_root_at(root: &Path) {

@@ -503,4 +503,128 @@ describe("Clovy technical identity", () => {
       expect(workflow).toContain("/june-api");
     }
   });
+
+  it("uses Clovy for newly written runtime state and private source concepts", async () => {
+    const [
+      sdkEngine,
+      notifications,
+      routines,
+      computerUseDriver,
+      meetingDetection,
+      obsidian,
+      desktopApi,
+      apiMain,
+      apiConfig,
+      driverContract,
+      noteDrag,
+    ] = await Promise.all([
+      read("agent-runtime/src/sdk-engine.ts"),
+      read("src-tauri/src/notifications.rs"),
+      read("src-tauri/src/routines.rs"),
+      read("src-tauri/src/computer_use_driver.rs"),
+      read("src-tauri/src/meeting_detection.rs"),
+      read("src-tauri/src/obsidian.rs"),
+      read("src-tauri/src/clovy_api.rs"),
+      read("clovy-api/crates/app/src/main.rs"),
+      read("clovy-api/crates/config/src/lib.rs"),
+      read("src-tauri/cua-driver-contract.json").then(JSON.parse),
+      read("src/lib/dnd.ts"),
+    ]);
+
+    expect(sdkEngine).toContain("clovyVersion: SERIALIZED_STATE_ENVELOPE_VERSION");
+    expect(sdkEngine).toContain("juneVersion: SERIALIZED_STATE_ENVELOPE_VERSION");
+    expect(notifications).toContain('const SESSION_ID_KEY: &str = "clovyAgentSessionId"');
+    expect(notifications).toContain('const LEGACY_SESSION_ID_KEY: &str = "juneAgentSessionId"');
+    expect(routines).toContain('format!("clovy_browser_routine_{}"');
+    expect(routines).not.toContain('format!("june_browser_routine_{}"');
+    expect(computerUseDriver).toContain("fn parent_is_clovy()");
+    expect(computerUseDriver).toContain("fn process_is_clovy(");
+    expect(computerUseDriver).not.toContain("fn parent_is_june()");
+    expect(computerUseDriver).not.toContain("fn process_is_june(");
+    expect(meetingDetection).toContain("clovy_capture_active: bool");
+    expect(meetingDetection).not.toContain("os_june_capture_active: bool");
+    expect(obsidian).toContain(".clovy-obsidian-write-probe-");
+    expect(obsidian).not.toContain(".june-obsidian-write-probe-");
+    expect(desktopApi).toContain("Clovy API returned an invalid response stream error");
+    expect(desktopApi).toContain('user_agent(concat!("clovy/"');
+    expect(desktopApi).not.toContain('user_agent(concat!("os-june/"');
+    expect(apiMain).not.toContain('"june=info,clovy_api=info');
+    expect(apiConfig).toContain("viewer@localdev.clovy");
+    expect(apiConfig).not.toContain("viewer@localdev.june");
+    expect(driverContract.clovyActions).toBeInstanceOf(Array);
+    expect(driverContract).not.toHaveProperty("juneActions");
+    expect(noteDrag).toContain('NOTE_DND_MIME = "application/x-clovy-note-id"');
+    expect(noteDrag).toContain('LEGACY_NOTE_DND_MIME = "application/x-june-note-id"');
+  });
+
+  it("publishes the Obsidian skill under Clovy with a rollback-safe June alias", async () => {
+    const [bundledSkill, skillIdentity, agentApi] = await Promise.all([
+      read("src-tauri/resources/agent-skills/clovy-obsidian/SKILL.md"),
+      read("src-tauri/src/agent_runtime/skill_identity.rs"),
+      read("src-tauri/src/agent_runtime/api.rs"),
+    ]);
+
+    expect(bundledSkill).toMatch(/^name: clovy-obsidian$/m);
+    expect(skillIdentity).toContain('pub const CLOVY_OBSIDIAN_SKILL_ID: &str = "clovy-obsidian"');
+    expect(skillIdentity).toContain('pub const LEGACY_OBSIDIAN_SKILL_ID: &str = "june-obsidian"');
+    expect(skillIdentity).toContain("write_skill_ids");
+    expect(agentApi).toContain("When the clovy-obsidian skill is available");
+    expect(agentApi).not.toContain("When the june-obsidian skill is available");
+  });
+
+  it("uses Clovy for ephemeral build and dictation artifacts", async () => {
+    const [
+      signedDmg,
+      rcWorkflow,
+      promotionWorkflow,
+      tauri,
+      macHelper,
+      windowsHelper,
+      dictation,
+      computerUseFixture,
+      computerUseDocs,
+      reproducibleBuilds,
+      index,
+      onboardingPreview,
+      styleguide,
+    ] = await Promise.all([
+      read("scripts/build-signed-dmg.sh"),
+      read(".github/workflows/rc-desktop-dmg.yml"),
+      read(".github/workflows/promote-desktop.yml"),
+      read("src-tauri/tauri.conf.json").then(JSON.parse),
+      read("src-tauri/native/mac-dictation-helper/main.swift"),
+      read("src-tauri/native/windows-dictation-helper/src/audio.rs"),
+      read("src-tauri/src/dictation.rs"),
+      read("src-tauri/native/computer-use-fixture/main.swift"),
+      read("docs/computer-use-support.md"),
+      read("docs/reproducible-builds.md"),
+      read("index.html"),
+      read("onboarding-preview.html"),
+      read("styleguide.html"),
+    ]);
+
+    for (const source of [signedDmg, rcWorkflow, promotionWorkflow]) {
+      expect(source).toContain("clovy-signing.keychain-db");
+      expect(source).not.toContain("os-june-signing.keychain-db");
+    }
+    expect(tauri.app.security.assetProtocol.scope).toEqual([
+      "$TEMP/clovy-dictation-*.m4a",
+      "$TEMP/clovy-dictation-*.wav",
+      "$TEMP/os-june-dictation-*.m4a",
+      "$TEMP/os-june-dictation-*.wav",
+    ]);
+    expect(macHelper).toContain('appendingPathComponent("clovy-dictation-');
+    expect(windowsHelper).toContain('.prefix("clovy-dictation-")');
+    expect(dictation).toContain('format!("clovy-dictation-{utterance_id}-normalized.wav")');
+    expect(computerUseFixture).toContain('"clovy-cu-observer-window"');
+    expect(computerUseFixture).not.toContain('"june-cu-observer-window"');
+    expect(computerUseDocs).toContain("`target/**/Clovy JUN-278 Codex`");
+    expect(reproducibleBuilds).toContain("the `clovy-api` binary");
+    expect(index.indexOf('localStorage.getItem("os-clovy:theme")')).toBeLessThan(
+      index.indexOf('localStorage.getItem("os-june:theme")'),
+    );
+    expect(onboardingPreview).toContain("clovy.replayOnboarding()");
+    expect(onboardingPreview).toContain("window.__CLOVY_STUB__");
+    expect(styleguide).toContain("else os-clovy:theme / system");
+  });
 });

@@ -180,8 +180,9 @@ mod macos {
     use objc2_foundation::NSString;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// `userInfo` key carrying the agent session on Clovy's own notifications.
-    const SESSION_ID_KEY: &str = "juneAgentSessionId";
+    /// `userInfo` keys carrying the agent session on Clovy's own notifications.
+    const SESSION_ID_KEY: &str = "clovyAgentSessionId";
+    const LEGACY_SESSION_ID_KEY: &str = "juneAgentSessionId";
 
     /// Set once the permanent delegate is installed; the native posting path
     /// is only trusted after that, so clicks are never silently dropped.
@@ -269,14 +270,13 @@ mod macos {
                 let _: () = msg_send![notification, setSoundName: &*sound];
             }
             if let Some(session_id) = &request.session_id {
-                if let Some(dictionary_class) = AnyClass::get(c"NSDictionary") {
+                if let Some(dictionary_class) = AnyClass::get(c"NSMutableDictionary") {
                     let key = NSString::from_str(SESSION_ID_KEY);
+                    let legacy_key = NSString::from_str(LEGACY_SESSION_ID_KEY);
                     let value = NSString::from_str(session_id);
-                    let user_info: *mut AnyObject = msg_send![
-                        dictionary_class,
-                        dictionaryWithObject: &*value,
-                        forKey: &*key,
-                    ];
+                    let user_info: *mut AnyObject = msg_send![dictionary_class, dictionary];
+                    let _: () = msg_send![user_info, setObject: &*value, forKey: &*legacy_key];
+                    let _: () = msg_send![user_info, setObject: &*value, forKey: &*key];
                     let _: () = msg_send![notification, setUserInfo: user_info];
                 }
             }
@@ -296,11 +296,13 @@ mod macos {
             if user_info.is_null() {
                 return None;
             }
-            let key = NSString::from_str(SESSION_ID_KEY);
-            let value: *mut AnyObject = msg_send![user_info, objectForKey: &*key];
-            if value.is_null() {
-                return None;
-            }
+            let value = [SESSION_ID_KEY, LEGACY_SESSION_ID_KEY]
+                .into_iter()
+                .find_map(|key| {
+                    let key = NSString::from_str(key);
+                    let value: *mut AnyObject = msg_send![user_info, objectForKey: &*key];
+                    (!value.is_null()).then_some(value)
+                })?;
             // Clovy only ever stores an NSString under this key; a foreign
             // object that does not respond to UTF8String is ignored.
             let responds: Bool = msg_send![value, respondsToSelector: sel!(UTF8String)];

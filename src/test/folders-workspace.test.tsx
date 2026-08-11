@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { Sidebar } from "../components/sidebar/Sidebar";
-import { NOTE_DND_MIME } from "../lib/dnd";
+import { LEGACY_NOTE_DND_MIME, NOTE_DND_MIME } from "../lib/dnd";
 import type { AccountStatus, FolderDto, NoteListItemDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
@@ -123,8 +123,8 @@ beforeEach(() => {
   for (let index = localStorage.length - 1; index >= 0; index -= 1) {
     const key = localStorage.key(index);
     if (
-      key?.startsWith("june:account-avatar-variant:") ||
-      key?.startsWith("june:account-avatar-pending:")
+      key?.startsWith("clovy:account-avatar-variant:") ||
+      key?.startsWith("clovy:account-avatar-pending:")
     ) {
       localStorage.removeItem(key);
     }
@@ -772,6 +772,20 @@ describe("FoldersWorkspace — list view", () => {
       dataTransfer: {
         types: [NOTE_DND_MIME],
         getData: () => "note-1",
+      },
+    });
+
+    expect(props.onAssignNoteToFolder).toHaveBeenCalledWith("note-1", "folder-1");
+  });
+
+  it("accepts the June-era note drag type as a compatibility alias", () => {
+    const props = baseProps();
+    render(<FoldersWorkspace {...props} />);
+
+    fireEvent.drop(screen.getByRole("button", { name: "Open Ideas" }), {
+      dataTransfer: {
+        types: [LEGACY_NOTE_DND_MIME],
+        getData: (type: string) => (type === LEGACY_NOTE_DND_MIME ? "note-1" : ""),
       },
     });
 

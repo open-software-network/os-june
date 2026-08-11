@@ -1297,7 +1297,7 @@ enum SelectedDeviceRecorderError: LocalizedError {
 final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "co.opensoftware.june.dictation-recorder")
+    private let queue = DispatchQueue(label: "co.opensoftware.clovy.dictation-recorder")
     private let writer: AVAssetWriter
     private let writerInput: AVAssetWriterInput
     private var didStartWriting = false
@@ -1556,7 +1556,7 @@ enum AutoDetectInputMeterError: LocalizedError {
 final class AutoDetectInputMeter: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let output = AVCaptureAudioDataOutput()
-    private let queue = DispatchQueue(label: "co.opensoftware.june.dictation-auto-meter")
+    private let queue = DispatchQueue(label: "co.opensoftware.clovy.dictation-auto-meter")
     private let levelHandler: (Float) -> Void
     private var pendingLevel: Float = 0
     private var lastLevelEmit: TimeInterval = 0
@@ -2345,7 +2345,7 @@ final class DictationController {
 
     private func temporaryRecordingURL() -> URL {
         FileManager.default.temporaryDirectory
-            .appendingPathComponent("os-june-dictation-\(UUID().uuidString)")
+            .appendingPathComponent("clovy-dictation-\(UUID().uuidString)")
             .appendingPathExtension("m4a")
     }
 

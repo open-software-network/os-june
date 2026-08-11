@@ -443,6 +443,7 @@ function hostAppErrorCode(error: unknown): string | undefined {
 
 function serializeState(sdkState: string, reasoningWireFormat?: ReasoningWireFormat): string {
   return JSON.stringify({
+    clovyVersion: SERIALIZED_STATE_ENVELOPE_VERSION,
     juneVersion: SERIALIZED_STATE_ENVELOPE_VERSION,
     sdkState,
     ...(reasoningWireFormat === undefined ? {} : { reasoningWireFormat }),
@@ -455,11 +456,14 @@ function parseSerializedState(serializedState: string): {
 } {
   try {
     const envelope = JSON.parse(serializedState) as unknown;
-    if (
-      isRecord(envelope) &&
-      envelope.juneVersion === SERIALIZED_STATE_ENVELOPE_VERSION &&
-      typeof envelope.sdkState === "string"
-    ) {
+    if (isRecord(envelope)) {
+      const version =
+        "clovyVersion" in envelope && envelope.clovyVersion !== undefined
+          ? envelope.clovyVersion
+          : envelope.juneVersion;
+      if (version !== SERIALIZED_STATE_ENVELOPE_VERSION || typeof envelope.sdkState !== "string") {
+        return { sdkState: serializedState };
+      }
       const reasoningWireFormat =
         envelope.reasoningWireFormat === "reasoning" ||
         envelope.reasoningWireFormat === "reasoning_content"

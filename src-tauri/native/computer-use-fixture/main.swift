@@ -60,8 +60,8 @@ final class FixtureDelegate: NSObject, NSApplicationDelegate, NSTextFieldDelegat
             ? "Clovy Computer Use Observer"
             : "Clovy Computer Use Target"
         window.setAccessibilityIdentifier(role == "observer"
-            ? "june-cu-observer-window"
-            : "june-cu-target-window")
+            ? "clovy-cu-observer-window"
+            : "clovy-cu-target-window")
 
         let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
         let heading = NSTextField(labelWithString: role == "observer"

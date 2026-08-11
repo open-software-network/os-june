@@ -16,8 +16,8 @@ import type {
 
 const runParams: JsonObject = {
   model: "private-auto",
-  instructions: "You are June.",
-  workspace: "/tmp/june-workspace",
+  instructions: "You are Clovy.",
+  workspace: "/tmp/clovy-workspace",
   safetyMode: "sandboxed",
   input: "Hello",
   history: [],
@@ -196,8 +196,8 @@ test("dispatches durable approval resolutions through run.resume", async () => {
   await service.handle(
     request("run.resume", {
       model: "private-auto",
-      instructions: "You are June.",
-      workspace: "/tmp/june-workspace",
+      instructions: "You are Clovy.",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       tools: [],
       skills: [],
@@ -219,21 +219,21 @@ test("dispatches clarification answers through run.resume", async () => {
   await service.handle(
     request("run.resume", {
       model: "private-auto",
-      instructions: "You are June.",
-      workspace: "/tmp/june-workspace",
+      instructions: "You are Clovy.",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       tools: [],
       skills: [],
       contextWindow: 16_000,
       serializedState: "{\"state\":true}",
       resolutions: [
-        { interruptionId: "clarify-1", kind: "clarification", answer: "June" },
+        { interruptionId: "clarify-1", kind: "clarification", answer: "Clovy" },
       ],
     }),
   );
   await nextTurn();
   assert.deepEqual(engine.resolutions, [
-    { interruptionId: "clarify-1", kind: "clarification", answer: "June" },
+    { interruptionId: "clarify-1", kind: "clarification", answer: "Clovy" },
   ]);
 });
 
@@ -244,8 +244,8 @@ test("dispatches opaque secret approval through run.resume without a value", asy
   await service.handle(
     request("run.resume", {
       model: "private-auto",
-      instructions: "You are June.",
-      workspace: "/tmp/june-workspace",
+      instructions: "You are Clovy.",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       tools: [],
       skills: [],
@@ -535,7 +535,7 @@ function harness(engine: AgentEngine) {
 async function initialize(service: RuntimeService): Promise<void> {
   await service.handle(
     request("runtime.initialize", {
-      clientName: "June",
+      clientName: "Clovy",
       clientVersion: "test",
     }),
   );

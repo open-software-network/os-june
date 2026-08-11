@@ -78,7 +78,7 @@ To reclaim digest-in-compose (the cleanest anchor), one of:
 The Dockerfile is multi-stage. Only the final `runtime` image is published and
 attested, so only inputs that reach it affect the digest:
 
-1. the `june` binary (`COPY --from=builder`)
+1. the `clovy-api` binary (`COPY --from=builder`)
 2. the `debian:bookworm-slim` base
 3. the CA certificate bundle
 4. file metadata (timestamps, ownership) in the layers

@@ -71,7 +71,8 @@ function initialStepIndex(steps: StepId[]): number {
 
 function browserOnboardingDemoStep(): StepId | null {
   if (!import.meta.env.DEV || typeof window === "undefined") return null;
-  const step = new URLSearchParams(window.location.search).get("juneDemoStep");
+  const params = new URLSearchParams(window.location.search);
+  const step = params.get("clovyDemoStep") ?? params.get("juneDemoStep");
   return step === "sign-in" ||
     step === "telemetry" ||
     step === "area" ||

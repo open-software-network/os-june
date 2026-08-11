@@ -1519,7 +1519,7 @@ fn venice_verify_http_client() -> &'static reqwest::Client {
             .timeout(VENICE_API_KEY_VERIFY_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june/0.1")
+            .user_agent("clovy/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
@@ -2308,7 +2308,7 @@ mod tests {
 
     fn test_state() -> ProviderSettingsState {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-provider-test-{}-{}",
+            "clovy-provider-test-{}-{}",
             std::process::id(),
             NEXT_TEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));

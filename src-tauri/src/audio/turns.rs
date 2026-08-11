@@ -1506,7 +1506,7 @@ mod tests {
     #[test]
     fn normalization_boosts_quiet_wav_without_touching_original() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("quiet.wav");
         let output = dir.join("normalized.wav");
@@ -1528,7 +1528,7 @@ mod tests {
     #[test]
     fn normalization_reuses_loud_enough_wav() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("loud.wav");
         let output = dir.join("normalized.wav");
@@ -1544,7 +1544,7 @@ mod tests {
     #[test]
     fn normalization_downmixes_and_downsamples_for_transcription() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-normalize-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-normalize-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("stereo.wav");
         let output = dir.join("prepared.wav");
@@ -1663,7 +1663,7 @@ mod tests {
         ];
 
         let dir = std::env::temp_dir().join(format!(
-            "os-june-normalize-equivalence-test-{}",
+            "clovy-normalize-equivalence-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1708,7 +1708,7 @@ mod tests {
         // Pins the seek-based extraction: the segment must start at the
         // turn's first frame and contain exactly the turn's samples, byte
         // offsets and decoder state agreeing with the old skip-based path.
-        let dir = std::env::temp_dir().join(format!("os-june-turn-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-turn-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let input = dir.join("source.wav");
         let output = dir.join("turn.wav");
@@ -1734,8 +1734,7 @@ mod tests {
 
     #[test]
     fn flags_silent_track_and_keeps_audible_one() {
-        let dir =
-            std::env::temp_dir().join(format!("os-june-silence-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-silence-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let silent = dir.join("silent.wav");
         let audible = dir.join("audible.wav");
@@ -1756,7 +1755,7 @@ mod tests {
     #[test]
     fn silence_gate_rejects_an_isolated_device_start_transient() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-transient-silence-test-{}",
+            "clovy-transient-silence-test-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1775,7 +1774,7 @@ mod tests {
     #[test]
     fn silence_gate_keeps_a_short_sustained_reply() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-short-reply-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-short-reply-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let short_reply = dir.join("short-reply.wav");
         let mut samples = vec![0_i16; 16_000];
@@ -1791,7 +1790,7 @@ mod tests {
 
     #[test]
     fn quiet_system_track_survives_detection_floor_but_is_silent_at_default_floor() {
-        let dir = std::env::temp_dir().join(format!("os-june-floor-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-floor-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let quiet = dir.join("quiet-system.wav");
         // Constant amplitude ~0.008 RMS: between the system detection floor
@@ -1816,7 +1815,7 @@ mod tests {
 
     #[test]
     fn truly_silent_track_is_dropped_at_detection_floor() {
-        let dir = std::env::temp_dir().join(format!("os-june-floor-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-floor-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let silent = dir.join("silent-system.wav");
         write_samples(&silent, &vec![0_i16; 16_000]);
@@ -1875,7 +1874,7 @@ mod tests {
         // Without echo rejection the mic detector emits a "microphone" turn for
         // that bleed, misattributing system audio to the user. A later,
         // system-free mic turn (the user actually speaking) must still survive.
-        let dir = std::env::temp_dir().join(format!("os-june-echo-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-echo-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -1941,7 +1940,7 @@ mod tests {
         // correctly: bleed correlates with the lag-aligned system reference no
         // matter its level, the user's voice does not.
         let dir =
-            std::env::temp_dir().join(format!("os-june-similarity-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-similarity-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2026,7 +2025,7 @@ mod tests {
         // would force the canceller to track a time-varying path, which is
         // not the scenario this tier targets), and the user's reply lands
         // after the remote speech ends.
-        let dir = std::env::temp_dir().join(format!("os-june-erle-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-erle-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2131,7 +2130,7 @@ mod tests {
         // large echo lag that tail is longer than the remainder floor and must
         // still be scored and trimmed, not kept because it left the unshifted
         // overlap window.
-        let dir = std::env::temp_dir().join(format!("os-june-tail-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-tail-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2186,7 +2185,7 @@ mod tests {
         // would delete their genuine words. Without a corroborated echo path
         // nothing may be trimmed.
         let dir =
-            std::env::temp_dir().join(format!("os-june-headphones-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-headphones-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2242,7 +2241,7 @@ mod tests {
         // while the genuine quiet interjection from the headphones phase
         // survives.
         let dir =
-            std::env::temp_dir().join(format!("os-june-late-echo-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-late-echo-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2312,10 +2311,8 @@ mod tests {
         // bleed, so no session lag can be latched from turn heads at all. The
         // dominated overlap must earn its own probe (scanning past the head)
         // and be trimmed.
-        let dir = std::env::temp_dir().join(format!(
-            "os-june-mid-turn-echo-test-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("clovy-mid-turn-echo-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -2368,7 +2365,7 @@ mod tests {
         // original misattribution. The all-genuine-but-dominated pattern must
         // trigger a per-overlap re-probe that recovers the right lag.
         let dir =
-            std::env::temp_dir().join(format!("os-june-stale-lag-test-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-stale-lag-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");

@@ -50,7 +50,7 @@ function session(overrides: Partial<AgentSessionDto> = {}): AgentSessionDto {
     status: "idle",
     model: "model-a",
     safetyMode: "sandboxed",
-    workspacePath: "/tmp/june/workspace",
+    workspacePath: "/tmp/clovy/workspace",
     source: "user",
     createdAt: "2026-07-22T00:00:00.000Z",
     updatedAt: "2026-07-22T00:00:00.000Z",

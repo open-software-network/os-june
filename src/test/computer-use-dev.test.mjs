@@ -23,17 +23,17 @@ describe("Computer use development identity", () => {
     const first = computerUseBundleIdentifier({
       baseIdentifier,
       profile: "debug",
-      worktreeRoot: "/tmp/june-worktree-a",
+      worktreeRoot: "/tmp/clovy-worktree-a",
     });
     const same = computerUseBundleIdentifier({
       baseIdentifier,
       profile: "debug",
-      worktreeRoot: "/tmp/june-worktree-a",
+      worktreeRoot: "/tmp/clovy-worktree-a",
     });
     const second = computerUseBundleIdentifier({
       baseIdentifier,
       profile: "debug",
-      worktreeRoot: "/tmp/june-worktree-b",
+      worktreeRoot: "/tmp/clovy-worktree-b",
     });
 
     expect(first).toBe(same);
@@ -54,7 +54,7 @@ describe("Computer use development identity", () => {
 
 describe("Computer use development restart", () => {
   it("removes only staged debug helper bundles", () => {
-    const worktreeRoot = mkdtempSync(path.join(tmpdir(), "june-computer-use-dev-test-"));
+    const worktreeRoot = mkdtempSync(path.join(tmpdir(), "clovy-computer-use-dev-test-"));
     temporaryDirectories.push(worktreeRoot);
     const bundleName = "June Computer Use Driver.app";
     const directBundle = path.join(
@@ -105,7 +105,7 @@ describe("Computer use development restart", () => {
     const run = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
     const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
     const appBundleIdentifier = "co.opensoftware.june.codex.jun278";
-    const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
+    const bundlePath = "/tmp/clovy-worktree/.tauri-helper/June Computer Use Driver.app";
 
     expect(
       resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),
@@ -141,7 +141,7 @@ describe("Computer use development restart", () => {
     );
     const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
     const appBundleIdentifier = "co.opensoftware.june";
-    const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
+    const bundlePath = "/tmp/clovy-worktree/.tauri-helper/June Computer Use Driver.app";
 
     expect(
       resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),
@@ -161,7 +161,7 @@ describe("Computer use development restart", () => {
     const run = vi.fn((_bin, args) => (args[0] === "reset" ? helperMiss : { status: 0 }));
     const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
     const appBundleIdentifier = "co.opensoftware.june";
-    const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
+    const bundlePath = "/tmp/clovy-worktree/.tauri-helper/June Computer Use Driver.app";
 
     expect(() =>
       resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),
@@ -185,7 +185,7 @@ describe("Computer use development restart", () => {
     );
     const helperBundleIdentifier = "co.opensoftware.june.computer-use-driver.dev.w123456789abc";
     const appBundleIdentifier = "co.opensoftware.june";
-    const bundlePath = "/tmp/june-worktree/.tauri-helper/June Computer Use Driver.app";
+    const bundlePath = "/tmp/clovy-worktree/.tauri-helper/June Computer Use Driver.app";
 
     expect(() =>
       resetComputerUseDevGrants({ bundlePath, helperBundleIdentifier, appBundleIdentifier }, run),

@@ -10,7 +10,9 @@
       // module bundle runs, avoiding a light-mode flash on dark systems.
       (function () {
         try {
-          var stored = localStorage.getItem("os-june:theme");
+          var stored =
+            localStorage.getItem("os-clovy:theme") ||
+            localStorage.getItem("os-june:theme");
           var resolved =
             stored === "light" || stored === "dark"
               ? stored
@@ -21,7 +23,9 @@
           // Pre-paint brand accent + surface wash. Keep the id->[accent, wash]
           // map in sync with src/lib/brand.ts so a non-default accent doesn't
           // flash sage first.
-          var brand = localStorage.getItem("os-june:brand");
+          var brand =
+            localStorage.getItem("os-clovy:brand") ||
+            localStorage.getItem("os-june:brand");
           var brands = {
             clay: ["#b5551f", "#976851"],
             rose: ["#a5655c", "#9e6961"],
@@ -44,7 +48,9 @@
           // Pre-paint text-size multiplier. Keep the id->multiplier map in sync
           // with src/lib/font-scale.ts so a non-default size doesn't flash the
           // base scale before the bundle runs.
-          var scale = localStorage.getItem("os-june:font-scale");
+          var scale =
+            localStorage.getItem("os-clovy:font-scale") ||
+            localStorage.getItem("os-june:font-scale");
           var scales = { default: 1, large: 1.1, larger: 1.2 };
           document.documentElement.style.setProperty(
             "--font-scale",

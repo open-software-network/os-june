@@ -152,6 +152,7 @@ describe("OnboardingFlow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    window.history.replaceState({}, "", "/");
     emitDictationEvent = undefined;
     mocks.listen.mockImplementation((eventName: string, handler: ListenHandler) => {
       if (eventName === "dictation-event") emitDictationEvent = handler;
@@ -218,6 +219,22 @@ describe("OnboardingFlow", () => {
       }),
     });
   }
+
+  it("prefers the Clovy demo-step query parameter", async () => {
+    window.history.replaceState({}, "", "/?clovyDemoStep=mood&juneDemoStep=permissions");
+
+    render(<OnboardingFlow {...flowProps()} />);
+
+    expect(await screen.findByRole("heading", { name: "Choose my personality" })).toBeVisible();
+  });
+
+  it("accepts the June-era demo-step query parameter as a fallback", async () => {
+    window.history.replaceState({}, "", "/?juneDemoStep=permissions");
+
+    render(<OnboardingFlow {...flowProps()} />);
+
+    expect(await screen.findByRole("heading", { name: "Let Clovy listen and type" })).toBeVisible();
+  });
 
   function stubNavigatorPlatform(platform: string, userAgent: string) {
     const ownPlatform = Object.getOwnPropertyDescriptor(navigator, "platform");
@@ -797,7 +814,7 @@ describe("subscribeToOnboardingComplete", () => {
     // BroadcastChannel message for the same completion; the guard collapses
     // them into a single invocation.
     localStorage.setItem("clovy.onboarding.completedVersion", "999");
-    window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "clovy.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 
     expect(callback).toHaveBeenCalledOnce();
@@ -810,7 +827,7 @@ describe("subscribeToOnboardingComplete", () => {
     unsubscribe();
 
     localStorage.setItem("clovy.onboarding.completedVersion", "999");
-    window.dispatchEvent(new StorageEvent("storage", { key: "june.onboarding.completedVersion" }));
+    window.dispatchEvent(new StorageEvent("storage", { key: "clovy.onboarding.completedVersion" }));
     window.dispatchEvent(new Event(ONBOARDING_COMPLETED_EVENT));
 
     expect(callback).not.toHaveBeenCalled();

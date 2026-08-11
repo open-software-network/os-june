@@ -297,7 +297,10 @@ fn ensure_readable(path: &Path) -> Result<(), AppError> {
 }
 
 fn ensure_writable(path: &Path) -> Result<(), AppError> {
-    let probe = path.join(format!(".june-obsidian-write-probe-{}", std::process::id()));
+    let probe = path.join(format!(
+        ".clovy-obsidian-write-probe-{}",
+        std::process::id()
+    ));
     let result = OpenOptions::new()
         .create_new(true)
         .write(true)

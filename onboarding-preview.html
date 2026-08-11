@@ -11,12 +11,12 @@
     open http://localhost:1421/onboarding-preview.html
 
   Console helpers once it's open:
-    june.replayOnboarding()            restart the wizard from step 1
-    june.replayOnboarding("permissions")
+    clovy.replayOnboarding()           restart the wizard from step 1
+    clovy.replayOnboarding("permissions")
                                        jump to a step (sign-in, permissions,
                                        telemetry, area, mood)
-    __JUNE_STUB__.signOut()            back to the signed-out welcome pitch
-    localStorage.setItem("os-june:theme", "dark"); location.reload()
+    __CLOVY_STUB__.signOut()           back to the signed-out welcome pitch
+    localStorage.setItem("os-clovy:theme", "dark"); location.reload()
 
   The preview opens signed out — the real first-run experience. Clicking
   "Continue with OpenSoftware" fake-signs-in as Sam Carter.
@@ -40,9 +40,13 @@
         try {
           var requested = new URLSearchParams(location.search).get("theme");
           if (requested === "light" || requested === "dark") {
+            localStorage.setItem("os-clovy:theme", requested);
             localStorage.setItem("os-june:theme", requested);
           }
-          var stored = requested || localStorage.getItem("os-june:theme");
+          var stored =
+            requested ||
+            localStorage.getItem("os-clovy:theme") ||
+            localStorage.getItem("os-june:theme");
           var resolved =
             stored === "light" || stored === "dark"
               ? stored
@@ -98,9 +102,15 @@
 
         // The wizard always replays in the preview.
         try {
+          localStorage.removeItem("clovy.onboarding.completedVersion");
           localStorage.removeItem("june.onboarding.completedVersion");
-          if (step) localStorage.setItem("june.onboarding.resumeStep", step);
-          else localStorage.removeItem("june.onboarding.resumeStep");
+          if (step) {
+            localStorage.setItem("clovy.onboarding.resumeStep", step);
+            localStorage.setItem("june.onboarding.resumeStep", step);
+          } else {
+            localStorage.removeItem("clovy.onboarding.resumeStep");
+            localStorage.removeItem("june.onboarding.resumeStep");
+          }
         } catch (e) {}
 
         // A plainly-not-Clovy account for the signed-in preview path.
@@ -145,7 +155,7 @@
         // and the Settings > General > Privacy toggle.
         let p3aSettings = { enabled: false, consentVersion: 1, consentedAtWeek: null };
 
-        window.__JUNE_STUB__ = {
+        window.__CLOVY_STUB__ = {
           emitEvent,
           p3aEvents,
           signOut() {
@@ -153,6 +163,8 @@
             location.href = location.pathname;
           },
         };
+        // Compatibility alias for existing local preview notes.
+        window.__JUNE_STUB__ = window.__CLOVY_STUB__;
 
         // @tauri-apps/api >= 2.11 tears listeners down through this separate
         // global; without it every unlisten throws in the browser preview.

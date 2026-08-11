@@ -145,7 +145,7 @@ fn http_client() -> Result<&'static reqwest::Client, AppError> {
                 .connect_timeout(HTTP_CONNECT_TIMEOUT)
                 .pool_idle_timeout(Duration::from_secs(90))
                 .tcp_keepalive(Some(Duration::from_secs(30)))
-                .user_agent("os-june/0.1 notion-hosted-mcp-preview")
+                .user_agent("clovy/0.1 notion-hosted-mcp-preview")
                 .build()
                 .map_err(|error| error.to_string())
         })

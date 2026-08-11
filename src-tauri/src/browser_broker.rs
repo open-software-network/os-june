@@ -2710,7 +2710,7 @@ mod tests {
         );
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "job-1".into(),
-            server_name: "june_browser_routine_job1".into(),
+            server_name: "clovy_browser_routine_job1".into(),
             token: "token".into(),
             enabled: true,
         });
@@ -2742,7 +2742,7 @@ mod tests {
         );
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "routine-independent".into(),
-            server_name: "june_browser_routine_independent".into(),
+            server_name: "clovy_browser_routine_independent".into(),
             token: "routine-token".into(),
             enabled: true,
         });
@@ -2782,7 +2782,7 @@ mod tests {
         );
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "routine-revoked".into(),
-            server_name: "june_browser_routine_revoked".into(),
+            server_name: "clovy_browser_routine_revoked".into(),
             token: "routine-token".into(),
             enabled: true,
         });
@@ -2797,7 +2797,7 @@ mod tests {
 
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "routine-revoked".into(),
-            server_name: "june_browser_routine_revoked".into(),
+            server_name: "clovy_browser_routine_revoked".into(),
             token: "routine-token".into(),
             enabled: false,
         });
@@ -2838,7 +2838,7 @@ mod tests {
         );
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "routine-downgraded".into(),
-            server_name: "june_browser_routine_downgraded".into(),
+            server_name: "clovy_browser_routine_downgraded".into(),
             token: "routine-token".into(),
             enabled: true,
         });
@@ -3247,7 +3247,7 @@ mod tests {
         }
         broker.set_routine_grant(RoutineBrowserGrant {
             job_id: "routine-1".into(),
-            server_name: "june_browser_routine_1".into(),
+            server_name: "clovy_browser_routine_1".into(),
             token: "routine-token".into(),
             enabled: true,
         });

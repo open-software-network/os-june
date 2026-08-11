@@ -59,6 +59,9 @@ pub const SANDBOXED_ROUTINE_BASE_TOOLSETS: &[&str] = &[
     "context_engine",
 ];
 
+// These June-era server and prefix values are released persisted toolset ids.
+// New source refers to them only as compatibility contracts; changing the
+// strings would strand saved routine and connector policy.
 pub const JUNE_GMAIL_SERVER: &str = "june_gmail";
 pub const JUNE_GMAIL_ACTIONS_SERVER: &str = "june_gmail_actions";
 pub const JUNE_GCAL_SERVER: &str = "june_gcal";

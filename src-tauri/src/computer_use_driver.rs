@@ -124,7 +124,7 @@ async fn main() {
         return;
     }
     let result = match args.as_slice() {
-        [mode] if mode == "mcp" && parent_is_june() => serve_stdio().await,
+        [mode] if mode == "mcp" && parent_is_clovy() => serve_stdio().await,
         [mode] if mode == "mcp-daemon" => serve_daemon().await,
         [mode] if mode == "mcp" => Err(anyhow::anyhow!(
             "the helper must be launched directly by Clovy"
@@ -172,7 +172,7 @@ async fn serve_daemon() -> anyhow::Result<()> {
         .pid()
         .ok_or_else(|| anyhow::anyhow!("the private Clovy peer has no process identity"))?;
     let peer_audit_token = socket_peer_audit_token(&stream)?;
-    if !process_is_june(peer_pid, Some(&peer_audit_token)) {
+    if !process_is_clovy(peer_pid, Some(&peer_audit_token)) {
         anyhow::bail!("the private helper accepts only Clovy");
     }
     let (reader, writer) = stream.into_split();
@@ -346,12 +346,12 @@ where
 }
 
 #[cfg(target_os = "macos")]
-fn parent_is_june() -> bool {
-    process_is_june(unsafe { libc::getppid() }, None)
+fn parent_is_clovy() -> bool {
+    process_is_clovy(unsafe { libc::getppid() }, None)
 }
 
 #[cfg(target_os = "macos")]
-fn process_is_june(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
+fn process_is_clovy(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
     let Some(process_path) = process_path(pid) else {
         return false;
     };
@@ -382,7 +382,7 @@ fn process_is_june(pid: libc::pid_t, audit_token: Option<&[u8]>) -> bool {
     // the byte-identical product-named launcher materialized by the Tauri dev runner,
     // both inside this checkout's Cargo target tree.
     cfg!(debug_assertions)
-        && development_process_path_is_june(
+        && development_process_path_is_clovy(
             &process_path,
             &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"),
         )
@@ -394,7 +394,7 @@ fn packaged_main_executable(outer_app: &std::path::Path) -> PathBuf {
 }
 
 #[cfg(target_os = "macos")]
-fn development_process_path_is_june(
+fn development_process_path_is_clovy(
     process_path: &std::path::Path,
     target_root: &std::path::Path,
 ) -> bool {
@@ -1150,15 +1150,15 @@ mod tests {
     fn development_peer_accepts_cargo_and_tauri_runner_names_only() {
         let target = std::path::Path::new("/repo/src-tauri/target");
 
-        assert!(development_process_path_is_june(
+        assert!(development_process_path_is_clovy(
             std::path::Path::new("/repo/src-tauri/target/debug/os-june"),
             target,
         ));
-        assert!(!development_process_path_is_june(
-            std::path::Path::new("/repo/src-tauri/target/debug/june-lookalike"),
+        assert!(!development_process_path_is_clovy(
+            std::path::Path::new("/repo/src-tauri/target/debug/clovy-lookalike"),
             target,
         ));
-        assert!(!development_process_path_is_june(
+        assert!(!development_process_path_is_clovy(
             std::path::Path::new("/tmp/target/debug/June"),
             target,
         ));
@@ -1245,11 +1245,11 @@ mod tests {
         let launcher = profile.join("Clovy JUN-278 Codex");
         std::fs::hard_link(&cargo_binary, &launcher).expect("Tauri launcher");
 
-        assert!(development_process_path_is_june(&launcher, &target));
+        assert!(development_process_path_is_clovy(&launcher, &target));
 
         let copied_lookalike = profile.join("Clovy JUN-279 Codex");
         std::fs::copy(&cargo_binary, &copied_lookalike).expect("copied lookalike");
-        assert!(!development_process_path_is_june(
+        assert!(!development_process_path_is_clovy(
             &copied_lookalike,
             &target
         ));

@@ -73,7 +73,7 @@ test("continues model inference after a host tool result", async () => {
       },
     };
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const events: EngineEvent[] = [];
   const input: EngineRunInput = {
     sessionId: "session-1",
@@ -85,7 +85,7 @@ test("continues model inference after a host tool result", async () => {
       model: "private-auto",
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "What skills are installed?",
       history: [],
@@ -162,7 +162,7 @@ test("surfaces a host tool exception as a terminal tagged failure", async () => 
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const events: EngineEvent[] = [];
 
   await assert.rejects(
@@ -175,7 +175,7 @@ test("surfaces a host tool exception as a terminal tagged failure", async () => 
       params: {
         model: "private-auto",
         instructions: "Use the tool.",
-        workspace: "/tmp/june-workspace",
+        workspace: "/tmp/clovy-workspace",
         safetyMode: "sandboxed",
         input: "Run it",
         history: [],
@@ -234,7 +234,7 @@ test("preserves credit classification from a native host tool failure", async ()
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await assert.rejects(
     engine.start({
@@ -246,7 +246,7 @@ test("preserves credit classification from a native host tool failure", async ()
       params: {
         model: "private-auto",
         instructions: "Use the tool.",
-        workspace: "/tmp/june-workspace",
+        workspace: "/tmp/clovy-workspace",
         safetyMode: "sandboxed",
         input: "Generate an image",
         history: [],
@@ -321,7 +321,7 @@ test("returns invalid model tool arguments for self-correction", async () => {
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   const result = await engine.start({
     sessionId: "session-invalid-arguments",
@@ -332,7 +332,7 @@ test("returns invalid model tool arguments for self-correction", async () => {
     params: {
       model: "private-auto",
       instructions: "Use the tool.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Write a value",
       history: [],
@@ -378,7 +378,7 @@ test("replays a persisted tool group into the next model turn", async () => {
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await engine.start({
     sessionId: "session-continuation",
@@ -389,7 +389,7 @@ test("replays a persisted tool group into the next model turn", async () => {
     params: {
       model: "private-auto",
       instructions: "Answer from the complete conversation history.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "What did that tool find?",
       history: [
@@ -475,7 +475,7 @@ test("replays context summaries as fenced untrusted user data", async () => {
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await engine.start({
     sessionId: "session-summary-context",
@@ -486,7 +486,7 @@ test("replays context summaries as fenced untrusted user data", async () => {
     params: {
       model: "private-auto",
       instructions: "Answer the current user.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Continue.",
       history: [
@@ -530,7 +530,7 @@ test("replays context summaries as fenced untrusted user data", async () => {
 });
 
 test("sends current and persisted image attachments as vision input", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "june-agent-images-"));
+  const directory = await mkdtemp(join(tmpdir(), "clovy-agent-images-"));
   const previousImage = join(directory, "previous.png");
   const currentImage = join(directory, "current.png");
   await writeFile(previousImage, Buffer.from("previous image"));
@@ -554,7 +554,7 @@ test("sends current and persisted image attachments as vision input", async () =
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await engine.start({
     sessionId: "session-vision",
@@ -639,7 +639,7 @@ test("serializes an approval interruption after assistant history", async () => 
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   const result = await engine.start({
     sessionId: "session-history",
@@ -650,7 +650,7 @@ test("serializes an approval interruption after assistant history", async () => 
     params: {
       model: "private-auto",
       instructions: "Use the requested file tool.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Create the file.",
       history: [
@@ -731,7 +731,7 @@ test("keeps managed MCP schemas non-strict and approval arguments minimal", asyn
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const parameters = {
     type: "object",
     properties: {
@@ -754,7 +754,7 @@ test("keeps managed MCP schemas non-strict and approval arguments minimal", asyn
     params: {
       model: "private-auto",
       instructions: "Create the requested Linear issue.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Create another sample issue from budi.",
       history: [],
@@ -839,7 +839,7 @@ test("forwards an explicit null from a non-strict MCP update", async () => {
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   const result = await engine.start({
     sessionId: "session-linear-update",
@@ -850,7 +850,7 @@ test("forwards an explicit null from a non-strict MCP update", async () => {
     params: {
       model: "private-auto",
       instructions: "Update the requested Linear issue.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Remove the assignee from PER-10.",
       history: [],
@@ -940,11 +940,11 @@ test("resumes a serialized approval and continues after the host tool result", a
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const commonParams = {
     model: "private-auto",
     instructions: "Use the requested file tool.",
-    workspace: "/tmp/june-workspace",
+    workspace: "/tmp/clovy-workspace",
     safetyMode: "sandboxed" as const,
     tools: [
       {
@@ -984,6 +984,7 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.equal(approval.callId, "call-write-file-resume");
   assert.ok(paused.serializedState);
   const nativeStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(nativeStateEnvelope.clovyVersion, 1);
   assert.equal(nativeStateEnvelope.juneVersion, 1);
   assert.equal(nativeStateEnvelope.reasoningWireFormat, "reasoning");
 
@@ -995,7 +996,11 @@ test("resumes a serialized approval and continues after the host tool result", a
     takeSteering: () => [],
     params: {
       ...commonParams,
-      serializedState: paused.serializedState,
+      serializedState: JSON.stringify({
+        juneVersion: nativeStateEnvelope.juneVersion,
+        sdkState: nativeStateEnvelope.sdkState,
+        reasoningWireFormat: nativeStateEnvelope.reasoningWireFormat,
+      }),
       resolutions: [
         {
           interruptionId: paused.interruptions[0]!.id,
@@ -1099,11 +1104,11 @@ test("preflights a Notion action before interruption and again before approved e
       }],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const commonParams = {
     model: "private-auto",
     instructions: "Update the requested Notion page.",
-    workspace: "/tmp/june-workspace",
+    workspace: "/tmp/clovy-workspace",
     safetyMode: "sandboxed" as const,
     tools: [{
       name: "notion-update-page",
@@ -1223,7 +1228,7 @@ test("keeps concurrent Notion preflights bound to their original tool call ids",
       }],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   const paused = await engine.start({
     sessionId: "session-notion-concurrent",
@@ -1234,7 +1239,7 @@ test("keeps concurrent Notion preflights bound to their original tool call ids",
     params: {
       model: "private-auto",
       instructions: "Update both Notion pages.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "Update both pages.",
       history: [],
@@ -1358,7 +1363,7 @@ test("preserves observed reasoning_content for an unlisted model alias", async (
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
   const input: EngineRunInput = {
     sessionId: "session-glm-reasoning",
     runId: "run-glm-reasoning",
@@ -1369,7 +1374,7 @@ test("preserves observed reasoning_content for an unlisted model alias", async (
       model: UNLISTED_GLM_MODEL,
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "What skills are installed?",
       history: [],
@@ -1504,7 +1509,7 @@ test("pins an Auto-routed GLM model across a tool-call continuation", async () =
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await engine.start({
     sessionId: "session-auto-glm",
@@ -1516,7 +1521,7 @@ test("pins an Auto-routed GLM model across a tool-call continuation", async () =
       model: AUTO_RUN_MODEL,
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "What skills are installed?",
       history: [],
@@ -1630,7 +1635,7 @@ test("pins an Auto-routed non-GLM model without renaming reasoning", async () =>
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   await engine.start({
     sessionId: "session-kimi",
@@ -1642,7 +1647,7 @@ test("pins an Auto-routed non-GLM model without renaming reasoning", async () =>
       model: "open-software/auto",
       reasoningEffort: "high",
       instructions: "Use list_skills, then answer.",
-      workspace: "/tmp/june-workspace",
+      workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
       input: "What skills are installed?",
       history: [],
@@ -1764,13 +1769,13 @@ test("pins an Auto-routed GLM model across an approval resume", async () => {
       ],
     });
   });
-  await engine.initialize({ clientName: "June", clientVersion: "test" });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
 
   const commonParams = {
     model: AUTO_RUN_MODEL,
     reasoningEffort: "high" as const,
     instructions: "Use list_skills, then answer.",
-    workspace: "/tmp/june-workspace",
+    workspace: "/tmp/clovy-workspace",
     safetyMode: "sandboxed" as const,
     tools: [
       {
@@ -1803,6 +1808,7 @@ test("pins an Auto-routed GLM model across an approval resume", async () => {
   assert.equal(paused.interruptions.length, 1);
   assert.ok(paused.serializedState);
   const glmStateEnvelope = JSON.parse(paused.serializedState) as Record<string, unknown>;
+  assert.equal(glmStateEnvelope.clovyVersion, 1);
   assert.equal(glmStateEnvelope.juneVersion, 1);
   assert.equal(glmStateEnvelope.reasoningWireFormat, "reasoning_content");
   // The start result must carry both observational route metadata and the

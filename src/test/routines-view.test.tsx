@@ -182,7 +182,7 @@ beforeEach(() => {
   tauriMocks.routineBrowserAccessGet.mockResolvedValue({ enabled: false });
   tauriMocks.routineBrowserAccessSet.mockImplementation(async (input: { enabled: boolean }) =>
     input.enabled
-      ? { enabled: true, serverName: "june_browser_routine_abc123" }
+      ? { enabled: true, serverName: "clovy_browser_routine_abc123" }
       : { enabled: false },
   );
   tauriMocks.routineTrustRecordRun.mockResolvedValue(null);
@@ -801,7 +801,7 @@ describe("RoutinesView detail", () => {
     expect(mocks.updateRoutine).toHaveBeenCalledWith(
       "abc123",
       expect.objectContaining({
-        enabledToolsets: expect.arrayContaining(["june_browser_routine_abc123"]),
+        enabledToolsets: expect.arrayContaining(["clovy_browser_routine_abc123"]),
       }),
     );
     expect(tauriMocks.connectorsApplyRuntime).toHaveBeenCalled();

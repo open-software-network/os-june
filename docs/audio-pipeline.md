@@ -117,7 +117,7 @@ Tauri commands: `start_recording`, `pause_recording`, `resume_recording`,
 `get_recording_status`, `finish_recording`, `check_recording_source_readiness`,
 `recover_recording`, `get_microphone_permission_state`. Events:
 `recording-telemetry`, `note-processing-progress`, `meeting-end-state-event`,
-and `june://meeting-end-finish`.
+and `clovy://meeting-end-finish`.
 
 ## System-audio helper IPC contract
 

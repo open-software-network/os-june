@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn repairs_stale_small_header_and_reports_true_duration() {
-        let dir = std::env::temp_dir().join(format!("os-june-repair-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-repair-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("system.wav");
         write_wav(&path, 10_000);
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn repairs_oversized_header_to_on_disk_duration_and_still_fails_truncated() {
-        let dir = std::env::temp_dir().join(format!("os-june-repair-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-repair-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("system.wav");
         write_wav(&path, 2_000);
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn leaves_correct_header_with_trailing_chunk_unrepaired() {
-        let dir = std::env::temp_dir().join(format!("os-june-repair-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-repair-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("system.wav");
         write_wav(&path, 2_000);
@@ -484,7 +484,7 @@ mod tests {
         // Hand-built 16-bit PCM WAVE_FORMAT_EXTENSIBLE (0xFFFE) file: hound reads
         // it as PCM and the repair must recognize its layout. Header claims ~0.5s
         // while ~1s of samples are on disk.
-        let dir = std::env::temp_dir().join(format!("os-june-repair-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-repair-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("extensible.wav");
 
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn leaves_garbage_file_as_not_readable() {
-        let dir = std::env::temp_dir().join(format!("os-june-repair-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-repair-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("garbage.bin");
         std::fs::write(&path, b"not a wav file at all, just some bytes").unwrap();
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn flags_structurally_valid_silent_wav_without_failing_validation() {
-        let dir = std::env::temp_dir().join(format!("os-june-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("microphone.wav");
         let spec = WavSpec {
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn does_not_flag_normal_wav_as_silent() {
-        let dir = std::env::temp_dir().join(format!("os-june-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("microphone.wav");
         write_wav(&path, 1_000);

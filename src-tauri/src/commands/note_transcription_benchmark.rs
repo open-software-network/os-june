@@ -184,7 +184,7 @@ fn remove_benchmark_observer(recording_session_id: &str) {
 }
 
 pub(super) async fn benchmark_repositories(dir: &tempfile::TempDir) -> Repositories {
-    let database_path = dir.path().join("june-benchmark.sqlite3");
+    let database_path = dir.path().join("clovy-benchmark.sqlite3");
     let options = sqlite_connect_options(&database_path)
         .expect("SQLite options")
         .create_if_missing(true)

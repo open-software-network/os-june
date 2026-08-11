@@ -59,7 +59,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../../lib/agent-events";
 import { errorCode, messageFromError } from "../../lib/errors";
-import { NOTE_DND_MIME } from "../../lib/dnd";
+import { LEGACY_NOTE_DND_MIME, NOTE_DND_MIME } from "../../lib/dnd";
 import { useDismiss } from "../../lib/use-dismiss";
 import { attachScrollThumbFade } from "../../lib/scroll-thumb-fade";
 import { useScrollFade } from "../../lib/use-scroll-fade";
@@ -1531,6 +1531,7 @@ function NoteRow({
   function handleDragStart(event: DragEvent<HTMLElement>) {
     event.dataTransfer.effectAllowed = "link";
     event.dataTransfer.setData(NOTE_DND_MIME, note.id);
+    event.dataTransfer.setData(LEGACY_NOTE_DND_MIME, note.id);
     event.dataTransfer.setData("text/plain", note.id);
 
     const node = event.currentTarget;

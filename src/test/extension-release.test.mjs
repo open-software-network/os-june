@@ -127,7 +127,7 @@ describe("Chrome extension release versioning", () => {
 
 describe("stable desktop release provenance", () => {
   it("binds every published desktop asset to the exact version and source commit", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "june-stable-release-"));
+    const directory = await mkdtemp(join(tmpdir(), "clovy-stable-release-"));
     for (const name of STABLE_ASSET_NAMES) {
       await writeFile(join(directory, name), `release bytes for ${name}\n`);
     }
@@ -160,7 +160,7 @@ describe("stable desktop release provenance", () => {
   });
 
   it("rejects provenance from a different stable promotion", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "june-stable-identity-"));
+    const directory = await mkdtemp(join(tmpdir(), "clovy-stable-identity-"));
     for (const name of STABLE_ASSET_NAMES) {
       await writeFile(join(directory, name), name);
     }

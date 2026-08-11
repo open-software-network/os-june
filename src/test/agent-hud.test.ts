@@ -533,7 +533,7 @@ describe("agent HUD", () => {
     expect(stackElement()).toHaveTextContent("Why is the microphone muted?");
 
     localStorage.setItem(
-      "june.agent.manuallyTitledSessions",
+      "clovy.agent.manuallyTitledSessions",
       JSON.stringify({ "session-1": "manual" }),
     );
     emitSessionsChanged({

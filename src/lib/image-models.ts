@@ -29,7 +29,7 @@ function imageModel({
 // part of the text/ASR model catalog the backend serves, so the picker uses
 // this local snapshot instead of fetching. Image generation IS metered: the
 // backend charges a flat per-image credit price keyed by model id
-// (`image_pricing` in june-config) and rejects any model without one
+// (`image_pricing` in clovy-config) and rejects any model without one
 // (`model_not_priced`). Keep these ids in sync with that map — a model listed
 // here but unpriced there fails at generation time.
 export const IMAGE_MODELS: VeniceModelDto[] = [

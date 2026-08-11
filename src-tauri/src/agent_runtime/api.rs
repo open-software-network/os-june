@@ -1,3 +1,7 @@
+use super::skill_identity::{
+    canonical_skill_id, canonical_skill_ids, read_skill_ids, skill_content_for_id, skill_file,
+    write_skill_ids,
+};
 use super::{
     repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
     AgentRuntimeHost, AgentSafetyMode, MessageAttachmentPayload,
@@ -693,17 +697,16 @@ pub async fn start_agent_run(
     )
     .await?;
     let available_skills = agent_skill_catalog(&app, &repository).await?;
-    let requested_skills = request
-        .enabled_skill_ids
-        .iter()
-        .filter(|id| {
-            available_skills.iter().any(|skill| {
-                skill.get("id").and_then(Value::as_str) == Some(id.as_str())
-                    && skill.get("enabled").and_then(Value::as_bool) == Some(true)
+    let requested_skills =
+        canonical_skill_ids(request.enabled_skill_ids.iter().map(String::as_str))
+            .into_iter()
+            .filter(|id| {
+                available_skills.iter().any(|skill| {
+                    skill.get("id").and_then(Value::as_str) == Some(id.as_str())
+                        && skill.get("enabled").and_then(Value::as_bool) == Some(true)
+                })
             })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
     let reasoning_effort = normalize_reasoning_effort(request.reasoning_effort.as_deref())?;
     let run = repository
         .create_run(&session.id, &model, reasoning_effort)
@@ -1822,13 +1825,16 @@ pub async fn list_agent_skills(app: AppHandle) -> Result<Vec<Value>, AppError> {
 #[tauri::command]
 pub async fn read_agent_skill(app: AppHandle, skill_id: String) -> Result<Value, AppError> {
     validate_skill_id(&skill_id)?;
+    let canonical_id = canonical_skill_id(&skill_id);
     for (root, managed) in skill_roots(&app) {
-        let path = root.join(&skill_id).join("SKILL.md");
-        if path.is_file() {
-            let content = tokio::fs::read_to_string(path)
-                .await
-                .map_err(|error| AppError::new("agent_skill_read_failed", error.to_string()))?;
-            return Ok(json!({ "content": content, "readOnly": !managed }));
+        for read_id in read_skill_ids(canonical_id) {
+            let path = skill_file(&root, read_id);
+            if path.is_file() {
+                let content = tokio::fs::read_to_string(path)
+                    .await
+                    .map_err(|error| AppError::new("agent_skill_read_failed", error.to_string()))?;
+                return Ok(json!({ "content": content, "readOnly": !managed }));
+            }
         }
     }
     Err(AppError::new(
@@ -1843,6 +1849,7 @@ pub async fn update_agent_skill(
     request: UpdateSkillRequest,
 ) -> Result<Value, AppError> {
     validate_skill_id(&request.skill_id)?;
+    let canonical_id = canonical_skill_id(&request.skill_id).to_string();
     if request.content.len() > 512 * 1024 {
         return Err(AppError::new(
             "agent_skill_too_large",
@@ -1858,36 +1865,58 @@ pub async fn update_agent_skill(
                 "Managed skill storage is unavailable.",
             )
         })?;
-    let path = root.join(&request.skill_id).join("SKILL.md");
-    if !path.is_file() {
+    if !read_skill_ids(&canonical_id)
+        .into_iter()
+        .any(|read_id| skill_file(&root, read_id).is_file())
+    {
         return Err(AppError::new(
             "agent_skill_read_only",
             "User-global skills are read-only in Clovy.",
         ));
     }
-    let temporary = path.with_extension("md.tmp");
-    tokio::fs::write(&temporary, request.content)
-        .await
-        .map_err(|error| AppError::new("agent_skill_write_failed", error.to_string()))?;
-    tokio::fs::rename(&temporary, &path)
-        .await
-        .map_err(|error| AppError::new("agent_skill_write_failed", error.to_string()))?;
+    write_managed_skill_content(&root, &canonical_id, &request.content).await?;
     let skill = repository(&app)
         .await?
         .skills()
         .await?
         .into_iter()
-        .find(|skill| skill.id == request.skill_id)
+        .find(|skill| skill.id == canonical_id)
         .map(|skill| skill.enabled)
         .unwrap_or(true);
-    let description = tokio::fs::read_to_string(&path)
-        .await
-        .ok()
-        .and_then(|text| skill_description(&text))
-        .unwrap_or_else(|| "Clovy agent skill".into());
+    let description =
+        skill_description(&request.content).unwrap_or_else(|| "Clovy agent skill".into());
     Ok(
-        json!({ "id": request.skill_id, "name": request.skill_id, "description": description, "source": "managed", "enabled": skill, "editable": true }),
+        json!({ "id": canonical_id, "name": canonical_id, "description": description, "source": "managed", "enabled": skill, "editable": true }),
     )
+}
+
+async fn write_managed_skill_content(
+    root: &Path,
+    skill_id: &str,
+    content: &str,
+) -> Result<(), AppError> {
+    for write_id in write_skill_ids(skill_id) {
+        let content = skill_content_for_id(content, write_id);
+        let path = skill_file(root, write_id);
+        let parent = path.parent().ok_or_else(|| {
+            AppError::new(
+                "agent_skill_write_failed",
+                "Skill path has no parent directory.",
+            )
+        })?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| AppError::new("agent_skill_write_failed", error.to_string()))?;
+        let temporary = path.with_extension("md.tmp");
+        tokio::fs::write(&temporary, content)
+            .await
+            .map_err(|error| AppError::new("agent_skill_write_failed", error.to_string()))?;
+        if let Err(error) = tokio::fs::rename(&temporary, &path).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(AppError::new("agent_skill_write_failed", error.to_string()));
+        }
+    }
+    Ok(())
 }
 
 fn validate_skill_id(skill_id: &str) -> Result<(), AppError> {
@@ -1913,26 +1942,37 @@ pub(crate) async fn agent_skill_catalog(
         .skills()
         .await?
         .into_iter()
-        .map(|skill| (skill.id, skill.enabled))
+        .map(|skill| (canonical_skill_id(&skill.id).to_string(), skill.enabled))
         .collect();
+    agent_skill_catalog_from_roots(skill_roots(app), &overrides).await
+}
+
+async fn agent_skill_catalog_from_roots(
+    roots: Vec<(PathBuf, bool)>,
+    overrides: &HashMap<String, bool>,
+) -> Result<Vec<Value>, AppError> {
     let mut result = Vec::new();
-    for (root, managed) in skill_roots(app) {
+    for (root, managed) in roots {
         let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
             continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            let skill_file = entry.path().join("SKILL.md");
-            if !skill_file.is_file() {
+            let stored_skill_file = entry.path().join("SKILL.md");
+            if !stored_skill_file.is_file() {
                 continue;
             }
-            let id = entry.file_name().to_string_lossy().into_owned();
+            let stored_id = entry.file_name().to_string_lossy().into_owned();
+            let id = canonical_skill_id(&stored_id).to_string();
+            if stored_id != id && skill_file(&root, &id).is_file() {
+                continue;
+            }
             if result
                 .iter()
                 .any(|value: &Value| value.get("id").and_then(Value::as_str) == Some(&id))
             {
                 continue;
             }
-            let description = tokio::fs::read_to_string(&skill_file)
+            let description = tokio::fs::read_to_string(&stored_skill_file)
                 .await
                 .ok()
                 .and_then(|text| skill_description(&text))
@@ -1948,11 +1988,17 @@ pub async fn set_agent_skill_enabled(
     app: AppHandle,
     request: SetSkillEnabledRequest,
 ) -> Result<Value, AppError> {
+    validate_skill_id(&request.skill_id)?;
+    let canonical_id = canonical_skill_id(&request.skill_id).to_string();
     let managed_root = skill_roots(&app)
         .into_iter()
         .find(|(_, managed)| *managed)
         .map(|(root, _)| root)
-        .filter(|root| root.join(&request.skill_id).join("SKILL.md").is_file());
+        .filter(|root| {
+            read_skill_ids(&canonical_id)
+                .into_iter()
+                .any(|read_id| skill_file(root, read_id).is_file())
+        });
     let Some(managed_root) = managed_root else {
         return Err(AppError::new(
             "agent_skill_read_only",
@@ -1961,14 +2007,16 @@ pub async fn set_agent_skill_enabled(
     };
     let skill = repository(&app)
         .await?
-        .set_skill_enabled(&request.skill_id, request.enabled, true)
+        .set_skill_enabled(&canonical_id, request.enabled, true)
         .await?;
-    let description =
-        tokio::fs::read_to_string(managed_root.join(&request.skill_id).join("SKILL.md"))
-            .await
-            .ok()
-            .and_then(|text| skill_description(&text))
-            .unwrap_or_else(|| "Clovy agent skill".into());
+    let mut description = None;
+    for read_id in read_skill_ids(&canonical_id) {
+        if let Ok(text) = tokio::fs::read_to_string(skill_file(&managed_root, read_id)).await {
+            description = skill_description(&text);
+            break;
+        }
+    }
+    let description = description.unwrap_or_else(|| "Clovy agent skill".into());
     Ok(
         json!({ "id": skill.id, "name": skill.id, "description": description, "source": "managed", "enabled": skill.enabled, "editable": true }),
     )
@@ -2174,7 +2222,7 @@ async fn tool_descriptors(
         { "name": "generate_image", "description": "Generate an image from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" } }, "required": ["prompt"], "additionalProperties": false } },
         { "name": "edit_image", "description": "Edit an image file in the Clovy session workspace and show the result in the conversation.", "parameters": { "type": "object", "properties": { "sourcePath": { "type": "string" }, "instruction": { "type": "string" } }, "required": ["sourcePath", "instruction"], "additionalProperties": false } },
         { "name": "generate_video", "description": "Generate a short video from a text description and show it in the conversation.", "parameters": { "type": "object", "properties": { "prompt": { "type": "string" }, "duration": { "type": "string" }, "aspectRatio": { "type": "string" }, "audio": { "type": "boolean" } }, "required": ["prompt"], "additionalProperties": false } },
-        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in Clovy. When the june-obsidian skill is available, load it before Obsidian note work. Call this tool before every distinct Obsidian task because the user may change or disconnect the vault while the session remains open. If connected is false, do not guess a vault path. If available is false, do not infer or reconstruct its path. A returned path is current discovery only, not write authorization; stay within that vault and use only filesystem operations allowed by the current safety mode.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
+        { "name": "get_obsidian_vault", "description": "Discover the current Obsidian vault selected in Clovy. When the clovy-obsidian skill is available, load it before Obsidian note work. Call this tool before every distinct Obsidian task because the user may change or disconnect the vault while the session remains open. If connected is false, do not guess a vault path. If available is false, do not infer or reconstruct its path. A returned path is current discovery only, not write authorization; stay within that vault and use only filesystem operations allowed by the current safety mode.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
         { "name": "start_recording", "description": "Start a visible Clovy recording only when the user explicitly asks to begin recording now.", "parameters": { "type": "object", "properties": { "sourceMode": { "type": "string", "enum": ["microphoneOnly", "microphonePlusSystem"] } }, "required": [], "additionalProperties": false }, "requiresApproval": true },
         { "name": "stop_recording", "description": "Stop the recording currently visible in Clovy.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false }, "requiresApproval": true },
         { "name": "recording_status", "description": "Check whether Clovy is currently recording and return the active recording metadata.", "parameters": { "type": "object", "properties": {}, "required": [], "additionalProperties": false } },
@@ -3460,7 +3508,7 @@ mod tests {
             &[source.to_string_lossy().into_owned()],
             &[AttachmentMetadataInput {
                 name: "launch-brief.custom".to_string(),
-                media_type: Some("application/x-june-brief".to_string()),
+                media_type: Some("application/x-clovy-brief".to_string()),
             }],
             workspace.path(),
         )
@@ -3471,7 +3519,7 @@ mod tests {
         assert_eq!(attachments[0].name, "launch-brief.custom");
         assert_eq!(
             attachments[0].mime_type.as_deref(),
-            Some("application/x-june-brief")
+            Some("application/x-clovy-brief")
         );
         assert!(PathBuf::from(&attachments[0].path).starts_with(workspace.path()));
         assert_eq!(
@@ -3506,12 +3554,58 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn obsidian_aliases_collapse_to_one_canonical_catalog_entry() {
+        let root = tempfile::tempdir().expect("managed skill root");
+        for (skill_id, description) in [
+            ("clovy-obsidian", "Canonical instructions"),
+            ("june-obsidian", "Legacy instructions"),
+        ] {
+            let path = skill_file(root.path(), skill_id);
+            std::fs::create_dir_all(path.parent().expect("skill parent")).expect("skill directory");
+            std::fs::write(
+                path,
+                format!("---\nname: {skill_id}\ndescription: {description}\n---\n"),
+            )
+            .expect("skill file");
+        }
+        let overrides = HashMap::from([("clovy-obsidian".to_string(), false)]);
+
+        let catalog =
+            agent_skill_catalog_from_roots(vec![(root.path().to_path_buf(), true)], &overrides)
+                .await
+                .expect("skill catalog");
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(catalog[0]["id"], "clovy-obsidian");
+        assert_eq!(catalog[0]["name"], "clovy-obsidian");
+        assert_eq!(catalog[0]["description"], "Canonical instructions");
+        assert_eq!(catalog[0]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn canonical_obsidian_edits_are_written_to_the_rollback_alias_first() {
+        let root = tempfile::tempdir().expect("managed skill root");
+
+        write_managed_skill_content(root.path(), "clovy-obsidian", "edited instructions")
+            .await
+            .expect("dual-write skill");
+
+        for skill_id in ["clovy-obsidian", "june-obsidian"] {
+            let content = tokio::fs::read_to_string(skill_file(root.path(), skill_id))
+                .await
+                .expect("skill alias");
+            assert!(content.contains(&format!("name: {skill_id}")));
+            assert!(content.ends_with("edited instructions"));
+        }
+    }
+
     #[test]
     fn bundled_obsidian_skill_has_correct_tool_reference_and_frontmatter() {
         let skill_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("agent-skills")
-            .join("june-obsidian")
+            .join("clovy-obsidian")
             .join("SKILL.md");
         let content = std::fs::read_to_string(&skill_path)
             .unwrap_or_else(|_| panic!("skill file should exist at {}", skill_path.display()));
@@ -3523,6 +3617,7 @@ mod tests {
             !content.contains("june_obsidian.get_obsidian_vault"),
             "skill must not reference the retired june_obsidian MCP server prefix"
         );
+        assert!(content.contains("name: clovy-obsidian"));
         assert_eq!(
             skill_description(&content).as_deref(),
             Some("Work with the Obsidian vault currently selected in Clovy.")

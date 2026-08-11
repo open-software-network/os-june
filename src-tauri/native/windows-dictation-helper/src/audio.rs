@@ -112,7 +112,7 @@ impl Recorder {
             sample_format: hound::SampleFormat::Int,
         };
         let temp_file = tempfile::Builder::new()
-            .prefix("os-june-dictation-")
+            .prefix("clovy-dictation-")
             .suffix(".wav")
             .tempfile()?;
         let temp_path = temp_file.into_temp_path();

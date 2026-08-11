@@ -284,7 +284,7 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         ));
     }
     terminate_existing_helpers();
-    let temp = std::env::temp_dir().join(format!("os-june-audio-check-{}", uuid::Uuid::new_v4()));
+    let temp = std::env::temp_dir().join(format!("clovy-audio-check-{}", uuid::Uuid::new_v4()));
     let output_path = temp.with_extension("wav");
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");

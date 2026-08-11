@@ -14,7 +14,7 @@ test("does not compact history below the threshold", async () => {
 
 test("keeps system instructions, recent turns, and complete tool groups", async () => {
   const history: RuntimeHistoryItem[] = [
-    { id: "system", kind: "message", role: "system", text: "June instructions", estimatedTokens: 100 },
+    { id: "system", kind: "message", role: "system", text: "Clovy instructions", estimatedTokens: 100 },
   ];
   for (let index = 0; index < 10; index += 1) {
     history.push({
@@ -81,7 +81,7 @@ test("manual compaction can force eligible older groups below the automatic thre
 
 test("replaces prior context summaries instead of accumulating system messages", async () => {
   const history: RuntimeHistoryItem[] = [
-    { id: "system", kind: "message", role: "system", text: "June instructions" },
+    { id: "system", kind: "message", role: "system", text: "Clovy instructions" },
     {
       id: "old-summary",
       kind: "context_summary",
@@ -113,7 +113,7 @@ test("replaces prior context summaries instead of accumulating system messages",
 
 test("compacts an oversized recent group instead of exempting it", async () => {
   const history: RuntimeHistoryItem[] = [
-    { id: "system", kind: "message", role: "system", text: "June instructions" },
+    { id: "system", kind: "message", role: "system", text: "Clovy instructions" },
     {
       id: "huge-tool-result",
       kind: "tool_result",

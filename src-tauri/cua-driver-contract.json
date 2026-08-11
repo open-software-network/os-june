@@ -1,7 +1,7 @@
 {
   "version": "0.5.0",
   "protocolVersion": "2024-11-05",
-  "juneActions": [
+  "clovyActions": [
     "capture",
     "click",
     "double_click",

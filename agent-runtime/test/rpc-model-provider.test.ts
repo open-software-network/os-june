@@ -26,7 +26,7 @@ const finalChunk: JsonObject = {
   object: "chat.completion.chunk",
   created: 1,
   model: "private-auto",
-  choices: [{ index: 0, finish_reason: "stop", delta: { content: "from June" } }],
+  choices: [{ index: 0, finish_reason: "stop", delta: { content: "from Clovy" } }],
   usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
 };
 
@@ -73,7 +73,7 @@ test("emits each polled model chunk before the stream completes", async () => {
     events.push(next.value);
   }
   const textDeltas = events.filter((event) => event.type === "output_text_delta");
-  assert.deepEqual(textDeltas.map((event) => event.delta), ["Hello ", "from June"]);
+  assert.deepEqual(textDeltas.map((event) => event.delta), ["Hello ", "from Clovy"]);
   assert.ok(events.some((event) => event.type === "response_done"));
 });
 

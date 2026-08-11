@@ -1,3 +1,4 @@
+use super::skill_identity::{canonical_skill_id, read_skill_ids, reconcile_managed_obsidian_skill};
 use super::{AgentRepository, AgentSafetyMode};
 use crate::domain::types::AppError;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
@@ -135,7 +136,7 @@ pub async fn dispatch_tool(
         return Ok(result);
     }
     match name {
-        "search_june" => search_june(context, &arguments).await,
+        "search_june" => search_clovy_notes(context, &arguments).await,
         "list_memories" => list_memories(context, &arguments).await,
         "save_memory" => save_memory(context, &arguments).await,
         "forget_memory" => forget_memory(context, &arguments).await,
@@ -413,13 +414,13 @@ fn agent_mcp_error(error: crate::agent_mcp::AgentMcpError) -> AppError {
     AppError::new("agent_mcp_tool_failed", error.to_string())
 }
 
-async fn search_june(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
+async fn search_clovy_notes(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
     let query_text = required_string(arguments, "query")?;
     let profile = crate::commands::active_profile(&context.app);
-    search_june_for_profile(&context.repository.pool, &profile, query_text).await
+    search_clovy_notes_for_profile(&context.repository.pool, &profile, query_text).await
 }
 
-async fn search_june_for_profile(
+async fn search_clovy_notes_for_profile(
     pool: &sqlx_sqlite::SqlitePool,
     profile: &str,
     query_text: &str,
@@ -1188,6 +1189,7 @@ async fn list_skills(context: &ToolContext) -> Result<Value, AppError> {
         .run_enabled_skills(&context.run_id)
         .await?
         .into_iter()
+        .map(|name| canonical_skill_id(&name).to_string())
         .collect::<std::collections::HashSet<_>>();
     let roots = skill_roots(&context.app);
     let mut skills = Vec::new();
@@ -1196,8 +1198,17 @@ async fn list_skills(context: &ToolContext) -> Result<Value, AppError> {
             continue;
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if allowed.contains(&name) && entry.path().join("SKILL.md").is_file() {
+            let stored_name = entry.file_name().to_string_lossy().into_owned();
+            let name = canonical_skill_id(&stored_name).to_string();
+            if stored_name != name && root.join(&name).join("SKILL.md").is_file() {
+                continue;
+            }
+            if allowed.contains(&name)
+                && entry.path().join("SKILL.md").is_file()
+                && !skills.iter().any(|skill: &Value| {
+                    skill.get("name").and_then(Value::as_str) == Some(name.as_str())
+                })
+            {
                 skills.push(json!({ "name": name, "root": root }));
             }
         }
@@ -1206,19 +1217,24 @@ async fn list_skills(context: &ToolContext) -> Result<Value, AppError> {
 }
 
 async fn load_skill(context: &ToolContext, arguments: &Value) -> Result<Value, AppError> {
-    let name = required_string(arguments, "name")?;
-    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+    let requested_name = required_string(arguments, "name")?;
+    if requested_name.contains('/')
+        || requested_name.contains('\\')
+        || requested_name == "."
+        || requested_name == ".."
+    {
         return Err(AppError::new(
             "agent_skill_invalid",
             "Skill name is invalid.",
         ));
     }
+    let name = canonical_skill_id(requested_name);
     if !context
         .repository
         .run_enabled_skills(&context.run_id)
         .await?
         .iter()
-        .any(|allowed| allowed == name)
+        .any(|allowed| canonical_skill_id(allowed) == name)
     {
         return Err(AppError::new(
             "agent_skill_disabled",
@@ -1226,10 +1242,12 @@ async fn load_skill(context: &ToolContext, arguments: &Value) -> Result<Value, A
         ));
     }
     for root in skill_roots(&context.app) {
-        let path = root.join(name).join("SKILL.md");
-        if path.is_file() {
-            let content = tokio::fs::read_to_string(&path).await.map_err(io_error)?;
-            return Ok(json!({ "name": name, "content": content, "path": path }));
+        for read_id in read_skill_ids(name) {
+            let path = root.join(read_id).join("SKILL.md");
+            if path.is_file() {
+                let content = tokio::fs::read_to_string(&path).await.map_err(io_error)?;
+                return Ok(json!({ "name": name, "content": content, "path": path }));
+            }
         }
     }
     Err(AppError::new(
@@ -1405,6 +1423,9 @@ pub fn seed_bundled_skills(app: &AppHandle) {
         tracing::warn!("could not resolve bundled agent-skills resource directory");
         return;
     };
+    if let Err(error) = reconcile_managed_obsidian_skill(&managed_root) {
+        tracing::warn!(?error, "could not promote the legacy Obsidian skill");
+    }
     let Ok(entries) = std::fs::read_dir(&source_root) else {
         return;
     };
@@ -1432,6 +1453,9 @@ pub fn seed_bundled_skills(app: &AppHandle) {
             tracing::warn!(?error, skill = %skill_id, "could not finalize bundled skill");
             let _ = std::fs::remove_file(&temp);
         }
+    }
+    if let Err(error) = reconcile_managed_obsidian_skill(&managed_root) {
+        tracing::warn!(?error, "could not publish the legacy Obsidian skill alias");
     }
 }
 
@@ -1528,9 +1552,9 @@ mod tests {
 
     #[test]
     fn sandbox_profile_only_grants_workspace_and_tmp_writes() {
-        let profile = sandbox_profile(Path::new("/Users/example/June Workspace"));
+        let profile = sandbox_profile(Path::new("/Users/example/Clovy Workspace"));
         assert!(profile.contains("(deny file-write*)"));
-        assert!(profile.contains("/Users/example/June Workspace"));
+        assert!(profile.contains("/Users/example/Clovy Workspace"));
         assert!(!profile.contains("(allow file-write*)"));
     }
 
@@ -1607,7 +1631,7 @@ mod tests {
         query("INSERT INTO dictation_history (id, text, profile, created_at) VALUES ('dictation-a', 'needle mine', 'profile-a', '2026-01-01'), ('dictation-b', 'needle theirs', 'profile-b', '2026-01-02')")
             .execute(&pool).await.unwrap();
 
-        let result = search_june_for_profile(&pool, "profile-a", "needle")
+        let result = search_clovy_notes_for_profile(&pool, "profile-a", "needle")
             .await
             .unwrap();
 

@@ -9529,7 +9529,7 @@ mod tests {
         repos
             .set_routine_browser_grant(&super::RoutineBrowserGrantRecord {
                 job_id: "job-1".to_string(),
-                server_name: "june_browser_routine_job1".to_string(),
+                server_name: "clovy_browser_routine_job1".to_string(),
                 token: "browser-token".to_string(),
                 enabled: true,
             })
@@ -9579,7 +9579,7 @@ mod tests {
         let repos = test_repositories().await;
         let enabled = super::RoutineBrowserGrantRecord {
             job_id: "job-1".to_string(),
-            server_name: "june_browser_routine_job1".to_string(),
+            server_name: "clovy_browser_routine_job1".to_string(),
             token: "browser-token".to_string(),
             enabled: true,
         };

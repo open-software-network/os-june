@@ -302,8 +302,8 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
-          keychain="$RUNNER_TEMP/os-june-signing.keychain-db"
-          keychain_password="os-june-$RANDOM-$RANDOM"
+          keychain="$RUNNER_TEMP/clovy-signing.keychain-db"
+          keychain_password="clovy-$RANDOM-$RANDOM"
           cert="$RUNNER_TEMP/certificate.p12"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert"
           security create-keychain -p "$keychain_password" "$keychain"

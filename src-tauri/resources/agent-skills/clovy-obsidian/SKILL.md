@@ -1,5 +1,5 @@
 ---
-name: june-obsidian
+name: clovy-obsidian
 description: Work with the Obsidian vault currently selected in Clovy.
 platforms: [linux, macos, windows]
 ---

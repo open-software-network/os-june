@@ -80,8 +80,8 @@ and run at least once, LaunchServices knows the bundle and subsequent resets
 succeed.
 
 The Tauri dev runner executes a hard-linked product-name alias of Cargo's
-`os-june` binary. The normal alias is `target/**/June`; supported issue
-worktrees use a visible name such as `target/**/June JUN-278 Codex`. The
+`os-june` binary. The normal alias is `target/**/Clovy`; supported issue
+worktrees use a visible name such as `target/**/Clovy JUN-278 Codex`. The
 authenticated helper accepts only the generated name shapes inside this
 checkout's Cargo target tree and requires the alias to share the canonical
 binary's filesystem identity. If the Plugins surface reports that the driver
@@ -90,7 +90,7 @@ exact live launcher to check this boundary:
 
 ```sh
 node scripts/computer-use-self-test.mjs --permissions-only \
-  --host "src-tauri/target/debug/June JUN-278 Codex"
+  --host "src-tauri/target/debug/Clovy JUN-278 Codex"
 ```
 
 The launch log prints the effective identifier and reset result. The production

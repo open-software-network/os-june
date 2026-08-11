@@ -1291,7 +1291,7 @@ fn http_client() -> &'static reqwest::Client {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june/0.1")
+            .user_agent("clovy/0.1")
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })

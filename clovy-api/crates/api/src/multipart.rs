@@ -92,7 +92,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_limit_multipart_error_maps_to_payload_too_large_envelope() {
-        const BOUNDARY: &str = "june-boundary";
+        const BOUNDARY: &str = "clovy-boundary";
         let mut body = format!(
             "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"clip.wav\"\r\nContent-Type: audio/wav\r\n\r\n"
         )

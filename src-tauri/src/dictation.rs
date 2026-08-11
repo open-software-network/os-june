@@ -5568,7 +5568,7 @@ fn prepare_dictation_audio(
     #[cfg(target_os = "windows")]
     {
         let output_path =
-            std::env::temp_dir().join(format!("os-june-dictation-{utterance_id}-normalized.wav"));
+            std::env::temp_dir().join(format!("clovy-dictation-{utterance_id}-normalized.wav"));
         return normalize_wav_for_transcription(input_path, &output_path);
     }
     #[cfg(not(target_os = "windows"))]
@@ -10017,7 +10017,7 @@ mod tests {
         let event = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-june-dictation-test.m4a",
+                "path": "/tmp/clovy-dictation-test.m4a",
                 "targetBundleIdentifier": "com.apple.mail",
             }
         });
@@ -10027,7 +10027,7 @@ mod tests {
         // Older helpers omit the field (or send it empty): no target.
         let legacy = serde_json::json!({
             "type": "recording_ready",
-            "payload": { "path": "/tmp/os-june-dictation-test.m4a", "targetBundleIdentifier": "" }
+            "payload": { "path": "/tmp/clovy-dictation-test.m4a", "targetBundleIdentifier": "" }
         });
         let info = recording_ready_info_from_event(&legacy).expect("info parses");
         assert_eq!(info.target_bundle_id, None);
@@ -10038,7 +10038,7 @@ mod tests {
         let event = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-june-dictation-test.m4a",
+                "path": "/tmp/clovy-dictation-test.m4a",
                 "observedAudioLevel": "0.1732",
             }
         });
@@ -10047,7 +10047,7 @@ mod tests {
 
         assert_eq!(
             info.audio_path,
-            PathBuf::from("/tmp/os-june-dictation-test.m4a")
+            PathBuf::from("/tmp/clovy-dictation-test.m4a")
         );
         assert_eq!(info.observed_audio_level, Some(0.1732));
     }
@@ -10057,7 +10057,7 @@ mod tests {
         let event = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-june-dictation-test.m4a",
+                "path": "/tmp/clovy-dictation-test.m4a",
                 "speechConfidence": "0.2630",
                 "speechAnalysisStatus": "ok",
             }
@@ -10072,7 +10072,7 @@ mod tests {
         let invalid = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-june-dictation-test.m4a",
+                "path": "/tmp/clovy-dictation-test.m4a",
                 "speechConfidence": "1.2",
             }
         });
@@ -10086,7 +10086,7 @@ mod tests {
             let event = serde_json::json!({
                 "type": "recording_ready",
                 "payload": {
-                    "path": "/tmp/os-june-dictation-test.m4a",
+                    "path": "/tmp/clovy-dictation-test.m4a",
                     "observedAudioLevel": value,
                 }
             });
@@ -10097,7 +10097,7 @@ mod tests {
         let event = serde_json::json!({
             "type": "recording_ready",
             "payload": {
-                "path": "/tmp/os-june-dictation-test.m4a",
+                "path": "/tmp/clovy-dictation-test.m4a",
                 "observedAudioLevel": "0",
             }
         });
@@ -10111,7 +10111,7 @@ mod tests {
             serde_json::json!({
                 "type": "recording_ready",
                 "payload": {
-                    "path": "/tmp/os-june-dictation-test.wav",
+                    "path": "/tmp/clovy-dictation-test.wav",
                     "composerRequestId": request_id,
                 }
             })
@@ -10133,7 +10133,7 @@ mod tests {
             serde_json::json!({
                 "type": "recording_ready",
                 "payload": {
-                    "path": "/tmp/os-june-dictation-test.m4a",
+                    "path": "/tmp/clovy-dictation-test.m4a",
                     "takeId": take_id,
                 }
             })
@@ -10530,7 +10530,7 @@ mod tests {
     fn low_speech_evidence_requires_both_low_audio_signals() {
         let info =
             |speech_confidence, speech_analysis_status, observed_audio_level| RecordingReadyInfo {
-                audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+                audio_path: PathBuf::from("/tmp/clovy-dictation-test.m4a"),
                 take_id: None,
                 observed_audio_level,
                 speech_confidence,
@@ -10569,7 +10569,7 @@ mod tests {
     #[test]
     fn short_capture_is_quarantined_regardless_of_level_but_analysis_failure_fails_open() {
         let info = |status, speech_confidence| RecordingReadyInfo {
-            audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            audio_path: PathBuf::from("/tmp/clovy-dictation-test.m4a"),
             take_id: None,
             observed_audio_level: Some(0.0305),
             speech_confidence,
@@ -10583,7 +10583,7 @@ mod tests {
             None,
         )));
         let loud_short_capture = RecordingReadyInfo {
-            audio_path: PathBuf::from("/tmp/os-june-dictation-test.m4a"),
+            audio_path: PathBuf::from("/tmp/clovy-dictation-test.m4a"),
             take_id: None,
             observed_audio_level: Some(DICTATION_AUDIO_ACTIVITY_THRESHOLD),
             speech_confidence: None,

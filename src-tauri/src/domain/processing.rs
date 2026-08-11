@@ -5654,7 +5654,7 @@ mod tests {
     #[test]
     fn transcript_coverage_counts_full_source_sentinel_success_as_covered() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-coverage-success-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-coverage-success-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         write_loud_wav(&mic_path, 16_000, 16_000 * 90);
@@ -5686,7 +5686,7 @@ mod tests {
     #[test]
     fn transcript_coverage_counts_full_source_sentinel_failure_from_wav_duration() {
         let dir =
-            std::env::temp_dir().join(format!("os-june-coverage-failure-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-coverage-failure-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         write_loud_wav(&mic_path, 16_000, 16_000 * 90);
@@ -5725,10 +5725,8 @@ mod tests {
         // Microphone no-speech failures stay visible (only system no-speech
         // is suppressed), but a no-speech sentinel is still silence: both
         // detectors agreed there was nothing to transcribe.
-        let dir = std::env::temp_dir().join(format!(
-            "os-june-coverage-nospeech-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("clovy-coverage-nospeech-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         write_loud_wav(&mic_path, 16_000, 16_000 * 90);
@@ -5768,7 +5766,7 @@ mod tests {
         // persisted row, and the no-speech failure was suppressed (not
         // visible). The silent source must not warn.
         let dir =
-            std::env::temp_dir().join(format!("os-june-coverage-silent-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-coverage-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         write_loud_wav(&mic_path, 16_000, 16_000 * 90);
@@ -6188,7 +6186,7 @@ mod tests {
     #[test]
     fn short_cached_full_source_sentinel_is_not_reused() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-short-cached-sentinel-{}",
+            "clovy-short-cached-sentinel-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -6205,7 +6203,7 @@ mod tests {
     #[tokio::test]
     async fn short_full_source_vad_miss_uses_live_preview_chunk_size() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-short-full-source-chunks-{}",
+            "clovy-short-full-source-chunks-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -6278,10 +6276,8 @@ mod tests {
 
     #[tokio::test]
     async fn durable_job_is_claimed_before_provider_and_uses_ledger_operation_id() {
-        let dir = std::env::temp_dir().join(format!(
-            "os-june-durable-job-claim-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("clovy-durable-job-claim-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio_path = dir.join("turn.wav");
         write_loud_wav(&audio_path, 16_000, 16_000);
@@ -6339,7 +6335,7 @@ mod tests {
         // chunk returns no-speech; the turn must still succeed with chunk-0's
         // text instead of aborting and discarding it.
         let dir =
-            std::env::temp_dir().join(format!("os-june-chunk-nospeech-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-chunk-nospeech-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio_path = dir.join("turn.wav");
         write_loud_wav(&audio_path, 16_000, 16_000 * 31);
@@ -6406,7 +6402,7 @@ mod tests {
         // When no chunk has speech, the turn must fail as a no-speech condition
         // so it stays non-blocking — not a generic error that fails the note.
         let dir =
-            std::env::temp_dir().join(format!("os-june-chunk-allsilent-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-chunk-allsilent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio_path = dir.join("turn.wav");
         write_loud_wav(&audio_path, 16_000, 16_000 * 31);
@@ -6448,7 +6444,7 @@ mod tests {
     #[tokio::test]
     async fn single_chunk_silent_audio_is_skipped_before_reaching_the_transcriber() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-single-chunk-silentskip-{}",
+            "clovy-single-chunk-silentskip-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -6499,7 +6495,7 @@ mod tests {
     #[tokio::test]
     async fn single_chunk_empty_provider_result_is_no_speech_not_success() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-single-chunk-empty-result-{}",
+            "clovy-single-chunk-empty-result-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -6546,7 +6542,7 @@ mod tests {
         // chunk 1 silent. The silent chunk must never reach the API (no credit
         // hold), while both audible chunks are transcribed.
         let dir =
-            std::env::temp_dir().join(format!("os-june-chunk-silentskip-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("clovy-chunk-silentskip-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let audio_path = dir.join("turn.wav");
         write_segmented_wav(
@@ -6629,8 +6625,7 @@ mod tests {
 
     #[test]
     fn drops_silent_system_source_but_keeps_microphone() {
-        let dir =
-            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -6655,8 +6650,7 @@ mod tests {
 
     #[test]
     fn keeps_silent_system_source_when_it_is_the_only_one() {
-        let dir =
-            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let system_path = dir.join("system.wav");
         write_test_wav(&system_path, &[0, 0, 0, 0]);
@@ -6677,8 +6671,7 @@ mod tests {
 
     #[test]
     fn keeps_quiet_system_source_between_detection_and_silence_floors() {
-        let dir =
-            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -6712,8 +6705,7 @@ mod tests {
 
     #[test]
     fn keeps_audible_system_source() {
-        let dir =
-            std::env::temp_dir().join(format!("os-june-drop-silent-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("clovy-drop-silent-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let mic_path = dir.join("microphone.wav");
         let system_path = dir.join("system.wav");
@@ -6733,7 +6725,7 @@ mod tests {
     #[test]
     fn drops_system_source_with_only_a_startup_transient() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-drop-transient-system-{}",
+            "clovy-drop-transient-system-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -8147,7 +8139,7 @@ mod tests {
     #[test]
     fn prepared_turn_matches_existing_audio_and_metadata() {
         let dir = std::env::temp_dir().join(format!(
-            "os-june-prepared-turn-golden-{}",
+            "clovy-prepared-turn-golden-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();

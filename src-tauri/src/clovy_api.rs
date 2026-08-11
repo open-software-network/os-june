@@ -892,7 +892,7 @@ async fn download_video_bytes(url: &str) -> Result<Vec<u8>, AppError> {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent("os-june-video-download/0.1")
+            .user_agent("clovy-video-download/0.1")
             .build()
             .map_err(network_error)?;
     let response = client.get(parsed).send().await.map_err(network_error)?;
@@ -3407,7 +3407,7 @@ impl ApiSseParser {
                     tracing::warn!(
                         body_bytes = data.len(),
                         %error,
-                        "june api returned an invalid response stream error"
+                        "Clovy API returned an invalid response stream error"
                     );
                     AppError::new("clovy_api_response_invalid", INVALID_CLOVY_RESPONSE_MESSAGE)
                 })?;
@@ -3578,7 +3578,7 @@ where
             status = status.as_u16(),
             body_bytes = body.len(),
             %error,
-            "june api returned a non-json response"
+            "Clovy API returned a non-json response"
         );
         AppError::new("clovy_api_response_invalid", INVALID_CLOVY_RESPONSE_MESSAGE)
     })?;
@@ -3690,7 +3690,7 @@ fn http_client() -> &'static reqwest::Client {
             .timeout(HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent(concat!("os-june/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("clovy/", env!("CARGO_PKG_VERSION")))
             .default_headers(app_version_headers())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
@@ -3704,7 +3704,7 @@ fn agent_http_client() -> &'static reqwest::Client {
             .timeout(AGENT_HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent(concat!("os-june-agent/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("clovy-agent/", env!("CARGO_PKG_VERSION")))
             .default_headers(app_version_headers())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
@@ -3731,7 +3731,7 @@ fn local_http_client() -> &'static reqwest::Client {
             .timeout(AGENT_HTTP_TIMEOUT)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Some(Duration::from_secs(30)))
-            .user_agent(concat!("os-june-agent/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("clovy-agent/", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
