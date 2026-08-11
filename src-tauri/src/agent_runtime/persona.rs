@@ -76,10 +76,7 @@ impl Default for ClovyPersonaSettings {
 impl ClovyPersonaSettings {
     pub fn validate(&self) -> Result<(), AppError> {
         if self.schema_version != CLOVY_PERSONA_SCHEMA_VERSION {
-            return Err(AppError::new(
-                "clovy_persona_version_unsupported",
-                "This Clovy personality version is not supported.",
-            ));
+            return Err(unsupported_persona_version());
         }
         for (name, value) in [
             ("voice", self.voice),
@@ -96,6 +93,13 @@ impl ClovyPersonaSettings {
         }
         Ok(())
     }
+}
+
+fn unsupported_persona_version() -> AppError {
+    AppError::new(
+        "clovy_persona_version_unsupported",
+        "This Clovy personality version is not supported.",
+    )
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -143,6 +147,17 @@ fn read_clovy_persona(path: &Path) -> Result<Option<ClovyPersonaSettings>, AppEr
             ));
         }
     };
+    let document = serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|error| AppError::new("clovy_persona_invalid", error.to_string()))?;
+    if document
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|version| version > u64::from(CLOVY_PERSONA_SCHEMA_VERSION))
+    {
+        return Err(unsupported_persona_version());
+    }
+    // Deserialize the original text again so existing invalid-persona error
+    // messages retain serde_json's line and column context.
     let settings = serde_json::from_str::<ClovyPersonaSettings>(&text)
         .map_err(|error| AppError::new("clovy_persona_invalid", error.to_string()))?;
     settings.validate()?;
@@ -161,16 +176,23 @@ fn load_clovy_persona_from_paths(
     canonical: &Path,
     legacy: &Path,
 ) -> Result<ClovyPersonaSettings, AppError> {
-    let canonical_settings = read_clovy_persona(canonical)?;
-    let legacy_settings = read_clovy_persona(legacy)?;
+    let canonical_read = read_clovy_persona(canonical);
+    let legacy_read = read_clovy_persona(legacy);
+    for result in [&canonical_read, &legacy_read] {
+        if let Err(error) = result {
+            if error.code == "clovy_persona_version_unsupported" {
+                return Err(error.clone());
+            }
+        }
+    }
     let marker_path = canonical.with_file_name(PERSONA_SYNC_MARKER_FILE);
     // A corrupt or unreadable marker is not equivalent to no marker. Failing
     // closed here prevents an ambiguous reconciliation from overwriting a
     // persona changed while a released June build was running.
     let prior_settings = read_clovy_persona(&marker_path)?;
 
-    let selected = match (&canonical_settings, &legacy_settings) {
-        (Some(canonical_value), Some(legacy_value)) if canonical_value != legacy_value => {
+    let selected = match (&canonical_read, &legacy_read) {
+        (Ok(Some(canonical_value)), Ok(Some(legacy_value))) if canonical_value != legacy_value => {
             if prior_settings.as_ref() == Some(canonical_value)
                 && prior_settings.as_ref() != Some(legacy_value)
             {
@@ -185,12 +207,13 @@ fn load_clovy_persona_from_paths(
                 legacy_value.clone()
             }
         }
-        (Some(settings), _) | (_, Some(settings)) => settings.clone(),
-        (None, None) => return Ok(ClovyPersonaSettings::default()),
+        (Ok(Some(settings)), _) | (_, Ok(Some(settings))) => settings.clone(),
+        (Ok(None), Ok(None)) => return Ok(ClovyPersonaSettings::default()),
+        (Err(error), _) | (_, Err(error)) => return Err(error.clone()),
     };
 
-    let legacy_current = legacy_settings.as_ref() == Some(&selected);
-    let canonical_current = canonical_settings.as_ref() == Some(&selected);
+    let legacy_current = matches!(&legacy_read, Ok(Some(settings)) if settings == &selected);
+    let canonical_current = matches!(&canonical_read, Ok(Some(settings)) if settings == &selected);
     let legacy_ready = legacy_current || write_clovy_persona(legacy, &selected).is_ok();
     let canonical_ready = canonical_current || write_clovy_persona(canonical, &selected).is_ok();
     if legacy_ready && canonical_ready {
@@ -476,6 +499,113 @@ mod tests {
     }
 
     #[test]
+    fn valid_canonical_persona_repairs_corrupt_legacy_copy() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let settings = play_persona();
+        write_clovy_persona(&canonical, &settings).expect("canonical write");
+        fs::write(&legacy, b"not valid json").expect("corrupt legacy write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            settings
+        );
+        assert_eq!(
+            read_clovy_persona(&legacy).expect("legacy read"),
+            Some(settings)
+        );
+    }
+
+    #[test]
+    fn valid_legacy_persona_repairs_corrupt_canonical_copy() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let settings = play_persona();
+        fs::write(&canonical, b"not valid json").expect("corrupt canonical write");
+        write_clovy_persona(&legacy, &settings).expect("legacy write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            settings
+        );
+        assert_eq!(
+            read_clovy_persona(&canonical).expect("canonical read"),
+            Some(settings)
+        );
+    }
+
+    #[test]
+    fn valid_canonical_persona_survives_unreadable_legacy_copy() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let settings = play_persona();
+        write_clovy_persona(&canonical, &settings).expect("canonical write");
+        fs::create_dir(&legacy).expect("unreadable legacy path");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            settings
+        );
+        assert!(legacy.is_dir());
+        assert!(!canonical.with_file_name(PERSONA_SYNC_MARKER_FILE).exists());
+    }
+
+    #[test]
+    fn valid_legacy_persona_survives_unreadable_canonical_copy() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let settings = play_persona();
+        fs::create_dir(&canonical).expect("unreadable canonical path");
+        write_clovy_persona(&legacy, &settings).expect("legacy write");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy).expect("reconciled load"),
+            settings
+        );
+        assert!(canonical.is_dir());
+        assert!(!canonical.with_file_name(PERSONA_SYNC_MARKER_FILE).exists());
+    }
+
+    #[test]
+    fn future_legacy_persona_is_never_overwritten_by_v1_reconciliation() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let marker = canonical.with_file_name(PERSONA_SYNC_MARKER_FILE);
+        let initial = ClovyPersonaSettings::default();
+        write_clovy_persona_pair(&canonical, &legacy, &initial).expect("initial dual write");
+
+        let mut future = serde_json::to_value(play_persona()).expect("future persona value");
+        future["schemaVersion"] = serde_json::json!(2);
+        future["area"] = serde_json::json!("futureArea");
+        let mut future_bytes = serde_json::to_vec_pretty(&future).expect("future persona bytes");
+        future_bytes.push(b'\n');
+        fs::write(&legacy, future_bytes).expect("future legacy write");
+
+        let canonical_before = fs::read(&canonical).expect("canonical bytes");
+        let legacy_before = fs::read(&legacy).expect("legacy bytes");
+        let marker_before = fs::read(&marker).expect("marker bytes");
+
+        let error = load_clovy_persona_from_paths(&canonical, &legacy)
+            .expect_err("future persona must block v1 reconciliation");
+        assert_eq!(error.code, "clovy_persona_version_unsupported");
+        assert_eq!(
+            error.message,
+            "This Clovy personality version is not supported."
+        );
+        assert_eq!(
+            fs::read(&canonical).expect("canonical after"),
+            canonical_before
+        );
+        assert_eq!(fs::read(&legacy).expect("legacy after"), legacy_before);
+        assert_eq!(fs::read(&marker).expect("marker after"), marker_before);
+    }
+
+    #[test]
     fn invalid_sync_marker_never_overwrites_divergent_personas() {
         let directory = tempfile::tempdir().expect("tempdir");
         let canonical = directory.path().join(CLOVY_PERSONA_FILE);
@@ -495,6 +625,34 @@ mod tests {
                 .expect_err("invalid marker must block reconciliation")
                 .code,
             "clovy_persona_invalid"
+        );
+        assert_eq!(
+            read_clovy_persona(&canonical).expect("canonical read"),
+            Some(canonical_settings)
+        );
+        assert_eq!(
+            read_clovy_persona(&legacy).expect("legacy read"),
+            Some(legacy_settings)
+        );
+    }
+
+    #[test]
+    fn unreadable_sync_marker_never_overwrites_divergent_personas() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let canonical = directory.path().join(CLOVY_PERSONA_FILE);
+        let legacy = directory.path().join(LEGACY_PERSONA_FILE);
+        let canonical_settings = ClovyPersonaSettings::default();
+        let legacy_settings = play_persona();
+        write_clovy_persona(&canonical, &canonical_settings).expect("canonical write");
+        write_clovy_persona(&legacy, &legacy_settings).expect("legacy write");
+        fs::create_dir(canonical.with_file_name(PERSONA_SYNC_MARKER_FILE))
+            .expect("unreadable marker path");
+
+        assert_eq!(
+            load_clovy_persona_from_paths(&canonical, &legacy)
+                .expect_err("unreadable marker must block reconciliation")
+                .code,
+            "clovy_persona_read_failed"
         );
         assert_eq!(
             read_clovy_persona(&canonical).expect("canonical read"),

@@ -122,6 +122,19 @@ describe("Clovy technical identity", () => {
     }
   });
 
+  it("uses the canonical root Clovy API env in Conductor with a legacy fallback", async () => {
+    const conductor = await read(".conductor/settings.toml");
+    const canonicalEnv = "$CONDUCTOR_ROOT_PATH/clovy-api/.env";
+    const legacyEnv = "$CONDUCTOR_ROOT_PATH/june-api/.env";
+
+    expect(conductor.indexOf(canonicalEnv)).toBeGreaterThan(-1);
+    expect(conductor.indexOf(legacyEnv)).toBeGreaterThan(conductor.indexOf(canonicalEnv));
+    expect(conductor).toContain(
+      `if [ ! -f \\"$api_env\\" ] && [ -f \\"${legacyEnv}\\" ]; then api_env=\\"${legacyEnv}\\"; fi`,
+    );
+    expect(conductor).toContain('ln -sf \\"$api_env\\" clovy-api/.env');
+  });
+
   it("uses Clovy for canonical package, service, and helper names", async () => {
     const [
       packageJson,

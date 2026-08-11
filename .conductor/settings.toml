@@ -11,7 +11,7 @@
 # Installs the front-end deps; the Rust crates (src-tauri, clovy-api) compile
 # on the first `tauri:dev` run. The .env files live in the root checkout and
 # are symlinked into each workspace so updates do not drift.
-setup = "mkdir -p clovy-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && ln -sf \"$CONDUCTOR_ROOT_PATH/clovy-api/.env\" clovy-api/.env; fi && pnpm install --frozen-lockfile"
+setup = "mkdir -p clovy-api && if [ -n \"$CONDUCTOR_ROOT_PATH\" ]; then ln -sf \"$CONDUCTOR_ROOT_PATH/.env\" .env && api_env=\"$CONDUCTOR_ROOT_PATH/clovy-api/.env\"; if [ ! -f \"$api_env\" ] && [ -f \"$CONDUCTOR_ROOT_PATH/june-api/.env\" ]; then api_env=\"$CONDUCTOR_ROOT_PATH/june-api/.env\"; fi; ln -sf \"$api_env\" clovy-api/.env; fi && pnpm install --frozen-lockfile"
 
 # Launch the Tauri desktop app in dev (migrated verbatim from conductor.json).
 # `tauri:dev` also starts the clovy-api backend via the beforeDevCommand hook.
