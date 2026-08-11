@@ -7,6 +7,7 @@ import {
 import { assignSessionToFolder } from "../lib/tauri";
 import { AGENT_SESSION_STATUS_EVENT, type AgentSessionStatusDetail } from "../lib/agent-events";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
+import { invalidateAgentSessionDraft } from "../lib/agent-session-drafts";
 import { updateMenuBarSessionStatus } from "./app-effects/update-ui";
 import type { UseAgentSessionSyncDependencies } from "./use-agent-session-sync-types";
 
@@ -107,14 +108,15 @@ export function useAgentSessionSync(dependencies: UseAgentSessionSyncDependencie
 
     function handleAgentSessionDeleted(event: Event) {
       const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-      const sessionId = detail?.sessionId;
-      if (!sessionId) return;
+      const storedSessionId = detail?.sessionId;
+      if (!storedSessionId) return;
+      invalidateAgentSessionDraft(storedSessionId);
       agentMenuBarSessionsRef.current = agentMenuBarSessionsRef.current.filter(
-        (session) => session.id !== sessionId,
+        (session) => session.id !== storedSessionId,
       );
-      setAgentSessions((current) => current.filter((session) => session.id !== sessionId));
-      agentMenuBarWorkingSessionIdsRef.current.delete(sessionId);
-      agentMenuBarWaitingSessionIdsRef.current.delete(sessionId);
+      setAgentSessions((current) => current.filter((session) => session.id !== storedSessionId));
+      agentMenuBarWorkingSessionIdsRef.current.delete(storedSessionId);
+      agentMenuBarWaitingSessionIdsRef.current.delete(storedSessionId);
       setAgentWorkingSessionIds(new Set(agentMenuBarWorkingSessionIdsRef.current));
       setAgentWaitingSessionIds(new Set(agentMenuBarWaitingSessionIdsRef.current));
       publishAgentMenuBarState();

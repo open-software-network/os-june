@@ -32,12 +32,17 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openDialog }));
 import { AgentWorkspace } from "../components/agent/AgentWorkspace";
 import { markAgentNewSessionPending } from "../components/agent/session-persistence";
 import { agentComposerClearance } from "../components/agent/composer/layout";
-import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
+import { AGENT_DELETE_SESSION_EVENT, AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
 import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
 import { rememberSessionModel } from "../lib/agent-session-models";
+import {
+  readAgentSessionDraft,
+  resetAgentSessionDraftsForTests,
+  writeAgentSessionDraft,
+} from "../lib/agent-session-drafts";
 import { readJuneHomeStoredSessionId, writeJuneHomeStoredSessionId } from "../lib/june-home";
 import { ATTACHMENT_FOLLOW_UP_NOTE, saveQueuedAgentFollowUps } from "../lib/agent-follow-up-queue";
 
@@ -109,6 +114,7 @@ function mockAgentLayoutBounds() {
 
 describe("AgentWorkspace runtime wiring", () => {
   beforeEach(() => {
+    resetAgentSessionDraftsForTests();
     resetCurrentDataPartitionForTests();
     window.localStorage.clear();
     mocks.runtimeListener = undefined;
@@ -292,6 +298,301 @@ describe("AgentWorkspace runtime wiring", () => {
 
     await user.click(screen.getByRole("button", { name: "View files (1)" }));
     expect(screen.getByRole("complementary", { name: "Files" })).toHaveTextContent("Pool Day.pdf");
+  });
+
+  it("keeps pending serialized drafts isolated by stored session through an immediate switch", async () => {
+    const user = userEvent.setup();
+    const draft = 'Review @note:note-7 ("Research")';
+    const { rerender } = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, draft);
+    // Do not wait for ComposerEditor's 75ms trailing publish: switching must
+    // preserve the live document using its teardown persistence callback.
+    rerender(<AgentWorkspace initialSession={newSession} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe("");
+    });
+
+    rerender(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(readAgentSessionDraft(session.id)).toBe(draft);
+    });
+  });
+
+  it("finishes IME composition under the source draft owner before switching", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    fireEvent.compositionStart(composer);
+    await user.type(composer, "編集中");
+    rerender(<AgentWorkspace initialSession={newSession} />);
+
+    await waitFor(() => expect(composer).toHaveTextContent("編集中"));
+    fireEvent.compositionEnd(composer);
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("編集中"));
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
+
+    rerender(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("編集中"));
+  });
+
+  it("does not submit a destination draft during an IME owner handoff", async () => {
+    const user = userEvent.setup();
+    writeAgentSessionDraft(newSession.id, "Destination draft");
+    const { rerender } = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    fireEvent.compositionStart(composer);
+    await user.type(composer, "Source composition");
+    rerender(<AgentWorkspace initialSession={newSession} />);
+
+    fireEvent.compositionEnd(composer);
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(mocks.invoke).not.toHaveBeenCalledWith("start_agent_run", expect.anything());
+    await waitFor(() => expect(composer).toHaveTextContent("Destination draft"));
+  });
+
+  it("persists a pending draft when the workspace unmounts before the editor debounce", async () => {
+    const user = userEvent.setup();
+    const draft = "Keep this unfinished message";
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, draft);
+    view.unmount();
+
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe(draft);
+    });
+  });
+
+  it("does not restore a session draft after its message is accepted", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Send this message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => {
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "start_agent_run",
+        expect.objectContaining({
+          request: expect.objectContaining({ prompt: "Send this message" }),
+        }),
+      );
+      expect(readAgentSessionDraft(session.id)).toBeUndefined();
+    });
+
+    view.unmount();
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "Message June" }).textContent).toBe("");
+    });
+  });
+
+  it("keeps a newer same-text draft when an older send finishes", async () => {
+    let resolveStart: ((value: unknown) => void) | undefined;
+    const pendingStart = new Promise((resolve) => {
+      resolveStart = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "start_agent_run") return pendingStart;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Same message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    await waitFor(() => expect(composer.textContent).toBe(""));
+    await user.type(composer, "Same message");
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Same message"));
+
+    await act(async () => {
+      resolveStart?.({
+        id: "run-same-message",
+        sessionId: session.id,
+        status: "running",
+        model: "fast",
+      });
+    });
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Same message"));
+
+    view.unmount();
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Same message"));
+  });
+
+  it("transfers a fresh-session follow-up when navigation unmounts the workspace", async () => {
+    let resolveCreate: ((value: AgentSessionDto) => void) | undefined;
+    const pendingCreate = new Promise<AgentSessionDto>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "create_agent_session") return pendingCreate;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Start a fresh session");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", expect.anything()),
+    );
+    const followUpComposer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(followUpComposer, "Keep this follow-up");
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    view.unmount();
+
+    await act(async () => resolveCreate?.(newSession));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    render(<AgentWorkspace initialSession={newSession} />);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Keep this follow-up",
+      ),
+    );
+  });
+
+  it("transfers a first Home follow-up after its editor publishes normally", async () => {
+    const homeSession: AgentSessionDto = {
+      ...session,
+      id: "home-first-session",
+      title: "Home",
+      workspacePath: "/tmp/home-first-session",
+    };
+    let resolveCreate: ((value: AgentSessionDto) => void) | undefined;
+    const pendingCreate = new Promise<AgentSessionDto>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_sessions") return Promise.resolve([]);
+      if (command === "create_agent_session") return pendingCreate;
+      if (command === "june_home_chat") return Promise.resolve({ reply: "Working on it." });
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace homeMode />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "First Home message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", expect.anything()),
+    );
+    await user.type(screen.getByRole("textbox"), "Keep this Home follow-up");
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    view.unmount();
+
+    await act(async () => resolveCreate?.(homeSession));
+    render(<AgentWorkspace homeMode initialSession={homeSession} />);
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Keep this Home follow-up",
+      ),
+    );
+  });
+
+  it("clears and fences drafts deleted by another session surface", async () => {
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Published draft");
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBe("Published draft"));
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, { detail: { sessionId: session.id } }),
+      );
+    });
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+
+    composer.textContent = "Late pending draft";
+    fireEvent.input(composer);
+    view.unmount();
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+  });
+
+  it("does not let a late failed send recreate an externally deleted draft", async () => {
+    let rejectStart: ((cause: Error) => void) | undefined;
+    const pendingStart = new Promise((_, reject) => {
+      rejectStart = reject;
+    });
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "start_agent_run") return pendingStart;
+      return defaultInvoke?.(command, args);
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+
+    await user.type(composer, "Do not resurrect this");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_DELETE_SESSION_EVENT, { detail: { sessionId: session.id } }),
+      );
+    });
+    await act(async () => rejectStart?.(new Error("Runtime failed after deletion")));
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+
+    view.unmount();
+    render(<AgentWorkspace initialSession={session} />);
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
+  });
+
+  it("does not re-cache a pending draft after its stored session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+
+    composer.textContent = "Delete this pending draft";
+    fireEvent.input(composer);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("delete_agent_session", {
+        sessionId: session.id,
+      }),
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
+    expect(readAgentSessionDraft(session.id)).toBeUndefined();
+  });
+
+  it("clears a published draft from the composer when its session is deleted", async () => {
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={session} />);
+    const composer = await screen.findByRole("textbox", { name: "Message June" });
+    await user.type(composer, "Delete this published draft");
+    await waitFor(() =>
+      expect(readAgentSessionDraft(session.id)).toBe("Delete this published draft"),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Session actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete session" }));
+
+    await waitFor(() => expect(readAgentSessionDraft(session.id)).toBeUndefined());
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent(""));
   });
 
   it("reserves the fixed composer before Home has a persisted session", async () => {
@@ -2831,6 +3132,7 @@ describe("AgentWorkspace runtime wiring", () => {
     );
     expect(screen.getByRole("button", { name: "Session actions" })).toBeVisible();
     expect(followUpComposer).toHaveTextContent("Follow-up draft");
+    expect(readAgentSessionDraft(newSession.id)).toBe("Follow-up draft");
     rerender(<AgentWorkspace initialSession={newSession} onSessionSelected={onSessionSelected} />);
     await waitFor(() =>
       expect(container.querySelector(".agent-user-turn")).toHaveTextContent("Fresh request"),
@@ -2884,6 +3186,113 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(laterComposer).toHaveTextContent("Later draft");
     expect(screen.getByText("later.pdf")).toBeVisible();
     expect(screen.queryByText("Unsent message")).not.toBeInTheDocument();
+  });
+
+  it("restores a branch draft after a first session run fails and is retried", async () => {
+    const user = userEvent.setup();
+    let rejectFirstStart: ((error: Error) => void) | undefined;
+    const firstStart = new Promise((_, reject) => {
+      rejectFirstStart = reject;
+    });
+    let startCount = 0;
+    const branchSession: AgentSessionDto = {
+      ...newSession,
+      id: "session-branch",
+      title: "Branch",
+      workspacePath: "/tmp/session-branch",
+    };
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "start_agent_run" && startCount++ === 0) return firstStart;
+      if (command === "start_agent_run") {
+        return Promise.resolve({
+          id: "run-retry",
+          sessionId: newSession.id,
+          status: "running",
+          model: "auto",
+        });
+      }
+      if (command === "branch_agent_session") return Promise.resolve(branchSession);
+      if (
+        command === "get_agent_session" &&
+        [newSession.id, branchSession.id].includes(
+          (args as { sessionId?: string } | undefined)?.sessionId ?? "",
+        )
+      ) {
+        return Promise.resolve(
+          (args as { sessionId?: string }).sessionId === branchSession.id
+            ? branchSession
+            : newSession,
+        );
+      }
+      if (
+        command === "list_agent_items" &&
+        [newSession.id, branchSession.id].includes(
+          (args as { sessionId?: string } | undefined)?.sessionId ?? "",
+        )
+      ) {
+        return Promise.resolve([]);
+      }
+      return defaultInvoke?.(command, args);
+    });
+
+    render(<AgentWorkspace />);
+    const composer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(composer, "First submission");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", expect.anything()),
+    );
+    const followUpComposer = screen.getByRole("textbox", { name: "Message June" });
+    await user.type(followUpComposer, "Later draft");
+    await waitFor(() => expect(followUpComposer).toHaveTextContent("Later draft"));
+    await waitFor(() => expect(readAgentSessionDraft(newSession.id)).toBe("Later draft"));
+    await act(async () => rejectFirstStart?.(new Error("first run failed")));
+
+    await user.click(await screen.findByRole("button", { name: "Retry unsent message" }));
+    await waitFor(() => {
+      const starts = mocks.invoke.mock.calls.filter(([command]) => command === "start_agent_run");
+      expect(starts).toHaveLength(2);
+    });
+    act(() => {
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "retry-message-completed",
+          sessionId: newSession.id,
+          runId: "run-retry",
+          sequence: 2,
+          method: "message.completed",
+          data: {
+            itemId: "retry-answer",
+            role: "assistant",
+            text: "Retry answer",
+            createdAt: "2026-07-22T12:01:00Z",
+          },
+        },
+      });
+      mocks.runtimeListener?.({
+        payload: {
+          protocolVersion: 1,
+          eventId: "retry-run-completed",
+          sessionId: newSession.id,
+          runId: "run-retry",
+          sequence: 3,
+          method: "run.completed",
+          data: { completedAt: "2026-07-22T12:02:00Z" },
+        },
+      });
+    });
+
+    writeAgentSessionDraft(branchSession.id, "Branch draft");
+    await screen.findAllByRole("button", { name: "Branch from here" });
+    fireEvent.click(screen.getAllByRole("button", { name: "Branch from here" }).at(-1) as Element);
+    await waitFor(() =>
+      expect(mocks.invoke).toHaveBeenCalledWith("branch_agent_session", expect.anything()),
+    );
+    await screen.findByText("Branch");
+    await waitFor(() => expect(screen.getByRole("textbox")).toHaveTextContent("Branch draft"));
+    expect(readAgentSessionDraft(branchSession.id)).toBe("Branch draft");
   });
 
   it("discards staged attachments when an unsent message is explicitly discarded", async () => {
