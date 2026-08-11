@@ -1137,6 +1137,12 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.equal(resumed.interruptions.length, 0);
   const resumedMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(resumedMessages));
+  const resumedSystem = resumedMessages.find(
+    (message) =>
+      isRecord(message) && message.role === "system" && typeof message.content === "string",
+  );
+  assert.ok(isRecord(resumedSystem));
+  assert.match(String(resumedSystem.content), /Use Clovy only/);
   const resumedAssistant = resumedMessages.find(
     (message) =>
       isRecord(message) &&

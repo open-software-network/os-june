@@ -212,10 +212,20 @@ test("injects queued steering at the next model boundary and acknowledges consum
       onSteeringConsumed: (message) => consumed.push(message.messageId),
     },
   );
-  for await (const _event of provider.getModel("private-auto").getStreamedResponse(modelRequest())) {
+  const request = modelRequest();
+  request.input = [
+    {
+      role: "system",
+      content:
+        "You are Clovy. Never present June as a product, assistant, persona, or name. Use Clovy only.",
+    },
+    ...request.input,
+  ];
+  for await (const _event of provider.getModel("private-auto").getStreamedResponse(request)) {
     // Drain the model response.
   }
   const messages = requests[0]?.messages as Array<{ role: string; content: string }>;
+  assert.match(messages[0]?.content ?? "", /Use Clovy only/);
   assert.deepEqual(messages.at(-1), { role: "user", content: "Prefer the launch plan" });
   assert.deepEqual(consumed, ["steer-1"]);
 });
