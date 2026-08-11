@@ -766,7 +766,9 @@ describe("Clovy technical identity", () => {
     expect(gitignore).toContain(".ephemeral-clovy-api.json*");
     expect(gitignore).toContain(".ephemeral-june-api.json*");
     expect(ephemeralApi).toContain('LEGACY_STATE_FILE=".ephemeral-june-api.json"');
-    expect(ephemeralApi).toContain('mv "$LEGACY_STATE_FILE" "$STATE_FILE"');
-    expect(ephemeralApi.indexOf("migrate_legacy_state\n\ncase")).toBeGreaterThan(-1);
+    expect(ephemeralApi).toContain('ln "$LEGACY_STATE_FILE" "$STATE_FILE"');
+    expect(ephemeralApi).toContain('rm -f "$LEGACY_STATE_FILE"');
+    expect(ephemeralApi.indexOf("migrate_legacy_state_file\n\ncase")).toBeGreaterThan(-1);
+    expect(ephemeralApi).toContain("until both recorded CVMs are torn down.");
   });
 });

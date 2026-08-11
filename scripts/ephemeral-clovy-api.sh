@@ -52,6 +52,39 @@ die() {
   exit 1
 }
 
+# A released June checkout may have the only teardown handle for a live,
+# billed CVM in the legacy state file. Move that handle to the canonical path
+# before any command reads or reserves state. Never overwrite a canonical
+# handle when both exist: `up` will fail closed, while `down` tears down the
+# canonical CVM first and then returns for the legacy one below.
+migrate_legacy_state_file() {
+  if [[ -L "$STATE_FILE" || (-e "$STATE_FILE" && ! -f "$STATE_FILE") ]]; then
+    die "$STATE_FILE must be a regular file; refusing to follow it."
+  fi
+  if [[ -e "$STATE_FILE" ]]; then
+    return 0
+  fi
+  if [[ ! -e "$LEGACY_STATE_FILE" && ! -L "$LEGACY_STATE_FILE" ]]; then
+    return 0
+  fi
+  if [[ -L "$LEGACY_STATE_FILE" || ! -f "$LEGACY_STATE_FILE" ]]; then
+    die "$LEGACY_STATE_FILE must be a regular file; refusing to follow it."
+  fi
+
+  # Link first so a concurrent canonical reservation can never be overwritten.
+  # Both paths are in the repository root, so this is an atomic same-filesystem
+  # handoff. An interrupted unlink leaves two handles to the same safe inode.
+  if ! ln "$LEGACY_STATE_FILE" "$STATE_FILE" 2>/dev/null; then
+    if [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]]; then
+      return 0
+    fi
+    die "Could not migrate legacy ephemeral CVM state from $LEGACY_STATE_FILE."
+  fi
+  chmod 600 "$STATE_FILE"
+  rm -f "$LEGACY_STATE_FILE"
+  echo "Migrated legacy ephemeral CVM state to $STATE_FILE."
+}
+
 # The state file is the only record of the CVM name and its bearer token.
 # Written atomically (temp + rename): a truncate-in-place could leave empty
 # JSON if jq dies mid-write, losing the teardown handle of a live CVM.
@@ -77,20 +110,6 @@ write_state() {
 
 read_state() {
   jq -r --arg key "$1" '.[$key] // empty' "$STATE_FILE"
-}
-
-# Preserve the only teardown handle for a CVM created by the June-era script.
-# Canonical state wins when both files exist; after it is torn down, the next
-# invocation promotes and handles the remaining legacy record.
-migrate_legacy_state() {
-  if [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]]; then return 0; fi
-  if [[ ! -e "$LEGACY_STATE_FILE" && ! -L "$LEGACY_STATE_FILE" ]]; then return 0; fi
-  if [[ -L "$LEGACY_STATE_FILE" || ! -f "$LEGACY_STATE_FILE" ]]; then
-    die "$LEGACY_STATE_FILE must be a regular file; refusing to follow it."
-  fi
-  chmod 600 "$LEGACY_STATE_FILE"
-  mv "$LEGACY_STATE_FILE" "$STATE_FILE"
-  echo "Migrated legacy ephemeral CVM state to $STATE_FILE."
 }
 
 # Tri-state existence probe via the /apps listing (same shape the CI
@@ -137,6 +156,9 @@ cmd_up() {
   phala status >/dev/null 2>&1 || die "The phala CLI is not authenticated. Run: phala auth login"
   node scripts/clovy-api-env-compat.mjs
   [[ -f "$API_ENV_FILE" ]] || die "$API_ENV_FILE is missing. Copy clovy-api/.env.example and fill in the upstream keys."
+  if [[ -e "$LEGACY_STATE_FILE" ]]; then
+    die "Both $STATE_FILE and $LEGACY_STATE_FILE exist. Run \`make ephemeral-api-down\` until both recorded CVMs are torn down."
+  fi
   # Atomic reservation (noclobber): two concurrent `up`s must not both pass a
   # plain -f guard during the long image build and then overwrite each other's
   # only CVM record. Whoever creates the file owns the run.
@@ -316,6 +338,14 @@ cmd_down() {
   fi
   rm -f "$STATE_FILE"
   echo "Ephemeral Clovy API torn down."
+
+  # A buggy compatibility-window checkout could have created a canonical CVM
+  # while a legacy one was still recorded. One explicit `down` must tear down
+  # both so the older billed instance is not silently left running.
+  if [[ -e "$LEGACY_STATE_FILE" || -L "$LEGACY_STATE_FILE" ]]; then
+    migrate_legacy_state_file
+    cmd_down
+  fi
 }
 
 cmd_dev() {
@@ -338,7 +368,7 @@ cmd_dev() {
     pnpm tauri:dev
 }
 
-migrate_legacy_state
+migrate_legacy_state_file
 
 case "${1:-}" in
   up) cmd_up ;;
