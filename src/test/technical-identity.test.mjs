@@ -515,6 +515,55 @@ describe("Clovy technical identity", () => {
     }
   });
 
+  it("builds historical desktop releases through the agent runtime identity bridge", async () => {
+    const [macPromotion, windowsProduction] = await Promise.all([
+      read(".github/workflows/promote-desktop.yml"),
+      read(".github/workflows/production-desktop-windows.yml"),
+    ]);
+
+    for (const legacyVariable of ["JUNE_AGENT_RUNTIME_TARGET", "JUNE_AGENT_RUNTIME_PREBUILT"]) {
+      expect(macPromotion).toContain(legacyVariable);
+      expect(windowsProduction).toContain(legacyVariable);
+    }
+    for (const legacyVariable of ["JUNE_AGENT_RUNTIME_NODE_ARM64", "JUNE_AGENT_RUNTIME_NODE_X64"]) {
+      expect(macPromotion).toContain(legacyVariable);
+    }
+
+    expect(macPromotion).toContain(".tauri-agent-runtime/clovy-agent-runtime");
+    expect(macPromotion).toContain(".tauri-agent-runtime/june-agent-runtime");
+    expect(macPromotion).toContain("Canonical and legacy agent runtime outputs differ.");
+    expect(macPromotion).toContain("Canonical and legacy packaged agent runtimes differ.");
+    expect(macPromotion).toContain('test "$(shasum -a 256 "$runtime"');
+    expect(macPromotion).toContain('codesign --verify --strict --verbose=2 "$runtime"');
+    expect(macPromotion).toContain(
+      'node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch arm64',
+    );
+
+    expect(windowsProduction).toContain(".tauri-agent-runtime/clovy-agent-runtime.exe");
+    expect(windowsProduction).toContain(".tauri-agent-runtime/june-agent-runtime.exe");
+    expect(windowsProduction).toContain("Canonical and legacy agent runtime outputs differ.");
+    expect(windowsProduction).toContain("Get-AuthenticodeSignature -FilePath $runtime.FullName");
+    expect(windowsProduction).toContain('Set-Content -LiteralPath "$($runtime.FullName).sha256"');
+    expect(windowsProduction).toContain(
+      "node scripts/build-agent-runtime.mjs --smoke $smokeRuntime",
+    );
+    expect(windowsProduction).toContain('$legacyRuntime = "native/bin/june-agent-runtime.exe"');
+    expect(windowsProduction).toContain("function Test-ArchivePath([string]$path)");
+    expect(windowsProduction).toContain('"(?m)(?:^|\\s)$escapedPath(?:\\s|$)"');
+    expect(windowsProduction).toContain(
+      "$hasCanonicalRuntime = Test-ArchivePath $canonicalRuntime",
+    );
+    expect(windowsProduction).toContain("$hasLegacyRuntime = Test-ArchivePath $legacyRuntime");
+    expect(windowsProduction).not.toContain(
+      "$listingText -match [regex]::Escape($canonicalRuntime)",
+    );
+    expect(windowsProduction).not.toContain("$listingText -match [regex]::Escape($legacyRuntime)");
+    expect(windowsProduction).toContain(
+      'foreach ($expected in @($packagedRuntime, "$packagedRuntime.sha256"',
+    );
+    expect(windowsProduction).toContain("if (!(Test-ArchivePath $expected))");
+  });
+
   it("runs Clovy API checks when the canonical companion protocol changes", async () => {
     const [apiChecks, apiBuild] = await Promise.all([
       read(".github/workflows/clovy-api.yml"),

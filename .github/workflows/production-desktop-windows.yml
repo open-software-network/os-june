@@ -211,6 +211,9 @@ jobs:
 
       - name: Build agent runtime
         shell: pwsh
+        env:
+          CLOVY_AGENT_RUNTIME_TARGET: windows
+          JUNE_AGENT_RUNTIME_TARGET: windows
         run: |
           pnpm agent-runtime:build
           node scripts/build-agent-runtime.mjs
@@ -224,7 +227,26 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: |
-          $runtime = Get-Item ".tauri-agent-runtime/clovy-agent-runtime.exe" -ErrorAction Stop
+          $canonicalRuntime = ".tauri-agent-runtime/clovy-agent-runtime.exe"
+          $legacyRuntime = ".tauri-agent-runtime/june-agent-runtime.exe"
+          $hasCanonical = Test-Path -LiteralPath $canonicalRuntime -PathType Leaf
+          $hasLegacy = Test-Path -LiteralPath $legacyRuntime -PathType Leaf
+          if ($hasCanonical -and $hasLegacy) {
+            $canonicalHash = (Get-FileHash -Algorithm SHA256 $canonicalRuntime).Hash
+            $legacyHash = (Get-FileHash -Algorithm SHA256 $legacyRuntime).Hash
+            $canonicalChecksum = (Get-Content -Raw "$canonicalRuntime.sha256").Trim()
+            $legacyChecksum = (Get-Content -Raw "$legacyRuntime.sha256").Trim()
+            if ($canonicalHash -cne $legacyHash -or $canonicalChecksum -cne $legacyChecksum) {
+              throw "Canonical and legacy agent runtime outputs differ."
+            }
+            throw "Canonical and legacy agent runtime outputs are both present; signing one would make the prebuilt outputs diverge."
+          } elseif ($hasCanonical) {
+            $runtime = Get-Item $canonicalRuntime -ErrorAction Stop
+          } elseif ($hasLegacy) {
+            $runtime = Get-Item $legacyRuntime -ErrorAction Stop
+          } else {
+            throw "Agent runtime build produced neither canonical nor legacy output."
+          }
           ./scripts/windows-sign.ps1 $runtime.FullName
           if ($LASTEXITCODE -ne 0) {
             throw "Agent runtime signing failed."
@@ -260,6 +282,9 @@ jobs:
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
           CLOVY_AGENT_RUNTIME_PREBUILT: "1"
+          JUNE_AGENT_RUNTIME_PREBUILT: "1"
+          CLOVY_AGENT_RUNTIME_TARGET: windows
+          JUNE_AGENT_RUNTIME_TARGET: windows
         run: pnpm tauri:build
 
       - name: Verify Windows signatures and payload
@@ -296,12 +321,29 @@ jobs:
             throw "Could not inspect NSIS installer payload."
           }
           $listingText = ($listing -join "`n").Replace("\", "/")
+          function Test-ArchivePath([string]$path) {
+            $escapedPath = [regex]::Escape($path.Replace("\", "/"))
+            return $listingText -match "(?m)(?:^|\s)$escapedPath(?:\s|$)"
+          }
           # The MSVC target statically links WebView2Loader; only GNU builds ship its DLL.
-          if ($listingText -notmatch [regex]::Escape("os-june.exe")) {
+          if (!(Test-ArchivePath "os-june.exe")) {
             throw "NSIS installer payload does not include os-june.exe."
           }
-          foreach ($expected in @("native/bin/clovy-agent-runtime.exe", "native/bin/clovy-agent-runtime.exe.sha256", "native/bin/june-dictation-helper.exe")) {
-            if ($listingText -notmatch [regex]::Escape($expected)) {
+          $canonicalRuntime = "native/bin/clovy-agent-runtime.exe"
+          $legacyRuntime = "native/bin/june-agent-runtime.exe"
+          $hasCanonicalRuntime = Test-ArchivePath $canonicalRuntime
+          $hasLegacyRuntime = Test-ArchivePath $legacyRuntime
+          if ($hasCanonicalRuntime -and $hasLegacyRuntime) {
+            throw "NSIS installer payload contains both canonical and legacy agent runtimes; their bytes cannot be safely disambiguated from the listing."
+          } elseif ($hasCanonicalRuntime) {
+            $packagedRuntime = $canonicalRuntime
+          } elseif ($hasLegacyRuntime) {
+            $packagedRuntime = $legacyRuntime
+          } else {
+            throw "NSIS installer payload includes neither canonical nor legacy agent runtime."
+          }
+          foreach ($expected in @($packagedRuntime, "$packagedRuntime.sha256", "native/bin/june-dictation-helper.exe")) {
+            if (!(Test-ArchivePath $expected)) {
               throw "NSIS installer payload does not include bundled file $expected."
             }
           }

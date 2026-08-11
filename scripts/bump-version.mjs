@@ -124,35 +124,43 @@ function cargoLockField(contents, table, field) {
   };
 }
 
-function clovyCargoLockPackage(contents) {
-  const matches = [];
+function desktopCargoLockPackage(contents) {
+  const matches = { clovy: [], "os-june": [] };
   for (const table of cargoLockPackageTables(contents)) {
     const name = cargoLockField(contents, table, "name");
     if (name.count !== 1 || name.malformed) continue;
-    if (name.value === "clovy") matches.push(table);
+    if (name.value === "clovy" || name.value === "os-june") {
+      matches[name.value].push(table);
+    }
   }
 
-  if (matches.length === 0) {
-    throw new Error('Could not find a [[package]] named "clovy" in Cargo.lock.');
+  const packageName = matches.clovy.length > 0 ? "clovy" : "os-june";
+  const selected = matches[packageName];
+  if (selected.length === 0) {
+    throw new Error(
+      'Could not find a [[package]] named "clovy" or legacy "os-june" in Cargo.lock.',
+    );
   }
-  if (matches.length > 1) {
-    throw new Error('Found multiple [[package]] tables named "clovy" in Cargo.lock.');
+  if (selected.length > 1) {
+    throw new Error(`Found multiple [[package]] tables named "${packageName}" in Cargo.lock.`);
   }
 
-  const table = matches[0];
+  const table = selected[0];
   const version = cargoLockField(contents, table, "version");
   if (version.count !== 1) {
     throw new Error(
-      `The Cargo.lock [[package]] named "clovy" must contain exactly one version field (found ${version.count}).`,
+      `The Cargo.lock [[package]] named "${packageName}" must contain exactly one version field (found ${version.count}).`,
     );
   }
   if (version.malformed) {
-    throw new Error('The Cargo.lock [[package]] named "clovy" has a malformed version field.');
+    throw new Error(
+      `The Cargo.lock [[package]] named "${packageName}" has a malformed version field.`,
+    );
   }
   for (const field of ["source", "checksum"]) {
     if (cargoLockField(contents, table, field).count > 0) {
       throw new Error(
-        `The Cargo.lock [[package]] named "clovy" unexpectedly contains a ${field} field.`,
+        `The Cargo.lock [[package]] named "${packageName}" unexpectedly contains a ${field} field.`,
       );
     }
   }
@@ -160,7 +168,7 @@ function clovyCargoLockPackage(contents) {
 }
 
 export function currentVersionFromCargoLock(contents) {
-  return clovyCargoLockPackage(contents).value;
+  return desktopCargoLockPackage(contents).value;
 }
 
 // The four version-bearing files must already agree before a bump — otherwise
@@ -197,7 +205,7 @@ function replaceCargoPackageVersion(contents, requestedVersion) {
 }
 
 function replaceCargoLockPackageVersion(contents, requestedVersion) {
-  const version = clovyCargoLockPackage(contents);
+  const version = desktopCargoLockPackage(contents);
   return `${contents.slice(0, version.valueStart)}${requestedVersion}${contents.slice(version.valueEnd)}`;
 }
 

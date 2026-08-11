@@ -469,17 +469,45 @@ jobs:
               tar -xzf "$archive"
             )
           done
-          echo "CLOVY_AGENT_RUNTIME_TARGET=universal-apple-darwin" >> "$GITHUB_ENV"
-          echo "CLOVY_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node" >> "$GITHUB_ENV"
-          echo "CLOVY_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node" >> "$GITHUB_ENV"
+          {
+            echo "CLOVY_AGENT_RUNTIME_TARGET=universal-apple-darwin"
+            echo "JUNE_AGENT_RUNTIME_TARGET=universal-apple-darwin"
+            echo "CLOVY_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node"
+            echo "JUNE_AGENT_RUNTIME_NODE_ARM64=$download_dir/node-v${node_version}-darwin-arm64/bin/node"
+            echo "CLOVY_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node"
+            echo "JUNE_AGENT_RUNTIME_NODE_X64=$download_dir/node-v${node_version}-darwin-x64/bin/node"
+          } >> "$GITHUB_ENV"
           export CLOVY_AGENT_RUNTIME_TARGET=universal-apple-darwin
+          export JUNE_AGENT_RUNTIME_TARGET="$CLOVY_AGENT_RUNTIME_TARGET"
           export CLOVY_AGENT_RUNTIME_NODE_ARM64="$download_dir/node-v${node_version}-darwin-arm64/bin/node"
+          export JUNE_AGENT_RUNTIME_NODE_ARM64="$CLOVY_AGENT_RUNTIME_NODE_ARM64"
           export CLOVY_AGENT_RUNTIME_NODE_X64="$download_dir/node-v${node_version}-darwin-x64/bin/node"
+          export JUNE_AGENT_RUNTIME_NODE_X64="$CLOVY_AGENT_RUNTIME_NODE_X64"
           pnpm agent-runtime:build
           node scripts/build-agent-runtime.mjs
+          canonical_runtime=.tauri-agent-runtime/clovy-agent-runtime
+          legacy_runtime=.tauri-agent-runtime/june-agent-runtime
+          if [ -e "$canonical_runtime" ] && [ -e "$legacy_runtime" ]; then
+            if ! cmp -s "$canonical_runtime" "$legacy_runtime" || \
+              ! cmp -s "$canonical_runtime.sha256" "$legacy_runtime.sha256"; then
+              echo "::error::Canonical and legacy agent runtime outputs differ."
+              exit 1
+            fi
+            runtime="$canonical_runtime"
+          elif [ -e "$canonical_runtime" ]; then
+            runtime="$canonical_runtime"
+          elif [ -e "$legacy_runtime" ]; then
+            runtime="$legacy_runtime"
+          else
+            echo "::error::Agent runtime build produced neither canonical nor legacy output."
+            exit 1
+          fi
+          test -x "$runtime"
+          test -s "$runtime.sha256"
+          test "$(shasum -a 256 "$runtime" | awk '{print $1}')" = "$(tr -d '[:space:]' < "$runtime.sha256")"
           smoke_dir="$RUNNER_TEMP/Clovy agent runtime smoke"
           mkdir -p "$smoke_dir"
-          cp .tauri-agent-runtime/clovy-agent-runtime "$smoke_dir/clovy-agent-runtime"
+          cp "$runtime" "$smoke_dir/clovy-agent-runtime"
           node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch arm64
           node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
 
@@ -491,6 +519,7 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           CLOVY_AGENT_RUNTIME_PREBUILT: "1"
+          JUNE_AGENT_RUNTIME_PREBUILT: "1"
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ steps.apple-api-key.outputs.path }}
@@ -536,7 +565,23 @@ jobs:
             exit 1
           fi
           app="${apps[0]}"
-          runtime="$app/Contents/Resources/native/bin/clovy-agent-runtime"
+          canonical_runtime="$app/Contents/Resources/native/bin/clovy-agent-runtime"
+          legacy_runtime="$app/Contents/Resources/native/bin/june-agent-runtime"
+          if [ -e "$canonical_runtime" ] && [ -e "$legacy_runtime" ]; then
+            if ! cmp -s "$canonical_runtime" "$legacy_runtime" || \
+              ! cmp -s "$canonical_runtime.sha256" "$legacy_runtime.sha256"; then
+              echo "::error::Canonical and legacy packaged agent runtimes differ."
+              exit 1
+            fi
+            runtime="$canonical_runtime"
+          elif [ -e "$canonical_runtime" ]; then
+            runtime="$canonical_runtime"
+          elif [ -e "$legacy_runtime" ]; then
+            runtime="$legacy_runtime"
+          else
+            echo "::error::The app contains neither canonical nor legacy agent runtime."
+            exit 1
+          fi
           checksum="$runtime.sha256"
           test -x "$runtime"
           test -s "$checksum"
