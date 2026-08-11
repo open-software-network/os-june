@@ -5,6 +5,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureClovyApiEnv } from "./clovy-api-env-compat.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const apiDir = path.join(rootDir, "clovy-api");
@@ -105,6 +106,11 @@ if (skipLocalApi) {
   if (!fs.existsSync(path.join(apiDir, "Cargo.toml"))) {
     console.error(`Could not find clovy-api/Cargo.toml under ${rootDir}`);
     process.exit(1);
+  }
+
+  const apiEnv = ensureClovyApiEnv(rootDir);
+  if (apiEnv.source === "legacy") {
+    console.error("Migrated legacy june-api/.env to clovy-api/.env.");
   }
 
   if (await portIsOpen(apiPort)) {

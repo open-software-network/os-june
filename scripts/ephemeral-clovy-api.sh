@@ -120,6 +120,7 @@ cmd_up() {
   docker info >/dev/null 2>&1 || die "The Docker daemon is unreachable. Start Docker Desktop and retry."
   command -v phala >/dev/null 2>&1 || die "The phala CLI is required. Install it with: npm install -g phala"
   phala status >/dev/null 2>&1 || die "The phala CLI is not authenticated. Run: phala auth login"
+  node scripts/clovy-api-env-compat.mjs
   [[ -f "$API_ENV_FILE" ]] || die "$API_ENV_FILE is missing. Copy clovy-api/.env.example and fill in the upstream keys."
   # Atomic reservation (noclobber): two concurrent `up`s must not both pass a
   # plain -f guard during the long image build and then overwrite each other's

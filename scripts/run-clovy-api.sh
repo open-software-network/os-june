@@ -10,6 +10,8 @@ if [[ ! -f "$API_DIR/Cargo.toml" ]]; then
   exit 1
 fi
 
+node "$ROOT_DIR/scripts/clovy-api-env-compat.mjs"
+
 existing_pids="$(lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
 if [[ -n "$existing_pids" ]]; then
   while IFS= read -r pid; do

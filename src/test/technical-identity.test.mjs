@@ -1,8 +1,10 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import { ensureClovyApiEnv } from "../../scripts/clovy-api-env-compat.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -70,6 +72,56 @@ function expectCanonicalPreferredAliases(compose) {
 }
 
 describe("Clovy technical identity", () => {
+  it("prefers canonical Clovy API env configuration", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "clovy-api-env-"));
+    try {
+      await mkdir(join(tempRoot, "clovy-api"));
+      await mkdir(join(tempRoot, "june-api"));
+      await writeFile(join(tempRoot, "clovy-api", ".env"), "SOURCE=canonical\n");
+      await writeFile(join(tempRoot, "june-api", ".env"), "SOURCE=legacy\n");
+
+      expect(ensureClovyApiEnv(tempRoot).source).toBe("canonical");
+      expect(await readFile(join(tempRoot, "clovy-api", ".env"), "utf8")).toBe(
+        "SOURCE=canonical\n",
+      );
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("migrates a legacy-only Clovy API env without exposing its contents", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "clovy-api-env-"));
+    try {
+      await mkdir(join(tempRoot, "clovy-api"));
+      await mkdir(join(tempRoot, "june-api"));
+      const legacyConfig = "CLOVY__UPSTREAMS__VENICE__API_KEY=secret-value\n";
+      await writeFile(join(tempRoot, "june-api", ".env"), legacyConfig);
+
+      expect(ensureClovyApiEnv(tempRoot)).toEqual({
+        source: "legacy",
+        path: join(tempRoot, "clovy-api", ".env"),
+      });
+      expect(await readFile(join(tempRoot, "clovy-api", ".env"), "utf8")).toBe(legacyConfig);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves Clovy API env configuration absent when neither file exists", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "clovy-api-env-"));
+    try {
+      await mkdir(join(tempRoot, "clovy-api"));
+      await mkdir(join(tempRoot, "june-api"));
+
+      expect(ensureClovyApiEnv(tempRoot).source).toBe("none");
+      await expect(readFile(join(tempRoot, "clovy-api", ".env"), "utf8")).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("uses Clovy for canonical package, service, and helper names", async () => {
     const [
       packageJson,
@@ -349,6 +401,7 @@ describe("Clovy technical identity", () => {
       beforeDev,
       runApi,
       ephemeralApi,
+      makefile,
       production,
       staging,
       ephemeral,
@@ -362,6 +415,7 @@ describe("Clovy technical identity", () => {
       read("scripts/tauri-before-dev.mjs"),
       read("scripts/run-clovy-api.sh"),
       read("scripts/ephemeral-clovy-api.sh"),
+      read("Makefile"),
       read("clovy-api/deploy/docker-compose.production.yml"),
       read("clovy-api/deploy/docker-compose.staging.yml"),
       read("clovy-api/deploy/docker-compose.ephemeral.yml"),
@@ -377,7 +431,20 @@ describe("Clovy technical identity", () => {
     expect(beforeDev).toContain(
       'process.env.CLOVY_API_PORT ?? process.env.JUNE_API_PORT ?? "8080"',
     );
+    expect(beforeDev).toContain("ensureClovyApiEnv(rootDir)");
     expect(runApi).toContain("${CLOVY_API_PORT:-${JUNE_API_PORT:-8080}}");
+    expect(runApi).toContain('node "$ROOT_DIR/scripts/clovy-api-env-compat.mjs"');
+    expect(runApi.indexOf("clovy-api-env-compat.mjs")).toBeLessThan(
+      runApi.indexOf("exec cargo run -p clovy-api-server -- serve"),
+    );
+    const ephemeralEnvBridge = ephemeralApi.indexOf("node scripts/clovy-api-env-compat.mjs");
+    expect(ephemeralEnvBridge).toBeGreaterThan(-1);
+    expect(ephemeralEnvBridge).toBeLessThan(
+      ephemeralApi.indexOf('[[ -f "$API_ENV_FILE" ]] || die'),
+    );
+    expect(makefile).toMatch(
+      /^dev-api:.*\n\tnode scripts\/clovy-api-env-compat\.mjs\n\tcd clovy-api/m,
+    );
     const canonicalEnvRead = ephemeralApi.indexOf('grep -E "^${canonical}=."');
     const legacyEnvRead = ephemeralApi.indexOf('grep -E "^${legacy}=."');
     expect(canonicalEnvRead).toBeGreaterThan(-1);

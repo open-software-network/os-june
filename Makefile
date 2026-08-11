@@ -43,6 +43,7 @@ dev-staging:  ## Run the desktop app against staging Clovy API (real OS Accounts
 		pnpm tauri:dev
 
 dev-api:  ## Run only clovy-api locally on :8080 (loads clovy-api/.env)
+	node scripts/clovy-api-env-compat.mjs
 	cd clovy-api && cargo run -p clovy-api-server -- serve
 
 # Ephemeral Phala CVM: the working-tree clovy-api inside a real TEE, on demand.
