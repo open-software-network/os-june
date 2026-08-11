@@ -14,6 +14,7 @@ cd "$(git rev-parse --show-toplevel)"
 COMPOSE_FILE="clovy-api/deploy/docker-compose.ephemeral.yml"
 API_ENV_FILE="clovy-api/.env"
 STATE_FILE=".ephemeral-clovy-api.json"
+LEGACY_STATE_FILE=".ephemeral-june-api.json"
 LOCAL_DEV_USER_ID="usr_local_dev"
 
 TMP_FILES=()
@@ -76,6 +77,20 @@ write_state() {
 
 read_state() {
   jq -r --arg key "$1" '.[$key] // empty' "$STATE_FILE"
+}
+
+# Preserve the only teardown handle for a CVM created by the June-era script.
+# Canonical state wins when both files exist; after it is torn down, the next
+# invocation promotes and handles the remaining legacy record.
+migrate_legacy_state() {
+  if [[ -e "$STATE_FILE" || -L "$STATE_FILE" ]]; then return 0; fi
+  if [[ ! -e "$LEGACY_STATE_FILE" && ! -L "$LEGACY_STATE_FILE" ]]; then return 0; fi
+  if [[ -L "$LEGACY_STATE_FILE" || ! -f "$LEGACY_STATE_FILE" ]]; then
+    die "$LEGACY_STATE_FILE must be a regular file; refusing to follow it."
+  fi
+  chmod 600 "$LEGACY_STATE_FILE"
+  mv "$LEGACY_STATE_FILE" "$STATE_FILE"
+  echo "Migrated legacy ephemeral CVM state to $STATE_FILE."
 }
 
 # Tri-state existence probe via the /apps listing (same shape the CI
@@ -322,6 +337,8 @@ cmd_dev() {
     CLOVY_DEV_SKIP_LOCAL_API=1 \
     pnpm tauri:dev
 }
+
+migrate_legacy_state
 
 case "${1:-}" in
   up) cmd_up ;;

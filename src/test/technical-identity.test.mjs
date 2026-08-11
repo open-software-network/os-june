@@ -756,4 +756,17 @@ describe("Clovy technical identity", () => {
     expect(onboardingPreview).toContain("window.__CLOVY_STUB__");
     expect(styleguide).toContain("else os-clovy:theme / system");
   });
+
+  it("keeps legacy ephemeral CVM state recoverable and ignored", async () => {
+    const [gitignore, ephemeralApi] = await Promise.all([
+      read(".gitignore"),
+      read("scripts/ephemeral-clovy-api.sh"),
+    ]);
+
+    expect(gitignore).toContain(".ephemeral-clovy-api.json*");
+    expect(gitignore).toContain(".ephemeral-june-api.json*");
+    expect(ephemeralApi).toContain('LEGACY_STATE_FILE=".ephemeral-june-api.json"');
+    expect(ephemeralApi).toContain('mv "$LEGACY_STATE_FILE" "$STATE_FILE"');
+    expect(ephemeralApi.indexOf("migrate_legacy_state\n\ncase")).toBeGreaterThan(-1);
+  });
 });

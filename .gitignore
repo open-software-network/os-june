@@ -50,6 +50,7 @@ CLAUDE.local.md
 # Ephemeral Phala CVM state (holds a per-run bearer token; mode 600).
 # The glob also covers write_state's atomic-rename temps (.json.XXXXXX).
 .ephemeral-clovy-api.json*
+.ephemeral-june-api.json*
 
 # Local agent working files: task briefs and review/report scratch
 .briefs
