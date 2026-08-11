@@ -1,4 +1,4 @@
-# june.link isolated rollout
+# Clovy link compatibility rollout
 
 `june.link` must never be added to the `os-june-api-production` ingress. The
 short-link origin runs on `os-june-link-production`, with a separate

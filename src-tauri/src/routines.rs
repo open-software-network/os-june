@@ -1417,7 +1417,9 @@ async fn routine_trust(pool: &SqlitePool, routine_id: &str) -> (Vec<String>, Opt
 fn routine_base_tool_allowed(name: &str, enabled_toolsets: &[String]) -> bool {
     let has = |toolset: &str| enabled_toolsets.iter().any(|value| value == toolset);
     match name {
-        "search_june" => has("context_engine") || has("memory") || has("session_search"),
+        "search_clovy" | "search_june" => {
+            has("context_engine") || has("memory") || has("session_search")
+        }
         "web_search" | "web_fetch" => has("web"),
         "list_files" | "read_file" | "preview_file" | "search_files" => has("file"),
         "list_skills" | "load_skill" => has("skills"),
@@ -1514,7 +1516,7 @@ pub async fn routine_mcp_server_allowed_for_session(
 
 fn base_unattended_tools() -> Value {
     json!([
-        { "name": "search_june", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
+        { "name": "search_clovy", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_search", "description": "Search the public web.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "web_fetch", "description": "Fetch a public web page.", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false } },
         { "name": "list_files", "description": "List files in the routine workspace.", "parameters": { "type": "object", "properties": { "path": { "type": "string" } }, "required": [], "additionalProperties": false } },
@@ -2261,6 +2263,8 @@ mod tests {
 
         assert!(names.contains(&"list_skills"));
         assert!(names.contains(&"load_skill"));
+        assert!(names.contains(&"search_clovy"));
+        assert!(!names.contains(&"search_june"));
         assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"run_shell"));
     }

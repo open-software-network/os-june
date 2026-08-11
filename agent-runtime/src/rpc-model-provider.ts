@@ -8,8 +8,9 @@ import type { SteeringMessage } from "./types.js";
 
 export const MODEL_CHAT_COMPLETIONS_TOOL = "__clovy_model_chat_completions";
 const AUTO_MODEL_ID = "open-software/auto";
-const AUTO_MODEL_PREFIX = "__june_auto_generation__:";
-const RESOLVED_AUTO_MODEL_PREFIX = "__june_auto_resolved__:";
+const AUTO_MODEL_PREFIX = "__clovy_auto_generation__:";
+const LEGACY_AUTO_MODEL_PREFIX = "__june_auto_generation__:";
+const RESOLVED_AUTO_MODEL_PREFIX = "__clovy_auto_resolved__:";
 
 export type ModelRpcInvoker = (input: {
   name: typeof MODEL_CHAT_COMPLETIONS_TOOL;
@@ -232,7 +233,12 @@ export type ModelRoute = {
 function concreteModel(model: string | undefined): string | undefined {
   const normalized = model?.trim();
   if (!normalized || [...normalized].length > 128) return undefined;
-  if (normalized === "auto" || isAutoModel(normalized) || normalized.startsWith("__june_")) {
+  if (
+    normalized === "auto" ||
+    isAutoModel(normalized) ||
+    normalized.startsWith("__clovy_") ||
+    normalized.startsWith("__june_")
+  ) {
     return undefined;
   }
   if ([...normalized].some((character) => /\s|\p{Cc}/u.test(character))) return undefined;
@@ -252,7 +258,11 @@ function autoResponseModel(model: JsonValue | undefined): string | undefined {
 }
 
 function isAutoModel(model: string | undefined): boolean {
-  return model === AUTO_MODEL_ID || model?.startsWith(AUTO_MODEL_PREFIX) === true;
+  return (
+    model === AUTO_MODEL_ID ||
+    model?.startsWith(AUTO_MODEL_PREFIX) === true ||
+    model?.startsWith(LEGACY_AUTO_MODEL_PREFIX) === true
+  );
 }
 
 // Restores the response's observed reasoning field on assistant replay. The

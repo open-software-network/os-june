@@ -1,11 +1,11 @@
 # Internal agent tool naming
 
-**Rule.** June-owned tools exposed to the agent as in-loop host tools are named
+**Rule.** Clovy-owned tools exposed to the agent as in-loop host tools are named
 **`verb_object`**: the verb first, in `snake_case`, with no capability or
 provider prefix repeated inside the tool name.
 
 [ADR-0040](../docs/adr/0040-plugin-capabilities-as-host-tools.md) defines the
-integration shape. June-managed `june_*` MCP servers are retired; they are
+integration shape. Clovy-managed `june_*` MCP servers are retired; they are
 historical architecture, not the namespace or template for a new internal
 tool surface.
 
@@ -22,7 +22,7 @@ verb (`web_search`, `web_fetch`), and a status reader may be named for what it
 returns (`recording_status`, `status`).
 
 **And: the name of every tool in a contract is fixed in exactly one document,
-before the code is written.** For a June-owned host-tool surface that document
+before the code is written.** For a Clovy-owned host-tool surface that document
 is the subsystem PRD or contract that owns the capability. Other documents
 reference those names; they never coin them.
 
@@ -43,7 +43,7 @@ nobody caught it. A contract described but not *named* will be named twice.
 That incident happened while Browser use was framed as the `june_browser` MCP
 server. ADR-0040 retired that server shape, but the naming lesson remains.
 
-**How to apply.** Before implementing a June-owned host-tool surface, put the
+**How to apply.** Before implementing a Clovy-owned host-tool surface, put the
 names in the owning PRD or contract as a table, then implement against that
 table. When adding a tool to an existing surface, match its established
 convention and add the name to the owning document in the same change. When a
@@ -58,4 +58,4 @@ Inspect the current host-tool catalog and dispatch before coining anything:
 
 **Exceptions.** Tools supplied by external MCP servers, including
 user-connected and provider-hosted servers, are not ours to name; use them as
-they come. This rule binds June-owned in-loop host tools only.
+they come. This rule binds Clovy-owned in-loop host tools only.

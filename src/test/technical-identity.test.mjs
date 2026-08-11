@@ -72,6 +72,46 @@ function expectCanonicalPreferredAliases(compose) {
 }
 
 describe("Clovy technical identity", () => {
+  it("keeps Clovy as the only presented assistant identity", async () => {
+    const [
+      runtimeIdentity,
+      runtimePrompt,
+      desktopApi,
+      agentApi,
+      agentTools,
+      routines,
+      ...currentRules
+    ] = await Promise.all([
+      read("agent-runtime/src/identity.ts"),
+      read("agent-runtime/src/sdk-engine.ts"),
+      read("src-tauri/src/clovy_api.rs"),
+      read("src-tauri/src/agent_runtime/api.rs"),
+      read("src-tauri/src/agent_runtime/tools.rs"),
+      read("src-tauri/src/routines.rs"),
+      read("spec/index.md"),
+      read("spec/no-all-caps.md"),
+      read("spec/sentence-case.md"),
+      read("spec/font-families.md"),
+      read("spec/mcp-tool-naming.md"),
+    ]);
+
+    const removedIdentityCopy = "June was Clovy's previous name";
+    expect(runtimeIdentity).not.toContain(removedIdentityCopy);
+    expect(runtimePrompt).not.toContain(removedIdentityCopy);
+    expect(desktopApi).not.toContain(removedIdentityCopy);
+    expect(runtimePrompt).toContain("Use Clovy only");
+    expect(desktopApi).toContain("Use Clovy only");
+    expect(agentApi).toContain('{ "name": "search_clovy"');
+    expect(agentApi).not.toContain('{ "name": "search_june"');
+    expect(agentTools).toContain('"search_clovy" | "search_june"');
+    expect(routines).toContain('{ "name": "search_clovy"');
+    expect(routines).not.toContain('{ "name": "search_june"');
+
+    for (const rule of currentRules) {
+      expect(rule).not.toMatch(/\bJune(?:'s|-owned|-managed)\b/);
+    }
+  });
+
   it("prefers canonical Clovy API env configuration", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "clovy-api-env-"));
     try {

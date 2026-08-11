@@ -4,7 +4,7 @@
 (`--font-serif`, Martina Plantijn) is for headings and display moments only. Mono
 (`--font-mono`, Berkeley Mono) is only for code and technical identifiers.
 
-**Why.** The sans face carries June's calm, precise voice. Letting serif or mono
+**Why.** The sans face carries Clovy's calm, precise voice. Letting serif or mono
 leak into body copy dilutes that voice and makes the surface read as inconsistent
 rather than intentional.
 
@@ -16,4 +16,4 @@ meant to read as such.
 **Exceptions.** The existing serif empty-state titles
 (`.empty-state-title`) are canon, not a violation, as is the Home thread's
 serif daily greeting (a display moment). Chat bodies everywhere - including
-June's Home replies - stay sans.
+Clovy's Home replies - stay sans.

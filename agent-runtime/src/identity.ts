@@ -1,8 +1,6 @@
 import type { EngineResult, RunStartParams } from "./types.js";
 
 export const CLOVY_IDENTITY_REPLY = "I'm Clovy, your personal AI assistant.";
-export const CLOVY_LEGACY_NAME_REPLY =
-  "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.";
 
 const LEGACY_NAME_QUESTIONS = new Set([
   "are you june",
@@ -121,7 +119,7 @@ function identityReply(input: string): string | undefined {
   }
   while (namedEnd > namedStart && words[namedEnd - 1] === "please") namedEnd -= 1;
   const namedQuestion = words.slice(namedStart, namedEnd).join(" ");
-  if (LEGACY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_LEGACY_NAME_REPLY;
+  if (LEGACY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_IDENTITY_REPLY;
   if (CLOVY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_IDENTITY_REPLY;
 
   let start = 0;

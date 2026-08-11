@@ -9,8 +9,8 @@ import { MODEL_CHAT_COMPLETIONS_TOOL } from "../src/rpc-model-provider.ts";
 import { runtimeFailureDetails } from "../src/sanitize.ts";
 import type { EngineEvent, EngineRunInput, JsonObject, JsonValue } from "../src/types.ts";
 
-const AUTO_RUN_MODEL = "__june_auto_generation__:73";
-const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
+const AUTO_RUN_MODEL = "__clovy_auto_generation__:73";
+const PINNED_GLM_RUN_MODEL = "__clovy_auto_resolved__:z-ai%2Fglm-5.2";
 const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
 test("answers the legacy June name as Clovy without calling a model", async () => {
@@ -43,14 +43,13 @@ test("answers the legacy June name as Clovy without calling a model", async () =
 
   assert.equal(
     result.finalOutput,
-    "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+    "I'm Clovy, your personal AI assistant.",
   );
   assert.equal(hostCalls, 0);
   assert.deepEqual(events, [
     {
       type: "message.delta",
-      delta:
-        "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+      delta: "I'm Clovy, your personal AI assistant.",
     },
   ]);
   assert.deepEqual(
@@ -59,7 +58,7 @@ test("answers the legacy June name as Clovy without calling a model", async () =
       { role: "user", text: "Clovy, what is June?" },
       {
         role: "assistant",
-        text: "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.",
+        text: "I'm Clovy, your personal AI assistant.",
       },
     ],
   );
@@ -1783,7 +1782,7 @@ test("pins an Auto-routed non-GLM model without renaming reasoning", async () =>
   });
 
   assert.equal(modelRequests[0]?.model, "open-software/auto");
-  assert.equal(modelRequests[1]?.model, "__june_auto_resolved__:kimi-k2");
+  assert.equal(modelRequests[1]?.model, "__clovy_auto_resolved__:kimi-k2");
   const secondMessages = modelRequests[1]?.messages;
   assert.ok(Array.isArray(secondMessages));
   const assistantMessage = secondMessages.find(

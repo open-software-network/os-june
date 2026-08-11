@@ -1,4 +1,4 @@
-# June enforceable coding rules
+# Clovy enforceable coding rules
 
 Read every spec in your scope before writing code; **violations should fail
 review.** When you add, rename, or remove a spec, update this index in the same
@@ -33,7 +33,7 @@ authoritative, reviewable version.
 
 ## Agent surface - tools
 
-- [mcp-tool-naming](mcp-tool-naming.md) - June-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
+- [mcp-tool-naming](mcp-tool-naming.md) - Clovy-owned in-loop host tools are `verb_object`; the owning PRD or contract names them before the code is written
 
 ## Tooling — dependencies
 

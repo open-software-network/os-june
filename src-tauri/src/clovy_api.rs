@@ -53,17 +53,21 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// Internal agent model id used to carry a per-run Auto preference through
 /// session-scoped `config.set`. Clovy's on-device provider adapter rewrites it
 /// before forwarding, so Clovy API never sees this implementation detail.
-const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
+const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__clovy_auto_generation__:";
+const LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal model id for the canonical model selected by Auto for the rest of
 /// one agent run. It preserves service-managed inference provenance across
 /// continuations.
-const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
+const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__clovy_auto_resolved__:";
+const LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
 /// Internal agent model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.
-const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
+const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__clovy_remote_generation__:";
+const LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 /// The frontend's synthetic catalog id prefix for the local model option
 /// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
-const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
+const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__clovy_local_generation__:";
+const LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 // Every Clovy API request carries the real shipped app version so the server
@@ -1369,8 +1373,11 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         .to_string();
     for prefix in [
         AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX,
+        LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX,
         AGENT_RUN_REMOTE_MODEL_PREFIX,
+        LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX,
         LOCAL_GENERATION_OPTION_ID_PREFIX,
+        LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX,
     ] {
         if request_model.starts_with(prefix) {
             if let Some(decoded) = decode_tagged_model(&request_model, prefix) {
@@ -1383,22 +1390,24 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
             break;
         }
     }
-    let auto_cost_quality =
-        if let Some(encoded) = request_model.strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX) {
-            Some(
-                encoded
-                    .parse::<u8>()
-                    .ok()
-                    .filter(|value| *value <= 100)
-                    .map_or_else(crate::providers::cost_quality, |value| {
-                        f64::from(value) / 100.0
-                    }),
-            )
-        } else if request_model == crate::providers::AUTO_GENERATION_MODEL {
-            Some(crate::providers::cost_quality())
-        } else {
-            None
-        };
+    let auto_cost_quality = if let Some(encoded) = request_model
+        .strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX)
+        .or_else(|| request_model.strip_prefix(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX))
+    {
+        Some(
+            encoded
+                .parse::<u8>()
+                .ok()
+                .filter(|value| *value <= 100)
+                .map_or_else(crate::providers::cost_quality, |value| {
+                    f64::from(value) / 100.0
+                }),
+        )
+    } else if request_model == crate::providers::AUTO_GENERATION_MODEL {
+        Some(crate::providers::cost_quality())
+    } else {
+        None
+    };
     if let Some(cost_quality) = auto_cost_quality {
         object.insert(
             "model".to_string(),
@@ -1433,6 +1442,7 @@ pub(crate) fn is_canonical_agent_model(model: &str) -> bool {
         && model.chars().count() <= CLOVY_API_MAX_ID_CHARS
         && model != "auto"
         && model != crate::providers::AUTO_GENERATION_MODEL
+        && !model.starts_with("__clovy_")
         && !model.starts_with("__june_")
         && !model.chars().any(char::is_whitespace)
         && !model.chars().any(char::is_control)
@@ -1440,6 +1450,7 @@ pub(crate) fn is_canonical_agent_model(model: &str) -> bool {
 
 fn decode_resolved_auto_model(model: &str) -> Option<String> {
     decode_tagged_model(model, AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+        .or_else(|| decode_tagged_model(model, LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX))
         .filter(|model| is_canonical_agent_model(model))
 }
 
@@ -1447,7 +1458,9 @@ pub(crate) fn is_agent_auto_model(model: &str) -> bool {
     let model = model.trim();
     model == crate::providers::AUTO_GENERATION_MODEL
         || model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
+        || model.starts_with(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX)
         || model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+        || model.starts_with(LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
 }
 
 /// Resolve provider provenance before normalization removes internal tags.
@@ -1466,16 +1479,20 @@ fn agent_generation_route(
         .map(str::trim)
         .unwrap_or_default();
     let local_model_id = settings.model_id.trim();
-    if requested_model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX) {
+    if requested_model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
+        || requested_model.starts_with(LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX)
+    {
         let selected_local_model =
-            decode_tagged_model(requested_model, LOCAL_GENERATION_OPTION_ID_PREFIX).ok_or_else(
-                || {
+            decode_tagged_model(requested_model, LOCAL_GENERATION_OPTION_ID_PREFIX)
+                .or_else(|| {
+                    decode_tagged_model(requested_model, LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX)
+                })
+                .ok_or_else(|| {
                     AppError::new(
                 "local_model_invalid",
                 "The local model selected for this session is invalid. Choose the model again.",
             )
-                },
-            )?;
+                })?;
         if settings.base_url.trim().is_empty() || selected_local_model != local_model_id {
             return Err(AppError::new(
                 "local_model_unavailable",
@@ -1484,16 +1501,22 @@ fn agent_generation_route(
         }
         return Ok(AgentGenerationRoute::Local);
     }
-    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX) {
-        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX).ok_or_else(|| {
-            AppError::new(
-                "remote_model_invalid",
-                "The model selected for this session is invalid. Choose the model again.",
-            )
-        })?;
+    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX)
+        || requested_model.starts_with(LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX)
+    {
+        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX)
+            .or_else(|| decode_tagged_model(requested_model, LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX))
+            .ok_or_else(|| {
+                AppError::new(
+                    "remote_model_invalid",
+                    "The model selected for this session is invalid. Choose the model again.",
+                )
+            })?;
         return Ok(AgentGenerationRoute::Remote);
     }
-    if requested_model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX) {
+    if requested_model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+        || requested_model.starts_with(LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
+    {
         decode_resolved_auto_model(requested_model).ok_or_else(|| {
             AppError::new(
                 "auto_resolved_model_invalid",
@@ -1503,6 +1526,7 @@ fn agent_generation_route(
         return Ok(AgentGenerationRoute::Remote);
     }
     if requested_model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
+        || requested_model.starts_with(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX)
         || requested_model == crate::providers::AUTO_GENERATION_MODEL
     {
         return Ok(AgentGenerationRoute::Remote);
@@ -1721,7 +1745,7 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant. Clovy is the identity you present in every conversation. When asked who or what you are, answer as Clovy. June is Clovy's former product name and a legacy alias only, never a distinct assistant or persona. Never identify yourself as ChatGPT or an OpenAI assistant, claim that OpenAI created you, or present an upstream model as your identity. If the user asks specifically about the selected model or provider, explain it as an implementation detail distinct from your identity. This is a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy alias 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant. Clovy is the identity you present in every conversation. When asked who or what you are, answer as Clovy. Treat the legacy June alias as referring to Clovy, but never present June as a product, assistant, persona, or name in replies. Use Clovy only. Never identify yourself as ChatGPT or an OpenAI assistant, claim that OpenAI created you, or present an upstream model as your identity. If the user asks specifically about the selected model or provider, explain it as an implementation detail distinct from your identity. This is a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy June alias is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
 
 fn clovy_home_chat_system_prompt_with_persona(
     persona: &crate::agent_runtime::persona::ClovyPersonaSettings,
@@ -1747,8 +1771,6 @@ const CLOVY_HOME_HISTORY_MAX_CHARS: usize = 12_000;
 const CLOVY_HOME_MAX_OUTPUT_TOKENS: u64 = 2_048;
 const CLOVY_HOME_TRUNCATION_NOTICE: &str = "This reply was cut short. Ask me to continue.";
 const CLOVY_IDENTITY_REPLY: &str = "I'm Clovy, your personal AI assistant.";
-const CLOVY_LEGACY_NAME_REPLY: &str =
-    "I'm Clovy, your personal AI assistant. June was Clovy's previous name, not a separate assistant.";
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2075,7 +2097,7 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
             | "who is june"
             | "whos june"
     ) {
-        return Some(CLOVY_LEGACY_NAME_REPLY);
+        return Some(CLOVY_IDENTITY_REPLY);
     }
     if matches!(
         named_question.as_str(),
@@ -2401,7 +2423,7 @@ pub async fn clovy_home_chat(
     let response = proxy_agent_chat_completions(serde_json::json!({
         // Home's lightweight route is intentionally independent of the
         // selected Agent model. Focused handoffs capture normal Agent defaults.
-        "model": "__june_auto_generation__:0",
+        "model": "__clovy_auto_generation__:0",
         "reasoning_effort": "minimal",
         "messages": messages,
         "tools": [{
@@ -4750,7 +4772,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("only source of new intent"));
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("work mentioned only in an earlier turn"));
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey Clovy'"));
-        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("legacy alias 'Hey June'"));
+        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("legacy June alias"));
+        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("Use Clovy only"));
     }
 
     #[test]
@@ -4775,7 +4798,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Clovy, what is June?",
             "What is Ｊｕｎｅ?",
         ] {
-            assert_eq!(clovy_identity_reply(message), Some(CLOVY_LEGACY_NAME_REPLY));
+            assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
         }
         assert_eq!(
             clovy_identity_reply("What is Clovy?"),
@@ -4811,7 +4834,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(prompt.contains("Polish 20/100"));
         assert!(prompt.contains("help managing personal life"));
         assert!(prompt.contains("Clovy is the identity you present in every conversation"));
-        assert!(prompt.contains("never a distinct assistant or persona"));
+        assert!(prompt.contains("never present June as a product, assistant, persona, or name"));
+        assert!(prompt.contains("Use Clovy only"));
         assert!(prompt.contains("ChatGPT or an OpenAI assistant"));
         assert!(prompt.contains("only source of new intent"));
         assert!(prompt.contains("call start_task exactly once"));
@@ -5232,7 +5256,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_preserves_explicit_remote_provenance_when_model_ids_collide() {
         let body = serde_json::json!({
-            "model": "__june_remote_generation__:llama3.1%3A8b",
+            "model": "__clovy_remote_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5254,7 +5278,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_preserves_managed_auto_provenance_after_model_resolution() {
         let mut body = serde_json::json!({
-            "model": "__june_auto_resolved__:z-ai%2Fglm-5.2",
+            "model": "__clovy_auto_resolved__:z-ai%2Fglm-5.2",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5277,6 +5301,41 @@ data: [DONE]
     }
 
     #[test]
+    fn agent_proxy_accepts_legacy_tagged_model_aliases() {
+        let settings = LocalGenerationSettings {
+            base_url: "http://localhost:11434/v1".to_string(),
+            model_id: "llama3.1:8b".to_string(),
+            api_key: String::new(),
+        };
+        for (model, expected_model, expected_route) in [
+            (
+                "__june_local_generation__:llama3.1%3A8b",
+                "llama3.1:8b",
+                AgentGenerationRoute::Local,
+            ),
+            (
+                "__june_remote_generation__:llama3.1%3A8b",
+                "llama3.1:8b",
+                AgentGenerationRoute::Remote,
+            ),
+            (
+                "__june_auto_resolved__:z-ai%2Fglm-5.2",
+                "z-ai/glm-5.2",
+                AgentGenerationRoute::Remote,
+            ),
+        ] {
+            let mut body = serde_json::json!({ "model": model, "messages": [] });
+            assert_eq!(
+                agent_generation_route(&body, &settings, PROVIDER_LOCAL).unwrap(),
+                expected_route
+            );
+            normalize_agent_chat_request_for_proxy(&mut body);
+            assert_eq!(body["model"], serde_json::json!(expected_model));
+        }
+        assert!(is_agent_auto_model("__june_auto_resolved__:z-ai%2Fglm-5.2"));
+    }
+
+    #[test]
     fn agent_proxy_rejects_noncanonical_resolved_auto_models() {
         let settings = LocalGenerationSettings {
             base_url: "http://localhost:11434/v1".to_string(),
@@ -5284,8 +5343,9 @@ data: [DONE]
             api_key: String::new(),
         };
         for model in [
-            "__june_auto_resolved__:auto",
-            "__june_auto_resolved__:z-ai%2Fglm%205.2",
+            "__clovy_auto_resolved__:auto",
+            "__clovy_auto_resolved__:z-ai%2Fglm%205.2",
+            "__clovy_auto_resolved__:__clovy_local_generation__%3Az-ai%252Fglm-5.2",
             "__june_auto_resolved__:__june_local_generation__%3Az-ai%252Fglm-5.2",
         ] {
             let body = serde_json::json!({ "model": model });
@@ -5298,7 +5358,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_routes_matching_tagged_local_model_locally() {
         let mut body = serde_json::json!({
-            "model": "__june_local_generation__:llama3.1%3A8b",
+            "model": "__clovy_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5319,7 +5379,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_rejects_tagged_local_model_when_endpoint_is_unavailable() {
         let body = serde_json::json!({
-            "model": "__june_local_generation__:llama3.1%3A8b",
+            "model": "__clovy_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5335,7 +5395,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_rejects_tagged_local_model_after_configuration_changes() {
         let body = serde_json::json!({
-            "model": "__june_local_generation__:llama3.1%3A8b",
+            "model": "__clovy_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5394,9 +5454,10 @@ data: [DONE]
     #[test]
     fn agent_proxy_decodes_per_run_auto_cost_quality_preference() {
         for (model, expected) in [
-            ("__june_auto_generation__:0", 0.0),
+            ("__clovy_auto_generation__:0", 0.0),
+            ("__clovy_auto_generation__:73", 0.73),
+            ("__clovy_auto_generation__:100", 1.0),
             ("__june_auto_generation__:73", 0.73),
-            ("__june_auto_generation__:100", 1.0),
         ] {
             let mut body = serde_json::json!({
                 "model": model,
@@ -5417,7 +5478,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_falls_back_safely_for_malformed_per_run_auto_model() {
         let mut body = serde_json::json!({
-            "model": "__june_auto_generation__:not-a-preset",
+            "model": "__clovy_auto_generation__:not-a-preset",
             "messages": []
         });
 
@@ -5431,13 +5492,13 @@ data: [DONE]
             body["auto"]["cost_quality"],
             serde_json::json!(crate::providers::cost_quality())
         );
-        assert!(!body.to_string().contains("__june_auto_generation__:"));
+        assert!(!body.to_string().contains("__clovy_auto_generation__:"));
     }
 
     #[test]
     fn agent_proxy_falls_back_safely_for_out_of_range_per_run_auto_model() {
         let mut body = serde_json::json!({
-            "model": "__june_auto_generation__:101",
+            "model": "__clovy_auto_generation__:101",
             "messages": []
         });
 

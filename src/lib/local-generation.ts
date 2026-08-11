@@ -6,7 +6,8 @@ import type { LocalGenerationSettingsDto, VeniceModelDto } from "./tauri";
 // the settings surface and the agent composer, so they live outside
 // AppSettings.
 
-export const LOCAL_GENERATION_OPTION_ID_PREFIX = "__june_local_generation__:";
+export const LOCAL_GENERATION_OPTION_ID_PREFIX = "__clovy_local_generation__:";
+const LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX = "__june_local_generation__:";
 
 /** Stable synthetic id for the local model catalog option. Prefixed so it can
  * never collide with a real remote model id (finding: a raw local id that
@@ -21,11 +22,12 @@ export function localGenerationOptionId(modelId: string) {
  * retain upstream provenance; Clovy's on-device integration uses this inverse
  * only when it needs to display or forward the raw local id. */
 export function rawLocalGenerationModelId(optionId: string): string | null {
-  if (!optionId.startsWith(LOCAL_GENERATION_OPTION_ID_PREFIX)) return null;
+  const prefix = [LOCAL_GENERATION_OPTION_ID_PREFIX, LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX].find(
+    (value) => optionId.startsWith(value),
+  );
+  if (!prefix) return null;
   try {
-    const decoded = decodeURIComponent(
-      optionId.slice(LOCAL_GENERATION_OPTION_ID_PREFIX.length),
-    ).trim();
+    const decoded = decodeURIComponent(optionId.slice(prefix.length)).trim();
     return decoded || null;
   } catch {
     return null;

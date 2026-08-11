@@ -82,6 +82,6 @@ describe("companion model projection", () => {
       modelId: "retired-model",
       modelName: "Retired model",
     });
-    expect(companionStoredModelId("open-software/auto", 49.6)).toBe("__june_auto_generation__:50");
+    expect(companionStoredModelId("open-software/auto", 49.6)).toBe("__clovy_auto_generation__:50");
   });
 });

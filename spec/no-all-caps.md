@@ -4,7 +4,7 @@
 capsy copy in eyebrows, pre-headers, or metadata. Labels use sentence case (see
 [sentence-case](sentence-case.md)).
 
-**Why.** June's surface reads as calm and precise; shouty or CSS-uppercased text
+**Why.** Clovy's surface reads as calm and precise; shouty or CSS-uppercased text
 undercuts that and hurts scannability. The stylesheet has zero
 `text-transform: uppercase` today, and this rule keeps it that way, especially
 for the eyebrow and metadata slots where uppercase creeps in by habit.
