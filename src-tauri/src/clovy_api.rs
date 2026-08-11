@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 use tauri::{ipc::Channel, AppHandle};
+use unicode_normalization::UnicodeNormalization;
 
 // The deployed production API (Phala dstack; see clovy-api/deploy/
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
@@ -2039,7 +2040,7 @@ fn clovy_home_message_too_large(messages: &[ClovyHomeChatMessage]) -> bool {
 
 fn clovy_identity_reply(message: &str) -> Option<&'static str> {
     let normalized = message
-        .chars()
+        .nfkc()
         .filter(|character| !matches!(character, '\'' | '’'))
         .collect::<String>()
         .to_lowercase();
@@ -4763,7 +4764,12 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
 
     #[test]
     fn home_chat_answers_legacy_name_questions_as_clovy_without_inference() {
-        for message in ["what is june", "Who is June?", "Hey, are you June?"] {
+        for message in [
+            "what is june",
+            "Who is June?",
+            "Hey, are you June?",
+            "What is Ｊｕｎｅ?",
+        ] {
             assert_eq!(clovy_identity_reply(message), Some(CLOVY_LEGACY_NAME_REPLY));
         }
         assert_eq!(
