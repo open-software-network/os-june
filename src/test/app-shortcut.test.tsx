@@ -14,6 +14,11 @@ import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
 import { companionFrontendConsumerAvailable } from "../lib/companion-frontend-router";
 import { rememberSessionModel } from "../lib/agent-session-models";
 import {
+  resetSidebarShortcutCacheForTests,
+  SIDEBAR_SHORTCUT_STORAGE_KEY,
+  setStoredSidebarShortcut,
+} from "../lib/sidebar-shortcut";
+import {
   AGENT_NEW_SESSION_EVENT,
   AGENT_NEW_SESSION_PENDING_KEY,
   AGENT_OPEN_EVENT,
@@ -418,6 +423,8 @@ describe("App shortcuts", () => {
     vi.clearAllMocks();
     window.localStorage.setItem("june:active-agent-profile", "default");
     window.localStorage.removeItem("june:agent:last-open-session");
+    window.localStorage.removeItem(SIDEBAR_SHORTCUT_STORAGE_KEY);
+    resetSidebarShortcutCacheForTests();
     window.localStorage.removeItem("june.agent.sessionModels");
     mocks.companionPairingEnabled = true;
     mocks.pendingMeetingStartRequest = undefined;
@@ -1942,6 +1949,125 @@ describe("App shortcuts", () => {
     } finally {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, onNewSession);
     }
+  });
+
+  it("toggles the sidebar with Command-Backslash by default", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    expect(screen.getByRole("button", { name: "Hide sidebar" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", metaKey: true });
+    expect(screen.getByRole("button", { name: "Show sidebar" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", metaKey: true });
+    expect(screen.getByRole("button", { name: "Hide sidebar" })).toBeInTheDocument();
+  });
+
+  it("uses the saved sidebar shortcut instead of the default", async () => {
+    setStoredSidebarShortcut({
+      code: "KeyU",
+      label: "Cmd+U",
+      modifiers: {
+        command: true,
+        control: false,
+        option: false,
+        shift: false,
+        function: false,
+      },
+      pressCount: 1,
+    });
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", metaKey: true });
+    expect(screen.getByRole("button", { name: "Hide sidebar" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "u", code: "KeyU", metaKey: true });
+    expect(screen.getByRole("button", { name: "Show sidebar" })).toBeInTheDocument();
+  });
+
+  it("changes and persists the sidebar shortcut from Settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    await user.click(await screen.findByRole("button", { name: "Shortcuts" }));
+
+    const row = screen.getByRole("heading", { name: "Toggle sidebar" }).closest(".settings-row");
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByLabelText("Shortcut Cmd+Backslash")).toBeInTheDocument();
+
+    await user.click(within(row as HTMLElement).getByRole("button", { name: "Change" }));
+    expect(
+      within(row as HTMLElement).getByText("Press shortcut or Backspace..."),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "u", code: "KeyU", metaKey: true });
+
+    await waitFor(() =>
+      expect(within(row as HTMLElement).getByLabelText("Shortcut Cmd+U")).toBeInTheDocument(),
+    );
+    expect(
+      JSON.parse(window.localStorage.getItem(SIDEBAR_SHORTCUT_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({
+      code: "KeyU",
+      label: "Cmd+U",
+      modifiers: { command: true },
+    });
+
+    await user.click(within(row as HTMLElement).getByRole("button", { name: /reset/i }));
+    expect(within(row as HTMLElement).getByLabelText("Shortcut Cmd+Backslash")).toBeInTheDocument();
+  });
+
+  it("turns off the sidebar shortcut with Backspace while changing it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    await user.click(await screen.findByRole("button", { name: "Shortcuts" }));
+
+    const row = screen.getByRole("heading", { name: "Toggle sidebar" }).closest(".settings-row");
+    expect(row).not.toBeNull();
+    await user.click(within(row as HTMLElement).getByRole("button", { name: "Change" }));
+    expect(
+      within(row as HTMLElement).getByText("Press shortcut or Backspace..."),
+    ).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Backspace", code: "Backspace" });
+
+    expect(within(row as HTMLElement).getByLabelText("Shortcut not set")).toBeInTheDocument();
+    expect(window.localStorage.getItem(SIDEBAR_SHORTCUT_STORAGE_KEY)).toBe("null");
+
+    fireEvent.keyDown(window, { key: "\\", code: "Backslash", metaKey: true });
+    expect(screen.getByRole("button", { name: "Hide sidebar" })).toBeInTheDocument();
+  });
+
+  it("rejects a sidebar shortcut without Cmd or Ctrl", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => expect(mocks.listeners.has(OPEN_SETTINGS_EVENT)).toBe(true));
+    act(() => {
+      mocks.listeners.get(OPEN_SETTINGS_EVENT)?.({});
+    });
+    await user.click(await screen.findByRole("button", { name: "Shortcuts" }));
+
+    const row = screen.getByRole("heading", { name: "Toggle sidebar" }).closest(".settings-row");
+    expect(row).not.toBeNull();
+    await user.click(within(row as HTMLElement).getByRole("button", { name: "Change" }));
+
+    fireEvent.keyDown(window, { key: "B", code: "KeyB", shiftKey: true });
+
+    expect(
+      within(row as HTMLElement).getByText("Shortcut must include Cmd or Ctrl."),
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem(SIDEBAR_SHORTCUT_STORAGE_KEY)).toBeNull();
   });
 
   it("keeps each agent tab tied to its selected session", async () => {
