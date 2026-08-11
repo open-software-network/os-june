@@ -1204,6 +1204,18 @@ fn inject_local_safety_context(object: &mut serde_json::Map<String, serde_json::
     else {
         return;
     };
+    if let Some(message) = messages.first_mut() {
+        let is_system = message.get("role").and_then(serde_json::Value::as_str) == Some("system");
+        let content = message
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        if let (true, Some(content)) = (is_system, content) {
+            message["content"] =
+                serde_json::Value::String(format!("{LOCAL_SAFETY_CONTEXT}\n\n{content}"));
+            return;
+        }
+    }
     messages.insert(
         0,
         serde_json::json!({ "role": "system", "content": LOCAL_SAFETY_CONTEXT }),
@@ -1708,7 +1720,7 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant in a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy alias 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant. Clovy is the identity you present in every conversation. When asked who or what you are, answer as Clovy. Never identify yourself as ChatGPT or an OpenAI assistant, claim that OpenAI created you, or present an upstream model as your identity. If the user asks specifically about the selected model or provider, explain it as an implementation detail distinct from your identity. This is a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy alias 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
 
 fn clovy_home_chat_system_prompt_with_persona(
     persona: &crate::agent_runtime::persona::ClovyPersonaSettings,
@@ -1733,6 +1745,7 @@ const CLOVY_HOME_RECENT_MAX_TOTAL_CHARS: usize = 64_000;
 const CLOVY_HOME_HISTORY_MAX_CHARS: usize = 12_000;
 const CLOVY_HOME_MAX_OUTPUT_TOKENS: u64 = 2_048;
 const CLOVY_HOME_TRUNCATION_NOTICE: &str = "This reply was cut short. Ask me to continue.";
+const CLOVY_IDENTITY_REPLY: &str = "I'm Clovy, your personal AI assistant.";
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2022,6 +2035,65 @@ fn clovy_home_message_too_large(messages: &[ClovyHomeChatMessage]) -> bool {
         .is_some_and(|message| message.content.chars().count() > CLOVY_HOME_RECENT_MAX_TOTAL_CHARS)
 }
 
+fn clovy_identity_reply(message: &str) -> Option<&'static str> {
+    let normalized = message
+        .chars()
+        .filter(|character| !matches!(character, '\'' | '’'))
+        .collect::<String>()
+        .to_lowercase();
+    let words = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let mut start = 0;
+    let mut end = words.len();
+    while start < end
+        && matches!(
+            words[start],
+            "clovy"
+                | "hello"
+                | "hey"
+                | "hi"
+                | "june"
+                | "ok"
+                | "okay"
+                | "please"
+                | "so"
+                | "there"
+                | "uh"
+                | "um"
+                | "well"
+                | "yo"
+        )
+    {
+        start += 1;
+    }
+    while end > start && matches!(words[end - 1], "clovy" | "june" | "please") {
+        end -= 1;
+    }
+    matches!(
+        words[start..end].join(" ").as_str(),
+        "are you chatgpt"
+            | "are you clovy"
+            | "are you openai"
+            | "can you tell me who you are"
+            | "identify yourself"
+            | "tell me who you are"
+            | "what are you"
+            | "what is your name"
+            | "what r u"
+            | "what r you"
+            | "what should i call you"
+            | "whats your name"
+            | "who am i talking to"
+            | "who are you"
+            | "who is this"
+            | "who r u"
+            | "who r you"
+    )
+    .then_some(CLOVY_IDENTITY_REPLY)
+}
+
 fn clovy_home_requires_current_information(message: &str) -> bool {
     let words = message
         .to_lowercase()
@@ -2260,6 +2332,16 @@ pub async fn clovy_home_chat(
         .and_then(|message| message["content"].as_str())
         .unwrap_or_default()
         .to_string();
+    if let Some(content) = clovy_identity_reply(&latest_user_message) {
+        let content = content.to_string();
+        let _ = on_event.send(ClovyHomeChatEvent::Delta {
+            content: content.clone(),
+        });
+        return Ok(ClovyHomeChatResponse {
+            content: Some(content),
+            task: None,
+        });
+    }
     let requires_current_information =
         clovy_home_requires_current_information(&latest_user_message);
     messages.extend(retained);
@@ -4628,6 +4710,30 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
     }
 
     #[test]
+    fn home_chat_answers_general_identity_without_inference() {
+        for message in [
+            "who are you?",
+            "Hi, who r u?",
+            "Hey there, what's your name, Clovy?",
+            "Identify yourself.",
+        ] {
+            assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
+        }
+    }
+
+    #[test]
+    fn home_chat_does_not_short_circuit_model_or_provider_questions() {
+        for message in [
+            "What model are you using?",
+            "Which provider handled this?",
+            "Are you using GPT OSS?",
+            "Who are you working for?",
+        ] {
+            assert_eq!(clovy_identity_reply(message), None);
+        }
+    }
+
+    #[test]
     fn home_chat_prompt_includes_the_shared_personality_without_losing_routing_rules() {
         let prompt = clovy_home_chat_system_prompt_with_persona(
             &crate::agent_runtime::persona::ClovyPersonaSettings {
@@ -4642,6 +4748,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
 
         assert!(prompt.contains("Polish 20/100"));
         assert!(prompt.contains("help managing personal life"));
+        assert!(prompt.contains("Clovy is the identity you present in every conversation"));
+        assert!(prompt.contains("ChatGPT or an OpenAI assistant"));
         assert!(prompt.contains("only source of new intent"));
         assert!(prompt.contains("call start_task exactly once"));
     }
@@ -5517,18 +5625,40 @@ data: [DONE]
     }
 
     #[test]
-    fn local_agent_proxy_injects_safety_context() {
+    fn local_agent_proxy_merges_safety_context_into_leading_system_message() {
+        let mut object = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": "You are Clovy." },
+                { "role": "user", "content": "hello" }
+            ]
+        });
+        inject_local_safety_context(object.as_object_mut().unwrap());
+
+        let messages = object["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(
+            messages[0]["content"],
+            format!("{LOCAL_SAFETY_CONTEXT}\n\nYou are Clovy.")
+        );
+        assert_eq!(messages[1]["content"], "hello");
+    }
+
+    #[test]
+    fn local_agent_proxy_prepends_safety_context_without_leading_system_message() {
         let mut object = serde_json::json!({
             "messages": [{ "role": "user", "content": "hello" }]
         });
         inject_local_safety_context(object.as_object_mut().unwrap());
 
         let messages = object["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "system");
         assert!(messages[0]["content"]
             .as_str()
             .unwrap()
             .contains("Standing content policy"));
+        assert_eq!(messages[1]["content"], "hello");
     }
 
     #[test]

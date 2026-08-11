@@ -13,6 +13,95 @@ const AUTO_RUN_MODEL = "__june_auto_generation__:73";
 const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
 const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
+test("answers general identity questions as Clovy without calling a model", async () => {
+  let hostCalls = 0;
+  const engine = new OpenAIAgentsEngine(async () => {
+    hostCalls += 1;
+    throw new Error("identity replies must not reach a model or tool");
+  });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
+  const events: EngineEvent[] = [];
+
+  const result = await engine.start({
+    sessionId: "session-identity",
+    runId: "run-identity",
+    signal: new AbortController().signal,
+    emit: (event) => events.push(event),
+    takeSteering: () => [],
+    params: {
+      model: AUTO_RUN_MODEL,
+      instructions: "Answer the user.",
+      workspace: "/tmp/clovy-workspace",
+      safetyMode: "sandboxed",
+      input: "Hi, who r u?",
+      history: [],
+      tools: [],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(result.finalOutput, "I'm Clovy, your personal AI assistant.");
+  assert.equal(hostCalls, 0);
+  assert.deepEqual(events, [
+    { type: "message.delta", delta: "I'm Clovy, your personal AI assistant." },
+  ]);
+  assert.deepEqual(
+    result.history.slice(-2).map((item) => ({ role: item.role, text: item.text })),
+    [
+      { role: "user", text: "Hi, who r u?" },
+      { role: "assistant", text: "I'm Clovy, your personal AI assistant." },
+    ],
+  );
+  assert.deepEqual(result.usage, {});
+});
+
+test("keeps explicit model questions on the model route", async () => {
+  let modelRequests = 0;
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    assert.equal(input.name, MODEL_CHAT_COMPLETIONS_TOOL);
+    modelRequests += 1;
+    return streamPage("model-detail", {
+      id: "completion-model-detail",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "openai/gpt-oss-120b",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "Clovy is using a hosted model." },
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+  });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
+
+  const result = await engine.start({
+    sessionId: "session-model-detail",
+    runId: "run-model-detail",
+    signal: new AbortController().signal,
+    emit: () => undefined,
+    takeSteering: () => [],
+    params: {
+      model: AUTO_RUN_MODEL,
+      instructions: "Answer the user.",
+      workspace: "/tmp/clovy-workspace",
+      safetyMode: "sandboxed",
+      input: "What model are you using?",
+      history: [],
+      tools: [],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  assert.equal(modelRequests, 1);
+  assert.equal(result.finalOutput, "Clovy is using a hosted model.");
+  assert.equal(result.usage.resolvedModel, "openai/gpt-oss-120b");
+});
+
 test("continues model inference after a host tool result", async () => {
   const modelRequests: JsonObject[] = [];
   const toolCalls: Array<{ name: string; callId?: string }> = [];
@@ -499,13 +588,29 @@ test("replays context summaries as fenced untrusted user data", async () => {
         },
       ],
       tools: [],
-      skills: [],
+      skills: [
+        {
+          name: "research",
+          description: "Investigate sources safely.",
+          source: "managed",
+        },
+      ],
       contextWindow: 16_000,
     },
   });
 
   const messages = modelRequest?.messages;
   assert.ok(Array.isArray(messages));
+  const systemMessage = messages.find(
+    (message) =>
+      isRecord(message) && message.role === "system" && typeof message.content === "string",
+  );
+  assert.ok(isRecord(systemMessage));
+  assert.match(String(systemMessage.content), /You are Clovy/);
+  assert.match(String(systemMessage.content), /ChatGPT or an OpenAI assistant/);
+  assert.match(String(systemMessage.content), /Answer the current user\./);
+  assert.match(String(systemMessage.content), /untrusted historical data/);
+  assert.match(String(systemMessage.content), /research: Investigate sources safely\./);
   assert.equal(
     messages.some(
       (message) =>

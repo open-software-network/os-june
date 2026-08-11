@@ -1,4 +1,5 @@
 import { compactHistory } from "./compaction.js";
+import { clovyIdentityResult } from "./identity.js";
 import { HOST_REQUEST_METHODS, ProtocolError, type RpcRequest, type RuntimeEventMethod } from "./protocol.js";
 import { errorMessage, runtimeFailureDetails, sanitizeForLog } from "./sanitize.js";
 import type { NdjsonRpcPeer } from "./transport.js";
@@ -105,6 +106,17 @@ export class RuntimeService {
     active: ActiveRun,
   ): Promise<EngineResult> {
     throwIfAborted(active.controller.signal);
+    const identityResult = clovyIdentityResult(parsed);
+    if (identityResult) {
+      this.emit("run.started", {
+        model: parsed.model,
+        compacted: false,
+        history: parsed.history as unknown as JsonValue,
+        removedItemIds: [],
+      }, sessionId, runId);
+      this.emit("message.delta", { delta: identityResult.finalOutput ?? "" }, sessionId, runId);
+      return identityResult;
+    }
     const compaction = await compactHistory({
       history: parsed.history,
       contextWindow: parsed.contextWindow,

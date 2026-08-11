@@ -1161,14 +1161,26 @@ fn strip_conflicting_all_of(node: &mut serde_json::Value) {
     }
 }
 
-/// Prepends the standing safety policy to a raw (client-supplied) chat
-/// completion body, ahead of any system prompt the client sent. A `messages`
-/// value that is missing or not an array is left alone — there is no prompt
-/// to contextualize and the upstream will reject the body anyway.
+/// Folds the standing safety policy into a leading string system message so
+/// upstreams that honor only one system instruction receive both policies. If
+/// there is no mergeable leading system message, prepend a separate one. A
+/// missing or non-array `messages` value is left for upstream validation.
 fn inject_safety_context(body: &mut serde_json::Map<String, serde_json::Value>) {
     let Some(messages) = body.get_mut("messages").and_then(|v| v.as_array_mut()) else {
         return;
     };
+    if let Some(message) = messages.first_mut() {
+        let is_system = message.get("role").and_then(serde_json::Value::as_str) == Some("system");
+        let content = message
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        if let (true, Some(content)) = (is_system, content) {
+            message["content"] =
+                serde_json::Value::String(format!("{SAFETY_CONTEXT}\n\n{content}"));
+            return;
+        }
+    }
     messages.insert(
         0,
         serde_json::json!({ "role": "system", "content": SAFETY_CONTEXT }),
@@ -2432,7 +2444,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_chat_sends_safety_context_ahead_of_client_messages() {
+    async fn agent_chat_merges_safety_context_into_the_leading_system_message() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -2473,11 +2485,13 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&requests[0].body).expect("request body json");
         let messages = body["messages"].as_array().expect("messages array");
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], SAFETY_CONTEXT);
-        assert_eq!(messages[1]["content"], "client system prompt");
-        assert_eq!(messages[2]["content"], "hi");
+        assert_eq!(
+            messages[0]["content"],
+            format!("{SAFETY_CONTEXT}\n\nclient system prompt")
+        );
+        assert_eq!(messages[1]["content"], "hi");
     }
 
     fn test_agent(base_url: &str) -> VeniceAgentChat {
