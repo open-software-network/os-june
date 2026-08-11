@@ -8,7 +8,7 @@ import {
 
 describe("agent Auto model selections", () => {
   it("encodes the Auto preference for the Clovy API run boundary", () => {
-    expect(AGENT_RUN_AUTO_MODEL_PREFIX).toBe("__clovy_auto_generation__:");
+    expect(AGENT_RUN_AUTO_MODEL_PREFIX).toBe("__june_auto_generation__:");
     expect(agentRunModelId(AUTO_MODEL_ID, 20)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}20`);
     expect(agentRunModelId(AUTO_MODEL_ID, 50)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}50`);
     expect(agentRunModelId(AUTO_MODEL_ID, 100)).toBe(`${AGENT_RUN_AUTO_MODEL_PREFIX}100`);
@@ -27,10 +27,6 @@ describe("agent Auto model selections", () => {
     expect(agentModelSelection(`${AGENT_RUN_AUTO_MODEL_PREFIX}100`)).toEqual({
       modelId: AUTO_MODEL_ID,
       costQuality: 100,
-    });
-    expect(agentModelSelection("__june_auto_generation__:20")).toEqual({
-      modelId: AUTO_MODEL_ID,
-      costQuality: 20,
     });
   });
 

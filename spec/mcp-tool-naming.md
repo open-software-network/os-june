@@ -58,4 +58,7 @@ Inspect the current host-tool catalog and dispatch before coining anything:
 
 **Exceptions.** Tools supplied by external MCP servers, including
 user-connected and provider-hosted servers, are not ours to name; use them as
-they come. This rule binds Clovy-owned in-loop host tools only.
+they come. A released execution name may also remain during a documented
+rollback bridge when a subsystem contract proves that older binaries must read
+newly persisted catalogs. This rule binds all other Clovy-owned in-loop host
+tools.

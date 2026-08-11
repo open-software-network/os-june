@@ -8,17 +8,19 @@ and unattended routines.
 
 | Tool | Input | Result | Availability |
 | --- | --- | --- | --- |
-| `search_clovy` | `query` (required string) | Bounded matches from the active data partition's notes, transcripts, and dictation history | Attended sessions and routines with `context_engine`, `memory`, or `session_search` enabled |
+| `search_june` | `query` (required string) | Bounded matches from the current data partition's notes, transcripts, and dictation history | Attended sessions and routines with `context_engine`, `memory`, or `session_search` enabled |
 
-The current attended and routine catalogs expose only `search_clovy`. New
-prompts, runs, policies, and documentation must not emit the former tool name.
-Search remains scoped to the current data partition and returns the existing bounded,
-sanitized result shape.
+The current attended and routine catalogs retain `search_june` as a legacy
+execution identifier because tool catalogs are persisted in resumable runs. A
+rollback build recognizes only that identifier, so renaming it would strand a
+run created by Clovy and then resumed after downgrade. The descriptor and all
+user-facing copy call the product Clovy. Search remains scoped to the current
+data partition and returns the existing bounded, sanitized result shape.
 
 ## Legacy dispatch compatibility
 
-`search_june` is a read-only input alias for tool calls already persisted by a
-released session or routine. The Rust dispatcher and routine-policy gate accept
-that exact alias so replay and resume do not fail, but no current catalog
-advertises it and no new run writes it. This alias is a persisted-input bridge
-under ADR-0055, not a current product or tool identity.
+`search_june` remains the rollback-readable execution name during the bridge
+window. It is a persisted input and rollback output under ADR-0055, not a
+current product or assistant identity. A future rename requires an
+upgrade-run-downgrade-resume migration that keeps old binaries able to execute
+newly persisted run catalogs.

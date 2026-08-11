@@ -1201,7 +1201,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
         request: {
           title: "Summarize this file",
-          model: "__clovy_auto_generation__:20",
+          model: "__june_auto_generation__:20",
           safetyMode: "sandboxed",
           profile: "work",
         },
@@ -1212,7 +1212,7 @@ describe("AgentWorkspace runtime wiring", () => {
         request: expect.objectContaining({
           sessionId: "focused-session",
           prompt: "Summarize this file",
-          model: "__clovy_auto_generation__:20",
+          model: "__june_auto_generation__:20",
           reasoningEffort: "medium",
           safetyMode: "sandboxed",
           attachments: ["/tmp/brief.pdf"],
@@ -1469,7 +1469,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
         request: expect.objectContaining({
           prompt: "Use the staged model",
-          model: "__clovy_auto_generation__:100",
+          model: "__june_auto_generation__:100",
         }),
       }),
     );
@@ -1663,7 +1663,7 @@ describe("AgentWorkspace runtime wiring", () => {
         request: expect.objectContaining({
           sessionId: autoSession.id,
           prompt: "Use Economy",
-          model: "__clovy_auto_generation__:20",
+          model: "__june_auto_generation__:20",
         }),
       }),
     );
@@ -1705,7 +1705,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
         request: expect.objectContaining({
           title: "Fresh Economy request",
-          model: "__clovy_auto_generation__:20",
+          model: "__june_auto_generation__:20",
         }),
       }),
     );
@@ -1713,7 +1713,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(mocks.invoke).toHaveBeenCalledWith("start_agent_run", {
         request: expect.objectContaining({
           prompt: "Fresh Economy request",
-          model: "__clovy_auto_generation__:20",
+          model: "__june_auto_generation__:20",
         }),
       }),
     );
@@ -2334,7 +2334,7 @@ describe("AgentWorkspace runtime wiring", () => {
       expect(starts[1]?.[1]).toMatchObject({
         request: expect.objectContaining({
           prompt: "Send this next",
-          model: "__clovy_auto_generation__:100",
+          model: "__june_auto_generation__:100",
         }),
       });
     });
@@ -3473,7 +3473,7 @@ describe("AgentWorkspace runtime wiring", () => {
     await waitFor(() =>
       expect(mocks.invoke).toHaveBeenCalledWith("create_agent_session", {
         request: expect.objectContaining({
-          model: "__clovy_auto_generation__:100",
+          model: "__june_auto_generation__:100",
           title: "Fresh request",
           profile: "private",
         }),

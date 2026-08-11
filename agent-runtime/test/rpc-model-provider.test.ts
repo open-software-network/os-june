@@ -166,7 +166,7 @@ test("rejects reserved internal tags as Auto's canonical model", async () => {
   const provider = new RpcChatCompletionsModelProvider(async () => ({
     streamId: "stream-auto-reserved",
     chunks: [
-      { ...finalChunk, model: "__clovy_local_generation__:z-ai%2Fglm-5.2" },
+      { ...finalChunk, model: "__june_local_generation__:z-ai%2Fglm-5.2" },
       { ...finalChunk, model: "z-ai/glm-5.2" },
     ],
     done: true,

@@ -101,11 +101,9 @@ describe("Clovy technical identity", () => {
     expect(desktopApi).not.toContain(removedIdentityCopy);
     expect(runtimePrompt).toContain("Use Clovy only");
     expect(desktopApi).toContain("Use Clovy only");
-    expect(agentApi).toContain('{ "name": "search_clovy"');
-    expect(agentApi).not.toContain('{ "name": "search_june"');
-    expect(agentTools).toContain('"search_clovy" | "search_june"');
-    expect(routines).toContain('{ "name": "search_clovy"');
-    expect(routines).not.toContain('{ "name": "search_june"');
+    expect(agentApi).toContain('{ "name": "search_june", "description": "Search Clovy notes');
+    expect(agentTools).toContain('"search_june" => search_clovy_notes');
+    expect(routines).toContain('{ "name": "search_june", "description": "Search Clovy notes');
 
     for (const rule of currentRules) {
       expect(rule).not.toMatch(/\bJune(?:'s|-owned|-managed)\b/);

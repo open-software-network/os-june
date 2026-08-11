@@ -53,21 +53,17 @@ const AGENT_PROXY_MAX_OUTPUT_TOKENS: u64 = 32_768;
 /// Internal agent model id used to carry a per-run Auto preference through
 /// session-scoped `config.set`. Clovy's on-device provider adapter rewrites it
 /// before forwarding, so Clovy API never sees this implementation detail.
-const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__clovy_auto_generation__:";
-const LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
+const AGENT_RUN_AUTO_MODEL_PREFIX: &str = "__june_auto_generation__:";
 /// Internal model id for the canonical model selected by Auto for the rest of
 /// one agent run. It preserves service-managed inference provenance across
 /// continuations.
-const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__clovy_auto_resolved__:";
-const LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
+const AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX: &str = "__june_auto_resolved__:";
 /// Internal agent model id that preserves an explicitly remote selection
 /// even when a configured local endpoint exposes the same raw model id.
-const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__clovy_remote_generation__:";
-const LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
+const AGENT_RUN_REMOTE_MODEL_PREFIX: &str = "__june_remote_generation__:";
 /// The frontend's synthetic catalog id prefix for the local model option
 /// (`LOCAL_GENERATION_OPTION_ID_PREFIX` in `src/lib/local-generation.ts`).
-const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__clovy_local_generation__:";
-const LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
+const LOCAL_GENERATION_OPTION_ID_PREFIX: &str = "__june_local_generation__:";
 const AGENT_TITLE_MAX_CHARS: usize = 48;
 const VENICE_API_KEY_HEADER: &str = "x-venice-api-key";
 // Every Clovy API request carries the real shipped app version so the server
@@ -1373,11 +1369,8 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
         .to_string();
     for prefix in [
         AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX,
-        LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX,
         AGENT_RUN_REMOTE_MODEL_PREFIX,
-        LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX,
         LOCAL_GENERATION_OPTION_ID_PREFIX,
-        LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX,
     ] {
         if request_model.starts_with(prefix) {
             if let Some(decoded) = decode_tagged_model(&request_model, prefix) {
@@ -1390,24 +1383,22 @@ fn normalize_agent_chat_request_for_proxy(body: &mut serde_json::Value) {
             break;
         }
     }
-    let auto_cost_quality = if let Some(encoded) = request_model
-        .strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX)
-        .or_else(|| request_model.strip_prefix(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX))
-    {
-        Some(
-            encoded
-                .parse::<u8>()
-                .ok()
-                .filter(|value| *value <= 100)
-                .map_or_else(crate::providers::cost_quality, |value| {
-                    f64::from(value) / 100.0
-                }),
-        )
-    } else if request_model == crate::providers::AUTO_GENERATION_MODEL {
-        Some(crate::providers::cost_quality())
-    } else {
-        None
-    };
+    let auto_cost_quality =
+        if let Some(encoded) = request_model.strip_prefix(AGENT_RUN_AUTO_MODEL_PREFIX) {
+            Some(
+                encoded
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|value| *value <= 100)
+                    .map_or_else(crate::providers::cost_quality, |value| {
+                        f64::from(value) / 100.0
+                    }),
+            )
+        } else if request_model == crate::providers::AUTO_GENERATION_MODEL {
+            Some(crate::providers::cost_quality())
+        } else {
+            None
+        };
     if let Some(cost_quality) = auto_cost_quality {
         object.insert(
             "model".to_string(),
@@ -1442,7 +1433,6 @@ pub(crate) fn is_canonical_agent_model(model: &str) -> bool {
         && model.chars().count() <= CLOVY_API_MAX_ID_CHARS
         && model != "auto"
         && model != crate::providers::AUTO_GENERATION_MODEL
-        && !model.starts_with("__clovy_")
         && !model.starts_with("__june_")
         && !model.chars().any(char::is_whitespace)
         && !model.chars().any(char::is_control)
@@ -1450,7 +1440,6 @@ pub(crate) fn is_canonical_agent_model(model: &str) -> bool {
 
 fn decode_resolved_auto_model(model: &str) -> Option<String> {
     decode_tagged_model(model, AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
-        .or_else(|| decode_tagged_model(model, LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX))
         .filter(|model| is_canonical_agent_model(model))
 }
 
@@ -1458,9 +1447,7 @@ pub(crate) fn is_agent_auto_model(model: &str) -> bool {
     let model = model.trim();
     model == crate::providers::AUTO_GENERATION_MODEL
         || model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
-        || model.starts_with(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX)
         || model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
-        || model.starts_with(LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
 }
 
 /// Resolve provider provenance before normalization removes internal tags.
@@ -1479,20 +1466,16 @@ fn agent_generation_route(
         .map(str::trim)
         .unwrap_or_default();
     let local_model_id = settings.model_id.trim();
-    if requested_model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX)
-        || requested_model.starts_with(LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX)
-    {
+    if requested_model.starts_with(LOCAL_GENERATION_OPTION_ID_PREFIX) {
         let selected_local_model =
-            decode_tagged_model(requested_model, LOCAL_GENERATION_OPTION_ID_PREFIX)
-                .or_else(|| {
-                    decode_tagged_model(requested_model, LEGACY_LOCAL_GENERATION_OPTION_ID_PREFIX)
-                })
-                .ok_or_else(|| {
+            decode_tagged_model(requested_model, LOCAL_GENERATION_OPTION_ID_PREFIX).ok_or_else(
+                || {
                     AppError::new(
                 "local_model_invalid",
                 "The local model selected for this session is invalid. Choose the model again.",
             )
-                })?;
+                },
+            )?;
         if settings.base_url.trim().is_empty() || selected_local_model != local_model_id {
             return Err(AppError::new(
                 "local_model_unavailable",
@@ -1501,22 +1484,16 @@ fn agent_generation_route(
         }
         return Ok(AgentGenerationRoute::Local);
     }
-    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX)
-        || requested_model.starts_with(LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX)
-    {
-        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX)
-            .or_else(|| decode_tagged_model(requested_model, LEGACY_AGENT_RUN_REMOTE_MODEL_PREFIX))
-            .ok_or_else(|| {
-                AppError::new(
-                    "remote_model_invalid",
-                    "The model selected for this session is invalid. Choose the model again.",
-                )
-            })?;
+    if requested_model.starts_with(AGENT_RUN_REMOTE_MODEL_PREFIX) {
+        decode_tagged_model(requested_model, AGENT_RUN_REMOTE_MODEL_PREFIX).ok_or_else(|| {
+            AppError::new(
+                "remote_model_invalid",
+                "The model selected for this session is invalid. Choose the model again.",
+            )
+        })?;
         return Ok(AgentGenerationRoute::Remote);
     }
-    if requested_model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
-        || requested_model.starts_with(LEGACY_AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX)
-    {
+    if requested_model.starts_with(AGENT_RUN_RESOLVED_AUTO_MODEL_PREFIX) {
         decode_resolved_auto_model(requested_model).ok_or_else(|| {
             AppError::new(
                 "auto_resolved_model_invalid",
@@ -1526,7 +1503,6 @@ fn agent_generation_route(
         return Ok(AgentGenerationRoute::Remote);
     }
     if requested_model.starts_with(AGENT_RUN_AUTO_MODEL_PREFIX)
-        || requested_model.starts_with(LEGACY_AGENT_RUN_AUTO_MODEL_PREFIX)
         || requested_model == crate::providers::AUTO_GENERATION_MODEL
     {
         return Ok(AgentGenerationRoute::Remote);
@@ -2434,7 +2410,7 @@ pub async fn clovy_home_chat(
     let response = proxy_agent_chat_completions(serde_json::json!({
         // Home's lightweight route is intentionally independent of the
         // selected Agent model. Focused handoffs capture normal Agent defaults.
-        "model": "__clovy_auto_generation__:0",
+        "model": "__june_auto_generation__:0",
         "reasoning_effort": "minimal",
         "messages": messages,
         "tools": [{
@@ -5272,7 +5248,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_preserves_explicit_remote_provenance_when_model_ids_collide() {
         let body = serde_json::json!({
-            "model": "__clovy_remote_generation__:llama3.1%3A8b",
+            "model": "__june_remote_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5294,7 +5270,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_preserves_managed_auto_provenance_after_model_resolution() {
         let mut body = serde_json::json!({
-            "model": "__clovy_auto_resolved__:z-ai%2Fglm-5.2",
+            "model": "__june_auto_resolved__:z-ai%2Fglm-5.2",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5317,41 +5293,6 @@ data: [DONE]
     }
 
     #[test]
-    fn agent_proxy_accepts_legacy_tagged_model_aliases() {
-        let settings = LocalGenerationSettings {
-            base_url: "http://localhost:11434/v1".to_string(),
-            model_id: "llama3.1:8b".to_string(),
-            api_key: String::new(),
-        };
-        for (model, expected_model, expected_route) in [
-            (
-                "__june_local_generation__:llama3.1%3A8b",
-                "llama3.1:8b",
-                AgentGenerationRoute::Local,
-            ),
-            (
-                "__june_remote_generation__:llama3.1%3A8b",
-                "llama3.1:8b",
-                AgentGenerationRoute::Remote,
-            ),
-            (
-                "__june_auto_resolved__:z-ai%2Fglm-5.2",
-                "z-ai/glm-5.2",
-                AgentGenerationRoute::Remote,
-            ),
-        ] {
-            let mut body = serde_json::json!({ "model": model, "messages": [] });
-            assert_eq!(
-                agent_generation_route(&body, &settings, PROVIDER_LOCAL).unwrap(),
-                expected_route
-            );
-            normalize_agent_chat_request_for_proxy(&mut body);
-            assert_eq!(body["model"], serde_json::json!(expected_model));
-        }
-        assert!(is_agent_auto_model("__june_auto_resolved__:z-ai%2Fglm-5.2"));
-    }
-
-    #[test]
     fn agent_proxy_rejects_noncanonical_resolved_auto_models() {
         let settings = LocalGenerationSettings {
             base_url: "http://localhost:11434/v1".to_string(),
@@ -5359,9 +5300,8 @@ data: [DONE]
             api_key: String::new(),
         };
         for model in [
-            "__clovy_auto_resolved__:auto",
-            "__clovy_auto_resolved__:z-ai%2Fglm%205.2",
-            "__clovy_auto_resolved__:__clovy_local_generation__%3Az-ai%252Fglm-5.2",
+            "__june_auto_resolved__:auto",
+            "__june_auto_resolved__:z-ai%2Fglm%205.2",
             "__june_auto_resolved__:__june_local_generation__%3Az-ai%252Fglm-5.2",
         ] {
             let body = serde_json::json!({ "model": model });
@@ -5374,7 +5314,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_routes_matching_tagged_local_model_locally() {
         let mut body = serde_json::json!({
-            "model": "__clovy_local_generation__:llama3.1%3A8b",
+            "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5395,7 +5335,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_rejects_tagged_local_model_when_endpoint_is_unavailable() {
         let body = serde_json::json!({
-            "model": "__clovy_local_generation__:llama3.1%3A8b",
+            "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5411,7 +5351,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_rejects_tagged_local_model_after_configuration_changes() {
         let body = serde_json::json!({
-            "model": "__clovy_local_generation__:llama3.1%3A8b",
+            "model": "__june_local_generation__:llama3.1%3A8b",
             "messages": [{ "role": "user", "content": "hi" }],
         });
         let settings = LocalGenerationSettings {
@@ -5470,10 +5410,9 @@ data: [DONE]
     #[test]
     fn agent_proxy_decodes_per_run_auto_cost_quality_preference() {
         for (model, expected) in [
-            ("__clovy_auto_generation__:0", 0.0),
-            ("__clovy_auto_generation__:73", 0.73),
-            ("__clovy_auto_generation__:100", 1.0),
+            ("__june_auto_generation__:0", 0.0),
             ("__june_auto_generation__:73", 0.73),
+            ("__june_auto_generation__:100", 1.0),
         ] {
             let mut body = serde_json::json!({
                 "model": model,
@@ -5494,7 +5433,7 @@ data: [DONE]
     #[test]
     fn agent_proxy_falls_back_safely_for_malformed_per_run_auto_model() {
         let mut body = serde_json::json!({
-            "model": "__clovy_auto_generation__:not-a-preset",
+            "model": "__june_auto_generation__:not-a-preset",
             "messages": []
         });
 
@@ -5508,13 +5447,13 @@ data: [DONE]
             body["auto"]["cost_quality"],
             serde_json::json!(crate::providers::cost_quality())
         );
-        assert!(!body.to_string().contains("__clovy_auto_generation__:"));
+        assert!(!body.to_string().contains("__june_auto_generation__:"));
     }
 
     #[test]
     fn agent_proxy_falls_back_safely_for_out_of_range_per_run_auto_model() {
         let mut body = serde_json::json!({
-            "model": "__clovy_auto_generation__:101",
+            "model": "__june_auto_generation__:101",
             "messages": []
         });
 

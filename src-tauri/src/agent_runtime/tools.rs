@@ -136,7 +136,7 @@ pub async fn dispatch_tool(
         return Ok(result);
     }
     match name {
-        "search_clovy" | "search_june" => search_clovy_notes(context, &arguments).await,
+        "search_june" => search_clovy_notes(context, &arguments).await,
         "list_memories" => list_memories(context, &arguments).await,
         "save_memory" => save_memory(context, &arguments).await,
         "forget_memory" => forget_memory(context, &arguments).await,

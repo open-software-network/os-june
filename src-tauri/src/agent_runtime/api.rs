@@ -2215,7 +2215,7 @@ async fn tool_descriptors(
     workspace: &str,
 ) -> Result<Value, AppError> {
     let mut tools = json!([
-        { "name": "search_clovy", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
+        { "name": "search_june", "description": "Search Clovy notes, transcripts, and dictations.", "parameters": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false } },
         { "name": "list_memories", "description": "Recall durable facts, preferences, and decisions from Clovy's memory store. Pass projectId to include that project's memories.", "parameters": { "type": "object", "properties": { "projectId": { "type": "string" }, "includeGlobal": { "type": "boolean", "default": true }, "limit": { "type": "integer", "minimum": 1, "maximum": 20, "default": 8 }, "offset": { "type": "integer", "minimum": 0, "default": 0 } }, "required": [], "additionalProperties": false } },
         { "name": "save_memory", "description": "Save a durable fact, preference, or decision in Clovy's memory store. Pass projectId when it belongs to the current project.", "parameters": { "type": "object", "properties": { "content": { "type": "string", "maxLength": 4000 }, "projectId": { "type": "string" } }, "required": ["content"], "additionalProperties": false }, "requiresApproval": true },
         { "name": "forget_memory", "description": "Permanently forget one Clovy memory by id when the user asks Clovy to forget it.", "parameters": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"], "additionalProperties": false }, "requiresApproval": true },
@@ -3095,13 +3095,13 @@ mod tests {
         );
         assert_eq!(
             resolved_model_from_usage(Some(
-                &json!({ "resolvedModel": "__clovy_auto_generation__:73" })
+                &json!({ "resolvedModel": "__june_auto_generation__:73" })
             )),
             None
         );
         assert_eq!(
             resolved_model_from_usage(Some(
-                &json!({ "resolvedModel": "__clovy_local_generation__:z-ai%2Fglm-5.2" })
+                &json!({ "resolvedModel": "__june_local_generation__:z-ai%2Fglm-5.2" })
             )),
             None
         );
