@@ -108,7 +108,6 @@ import {
 } from "../../lib/agent-project-context";
 import { AgentChatTurnRow } from "./chat-turns/AgentChatTurnRow";
 import {
-  AgentArtifactList,
   AgentArtifactPanel,
   type AgentArtifact,
   type AgentArtifactPanelState,
@@ -2727,11 +2726,6 @@ export function AgentWorkspace({
                     upstreamFailureRetryDisabled={running || waiting || submitting}
                   />
                 ))}
-                <AgentArtifactList
-                  artifacts={renderedArtifacts}
-                  onOpen={openArtifact}
-                  onDownload={(artifact) => void downloadArtifact(artifact)}
-                />
                 <AgentThinking
                   visible={(running || submitting) && visibleTurns.at(-1)?.role === "user"}
                 />

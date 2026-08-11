@@ -212,6 +212,82 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(agentComposerClearance(600, 620)).toBe(0);
   });
 
+  it("keeps persisted files on their user message instead of repeating them after the thread", async () => {
+    const defaultInvoke = mocks.invoke.getMockImplementation();
+    mocks.invoke.mockImplementation((command: string, args?: unknown) => {
+      if (command === "list_agent_items") {
+        return Promise.resolve([
+          {
+            id: "message-with-attachment",
+            sessionId: session.id,
+            runId: "run-1",
+            sequence: 1,
+            createdAt: session.createdAt,
+            kind: "message",
+            role: "user",
+            text: "Review this contract.",
+            status: "complete",
+            attachments: [
+              {
+                id: "attachment-1",
+                sessionId: session.id,
+                runId: "run-1",
+                itemId: "message-with-attachment",
+                name: "Pool Day.pdf",
+                path: "/tmp/session-1/attachments/internal-Pool Day.pdf",
+                mimeType: "application/pdf",
+                sizeBytes: 115_000,
+                action: "imported",
+                available: true,
+                createdAt: session.createdAt,
+              },
+            ],
+          },
+        ]);
+      }
+      if (command === "list_agent_artifacts") {
+        return Promise.resolve([
+          {
+            id: "attachment-1",
+            sessionId: session.id,
+            runId: "run-1",
+            itemId: "message-with-attachment",
+            name: "Pool Day.pdf",
+            path: "/tmp/session-1/attachments/internal-Pool Day.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 115_000,
+            action: "imported",
+            available: true,
+            createdAt: session.createdAt,
+          },
+        ]);
+      }
+      return defaultInvoke?.(command, args);
+    });
+
+    const user = userEvent.setup();
+    const { container } = render(<AgentWorkspace initialSession={session} />);
+    const userTurn = await screen
+      .findByText("Review this contract.")
+      .then((text) => text.closest(".agent-user-turn"));
+    expect(userTurn).not.toBeNull();
+    const attachmentGroup = within(userTurn as HTMLElement).getByRole("group", {
+      name: "Attachments",
+    });
+    expect(attachmentGroup).toHaveTextContent("Pool Day.pdf");
+    const turnActions = userTurn?.querySelector(".agent-turn-actions");
+    expect(turnActions).toBeTruthy();
+    expect(
+      attachmentGroup.compareDocumentPosition(turnActions as Node) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container.querySelector(".agent-timeline > .agent-artifact-list")).toBeNull();
+    expect(screen.getAllByText("Pool Day.pdf")).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: "View files (1)" }));
+    expect(screen.getByRole("complementary", { name: "Files" })).toHaveTextContent("Pool Day.pdf");
+  });
+
   it("reserves the fixed composer before Home has a persisted session", async () => {
     mocks.invoke.mockImplementation((command: string) => {
       if (command === "list_agent_sessions") return Promise.resolve([]);

@@ -167,6 +167,7 @@ pub struct AgentArtifactDto {
     pub action: String,
     pub path: String,
     pub original_path: Option<String>,
+    pub display_name: Option<String>,
     pub mime_type: Option<String>,
     pub size_bytes: Option<i64>,
     pub available: bool,

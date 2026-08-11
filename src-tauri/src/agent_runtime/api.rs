@@ -474,7 +474,7 @@ pub async fn branch_agent_session(
         item_ids.insert(source_item_id, branch_item_id);
     }
     let artifacts = sqlx::query::query(
-        "SELECT id, item_id, provenance, action, path, original_path, mime_type, size_bytes, available, created_at
+        "SELECT id, item_id, provenance, action, path, original_path, display_name, mime_type, size_bytes, available, created_at
          FROM agent_artifacts WHERE session_id = ? AND created_at <= ? ORDER BY created_at ASC",
     )
     .bind(&session_id)
@@ -514,8 +514,8 @@ pub async fn branch_agent_session(
         let source_item_id: Option<String> = artifact.get("item_id");
         sqlx::query::query(
             "INSERT INTO agent_artifacts
-             (id, session_id, item_id, provenance, action, path, original_path, mime_type, size_bytes, available, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, session_id, item_id, provenance, action, path, original_path, display_name, mime_type, size_bytes, available, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(&branch.id)
@@ -524,6 +524,7 @@ pub async fn branch_agent_session(
         .bind(artifact.get::<String, _>("action"))
         .bind(destination.to_string_lossy().as_ref())
         .bind(artifact.get::<Option<String>, _>("original_path"))
+        .bind(artifact.get::<Option<String>, _>("display_name"))
         .bind(artifact.get::<Option<String>, _>("mime_type"))
         .bind(artifact.get::<Option<i64>, _>("size_bytes"))
         .bind(i64::from(available))
@@ -1626,7 +1627,70 @@ pub async fn list_agent_artifacts(
     app: AppHandle,
     session_id: String,
 ) -> Result<Vec<Value>, AppError> {
-    Ok(repository(&app).await?.artifacts(&session_id).await?.into_iter().map(|artifact| json!({ "id": artifact.id, "sessionId": artifact.session_id, "runId": artifact.run_id, "itemId": artifact.item_id, "name": PathBuf::from(&artifact.path).file_name().map(|v| v.to_string_lossy().into_owned()).unwrap_or_else(|| "Artifact".into()), "path": artifact.path, "mimeType": artifact.mime_type, "sizeBytes": artifact.size_bytes, "action": artifact.action, "available": artifact.available, "createdAt": artifact.created_at })).collect())
+    let repository = repository(&app).await?;
+    Ok(repository.artifacts(&session_id).await?.into_iter().map(|artifact| {
+        let name = artifact_display_name(
+            &artifact.path,
+            artifact.original_path.as_deref(),
+            &artifact.provenance,
+            artifact.display_name.as_deref(),
+        );
+        json!({ "id": artifact.id, "sessionId": artifact.session_id, "runId": artifact.run_id, "itemId": artifact.item_id, "name": name, "path": artifact.path, "mimeType": artifact.mime_type, "sizeBytes": artifact.size_bytes, "action": artifact.action, "available": artifact.available, "createdAt": artifact.created_at })
+    }).collect())
+}
+
+fn artifact_display_name(
+    path: &str,
+    original_path: Option<&str>,
+    provenance: &str,
+    persisted_name: Option<&str>,
+) -> String {
+    if let Some(name) = persisted_name {
+        return name.to_string();
+    }
+    let stored_name = PathBuf::from(path)
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned());
+    if provenance == "attachment" {
+        let original_name = original_path
+            .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
+            .map(|value| value.to_string_lossy().into_owned());
+        if let Some(name) = stored_name
+            .as_deref()
+            .and_then(|name| copied_attachment_name(name, original_name.as_deref()))
+        {
+            return name.to_string();
+        }
+        if let Some(name) = original_name {
+            return name;
+        }
+    }
+    stored_name.unwrap_or_else(|| "Artifact".into())
+}
+
+fn copied_attachment_name<'a>(
+    stored_name: &'a str,
+    original_name: Option<&str>,
+) -> Option<&'a str> {
+    let mut name = stored_name;
+    let mut stripped = false;
+    while let Some(remainder) = strip_copy_prefix(name) {
+        stripped = true;
+        name = remainder;
+        if original_name == Some(name) {
+            break;
+        }
+    }
+    stripped.then_some(name)
+}
+
+fn strip_copy_prefix(name: &str) -> Option<&str> {
+    let uuid_prefix = name.get(..36)?;
+    let remainder = name.get(37..)?;
+    (name.as_bytes().get(36) == Some(&b'-')
+        && uuid::Uuid::parse_str(uuid_prefix).is_ok()
+        && !remainder.is_empty())
+    .then_some(remainder)
 }
 
 #[tauri::command]
@@ -2610,8 +2674,8 @@ async fn persist_attachments(
         sqlx::query::query(
             "INSERT INTO agent_artifacts (
                 id, session_id, run_id, item_id, provenance, action, path,
-                original_path, mime_type, size_bytes, available, created_at
-             ) VALUES (?, ?, ?, ?, 'attachment', 'imported', ?, ?, ?, ?, 1, ?)",
+                original_path, display_name, mime_type, size_bytes, available, created_at
+             ) VALUES (?, ?, ?, ?, 'attachment', 'imported', ?, ?, ?, ?, ?, 1, ?)",
         )
         .bind(&attachment.id)
         .bind(session_id)
@@ -2619,6 +2683,7 @@ async fn persist_attachments(
         .bind(item_id)
         .bind(&attachment.path)
         .bind(original_paths.get(index))
+        .bind(&attachment.name)
         .bind(&attachment.mime_type)
         .bind(attachment.size_bytes)
         .bind(&attachment.created_at)
@@ -2706,6 +2771,87 @@ fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attachment_display_name_strips_the_internal_copy_prefix() {
+        assert_eq!(
+            artifact_display_name(
+                "/workspace/attachments/1fb34e2e-e4e7-45d7-b538-a87aefa4c8e4-Pool Day.pdf",
+                Some("/tmp/companion/content"),
+                "attachment",
+                None,
+            ),
+            "Pool Day.pdf"
+        );
+    }
+
+    #[test]
+    fn attachment_display_name_falls_back_to_the_original_path() {
+        assert_eq!(
+            artifact_display_name(
+                "/workspace/attachments/staged-content",
+                Some("/Users/andrew/Documents/Pool Day.pdf"),
+                "attachment",
+                None,
+            ),
+            "Pool Day.pdf"
+        );
+    }
+
+    #[test]
+    fn attachment_display_name_strips_copy_prefixes_from_repeated_branches() {
+        assert_eq!(
+            artifact_display_name(
+                "/workspace/artifacts/9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-1fb34e2e-e4e7-45d7-b538-a87aefa4c8e4-Pool Day.pdf",
+                Some("/Users/andrew/Documents/Pool Day.pdf"),
+                "attachment",
+                None,
+            ),
+            "Pool Day.pdf"
+        );
+    }
+
+    #[test]
+    fn attachment_display_name_preserves_a_uuid_prefixed_original_name() {
+        assert_eq!(
+            artifact_display_name(
+                "/workspace/attachments/1fb34e2e-e4e7-45d7-b538-a87aefa4c8e4-9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf",
+                Some("/Users/andrew/Documents/9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf"),
+                "attachment",
+                None,
+            ),
+            "9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf"
+        );
+    }
+
+    #[test]
+    fn attachment_display_name_prefers_the_persisted_metadata_name() {
+        let path = "/workspace/attachments/1fb34e2e-e4e7-45d7-b538-a87aefa4c8e4-9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf";
+        let persisted_name = "9bc2de72-d7b9-4f2a-ae01-cce9bacb2664-notes.pdf";
+
+        assert_eq!(
+            artifact_display_name(
+                path,
+                Some("/tmp/companion/content"),
+                "attachment",
+                Some(persisted_name),
+            ),
+            persisted_name
+        );
+    }
+
+    #[test]
+    fn generated_artifact_display_name_keeps_its_workspace_name() {
+        assert_eq!(
+            artifact_display_name(
+                "/workspace/artifacts/generated-report.pdf",
+                Some("/Users/andrew/Documents/source.pdf"),
+                "tool",
+                None,
+            ),
+            "generated-report.pdf"
+        );
+    }
 
     #[test]
     fn staged_attachment_file_names_must_be_safe_bare_names() {

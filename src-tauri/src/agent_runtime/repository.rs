@@ -1027,7 +1027,7 @@ impl AgentRepository {
     }
 
     pub async fn artifacts(&self, session_id: &str) -> Result<Vec<AgentArtifactDto>, sqlx::Error> {
-        let rows = query("SELECT id, session_id, run_id, item_id, provenance, action, path, original_path, mime_type, size_bytes, available, created_at FROM agent_artifacts WHERE session_id = ? ORDER BY created_at ASC")
+        let rows = query("SELECT id, session_id, run_id, item_id, provenance, action, path, original_path, display_name, mime_type, size_bytes, available, created_at FROM agent_artifacts WHERE session_id = ? ORDER BY created_at ASC")
             .bind(session_id).fetch_all(&self.pool).await?;
         Ok(rows
             .into_iter()
@@ -1040,6 +1040,7 @@ impl AgentRepository {
                 action: row.get("action"),
                 path: row.get("path"),
                 original_path: row.get("original_path"),
+                display_name: row.get("display_name"),
                 mime_type: row.get("mime_type"),
                 size_bytes: row.get("size_bytes"),
                 available: row.get::<i64, _>("available") != 0,
