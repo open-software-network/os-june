@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - "clovy-api/**"
+      - "crates/clovy-companion-protocol/**"
       - ".github/workflows/clovy-api.yml"
       - ".github/actions/setup-rust/**"
   push:
     branches: [main]
     paths:
       - "clovy-api/**"
+      - "crates/clovy-companion-protocol/**"
       - ".github/workflows/clovy-api.yml"
       - ".github/actions/setup-rust/**"
 

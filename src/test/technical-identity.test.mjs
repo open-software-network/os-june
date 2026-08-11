@@ -10,6 +10,17 @@ async function read(relativePath) {
   return readFile(join(root, relativePath), "utf8");
 }
 
+function workflowTriggerPaths(source, trigger) {
+  const start = source.indexOf(`  ${trigger}:\n`);
+  expect(start).toBeGreaterThan(-1);
+  const remainder = source.slice(start + trigger.length + 4);
+  const nextTrigger = remainder.search(
+    /\n(?: {2}(?:pull_request|push|workflow_dispatch):|[A-Za-z][\w-]*:)(?:\n|$)/,
+  );
+  const block = nextTrigger === -1 ? remainder : remainder.slice(0, nextTrigger);
+  return [...block.matchAll(/^\s{6}- "([^"]+)"$/gm)].map((match) => match[1]);
+}
+
 function shareSessionBridge(source, sessionStorage) {
   const start = source.indexOf('  var STATE_KEY = "clovy_share_state";');
   const end = source.indexOf("  // ── PKCE sign-in", start);
@@ -437,22 +448,54 @@ describe("Clovy technical identity", () => {
     }
   });
 
+  it("runs Clovy API checks when the canonical companion protocol changes", async () => {
+    const [apiChecks, apiBuild] = await Promise.all([
+      read(".github/workflows/clovy-api.yml"),
+      read(".github/workflows/build-clovy-api.yml"),
+    ]);
+    const apiCheckPaths = [
+      "clovy-api/**",
+      "crates/clovy-companion-protocol/**",
+      ".github/workflows/clovy-api.yml",
+      ".github/actions/setup-rust/**",
+    ];
+
+    expect(workflowTriggerPaths(apiChecks, "pull_request")).toEqual(apiCheckPaths);
+    expect(workflowTriggerPaths(apiChecks, "push")).toEqual(apiCheckPaths);
+    expect(workflowTriggerPaths(apiBuild, "push")).toEqual([
+      "clovy-api/**",
+      "crates/clovy-companion-protocol/**",
+      ".github/actions/phala-deploy/**",
+      ".github/workflows/build-clovy-api.yml",
+    ]);
+  });
+
   it("preserves released API and C ABI contracts while publishing canonical aliases", async () => {
-    const [desktopApi, canonicalHeader, legacyHeader, cryptoSource, apiBuild, apiPromotion] =
-      await Promise.all([
-        read("src-tauri/src/clovy_api.rs"),
-        read("crates/clovy-companion-crypto/include/clovy_companion_crypto.h"),
-        read("crates/clovy-companion-crypto/include/june_companion_crypto.h"),
-        read("crates/clovy-companion-crypto/src/lib.rs"),
-        read(".github/workflows/build-clovy-api.yml"),
-        read(".github/workflows/promote-clovy-api.yml"),
-      ]);
+    const [
+      desktopApi,
+      canonicalHeader,
+      canonicalCompatibilityHeader,
+      oldPathCompatibilityHeader,
+      cryptoSource,
+      apiBuild,
+      apiPromotion,
+    ] = await Promise.all([
+      read("src-tauri/src/clovy_api.rs"),
+      read("crates/clovy-companion-crypto/include/clovy_companion_crypto.h"),
+      read("crates/clovy-companion-crypto/include/june_companion_crypto.h"),
+      read("crates/june-companion-crypto/include/june_companion_crypto.h"),
+      read("crates/clovy-companion-crypto/src/lib.rs"),
+      read(".github/workflows/build-clovy-api.yml"),
+      read(".github/workflows/promote-clovy-api.yml"),
+    ]);
 
     expect(desktopApi).toContain('"https://june-api.opensoftware.co"');
     expect(desktopApi).toContain('b"june-api-operation-id-v1\\0"');
     expect(desktopApi).toContain('format!("june-op-');
     expect(canonicalHeader).toContain("clovy_crypto_generate_identity");
-    expect(legacyHeader).toContain("june_crypto_generate_identity");
+    expect(canonicalCompatibilityHeader).toContain("june_crypto_generate_identity");
+    expect(oldPathCompatibilityHeader).toContain("june_crypto_generate_identity");
+    expect(oldPathCompatibilityHeader).toBe(canonicalCompatibilityHeader);
     expect(cryptoSource).toContain('pub unsafe extern "C" fn clovy_crypto_generate_identity');
     expect(cryptoSource).toContain('pub unsafe extern "C" fn june_crypto_generate_identity');
     for (const workflow of [apiBuild, apiPromotion]) {

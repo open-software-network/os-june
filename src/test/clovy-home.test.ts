@@ -30,6 +30,7 @@ import {
   markHomeTaskHandoffActive,
   persistHomeDirectTurns,
   persistHomeTaskHandoffs,
+  readAllHomeTaskHandoffAttachments,
   readHomeDirectTurns,
   readHomeTaskHandoffs,
   recoverInterruptedHomeTaskHandoffs,
@@ -190,6 +191,39 @@ describe("Clovy Home", () => {
     persistHomeTaskHandoffs("home-many-handoffs", handoffs);
 
     expect(readHomeTaskHandoffs("home-many-handoffs")).toHaveLength(40);
+  });
+
+  it("protects only pending and retryable Home handoff attachments", () => {
+    writeClovyHomeStoredSessionId("default", "home-attachment-protection");
+    persistHomeTaskHandoffs("home-attachment-protection", [
+      {
+        id: "starting-task",
+        title: "Starting task",
+        prompt: "Start with this file",
+        status: "starting",
+        attachments: ["/tmp/staging/starting.pdf"],
+      },
+      {
+        id: "failed-task",
+        title: "Failed task",
+        prompt: "Retry with this file",
+        status: "failed",
+        attachments: ["/tmp/staging/failed.pdf"],
+      },
+      {
+        id: "running-task",
+        title: "Running task",
+        prompt: "Already copied this file",
+        status: "running",
+        storedSessionId: "focused-running-session",
+        attachments: ["/tmp/staging/consumed.pdf"],
+      },
+    ]);
+
+    expect(readAllHomeTaskHandoffAttachments()).toEqual([
+      "/tmp/staging/starting.pdf",
+      "/tmp/staging/failed.pdf",
+    ]);
   });
 
   it("recognizes a brief acknowledgement only after a successful task handoff", () => {

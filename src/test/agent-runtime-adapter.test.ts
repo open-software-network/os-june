@@ -18,6 +18,111 @@ const frame = {
 };
 
 describe("agent runtime adapter", () => {
+  it("coalesces consecutive internal activity from one agent run", () => {
+    const turns = agentItemsToChatTurns([
+      {
+        id: "reasoning-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 1,
+        createdAt: "2026-07-22T12:00:01Z",
+        kind: "reasoning",
+        text: "Inspect the file",
+        status: "complete",
+      },
+      {
+        id: "tool-result-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 2,
+        createdAt: "2026-07-22T12:00:02Z",
+        kind: "tool_result",
+        callId: "call-1",
+        name: "preview_file",
+        output: "Previewed the file",
+        isError: false,
+      },
+      {
+        id: "approval-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 3,
+        createdAt: "2026-07-22T12:00:03Z",
+        kind: "interruption",
+        interruption: {
+          id: "approval-1",
+          kind: "approval",
+          sessionId: "session-1",
+          runId: "run-1",
+          status: "resolved",
+          createdAt: "2026-07-22T12:00:03Z",
+          toolName: "run_shell",
+          title: "Run a shell command",
+          description: "Clovy wants to inspect the document.",
+          command: "run_shell pdftotext document.pdf -",
+          allowAlways: false,
+          resolution: "once",
+        },
+      },
+      {
+        id: "tool-result-2",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 4,
+        createdAt: "2026-07-22T12:00:04Z",
+        kind: "tool_result",
+        callId: "call-2",
+        name: "run_shell",
+        output: "Extracted the text",
+        isError: false,
+      },
+    ]);
+
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({
+      id: "tool-result-2",
+      role: "assistant",
+      createdAt: "2026-07-22T12:00:04Z",
+      parts: [
+        { type: "reasoning", text: "Inspect the file" },
+        { type: "tool", id: "call-1", name: "preview_file" },
+        { type: "approval", id: "approval-1", status: "resolved", choice: "once" },
+        { type: "tool", id: "call-2", name: "run_shell" },
+      ],
+    });
+  });
+
+  it("keeps adjacent activity from different agent runs in separate turns", () => {
+    const turns = agentItemsToChatTurns([
+      {
+        id: "tool-result-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 1,
+        createdAt: "2026-07-22T12:00:01Z",
+        kind: "tool_result",
+        callId: "call-1",
+        name: "preview_file",
+        output: "First run",
+        isError: false,
+      },
+      {
+        id: "tool-result-2",
+        sessionId: "session-1",
+        runId: "run-2",
+        sequence: 2,
+        createdAt: "2026-07-22T12:00:02Z",
+        kind: "tool_result",
+        callId: "call-2",
+        name: "preview_file",
+        output: "Second run",
+        isError: false,
+      },
+    ]);
+
+    expect(turns.map((turn) => turn.id)).toEqual(["tool-result-1", "tool-result-2"]);
+  });
+
   it("renders generated image and video tool results as media", () => {
     const items = [
       {
@@ -356,10 +461,6 @@ describe("agent runtime adapter", () => {
             allowPermanent: true,
             status: "pending",
           },
-        ],
-      },
-      {
-        parts: [
           {
             type: "clarify",
             id: "clarification-1",
@@ -368,10 +469,6 @@ describe("agent runtime adapter", () => {
             choices: ["Clovy", "Platform"],
             status: "pending",
           },
-        ],
-      },
-      {
-        parts: [
           {
             type: "secret",
             id: "secret-1",
@@ -410,13 +507,11 @@ describe("agent runtime adapter", () => {
 
     expect(agentItemsToChatTurns(projection.items)).toMatchObject([
       {
-        parts: [{ type: "approval", status: "resolved", choice: "once" }],
-      },
-      {
-        parts: [{ type: "clarify", status: "resolved", answer: "Clovy" }],
-      },
-      {
-        parts: [{ type: "secret", status: "resolved" }],
+        parts: [
+          { type: "approval", status: "resolved", choice: "once" },
+          { type: "clarify", status: "resolved", answer: "Clovy" },
+          { type: "secret", status: "resolved" },
+        ],
       },
     ]);
   });

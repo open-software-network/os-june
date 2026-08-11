@@ -3437,8 +3437,32 @@ button.agent-user-attachment:hover {
 .agent-tool-stack {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--sp-1);
   width: 100%;
+}
+
+/* Consecutive internal activity reads as one compact sequence. Pull only those
+ * neighboring rows to --sp-1; answer text keeps the turn's full gap so the
+ * handoff from activity to response remains clear. */
+.agent-assistant-turn-body > :is(
+    .agent-reasoning,
+    .agent-tool-stack,
+    .agent-resolved-row,
+    .agent-approval-card[data-status="pending"],
+    .agent-clarify-card[data-status="pending"],
+    .agent-action-card[data-status="pending"],
+    .agent-system-notice[data-status="pending"]
+  )
+  + :is(
+    .agent-reasoning,
+    .agent-tool-stack,
+    .agent-resolved-row,
+    .agent-approval-card[data-status="pending"],
+    .agent-clarify-card[data-status="pending"],
+    .agent-action-card[data-status="pending"],
+    .agent-system-notice[data-status="pending"]
+  ) {
+  margin-top: calc(-1 * var(--sp-2));
 }
 
 .agent-tool-disclosure {

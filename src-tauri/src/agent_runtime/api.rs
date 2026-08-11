@@ -7,14 +7,28 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    fs,
+    path::Component,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Manager, State};
 
 const INSTRUCTIONS: &str = "You are Clovy, a private personal AI assistant. Use the tools provided by the Clovy app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
 const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
+const MAX_STAGED_AGENT_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
+// Composer attachments may remain recoverable across restarts. Reap only
+// abandoned UUID staging directories that have been untouched for seven days.
+const STAGED_AGENT_ATTACHMENT_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+// Eight legal 50 MiB attachments fit at once, with headroom for one composer
+// being abandoned while another begins staging.
+const MAX_STAGED_AGENT_ATTACHMENT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_STAGED_AGENT_ATTACHMENT_DIRECTORIES: usize = 128;
+const STAGED_AGENT_ATTACHMENTS_DIR: &str = "agent-attachment-staging";
+static STAGED_AGENT_ATTACHMENTS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +96,18 @@ pub struct ReadArtifactRequest {
     pub path: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardStagedAgentAttachmentsRequest {
+    pub paths: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PruneStagedAgentAttachmentsRequest {
+    pub protected_paths: Vec<String>,
+}
+
 async fn repository(app: &AppHandle) -> Result<AgentRepository, AppError> {
     Ok(AgentRepository::new(
         crate::commands::repositories(app).await?.pool,
@@ -125,6 +151,102 @@ pub async fn get_latest_agent_run(
         ))),
         None => Ok(None),
     }
+}
+
+/// Stages a DOM-dropped attachment until the next agent run copies it into the
+/// session workspace. WKWebView exposes a dropped file's bytes, not its local
+/// filesystem path, so this command deliberately accepts Tauri's raw payload.
+#[tauri::command]
+pub fn stage_agent_attachment_bytes(
+    app: AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, AppError> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err(AppError::new(
+            "agent_attachment_staging_invalid",
+            "Expected the dropped file's contents as a binary payload.",
+        ));
+    };
+    validate_staged_attachment_size(bytes.len())?;
+    let raw_name = request
+        .headers()
+        .get("x-file-name")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| urlencoding::decode(value).ok())
+        .map(|value| value.into_owned())
+        .unwrap_or_default();
+    let name = validate_staged_attachment_file_name(&raw_name)?;
+    let _guard = STAGED_AGENT_ATTACHMENTS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "agent_attachment_staging_failed",
+                "The attachment staging lock is unavailable.",
+            )
+        })?;
+    let root = staged_agent_attachments_root(&app)?;
+    prepare_staged_agent_attachments_root(&root, bytes.len() as u64)?;
+    let parent = root.join(uuid::Uuid::new_v4().to_string());
+    fs::create_dir_all(&parent).map_err(staging_error)?;
+    let destination = parent.join(name);
+    if let Err(error) = fs::write(&destination, bytes) {
+        let _ = fs::remove_dir_all(&parent);
+        return Err(staging_error(error));
+    }
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+/// Removes temporary DOM-drop files after they have been copied into a session
+/// workspace. Picker paths and every path outside the staging root are ignored.
+#[tauri::command]
+pub fn discard_staged_agent_attachments(
+    app: AppHandle,
+    request: DiscardStagedAgentAttachmentsRequest,
+) -> Result<(), AppError> {
+    let _guard = STAGED_AGENT_ATTACHMENTS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "agent_attachment_staging_failed",
+                "The attachment staging lock is unavailable.",
+            )
+        })?;
+    let root = staged_agent_attachments_root(&app)?;
+    for path in request.paths {
+        let Some(parent) = staged_attachment_parent_for_path(&root, Path::new(&path)) else {
+            continue;
+        };
+        match fs::remove_dir_all(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(staging_error(error)),
+        }
+    }
+    Ok(())
+}
+
+/// Reaps expired staging directories while preserving exact staged file paths
+/// still referenced by live, queued, or recoverable frontend state.
+#[tauri::command]
+pub fn prune_staged_agent_attachments(
+    app: AppHandle,
+    request: PruneStagedAgentAttachmentsRequest,
+) -> Result<(), AppError> {
+    let _guard = STAGED_AGENT_ATTACHMENTS_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| {
+            AppError::new(
+                "agent_attachment_staging_failed",
+                "The attachment staging lock is unavailable.",
+            )
+        })?;
+    let root = staged_agent_attachments_root(&app)?;
+    fs::create_dir_all(&root).map_err(staging_error)?;
+    let protected = protected_staging_parents(&root, &request.protected_paths);
+    prune_expired_staged_agent_attachments(&root, SystemTime::now(), &protected)
 }
 
 #[tauri::command]
@@ -2225,6 +2347,162 @@ fn session_workspace(app: &AppHandle, session_id: Option<&str>) -> Result<PathBu
         |id| root.join(id),
     ))
 }
+
+fn staged_agent_attachments_root(app: &AppHandle) -> Result<PathBuf, AppError> {
+    Ok(crate::app_paths::app_data_dir(app)
+        .map_err(|error| AppError::new("agent_attachment_staging_failed", error.to_string()))?
+        .join(STAGED_AGENT_ATTACHMENTS_DIR))
+}
+
+fn validate_staged_attachment_size(size: usize) -> Result<(), AppError> {
+    if size > MAX_STAGED_AGENT_ATTACHMENT_BYTES {
+        return Err(AppError::new(
+            "agent_attachment_staging_denied",
+            "Dropped files must be 50 MB or smaller.",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_staged_attachment_file_name(raw_name: &str) -> Result<String, AppError> {
+    let name = raw_name;
+    let is_safe_bare_name = !name.trim().is_empty()
+        && name.len() <= 255
+        && name.chars().count() <= 255
+        && !name
+            .chars()
+            .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+        && matches!(
+            Path::new(name).components().next(),
+            Some(Component::Normal(_))
+        )
+        && Path::new(name).components().count() == 1;
+    if !is_safe_bare_name {
+        return Err(AppError::new(
+            "agent_attachment_staging_invalid",
+            "The dropped file does not have a usable filename.",
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn prepare_staged_agent_attachments_root(root: &Path, incoming_bytes: u64) -> Result<(), AppError> {
+    fs::create_dir_all(root).map_err(staging_error)?;
+    if count_canonical_staging_directories(root)? >= MAX_STAGED_AGENT_ATTACHMENT_DIRECTORIES {
+        return Err(AppError::new(
+            "agent_attachment_staging_denied",
+            "Clovy has too many temporary attachments. Remove attachments or try again later.",
+        ));
+    }
+    let staged_bytes = directory_bytes_without_following_symlinks(root)?;
+    if staged_bytes.saturating_add(incoming_bytes) > MAX_STAGED_AGENT_ATTACHMENT_TOTAL_BYTES {
+        return Err(AppError::new(
+            "agent_attachment_staging_denied",
+            "Clovy's temporary attachment storage is full. Remove attachments or try again later.",
+        ));
+    }
+    Ok(())
+}
+
+fn count_canonical_staging_directories(root: &Path) -> Result<usize, AppError> {
+    let mut count = 0;
+    for entry in fs::read_dir(root).map_err(staging_error)? {
+        let entry = entry.map_err(staging_error)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_canonical_staging_uuid(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(staging_error)?;
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn protected_staging_parents(root: &Path, paths: &[String]) -> HashSet<PathBuf> {
+    paths
+        .iter()
+        .filter_map(|path| staged_attachment_parent_for_path(root, Path::new(path)))
+        .collect()
+}
+
+fn prune_expired_staged_agent_attachments(
+    root: &Path,
+    now: SystemTime,
+    protected: &HashSet<PathBuf>,
+) -> Result<(), AppError> {
+    let canonical_root = root.canonicalize().map_err(staging_error)?;
+    for entry in fs::read_dir(&canonical_root).map_err(staging_error)? {
+        let entry = entry.map_err(staging_error)?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_canonical_staging_uuid(&name) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path()).map_err(staging_error)?;
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        if protected.contains(&entry.path()) {
+            continue;
+        }
+        let expired = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STAGED_AGENT_ATTACHMENT_TTL);
+        if expired {
+            fs::remove_dir_all(entry.path()).map_err(staging_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn directory_bytes_without_following_symlinks(path: &Path) -> Result<u64, AppError> {
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path).map_err(staging_error)? {
+        let entry = entry.map_err(staging_error)?;
+        let metadata = fs::symlink_metadata(entry.path()).map_err(staging_error)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_file() {
+            total = total.saturating_add(metadata.len());
+        } else if metadata.is_dir() {
+            total =
+                total.saturating_add(directory_bytes_without_following_symlinks(&entry.path())?);
+        }
+    }
+    Ok(total)
+}
+
+fn is_canonical_staging_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+
+fn staged_attachment_parent_for_path(root: &Path, path: &Path) -> Option<PathBuf> {
+    let canonical_root = root.canonicalize().ok()?;
+    let canonical_path = path.canonicalize().ok()?;
+    let mut components = canonical_path
+        .strip_prefix(&canonical_root)
+        .ok()?
+        .components();
+    let parent = components.next()?.as_os_str().to_str()?;
+    is_canonical_staging_uuid(parent).then_some(())?;
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return None;
+    }
+    Some(canonical_root.join(parent))
+}
+
+fn staging_error(error: std::io::Error) -> AppError {
+    AppError::new("agent_attachment_staging_failed", error.to_string())
+}
+
 fn io_error(error: std::io::Error) -> AppError {
     AppError::new("agent_workspace_failed", error.to_string())
 }
@@ -2429,6 +2707,186 @@ fn attachment_mime_type(path: &std::path::Path) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_attachment_file_names_must_be_safe_bare_names() {
+        for name in ["brief.pdf", "Résumé.pdf", " spaced name.txt "] {
+            assert!(
+                validate_staged_attachment_file_name(name).is_ok(),
+                "{name:?}"
+            );
+        }
+        for name in [
+            "",
+            "..",
+            "../brief.pdf",
+            "folder/brief.pdf",
+            "folder\\brief.pdf",
+            "a\n.txt",
+        ] {
+            assert!(
+                validate_staged_attachment_file_name(name).is_err(),
+                "{name:?} should be rejected"
+            );
+        }
+        assert!(validate_staged_attachment_file_name(&"a".repeat(256)).is_err());
+        assert!(validate_staged_attachment_file_name(&"é".repeat(128)).is_err());
+    }
+
+    #[test]
+    fn staged_attachment_bytes_are_limited_to_50_mib() {
+        assert!(validate_staged_attachment_size(MAX_STAGED_AGENT_ATTACHMENT_BYTES).is_ok());
+        assert!(validate_staged_attachment_size(MAX_STAGED_AGENT_ATTACHMENT_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn only_uuid_staging_parents_can_be_discarded() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join(STAGED_AGENT_ATTACHMENTS_DIR);
+        let id = uuid::Uuid::new_v4();
+        let parent = root.join(id.to_string());
+        std::fs::create_dir_all(&parent).expect("staging parent");
+        let attachment = parent.join("brief.pdf");
+        std::fs::write(&attachment, b"brief").expect("staged file");
+
+        assert_eq!(
+            staged_attachment_parent_for_path(&root, &attachment),
+            Some(parent.canonicalize().expect("canonical staging parent"))
+        );
+
+        let non_staged = root.join("not-a-uuid").join("brief.pdf");
+        std::fs::create_dir_all(non_staged.parent().expect("parent")).expect("non-staged parent");
+        std::fs::write(&non_staged, b"brief").expect("non-staged file");
+        assert_eq!(staged_attachment_parent_for_path(&root, &non_staged), None);
+
+        let external = temporary.path().join("picker.pdf");
+        std::fs::write(&external, b"picker").expect("picker file");
+        assert_eq!(staged_attachment_parent_for_path(&root, &external), None);
+    }
+
+    #[test]
+    fn staging_prunes_only_expired_unprotected_uuid_directories() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join(STAGED_AGENT_ATTACHMENTS_DIR);
+        fs::create_dir_all(&root).expect("staging root");
+        let expired = root.join(uuid::Uuid::new_v4().to_string());
+        let protected = root.join(uuid::Uuid::new_v4().to_string());
+        let invalid = root.join("keep-this-directory");
+        let noncanonical_uuid = root.join(uuid::Uuid::new_v4().simple().to_string());
+        fs::create_dir_all(&expired).expect("expired staging directory");
+        fs::create_dir_all(&protected).expect("protected staging directory");
+        fs::create_dir_all(&invalid).expect("invalid staging directory");
+        fs::create_dir_all(&noncanonical_uuid).expect("noncanonical UUID directory");
+        fs::write(expired.join("brief.pdf"), b"brief").expect("expired attachment");
+        let protected_attachment = protected.join("live.pdf");
+        fs::write(&protected_attachment, b"live").expect("protected attachment");
+        let external_attachment = temporary.path().join("external.pdf");
+        fs::write(&external_attachment, b"external").expect("external attachment");
+        fs::write(invalid.join("notes.txt"), b"notes").expect("invalid attachment");
+        let modified = fs::symlink_metadata(&expired)
+            .expect("expired metadata")
+            .modified()
+            .expect("modified time");
+
+        let protected_parents = protected_staging_parents(
+            &root,
+            &[
+                protected_attachment.to_string_lossy().into_owned(),
+                external_attachment.to_string_lossy().into_owned(),
+                expired
+                    .join("nested")
+                    .join("malformed.pdf")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        );
+        prune_expired_staged_agent_attachments(
+            &root,
+            modified + STAGED_AGENT_ATTACHMENT_TTL + Duration::from_secs(1),
+            &protected_parents,
+        )
+        .expect("prune staging");
+
+        assert!(!expired.exists());
+        assert!(protected.exists());
+        assert!(invalid.exists());
+        assert!(noncanonical_uuid.exists());
+    }
+
+    #[test]
+    fn staging_quota_allows_a_legal_eight_file_batch_and_rejects_overflow() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join(STAGED_AGENT_ATTACHMENTS_DIR);
+        fs::create_dir_all(&root).expect("staging root");
+        let parent = root.join(uuid::Uuid::new_v4().to_string());
+        fs::create_dir_all(&parent).expect("staging directory");
+        let staged = fs::File::create(parent.join("existing.bin")).expect("staged file");
+        staged
+            .set_len(MAX_STAGED_AGENT_ATTACHMENT_TOTAL_BYTES - 8 * 50 * 1024 * 1024)
+            .expect("sparse staged file");
+
+        prepare_staged_agent_attachments_root(&root, 8 * 50 * 1024 * 1024)
+            .expect("legal batch fits");
+        assert!(prepare_staged_agent_attachments_root(&root, 8 * 50 * 1024 * 1024 + 1).is_err());
+    }
+
+    #[test]
+    fn staging_directory_count_allows_128_total_and_rejects_more() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join(STAGED_AGENT_ATTACHMENTS_DIR);
+        fs::create_dir_all(&root).expect("staging root");
+        let mut canonical_directories = Vec::new();
+        for _ in 0..MAX_STAGED_AGENT_ATTACHMENT_DIRECTORIES {
+            let directory = root.join(uuid::Uuid::new_v4().to_string());
+            fs::create_dir(&directory).expect("canonical staging directory");
+            canonical_directories.push(directory);
+        }
+        fs::create_dir(root.join("not-a-staging-directory")).expect("invalid directory");
+
+        assert_eq!(
+            count_canonical_staging_directories(&root).expect("count staging directories"),
+            MAX_STAGED_AGENT_ATTACHMENT_DIRECTORIES
+        );
+        assert!(prepare_staged_agent_attachments_root(&root, 0).is_err());
+
+        fs::remove_dir(canonical_directories.pop().expect("canonical directory"))
+            .expect("remove one staging directory");
+        prepare_staged_agent_attachments_root(&root, 0)
+            .expect("one more staging directory is legal");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staging_cleanup_does_not_follow_uuid_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join(STAGED_AGENT_ATTACHMENTS_DIR);
+        let external = temporary.path().join("outside");
+        fs::create_dir_all(&root).expect("staging root");
+        fs::create_dir_all(&external).expect("external directory");
+        fs::write(external.join("keep.txt"), b"keep").expect("external file");
+        let link = root.join(uuid::Uuid::new_v4().to_string());
+        symlink(&external, &link).expect("uuid symlink");
+
+        prune_expired_staged_agent_attachments(
+            &root,
+            SystemTime::now() + STAGED_AGENT_ATTACHMENT_TTL + Duration::from_secs(1),
+            &HashSet::new(),
+        )
+        .expect("prune staging");
+
+        assert!(link.exists());
+        assert_eq!(
+            fs::read(external.join("keep.txt")).expect("external file"),
+            b"keep"
+        );
+        assert_eq!(
+            directory_bytes_without_following_symlinks(&root).unwrap(),
+            0
+        );
+        assert_eq!(count_canonical_staging_directories(&root).unwrap(), 0);
+    }
 
     #[test]
     fn extracts_a_concrete_model_from_persisted_usage() {

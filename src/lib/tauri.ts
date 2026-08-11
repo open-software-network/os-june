@@ -136,6 +136,23 @@ export const updateAgentSkill = (skillId: string, content: string) =>
   invoke<AgentSkillDto>("update_agent_skill", { request: { skillId, content } });
 export const setAgentSkillEnabled = agentRuntimeBindings.setSkillEnabled;
 
+/** DOM drops in WKWebView contain bytes but no source filesystem path. */
+export async function stageAgentAttachmentBytes(name: string, bytes: Uint8Array) {
+  return invoke<string>("stage_agent_attachment_bytes", bytes, {
+    headers: { "x-file-name": encodeURIComponent(name) },
+  });
+}
+
+/** Picker paths are ignored by the native command; only staged DOM drops are removed. */
+export async function discardStagedAgentAttachments(paths: string[]) {
+  return invoke<void>("discard_staged_agent_attachments", { request: { paths } });
+}
+
+/** Removes expired staging directories except those still owned by a live or recoverable flow. */
+export async function pruneStagedAgentAttachments(protectedPaths: string[]) {
+  return invoke<void>("prune_staged_agent_attachments", { request: { protectedPaths } });
+}
+
 export type {
   AgentArtifactDto,
   AgentInterruptionDto,

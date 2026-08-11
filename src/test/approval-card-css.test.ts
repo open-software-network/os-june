@@ -243,6 +243,38 @@ describe("inline notice centering", () => {
 });
 
 describe("resolved action row styles", () => {
+  it("tightens consecutive activity rows without tightening the answer gap", () => {
+    const activitySelector = `.agent-assistant-turn-body > :is(
+    .agent-reasoning,
+    .agent-tool-stack,
+    .agent-resolved-row,
+    .agent-approval-card[data-status="pending"],
+    .agent-clarify-card[data-status="pending"],
+    .agent-action-card[data-status="pending"],
+    .agent-system-notice[data-status="pending"]
+  )
+  + :is(
+    .agent-reasoning,
+    .agent-tool-stack,
+    .agent-resolved-row,
+    .agent-approval-card[data-status="pending"],
+    .agent-clarify-card[data-status="pending"],
+    .agent-action-card[data-status="pending"],
+    .agent-system-notice[data-status="pending"]
+  )`;
+    const compactActivity = cssRuleFor(activitySelector);
+    // The turn's base gap is --sp-4 (10px). Only an adjacent tool/receipt row
+    // pulls back by --sp-2 (6px), yielding --sp-1 (4px).
+    // Text is absent from both selector lists, so the response keeps 10px.
+    expect(cssRuleFor(".agent-assistant-turn-body")).toContain("gap: var(--sp-4);");
+    expect(cssRuleFor(".agent-tool-stack")).toContain("gap: var(--sp-1);");
+    expect(compactActivity).toContain("margin-top: calc(-1 * var(--sp-2));");
+    expect(activitySelector).toContain('.agent-approval-card[data-status="pending"]');
+    expect(activitySelector).toContain('.agent-clarify-card[data-status="pending"]');
+    expect(activitySelector).toContain('.agent-action-card[data-status="pending"]');
+    expect(activitySelector).toContain('.agent-system-notice[data-status="pending"]');
+  });
+
   it("reuses the tool-disclosure row treatment so the receipt matches the tool rows", () => {
     // The receipt carries .agent-tool-disclosure (verified in the DOM tests), so
     // its sizing/hover/icon-swap come from that shared block — no duplicated
