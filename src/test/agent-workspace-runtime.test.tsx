@@ -284,6 +284,12 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(container.querySelector(".agent-timeline > .agent-artifact-list")).toBeNull();
     expect(screen.getAllByText("Pool Day.pdf")).toHaveLength(1);
 
+    await user.click(
+      within(userTurn as HTMLElement).getByRole("button", { name: "Open Pool Day.pdf" }),
+    );
+    expect(screen.getByRole("complementary", { name: "Files" })).toHaveTextContent("Pool Day.pdf");
+    await user.click(screen.getByRole("button", { name: "Close files" }));
+
     await user.click(screen.getByRole("button", { name: "View files (1)" }));
     expect(screen.getByRole("complementary", { name: "Files" })).toHaveTextContent("Pool Day.pdf");
   });

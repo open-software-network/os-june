@@ -2608,6 +2608,7 @@ export function AgentWorkspace({
                         onSecret={(part, secret) =>
                           void respondToSecret(part.runId, part.id, secret)
                         }
+                        onOpenArtifact={openArtifact}
                         homeTaskHandoff={homeHandoffsByTurnId.get(turn.id)}
                         onOpenHomeTaskSession={onOpenHomeTaskSession}
                         onRetryHomeTask={retryHomeTask}
@@ -2719,6 +2720,7 @@ export function AgentWorkspace({
                     }
                     onSudo={() => undefined}
                     onSecret={(part, secret) => void respondToSecret(part.runId, part.id, secret)}
+                    onOpenArtifact={openArtifact}
                     onRetryUpstreamFailure={(turnId) => void retryFailure(turnId)}
                     onBranch={(itemId) => void branchFrom(itemId)}
                     branching={branchingItemId === turn.id}
