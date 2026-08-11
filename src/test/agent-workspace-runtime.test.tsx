@@ -320,6 +320,23 @@ describe("AgentWorkspace runtime wiring", () => {
     });
   });
 
+  it("restores a stored draft after leaving a prefilled new session", async () => {
+    writeAgentSessionDraft(session.id, "Saved session draft");
+    markAgentNewSessionPending("Prefilled new request");
+
+    const { rerender } = render(<AgentWorkspace />);
+    await screen.findByRole("textbox", { name: "Message June" });
+
+    rerender(<AgentWorkspace initialSession={session} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Message June" })).toHaveTextContent(
+        "Saved session draft",
+      ),
+    );
+    expect(readAgentSessionDraft(session.id)).toBe("Saved session draft");
+  });
+
   it("finishes IME composition under the source draft owner before switching", async () => {
     const user = userEvent.setup();
     const { rerender } = render(<AgentWorkspace initialSession={session} />);

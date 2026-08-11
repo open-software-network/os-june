@@ -870,15 +870,8 @@ export function AgentWorkspace({
       .catch(() => setVeniceApiKeyConfigured(false));
   }, [homeMode, initialAgentSession, initialSessionId, refreshSessions]);
 
-  const pendingDraftTakesPriorityRef = useRef(Boolean(pendingRequestRef.current?.prompt));
   useEffect(() => {
     if (!selectedId) return;
-    // A request that opens a new session deliberately pre-fills the composer;
-    // do not let a stale session draft replace that navigation intent.
-    if (pendingDraftTakesPriorityRef.current) {
-      pendingDraftTakesPriorityRef.current = false;
-      return;
-    }
     // The first session id is assigned while its initial send is still in
     // flight. Its composer may already contain a follow-up, which is not a
     // stored draft to restore over.
