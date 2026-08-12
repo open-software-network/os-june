@@ -2161,8 +2161,8 @@ fn clovy_home_has_prior_context(
         matches!(message["role"].as_str(), Some("user" | "assistant"))
             && message["content"]
                 .as_str()
-                .is_some_and(|content| !content.trim().is_empty())
-    }) || history_context.is_some_and(|context| !context.trim().is_empty())
+                .is_some_and(clovy_home_context_mentions_legacy_name)
+    }) || history_context.is_some_and(clovy_home_context_mentions_legacy_name)
         || memory_context.is_some_and(clovy_home_context_mentions_legacy_name)
 }
 
@@ -4853,9 +4853,22 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             None,
             None,
         ));
+        assert!(!clovy_home_has_prior_context(
+            &[
+                serde_json::json!({ "role": "assistant", "content": "The user prefers dark mode." }),
+                serde_json::json!({ "role": "user", "content": "Who is June?" }),
+            ],
+            None,
+            None,
+        ));
         assert!(clovy_home_has_prior_context(
             &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
             Some("Earlier context about a person named June."),
+            None,
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            Some("Earlier context about dark mode."),
             None,
         ));
         assert!(clovy_home_has_prior_context(

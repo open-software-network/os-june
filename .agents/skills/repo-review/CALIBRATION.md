@@ -246,3 +246,4 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #1057 | Cross-harness convergence (claude) | — | — | no verdict arrived within the bounded run before the reviewed head changed; silence was not counted as approval and fresh exact-head reviewers were used |
 | #1057 | Codex exact-head review | 1 | 1 | caught fresh Home memory context being omitted from the ambiguous-name guard; added focused memory-backed coverage |
 | #1057 | Adversarial post-review convergence | 1 | 1 | caught the first memory fix treating every unrelated memory as relevant; narrowed the guard to normalized whole-word legacy-name mentions |
+| #1057 | Codex final exact-head review | 1 | 1 | extended the same relevance rule from memories to ordinary history and compact summaries; unrelated prior turns now retain the deterministic Clovy reply |

@@ -25,6 +25,15 @@ const conversationHistory: RunStartParams["history"] = [
   },
 ];
 
+const unrelatedConversationHistory: RunStartParams["history"] = [
+  {
+    id: "unrelated-context",
+    kind: "message",
+    role: "assistant",
+    text: "The user prefers dark mode.",
+  },
+];
+
 test("answers legacy identity variants as Clovy only", () => {
   for (const input of [
     "Are you called June?",
@@ -68,5 +77,31 @@ test("answers explicit legacy assistant-name questions despite earlier context",
       history: conversationHistory,
     })?.finalOutput,
     CLOVY_IDENTITY_REPLY,
+  );
+});
+
+test("answers ambiguous legacy-name questions after unrelated context", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: unrelatedConversationHistory,
+    })?.finalOutput,
+    CLOVY_IDENTITY_REPLY,
+  );
+});
+
+test("recognizes normalized legacy-name context in compact summaries", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: [
+        {
+          id: "normalized-summary",
+          kind: "context_summary",
+          text: "The project lead is Ｊｕｎｅ.",
+        },
+      ],
+    }),
+    undefined,
   );
 });

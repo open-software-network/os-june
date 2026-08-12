@@ -90,13 +90,13 @@ const LEADING_CONVERSATIONAL_FILLERS = new Set([
 const TRAILING_FILLERS = new Set(["clovy", "june", "please"]);
 
 export function clovyIdentityResult(params: RunStartParams): EngineResult | undefined {
-  const hasConversationContext = params.history.some(
+  const hasRelevantLegacyNameContext = params.history.some(
     (item) =>
       ((item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
         item.kind === "context_summary") &&
-      Boolean(item.text?.trim()),
+      contextMentionsLegacyName(item.text),
   );
-  const reply = identityReply(params.input, !hasConversationContext);
+  const reply = identityReply(params.input, !hasRelevantLegacyNameContext);
   if ((params.attachments?.length ?? 0) > 0 || !reply) {
     return undefined;
   }
@@ -120,6 +120,12 @@ export function clovyIdentityResult(params: RunStartParams): EngineResult | unde
     usage: {},
     interruptions: [],
   };
+}
+
+function contextMentionsLegacyName(text: string | undefined): boolean {
+  if (!text) return false;
+  const words: string[] = text.normalize("NFKC").toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return words.includes("june");
 }
 
 function identityReply(input: string, allowAmbiguousLegacyName: boolean): string | undefined {
