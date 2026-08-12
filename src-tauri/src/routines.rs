@@ -2261,6 +2261,7 @@ mod tests {
 
         assert!(names.contains(&"list_skills"));
         assert!(names.contains(&"load_skill"));
+        assert!(names.contains(&"search_june"));
         assert!(!names.contains(&"write_file"));
         assert!(!names.contains(&"run_shell"));
     }

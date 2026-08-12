@@ -35,7 +35,7 @@ contract or an ADR.
 
 ## Home conversation paths
 
-Ordinary text-only Home turns use the lightweight native `june_home_chat` path.
+Ordinary text-only Home turns use the lightweight native `clovy_home_chat` path.
 It sends a compact relationship prompt and one structured `start_task` tool,
 which avoids loading the full agent prompt and tool catalog for a short
 conversation. Its speed-first route is internal and does not read or mutate
@@ -118,6 +118,41 @@ receives the user's current request and attachments, but not the lightweight
 path's full local history. Do not describe the entire visible Home transcript
 as shared semantic context until this boundary has a retrieval or summary
 contract.
+
+## Identity compatibility
+
+Clovy is the only assistant identity presented in Home and focused sessions.
+Text-only questions that use the former product name as an assistant name are
+accepted as compatibility input and receive the same concise Clovy identity
+reply as any other identity question. Replies never explain, repeat, or present
+the former name as a product, assistant, persona, or identity.
+
+Ambiguous questions such as `Who is June?` use that direct reply unless earlier
+conversation context, a compact summary, or an on-device memory mentions the
+legacy name. Relevant context continues through the normal model path so a
+person, month, or project already under discussion is not mistaken for an
+assistant-name question. Unrelated context does not disable the deterministic
+identity reply.
+
+The direct matcher does not claim an identity question when an attachment is
+present because the name may refer to content in that attachment. Those turns
+continue through the normal model path under the same Clovy-only identity
+instruction. The app invokes `clovy_home_chat`; `june_home_chat` remains only as
+a Tauri command alias for released callers.
+
+The Agents SDK also retains its released internal Agent serialization key so
+pending approvals and clarifications can survive both upgrades and downgrades.
+That key is a persisted compatibility value only. Resume accepts both released
+serialization keys. It migrates only the old app-owned identity sentence while
+preserving the rest of the attended or unattended run policy. Old descriptions
+owned by built-in Clovy tools and known historical built-in skill presentation
+strings are updated at the same boundary; execution names, schemas, approval
+metadata, and custom descriptions remain unchanged. The released app-owned
+Obsidian skill id is canonicalized in saved tool guidance and before it reaches
+the current model catalog. Known released app-managed `load_skill` results are
+also updated at resume, history-replay, and transcript-presentation boundaries.
+User-global skills, user-edited skill instructions, and unrelated tool results
+remain unchanged.
 
 ## Structured task handoff
 

@@ -4,7 +4,15 @@ import {
   humanizeToolName,
   toolActivityLabel,
   toolActivitySentence,
+  toolDisplayName,
 } from "../lib/agent-tool-labels";
+
+describe("toolDisplayName", () => {
+  it("hides the rollback search identifier behind a Clovy label", () => {
+    expect(toolDisplayName("search_june")).toBe("Search Clovy notes");
+    expect(toolDisplayName("read_file")).toBe("read_file");
+  });
+});
 
 describe("toolActivityLabel", () => {
   it("replaces generic terminal labels with the command activity", () => {

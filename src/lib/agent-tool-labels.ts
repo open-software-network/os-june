@@ -10,6 +10,11 @@ const GENERIC_TOOL_NAMES = new Set([
   "terminal",
 ]);
 
+/** Converts persisted execution identifiers into safe presentation labels. */
+export function toolDisplayName(toolName: string) {
+  return normalizeToolName(toolName) === "search_june" ? "Search Clovy notes" : toolName;
+}
+
 export function toolActivityLabel(toolName: string | undefined, payload?: unknown) {
   const records = payloadRecords(payload);
   const rawName =

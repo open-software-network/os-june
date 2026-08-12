@@ -1,6 +1,8 @@
 use super::skill_identity::{
-    canonical_skill_id, canonical_skill_ids, read_skill_ids, skill_content_for_id, skill_file,
-    write_skill_ids,
+    canonical_skill_id, canonical_skill_ids, canonicalize_load_skill_arguments,
+    is_managed_obsidian_skill_result, migrate_load_skill_result, migrate_resumable_skill_state,
+    read_skill_ids, skill_content_for_id, skill_file, write_skill_ids,
+    CLOVY_OBSIDIAN_SKILL_DESCRIPTION, LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
 };
 use super::{
     repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
@@ -21,6 +23,11 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 
 const INSTRUCTIONS: &str = "You are Clovy, a private personal AI assistant. Use the tools provided by the Clovy app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
+const LEGACY_ATTENDED_INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
+const LEGACY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
+    "You are June executing an unattended routine.";
+const CLOVY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
+    "You are Clovy executing an unattended routine.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
 const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
 const MAX_STAGED_AGENT_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
@@ -286,10 +293,8 @@ pub async fn compact_agent_session(
     let run_id: String = row.get("id");
     let items = repository.items(&session_id).await?;
     let expected_last_item_sequence = items.last().map_or(-1, |item| item.sequence);
-    let history = items
-        .into_iter()
-        .filter_map(history_item)
-        .collect::<Vec<_>>();
+    let managed_skill_root = managed_agent_skill_root(&app);
+    let history = runtime_history_with_skill_root(items, None, managed_skill_root.as_deref());
     let model = normalize_agent_model(&session.model);
     let context_window = crate::providers::clovy_model_runtime_capabilities(&model)
         .await
@@ -635,6 +640,7 @@ pub async fn delete_agent_session(app: AppHandle, session_id: String) -> Result<
 #[tauri::command]
 pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<Value>, AppError> {
     let repository = repository(&app).await?;
+    let managed_skill_root = managed_agent_skill_root(&app);
     let active_run_id = repository
         .latest_run(&session_id)
         .await
@@ -646,12 +652,11 @@ pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<
             )
         })
         .map(|run| run.id);
-    repository
-        .items(&session_id)
-        .await?
-        .into_iter()
-        .map(|item| item_json_with_active_run(item, active_run_id.as_deref()))
-        .collect()
+    items_json_with_active_run(
+        repository.items(&session_id).await?,
+        active_run_id.as_deref(),
+        managed_skill_root.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1360,6 +1365,8 @@ async fn resolve_agent_interruption_inner(
             ),
         },
     };
+    migrate_resumable_identity_instructions(&mut params);
+    migrate_resumable_presentation_descriptions(&mut params);
     params["model"] = json!(model);
     params
         .as_object_mut()
@@ -1369,7 +1376,11 @@ async fn resolve_agent_interruption_inner(
         .as_object_mut()
         .expect("run params object")
         .remove("history");
-    params["serializedState"] = json!(serialized_state);
+    let managed_skill_root = managed_agent_skill_root(app);
+    params["serializedState"] = json!(migrate_resumable_skill_state(
+        serialized_state,
+        managed_skill_root.as_deref(),
+    ));
     if let Some(resolved_model) = resolved_model {
         params["resolvedModel"] = json!(resolved_model);
     }
@@ -2047,15 +2058,20 @@ fn skill_description(text: &str) -> Option<String> {
 }
 
 fn skill_roots(app: &AppHandle) -> Vec<(PathBuf, bool)> {
-    let mut roots = crate::app_paths::app_data_dir(app)
-        .ok()
-        .map(|path| (path.join("agents").join("skills"), true))
+    let mut roots = managed_agent_skill_root(app)
+        .map(|path| (path, true))
         .into_iter()
         .collect::<Vec<_>>();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push((PathBuf::from(home).join(".agents").join("skills"), false));
     }
     roots
+}
+
+fn managed_agent_skill_root(app: &AppHandle) -> Option<PathBuf> {
+    crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|path| path.join("agents").join("skills"))
 }
 
 fn normalize_agent_model(model: &str) -> String {
@@ -2103,9 +2119,11 @@ async fn run_params(
         .context_tokens
         .unwrap_or(128_000)
         .max(1_024);
-    let mut history = runtime_history(
+    let managed_skill_root = managed_agent_skill_root(app);
+    let mut history = runtime_history_with_skill_root(
         repository.items(request.session_id).await?,
         request.excluded_history_run_id,
+        managed_skill_root.as_deref(),
     );
     if !supports_vision {
         for item in &mut history {
@@ -2208,6 +2226,137 @@ pub(crate) fn resumable_run_config(params: &Value) -> Value {
     config
 }
 
+fn migrate_resumable_identity_instructions(params: &mut Value) {
+    let Some(instructions) = params.get("instructions").and_then(Value::as_str) else {
+        return;
+    };
+    let migrated = instructions
+        .replacen(LEGACY_ATTENDED_INSTRUCTIONS, INSTRUCTIONS, 1)
+        .replacen(
+            LEGACY_UNATTENDED_IDENTITY_INSTRUCTION,
+            CLOVY_UNATTENDED_IDENTITY_INSTRUCTION,
+            1,
+        );
+    params["instructions"] = json!(migrated);
+}
+
+fn migrate_resumable_presentation_descriptions(params: &mut Value) {
+    if let Some(tools) = params.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            let Some(tool) = tool.as_object_mut() else {
+                continue;
+            };
+            let Some(name) = tool.get("name").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            if !is_clovy_builtin_tool(&name) {
+                continue;
+            }
+            if let Some(description) = tool.get_mut("description") {
+                if let Some(value) = description.as_str() {
+                    let mut migrated = value.replace("June", "Clovy");
+                    if name == "get_obsidian_vault" {
+                        migrated = migrated.replace("june-obsidian", "clovy-obsidian");
+                    }
+                    *description = json!(migrated);
+                }
+            }
+        }
+    }
+
+    if let Some(skills) = params.get_mut("skills").and_then(Value::as_array_mut) {
+        for skill in skills {
+            let Some(skill) = skill.as_object_mut() else {
+                continue;
+            };
+            let Some(name) = skill
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(description) = skill
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let source = skill
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if source.as_deref() == Some("managed") {
+                let canonical_name = canonical_skill_id(&name);
+                if canonical_name != name {
+                    skill.insert("name".into(), json!(canonical_name));
+                }
+            }
+            if let Some(migrated) =
+                migrated_managed_skill_description(&name, &description, source.as_deref())
+            {
+                skill.insert("description".into(), json!(migrated));
+            }
+        }
+    }
+}
+
+fn migrated_managed_skill_description(
+    name: &str,
+    description: &str,
+    source: Option<&str>,
+) -> Option<&'static str> {
+    if source != Some("managed") {
+        return None;
+    }
+    match (canonical_skill_id(name), description) {
+        (_, "June agent skill") => Some("Clovy agent skill"),
+        (_, "Enabled June skill") => Some("Enabled Clovy skill"),
+        ("clovy-obsidian", LEGACY_OBSIDIAN_SKILL_DESCRIPTION) => {
+            Some(CLOVY_OBSIDIAN_SKILL_DESCRIPTION)
+        }
+        _ => None,
+    }
+}
+
+fn is_clovy_builtin_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "search_june"
+            | "list_memories"
+            | "save_memory"
+            | "forget_memory"
+            | "edit_image"
+            | "get_obsidian_vault"
+            | "start_recording"
+            | "stop_recording"
+            | "recording_status"
+            | "start_session"
+            | "close_session"
+            | "navigate"
+            | "snapshot"
+            | "screenshot"
+            | "click"
+            | "fill"
+            | "press"
+            | "back"
+            | "list_tabs"
+            | "open_tab"
+            | "switch_tab"
+            | "close_tab"
+            | "list_skills"
+            | "load_skill"
+            | "list_routines"
+            | "create_routine"
+            | "update_routine"
+            | "pause_routine"
+            | "resume_routine"
+            | "delete_routine"
+            | "computer_use"
+    )
+}
+
 async fn tool_descriptors(
     app: &AppHandle,
     repository: &AgentRepository,
@@ -2305,7 +2454,17 @@ async fn tool_descriptors(
     Ok(tools)
 }
 
+#[cfg(test)]
 fn history_item(item: AgentItemDto) -> Option<Value> {
+    history_item_with_skill_root(item, None, &HashSet::new())
+}
+
+fn history_item_with_skill_root(
+    item: AgentItemDto,
+    managed_skill_root: Option<&Path>,
+    managed_load_skill_call_item_ids: &HashSet<String>,
+) -> Option<Value> {
+    let item_id = item.id.clone();
     match item.payload {
         AgentItemPayload::UserMessage(message)
         | AgentItemPayload::AssistantMessage(message)
@@ -2321,8 +2480,11 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::ToolCall(tool) => {
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
-            let arguments =
-                serde_json::to_string(&tool.arguments.unwrap_or_else(|| json!({}))).ok()?;
+            let mut arguments = tool.arguments.unwrap_or_else(|| json!({}));
+            if name == "load_skill" && managed_load_skill_call_item_ids.contains(&item_id) {
+                canonicalize_load_skill_arguments(&mut arguments);
+            }
+            let arguments = serde_json::to_string(&arguments).ok()?;
             Some(json!({
                 "id": item.id,
                 "kind": "tool_call",
@@ -2341,7 +2503,11 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::ToolResult(tool) => {
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
-            let output = serde_json::to_string(&tool.result.unwrap_or(Value::Null)).ok()?;
+            let mut result = tool.result.unwrap_or(Value::Null);
+            if name == "load_skill" {
+                migrate_load_skill_result(&mut result, managed_skill_root);
+            }
+            let output = serde_json::to_string(&result).ok()?;
             Some(json!({
                 "id": item.id,
                 "kind": "tool_result",
@@ -2361,11 +2527,31 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 fn runtime_history(items: Vec<AgentItemDto>, excluded_run_id: Option<&str>) -> Vec<Value> {
-    items
+    runtime_history_with_skill_root(items, excluded_run_id, None)
+}
+
+fn runtime_history_with_skill_root(
+    items: Vec<AgentItemDto>,
+    excluded_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+) -> Vec<Value> {
+    let items = items
         .into_iter()
         .filter(|item| item.run_id.as_deref() != excluded_run_id)
-        .filter_map(history_item)
+        .collect::<Vec<_>>();
+    let managed_load_skill_call_item_ids =
+        managed_load_skill_call_item_ids(&items, managed_skill_root);
+    items
+        .into_iter()
+        .filter_map(|item| {
+            history_item_with_skill_root(
+                item,
+                managed_skill_root,
+                &managed_load_skill_call_item_ids,
+            )
+        })
         .collect()
 }
 
@@ -2376,10 +2562,21 @@ fn run_json(run: super::AgentRunDto) -> Value {
     json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })
 }
 
+#[cfg(test)]
 fn item_json_with_active_run(
     item: AgentItemDto,
     active_run_id: Option<&str>,
 ) -> Result<Value, AppError> {
+    item_json_with_active_run_and_managed_calls(item, active_run_id, None, &HashSet::new())
+}
+
+fn item_json_with_active_run_and_managed_calls(
+    item: AgentItemDto,
+    active_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+    managed_load_skill_call_item_ids: &HashSet<String>,
+) -> Result<Value, AppError> {
+    let item_id = item.id.clone();
     let is_active_run = item.run_id.as_deref() == active_run_id;
     let stable_stream_id = is_active_run
         .then_some(item.external_id.as_deref())
@@ -2436,10 +2633,25 @@ fn item_json_with_active_run(
             json!({ "kind": "context_summary", "text": v.text, "metadata": v.metadata })
         }
         AgentItemPayload::ToolCall(v) => {
-            json!({ "kind": "tool_call", "callId": v.tool_call_id.unwrap_or_default(), "name": v.tool_name.unwrap_or_default(), "arguments": v.arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
+            let name = v.tool_name.unwrap_or_default();
+            let mut arguments = v.arguments;
+            let call_id = v.tool_call_id.unwrap_or_default();
+            if name == "load_skill" && managed_load_skill_call_item_ids.contains(&item_id) {
+                if let Some(arguments) = arguments.as_mut() {
+                    canonicalize_load_skill_arguments(arguments);
+                }
+            }
+            json!({ "kind": "tool_call", "callId": call_id, "name": name, "arguments": arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
         }
         AgentItemPayload::ToolResult(v) => {
-            json!({ "kind": "tool_result", "callId": v.tool_call_id.unwrap_or_default(), "name": v.tool_name.unwrap_or_default(), "output": v.result, "isError": v.status.as_deref() == Some("failed") })
+            let name = v.tool_name.unwrap_or_default();
+            let mut result = v.result;
+            if name == "load_skill" {
+                if let Some(result) = result.as_mut() {
+                    migrate_load_skill_result(result, managed_skill_root);
+                }
+            }
+            json!({ "kind": "tool_result", "callId": v.tool_call_id.unwrap_or_default(), "name": name, "output": result, "isError": v.status.as_deref() == Some("failed") })
         }
         AgentItemPayload::Interruption(v) => json!({ "kind": "interruption", "interruption": v }),
         AgentItemPayload::Error(v) => {
@@ -2448,6 +2660,84 @@ fn item_json_with_active_run(
     };
     object.extend(fields.as_object().cloned().expect("fields object"));
     Ok(Value::Object(object))
+}
+
+fn managed_load_skill_call_item_ids(
+    items: &[AgentItemDto],
+    managed_skill_root: Option<&Path>,
+) -> HashSet<String> {
+    let mut pending_calls: HashMap<(Option<&str>, &str), Vec<&str>> = HashMap::new();
+    let mut call_items_by_key: HashMap<(Option<&str>, &str), Vec<&str>> = HashMap::new();
+    let mut ambiguous_keys = HashSet::new();
+    let mut managed_call_items = HashSet::new();
+    for item in items {
+        match &item.payload {
+            AgentItemPayload::ToolCall(tool) if tool.tool_name.as_deref() == Some("load_skill") => {
+                if let Some(call_id) = tool.tool_call_id.as_deref() {
+                    let key = (item.run_id.as_deref(), call_id);
+                    let pending = pending_calls.entry(key).or_default();
+                    if !pending.is_empty() {
+                        ambiguous_keys.insert(key);
+                    }
+                    pending.push(&item.id);
+                    call_items_by_key.entry(key).or_default().push(&item.id);
+                }
+            }
+            AgentItemPayload::ToolResult(tool)
+                if tool.tool_name.as_deref() == Some("load_skill") =>
+            {
+                let Some(call_id) = tool.tool_call_id.as_deref() else {
+                    continue;
+                };
+                let key = (item.run_id.as_deref(), call_id);
+                let Some(call_items) = pending_calls.get_mut(&key) else {
+                    ambiguous_keys.insert(key);
+                    continue;
+                };
+                if call_items.len() != 1 {
+                    ambiguous_keys.insert(key);
+                }
+                let Some(call_item_id) = call_items.pop() else {
+                    ambiguous_keys.insert(key);
+                    continue;
+                };
+                if tool.result.as_ref().is_some_and(|result| {
+                    is_managed_obsidian_skill_result(result, managed_skill_root)
+                }) {
+                    managed_call_items.insert(call_item_id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    for key in ambiguous_keys {
+        if let Some(call_item_ids) = call_items_by_key.get(&key) {
+            for call_item_id in call_item_ids {
+                managed_call_items.remove(*call_item_id);
+            }
+        }
+    }
+    managed_call_items
+}
+
+fn items_json_with_active_run(
+    items: Vec<AgentItemDto>,
+    active_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+) -> Result<Vec<Value>, AppError> {
+    let managed_load_skill_call_item_ids =
+        managed_load_skill_call_item_ids(&items, managed_skill_root);
+    items
+        .into_iter()
+        .map(|item| {
+            item_json_with_active_run_and_managed_calls(
+                item,
+                active_run_id,
+                managed_skill_root,
+                &managed_load_skill_call_item_ids,
+            )
+        })
+        .collect()
 }
 
 fn session_workspace(app: &AppHandle, session_id: Option<&str>) -> Result<PathBuf, AppError> {
@@ -3495,6 +3785,119 @@ mod tests {
         assert_eq!(config["tools"][0]["name"], "read_file");
     }
 
+    #[test]
+    fn resumed_configuration_migrates_only_saved_app_identity_instructions() {
+        let persona = "\n\nClovy personality:\n- Depth 90/100";
+        let mut attended = json!({
+            "instructions": format!("{LEGACY_ATTENDED_INSTRUCTIONS}{persona}"),
+            "tools": [{ "name": "read_file" }]
+        });
+        let mut unattended = json!({
+            "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. If a tool needs approval, pause and wait for the user.",
+            "tools": [{ "name": "read_file" }]
+        });
+
+        migrate_resumable_identity_instructions(&mut attended);
+        migrate_resumable_identity_instructions(&mut unattended);
+
+        assert_eq!(attended["instructions"], format!("{INSTRUCTIONS}{persona}"));
+        assert!(unattended["instructions"]
+            .as_str()
+            .is_some_and(|instructions| instructions
+                .starts_with(CLOVY_UNATTENDED_IDENTITY_INSTRUCTION)
+                && instructions.contains("without asking questions")
+                && instructions.contains("pause and wait for the user")));
+        assert_eq!(attended["tools"][0]["name"], "read_file");
+        assert_eq!(unattended["tools"][0]["name"], "read_file");
+    }
+
+    #[test]
+    fn resumed_configuration_migrates_only_app_owned_presentation_descriptions() {
+        let custom_schema =
+            json!({ "type": "object", "properties": { "query": { "type": "string" } } });
+        let mut config = json!({
+            "tools": [
+                {
+                    "name": "search_june",
+                    "description": "Search June notes, transcripts, and dictations.",
+                    "parameters": custom_schema.clone(),
+                    "requiresApproval": false
+                },
+                {
+                    "name": "mcp_person_lookup",
+                    "description": "Look up a person named June.",
+                    "parameters": { "type": "object" }
+                },
+                {
+                    "name": "get_obsidian_vault",
+                    "description": "Discover the current Obsidian vault selected in June. When the june-obsidian skill is available, load it before Obsidian note work.",
+                    "parameters": { "type": "object" }
+                },
+                {
+                    "name": "mcp_obsidian_guide",
+                    "description": "Compare June and Clovy with the june-obsidian project.",
+                    "parameters": { "type": "object" }
+                }
+            ],
+            "skills": [
+                { "name": "calendar", "description": "June agent skill", "source": "managed" },
+                { "name": "june-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
+                { "name": "clovy-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
+                { "name": "artist", "description": "Research June Carter", "source": "managed" },
+                { "name": "biography", "description": "Research a person named June", "source": "external" },
+                { "name": "custom-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
+                { "name": "external-fallback", "description": "June agent skill", "source": "user_global" },
+                { "name": "june-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "user_global" }
+            ]
+        });
+
+        migrate_resumable_presentation_descriptions(&mut config);
+
+        assert_eq!(
+            config["tools"][0]["description"],
+            "Search Clovy notes, transcripts, and dictations."
+        );
+        assert_eq!(config["tools"][0]["parameters"], custom_schema);
+        assert_eq!(config["tools"][0]["requiresApproval"], false);
+        assert_eq!(
+            config["tools"][1]["description"],
+            "Look up a person named June."
+        );
+        assert_eq!(
+            config["tools"][2]["description"],
+            "Discover the current Obsidian vault selected in Clovy. When the clovy-obsidian skill is available, load it before Obsidian note work."
+        );
+        assert_eq!(
+            config["tools"][3]["description"],
+            "Compare June and Clovy with the june-obsidian project."
+        );
+        assert_eq!(config["skills"][0]["description"], "Clovy agent skill");
+        assert_eq!(config["skills"][1]["name"], "clovy-obsidian");
+        assert_eq!(
+            config["skills"][1]["description"],
+            "Work with the Obsidian vault currently selected in Clovy."
+        );
+        assert_eq!(
+            config["skills"][2]["description"],
+            "Work with the Obsidian vault currently selected in Clovy."
+        );
+        assert_eq!(config["skills"][3]["description"], "Research June Carter");
+        assert_eq!(
+            config["skills"][4]["description"],
+            "Research a person named June"
+        );
+        assert_eq!(
+            config["skills"][5]["description"],
+            "Work with the Obsidian vault currently selected in June."
+        );
+        assert_eq!(config["skills"][6]["description"], "June agent skill");
+        assert_eq!(config["skills"][7]["name"], "june-obsidian");
+        assert_eq!(
+            config["skills"][7]["description"],
+            "Work with the Obsidian vault currently selected in June."
+        );
+    }
+
     #[tokio::test]
     async fn supplied_attachment_name_and_media_type_survive_workspace_copy() {
         let source_directory = tempfile::tempdir().expect("source directory");
@@ -3794,6 +4197,274 @@ mod tests {
             tool_result["payload"]["output"],
             r#"{"files":["brief.md"]}"#
         );
+    }
+
+    #[test]
+    fn persisted_load_skill_history_migrates_only_app_owned_identity_fields() {
+        let item = |id: &str, run_id: &str, payload: AgentItemPayload| AgentItemDto {
+            id: id.into(),
+            session_id: "session-1".into(),
+            run_id: Some(run_id.into()),
+            sequence: 1,
+            payload,
+            external_id: None,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let legacy_skill = include_str!("fixtures/legacy-obsidian-v1.md");
+        let call_item = item(
+            "call",
+            "run-copied-branch",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let result_item = item(
+            "result",
+            "run-copied-branch",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let edited_item = item(
+            "edited",
+            "run-managed-edited",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-2".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let custom_item = item(
+            "custom",
+            "run-custom",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("mcp_custom".into()),
+                tool_call_id: Some("call-3".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/custom/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let copied_item = item(
+            "copied",
+            "run-copied",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-4".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "copied-reference",
+                    "content": legacy_skill,
+                    "path": "/custom/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let user_global_call_item = item(
+            "user-global-call",
+            "run-copied-branch",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let user_global_result_item = item(
+            "user-global-result",
+            "run-copied-branch",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_managed_call_item = item(
+            "ambiguous-managed-call",
+            "run-ambiguous",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_user_call_item = item(
+            "ambiguous-user-call",
+            "run-ambiguous",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_managed_result_item = item(
+            "ambiguous-managed-result",
+            "run-ambiguous",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_user_result_item = item(
+            "ambiguous-user-result",
+            "run-ambiguous",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let items = vec![
+            call_item,
+            result_item,
+            edited_item,
+            custom_item,
+            copied_item,
+            user_global_call_item,
+            user_global_result_item,
+            ambiguous_managed_call_item,
+            ambiguous_user_call_item,
+            ambiguous_managed_result_item,
+            ambiguous_user_result_item,
+        ];
+        let managed_root = Path::new("/Library/June/skills");
+        let history = runtime_history_with_skill_root(items.clone(), None, Some(managed_root));
+        let public = items_json_with_active_run(items, None, Some(managed_root))
+            .expect("public skill items");
+        let history_item = |id: &str| {
+            history
+                .iter()
+                .find(|value| value["id"] == id)
+                .expect("history item")
+        };
+        let public_item = |id: &str| {
+            public
+                .iter()
+                .find(|value| value["id"] == id)
+                .expect("public item")
+        };
+
+        assert_eq!(
+            history_item("call")["payload"]["arguments"],
+            r#"{"name":"clovy-obsidian"}"#
+        );
+        assert_eq!(public_item("call")["arguments"]["name"], "clovy-obsidian");
+        let result: Value = serde_json::from_str(
+            history_item("result")["payload"]["output"]
+                .as_str()
+                .expect("result output"),
+        )
+        .expect("result JSON");
+        assert_eq!(result["name"], "clovy-obsidian");
+        assert!(result["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("# Clovy Obsidian vault")));
+        assert_eq!(
+            result["path"],
+            "/Library/June/skills/clovy-obsidian/SKILL.md"
+        );
+        assert_eq!(public_item("result")["output"], result);
+        let edited: Value = serde_json::from_str(
+            history_item("edited")["payload"]["output"]
+                .as_str()
+                .expect("edited output"),
+        )
+        .expect("edited JSON");
+        assert_eq!(edited["name"], "clovy-obsidian");
+        assert_eq!(edited["content"], "Keep June Carter research");
+        assert_eq!(public_item("edited")["output"], edited);
+        let custom: Value = serde_json::from_str(
+            history_item("custom")["payload"]["output"]
+                .as_str()
+                .expect("custom output"),
+        )
+        .expect("custom JSON");
+        assert_eq!(custom["name"], "june-obsidian");
+        assert_eq!(custom["content"], legacy_skill);
+        assert_eq!(public_item("custom")["output"], custom);
+        let copied: Value = serde_json::from_str(
+            history_item("copied")["payload"]["output"]
+                .as_str()
+                .expect("copied output"),
+        )
+        .expect("copied JSON");
+        assert_eq!(copied["name"], "copied-reference");
+        assert_eq!(copied["content"], legacy_skill);
+        assert_eq!(copied["path"], "/custom/june-obsidian/SKILL.md");
+        assert_eq!(public_item("copied")["output"], copied);
+        assert_eq!(
+            history_item("user-global-call")["payload"]["arguments"],
+            r#"{"name":"june-obsidian"}"#
+        );
+        assert_eq!(
+            public_item("user-global-call")["arguments"]["name"],
+            "june-obsidian"
+        );
+        let user_global: Value = serde_json::from_str(
+            history_item("user-global-result")["payload"]["output"]
+                .as_str()
+                .expect("user-global output"),
+        )
+        .expect("user-global JSON");
+        assert_eq!(user_global["name"], "june-obsidian");
+        assert_eq!(
+            user_global["path"],
+            "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+        );
+        assert_eq!(public_item("user-global-result")["output"], user_global);
+        for id in ["ambiguous-managed-call", "ambiguous-user-call"] {
+            assert_eq!(
+                history_item(id)["payload"]["arguments"],
+                r#"{"name":"june-obsidian"}"#
+            );
+            assert_eq!(public_item(id)["arguments"]["name"], "june-obsidian");
+        }
     }
 
     #[test]

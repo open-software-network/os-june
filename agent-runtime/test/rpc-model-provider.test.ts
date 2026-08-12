@@ -212,7 +212,8 @@ test("injects queued steering at the next model boundary and acknowledges consum
       onSteeringConsumed: (message) => consumed.push(message.messageId),
     },
   );
-  for await (const _event of provider.getModel("private-auto").getStreamedResponse(modelRequest())) {
+  const request = modelRequest();
+  for await (const _event of provider.getModel("private-auto").getStreamedResponse(request)) {
     // Drain the model response.
   }
   const messages = requests[0]?.messages as Array<{ role: string; content: string }>;

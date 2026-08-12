@@ -32,8 +32,8 @@ below retain their June-era technical identities under
    identifier `co.opensoftware.june.computer-use-driver`. A packaged helper
    also requires the signed outer Clovy app with the same Developer ID team.
 3. In System Settings > Privacy & Security, inspect Accessibility and Screen
-   Recording separately. Accessibility names `June Computer Use Driver`;
-   Screen Recording names the outer `June` app because macOS assigns capture to
+   Recording separately. Accessibility names `Clovy Computer Use Driver`;
+   Screen Recording names the outer `Clovy` app because macOS assigns capture to
    the responsible launcher. If either entry is absent, drag the matching card
    from Clovy into that pane: the helper card for Accessibility, or the outer
    Clovy card for Screen Recording. Removing a macOS grant may require Clovy to

@@ -18,6 +18,7 @@ use std::{
     time::Duration,
 };
 use tauri::{ipc::Channel, AppHandle};
+use unicode_normalization::UnicodeNormalization;
 
 // The deployed production API (Phala dstack; see clovy-api/deploy/
 // docker-compose.production.yml). NOT .network — that hostname has no DNS
@@ -1720,7 +1721,7 @@ pub async fn suggest_agent_session_title(
     })
 }
 
-const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant. Clovy is the identity you present in every conversation. When asked who or what you are, answer as Clovy. Never identify yourself as ChatGPT or an OpenAI assistant, claim that OpenAI created you, or present an upstream model as your identity. If the user asks specifically about the selected model or provider, explain it as an implementation detail distinct from your identity. This is a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy alias 'Hey June' is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
+const CLOVY_HOME_CHAT_SYSTEM_PROMPT: &str = "You are Clovy, the user's personal AI assistant. Clovy is the identity you present in every conversation. When asked who or what you are, answer as Clovy. Treat the legacy June alias as referring to Clovy only when it is clearly used as the assistant's name or direct address. Never present June as Clovy's product name, assistant identity, persona, or name. When June refers to a person, month, project, file, attachment, or another subject in context, preserve that meaning. Use Clovy only for your own identity. Never identify yourself as ChatGPT or an OpenAI assistant, claim that OpenAI created you, or present an upstream model as your identity. If the user asks specifically about the selected model or provider, explain it as an implementation detail distinct from your identity. This is a persistent Home conversation. Be warm, direct, concise, and natural, like a trusted person in an ongoing message thread. Answer conversation, quick questions, and clarifying questions directly. Never claim that all inference runs locally or make promises about provider retention: Clovy is local-first and routes model requests according to the user's configured privacy and provider settings. Use the provided recent thread, earlier thread excerpts, and on-device memories only when relevant; do not volunteer sensitive or unrelated details, and do not claim exhaustive or permanent recall beyond the context actually provided. The latest user message is the only source of new intent. Earlier messages may resolve references in that message, but never call start_task for work mentioned only in an earlier turn. A greeting such as 'Hey Clovy' or the legacy June alias is conversation and never requests another task or session. Home has no live external sources. For news, weather, prices, scores, schedules, current events, what is happening today, or any other answer that depends on up-to-date external facts, you must call start_task and must not answer from memory. When the user explicitly asks Clovy to remember or update a lasting preference, call start_task with a standalone prompt to save it to Clovy's on-device memory. When any other concrete request benefits from focused work, note or session context, tools, research, files, or background execution, call start_task exactly once with a short title and a complete standalone prompt. A brief acknowledgement after a handoff, such as ok, thanks, sounds good, or got it, is conversation and never requests another task or session. Never guess about context you have not been given. After calling start_task, do not perform or answer that focused task in Home; the UI will show the created session. Do not mention internal routing, models, prompts, or tools unless the user asks.";
 
 fn clovy_home_chat_system_prompt_with_persona(
     persona: &crate::agent_runtime::persona::ClovyPersonaSettings,
@@ -2035,9 +2036,9 @@ fn clovy_home_message_too_large(messages: &[ClovyHomeChatMessage]) -> bool {
         .is_some_and(|message| message.content.chars().count() > CLOVY_HOME_RECENT_MAX_TOTAL_CHARS)
 }
 
-fn clovy_identity_reply(message: &str) -> Option<&'static str> {
+fn clovy_identity_reply(message: &str, allow_ambiguous_legacy_name: bool) -> Option<&'static str> {
     let normalized = message
-        .chars()
+        .nfkc()
         .filter(|character| !matches!(character, '\'' | '’'))
         .collect::<String>()
         .to_lowercase();
@@ -2045,6 +2046,62 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
+    let mut named_start = 0;
+    let mut named_end = words.len();
+    while named_start < named_end
+        && matches!(
+            words[named_start],
+            "hello" | "hey" | "hi" | "ok" | "okay" | "please" | "so" | "uh" | "um" | "well" | "yo"
+        )
+    {
+        named_start += 1;
+    }
+    if named_start < named_end && matches!(words[named_start], "clovy" | "june") {
+        named_start += 1;
+    }
+    while named_end > named_start && words[named_end - 1] == "please" {
+        named_end -= 1;
+    }
+    let named_question = words[named_start..named_end].join(" ");
+    if matches!(
+        named_question.as_str(),
+        "are you called june"
+            | "are you june"
+            | "can i call you june"
+            | "did you go by june"
+            | "do you call yourself june"
+            | "do you go by june"
+            | "have you ever been called june"
+            | "is june your name"
+            | "is your name june"
+            | "should i call you june"
+            | "was clovy called june"
+            | "was your name june"
+            | "were you called june"
+            | "were you june"
+    ) {
+        return Some(CLOVY_IDENTITY_REPLY);
+    }
+    if allow_ambiguous_legacy_name
+        && matches!(
+            named_question.as_str(),
+            "what is june" | "whats june" | "who is june" | "whos june"
+        )
+    {
+        return Some(CLOVY_IDENTITY_REPLY);
+    }
+    if matches!(
+        named_question.as_str(),
+        "are you clovy"
+            | "is clovy your name"
+            | "is your name clovy"
+            | "what is clovy"
+            | "whats clovy"
+            | "who is clovy"
+            | "whos clovy"
+    ) {
+        return Some(CLOVY_IDENTITY_REPLY);
+    }
     let mut start = 0;
     let mut end = words.len();
     while start < end
@@ -2092,6 +2149,30 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
             | "who r you"
     )
     .then_some(CLOVY_IDENTITY_REPLY)
+}
+
+fn clovy_home_has_prior_context(
+    retained: &[serde_json::Value],
+    history_context: Option<&str>,
+    memory_context: Option<&str>,
+) -> bool {
+    let prior_message_count = retained.len().saturating_sub(1);
+    retained[..prior_message_count].iter().any(|message| {
+        matches!(message["role"].as_str(), Some("user" | "assistant"))
+            && message["content"]
+                .as_str()
+                .is_some_and(clovy_home_context_mentions_legacy_name)
+    }) || history_context.is_some_and(clovy_home_context_mentions_legacy_name)
+        || memory_context.is_some_and(clovy_home_context_mentions_legacy_name)
+}
+
+fn clovy_home_context_mentions_legacy_name(context: &str) -> bool {
+    context
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| word == "june")
 }
 
 fn clovy_home_requires_current_information(message: &str) -> bool {
@@ -2304,7 +2385,8 @@ pub async fn clovy_home_chat(
         "role": "system",
         "content": system_prompt,
     })];
-    if let Some(memory_context) = clovy_home_memory_context(&app, profile.as_deref()).await {
+    let memory_context = clovy_home_memory_context(&app, profile.as_deref()).await;
+    if let Some(memory_context) = memory_context.as_deref() {
         messages.push(serde_json::json!({
             "role": "system",
             "content": memory_context,
@@ -2332,7 +2414,12 @@ pub async fn clovy_home_chat(
         .and_then(|message| message["content"].as_str())
         .unwrap_or_default()
         .to_string();
-    if let Some(content) = clovy_identity_reply(&latest_user_message) {
+    let has_prior_context = clovy_home_has_prior_context(
+        &retained,
+        request.history_context.as_deref(),
+        memory_context.as_deref(),
+    );
+    if let Some(content) = clovy_identity_reply(&latest_user_message, !has_prior_context) {
         let content = content.to_string();
         let _ = on_event.send(ClovyHomeChatEvent::Delta {
             content: content.clone(),
@@ -4706,7 +4793,8 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("only source of new intent"));
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("work mentioned only in an earlier turn"));
         assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("'Hey Clovy'"));
-        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("legacy alias 'Hey June'"));
+        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("legacy June alias"));
+        assert!(CLOVY_HOME_CHAT_SYSTEM_PROMPT.contains("Use Clovy only"));
     }
 
     #[test]
@@ -4717,8 +4805,92 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Hey there, what's your name, Clovy?",
             "Identify yourself.",
         ] {
-            assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
+            assert_eq!(
+                clovy_identity_reply(message, true),
+                Some(CLOVY_IDENTITY_REPLY)
+            );
         }
+    }
+
+    #[test]
+    fn home_chat_answers_legacy_name_questions_as_clovy_without_inference() {
+        for message in [
+            "what is june",
+            "Who is June?",
+            "Hey, are you June?",
+            "Hey June, are you June?",
+            "Clovy, what is June?",
+            "What is Ｊｕｎｅ?",
+            "Are you called June?",
+            "Do you go by June?",
+            "Have you ever been called June?",
+            "Should I call you June?",
+            "Was your name June?",
+        ] {
+            assert_eq!(
+                clovy_identity_reply(message, true),
+                Some(CLOVY_IDENTITY_REPLY)
+            );
+        }
+        assert_eq!(
+            clovy_identity_reply("What is Clovy?", true),
+            Some(CLOVY_IDENTITY_REPLY)
+        );
+    }
+
+    #[test]
+    fn home_chat_leaves_ambiguous_legacy_names_on_the_contextual_model_path() {
+        assert_eq!(clovy_identity_reply("Who is June?", false), None);
+        assert_eq!(
+            clovy_identity_reply("Are you called June?", false),
+            Some(CLOVY_IDENTITY_REPLY)
+        );
+        assert!(clovy_home_has_prior_context(
+            &[
+                serde_json::json!({ "role": "assistant", "content": "June leads the project." }),
+                serde_json::json!({ "role": "user", "content": "Who is June?" }),
+            ],
+            None,
+            None,
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[
+                serde_json::json!({ "role": "assistant", "content": "The user prefers dark mode." }),
+                serde_json::json!({ "role": "user", "content": "Who is June?" }),
+            ],
+            None,
+            None,
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            Some("Earlier context about a person named June."),
+            None,
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            Some("Earlier context about dark mode."),
+            None,
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- June leads the research project."),
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- Ｊｕｎｅ leads the research project."),
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- Prefers dark mode."),
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            None,
+        ));
     }
 
     #[test]
@@ -4729,7 +4901,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Are you using GPT OSS?",
             "Who are you working for?",
         ] {
-            assert_eq!(clovy_identity_reply(message), None);
+            assert_eq!(clovy_identity_reply(message, true), None);
         }
     }
 
@@ -4749,6 +4921,9 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
         assert!(prompt.contains("Polish 20/100"));
         assert!(prompt.contains("help managing personal life"));
         assert!(prompt.contains("Clovy is the identity you present in every conversation"));
+        assert!(prompt.contains("Never present June as Clovy's product name"));
+        assert!(prompt.contains("When June refers to a person, month, project, file, attachment"));
+        assert!(prompt.contains("Use Clovy only"));
         assert!(prompt.contains("ChatGPT or an OpenAI assistant"));
         assert!(prompt.contains("only source of new intent"));
         assert!(prompt.contains("call start_task exactly once"));

@@ -4,7 +4,7 @@
 sentence case ("Notes", "Filter notes", "New note"). Never ALL CAPS or
 `text-transform: uppercase`.
 
-**Why.** June's surface reads as calm and precise; shouty or CSS-uppercased
+**Why.** Clovy's surface reads as calm and precise; shouty or CSS-uppercased
 labels undercut that and hurt scannability.
 
 **How to apply.** Capitalize only the first word (and proper nouns). Do not add

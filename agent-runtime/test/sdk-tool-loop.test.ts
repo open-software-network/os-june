@@ -13,7 +13,7 @@ const AUTO_RUN_MODEL = "__june_auto_generation__:73";
 const PINNED_GLM_RUN_MODEL = "__june_auto_resolved__:z-ai%2Fglm-5.2";
 const UNLISTED_GLM_MODEL = "zai-org-glm-5.2";
 
-test("answers general identity questions as Clovy without calling a model", async () => {
+test("answers the legacy June name as Clovy without calling a model", async () => {
   let hostCalls = 0;
   const engine = new OpenAIAgentsEngine(async () => {
     hostCalls += 1;
@@ -33,7 +33,7 @@ test("answers general identity questions as Clovy without calling a model", asyn
       instructions: "Answer the user.",
       workspace: "/tmp/clovy-workspace",
       safetyMode: "sandboxed",
-      input: "Hi, who r u?",
+      input: "Clovy, what is June?",
       history: [],
       tools: [],
       skills: [],
@@ -41,16 +41,25 @@ test("answers general identity questions as Clovy without calling a model", asyn
     },
   });
 
-  assert.equal(result.finalOutput, "I'm Clovy, your personal AI assistant.");
+  assert.equal(
+    result.finalOutput,
+    "I'm Clovy, your personal AI assistant.",
+  );
   assert.equal(hostCalls, 0);
   assert.deepEqual(events, [
-    { type: "message.delta", delta: "I'm Clovy, your personal AI assistant." },
+    {
+      type: "message.delta",
+      delta: "I'm Clovy, your personal AI assistant.",
+    },
   ]);
   assert.deepEqual(
     result.history.slice(-2).map((item) => ({ role: item.role, text: item.text })),
     [
-      { role: "user", text: "Hi, who r u?" },
-      { role: "assistant", text: "I'm Clovy, your personal AI assistant." },
+      { role: "user", text: "Clovy, what is June?" },
+      {
+        role: "assistant",
+        text: "I'm Clovy, your personal AI assistant.",
+      },
     ],
   );
   assert.deepEqual(result.usage, {});
@@ -100,6 +109,64 @@ test("keeps explicit model questions on the model route", async () => {
   assert.equal(modelRequests, 1);
   assert.equal(result.finalOutput, "Clovy is using a hosted model.");
   assert.equal(result.usage.resolvedModel, "openai/gpt-oss-120b");
+});
+
+test("keeps the production identity policy when queued steering is injected", async () => {
+  const modelRequests: JsonObject[] = [];
+  const steering = [{ messageId: "steer-identity", text: "Prefer the launch plan" }];
+  const events: EngineEvent[] = [];
+  const engine = new OpenAIAgentsEngine(async (input) => {
+    assert.equal(input.name, MODEL_CHAT_COMPLETIONS_TOOL);
+    if ("request" in input.arguments) modelRequests.push(input.arguments.request);
+    return streamPage("steering-identity", {
+      id: "completion-steering-identity",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "private-auto",
+      choices: [
+        {
+          index: 0,
+          finish_reason: "stop",
+          delta: { role: "assistant", content: "I used the launch plan." },
+        },
+      ],
+    });
+  });
+  await engine.initialize({ clientName: "Clovy", clientVersion: "test" });
+
+  await engine.start({
+    sessionId: "session-steering-identity",
+    runId: "run-steering-identity",
+    signal: new AbortController().signal,
+    emit: (event) => events.push(event),
+    takeSteering: () => steering.splice(0),
+    params: {
+      model: "private-auto",
+      instructions: "Answer the user.",
+      workspace: "/tmp/clovy-workspace",
+      safetyMode: "sandboxed",
+      input: "Plan the launch.",
+      history: [],
+      tools: [],
+      skills: [],
+      contextWindow: 16_000,
+    },
+  });
+
+  const messages = modelRequests[0]?.messages;
+  assert.ok(Array.isArray(messages));
+  const system = messages.find(
+    (message) =>
+      isRecord(message) && message.role === "system" && typeof message.content === "string",
+  );
+  assert.ok(isRecord(system));
+  assert.match(String(system.content), /Use Clovy only for your own identity/);
+  assert.deepEqual(messages.at(-1), { role: "user", content: "Prefer the launch plan" });
+  assert.ok(
+    events.some(
+      (event) => event.type === "steering.consumed" && event.messageId === "steer-identity",
+    ),
+  );
 });
 
 test("continues model inference after a host tool result", async () => {
@@ -1078,6 +1145,7 @@ test("resumes a serialized approval and continues after the host tool result", a
     takeSteering: () => [],
     params: {
       ...commonParams,
+      instructions: "You are June. Use the requested file tool.",
       input: "Create the file.",
       history: [],
     },
@@ -1092,8 +1160,13 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.equal(nativeStateEnvelope.clovyVersion, 1);
   assert.equal(nativeStateEnvelope.juneVersion, 1);
   assert.equal(nativeStateEnvelope.reasoningWireFormat, "reasoning");
+  const legacySdkState = JSON.parse(String(nativeStateEnvelope.sdkState)) as Record<
+    string,
+    unknown
+  >;
+  assert.deepEqual(legacySdkState.currentAgent, { name: "June" });
 
-  const resumed = await engine.resume({
+  const resume = (sdkState: string) => engine.resume({
     sessionId: "session-resume",
     runId: "run-resume",
     signal: new AbortController().signal,
@@ -1103,7 +1176,7 @@ test("resumes a serialized approval and continues after the host tool result", a
       ...commonParams,
       serializedState: JSON.stringify({
         juneVersion: nativeStateEnvelope.juneVersion,
-        sdkState: nativeStateEnvelope.sdkState,
+        sdkState,
         reasoningWireFormat: nativeStateEnvelope.reasoningWireFormat,
       }),
       resolutions: [
@@ -1114,8 +1187,15 @@ test("resumes a serialized approval and continues after the host tool result", a
       ],
     },
   });
+  const rollbackResumed = await resume(String(nativeStateEnvelope.sdkState));
+  const mainSdkState = rewriteSerializedAgentNameForFixture(legacySdkState, "June", "Clovy");
+  assert.deepEqual(
+    (mainSdkState as Record<string, unknown>).currentAgent,
+    { name: "Clovy" },
+  );
+  const resumed = await resume(JSON.stringify(mainSdkState));
 
-  assert.equal(toolInvocationCount, 1);
+  assert.equal(toolInvocationCount, 2);
   assert.ok(
     events.some(
       (event) =>
@@ -1123,11 +1203,20 @@ test("resumes a serialized approval and continues after the host tool result", a
         event.callId === approval.callId,
     ),
   );
-  assert.equal(modelRequestCount, 2);
+  assert.equal(modelRequestCount, 3);
+  assert.equal(rollbackResumed.finalOutput, "The file contains OK.");
+  assert.equal(rollbackResumed.interruptions.length, 0);
   assert.equal(resumed.finalOutput, "The file contains OK.");
   assert.equal(resumed.interruptions.length, 0);
-  const resumedMessages = modelRequests[1]?.messages;
+  const resumedMessages = modelRequests[2]?.messages;
   assert.ok(Array.isArray(resumedMessages));
+  const resumedSystem = resumedMessages.find(
+    (message) =>
+      isRecord(message) && message.role === "system" && typeof message.content === "string",
+  );
+  assert.ok(isRecord(resumedSystem));
+  assert.match(String(resumedSystem.content), /Use Clovy only for your own identity/);
+  assert.doesNotMatch(String(resumedSystem.content), /You are June/);
   const resumedAssistant = resumedMessages.find(
     (message) =>
       isRecord(message) &&
@@ -1968,6 +2057,31 @@ function streamPage(streamId: string, chunk: JsonObject) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function rewriteSerializedAgentNameForFixture(
+  value: unknown,
+  from: string,
+  to: string,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => rewriteSerializedAgentNameForFixture(item, from, to));
+  }
+  if (!isRecord(value)) return value;
+
+  const rewritten = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [
+      key === from ? to : key,
+      rewriteSerializedAgentNameForFixture(item, from, to),
+    ]),
+  );
+  if (
+    Object.keys(rewritten).every((key) => key === "name" || key === "identity")
+  ) {
+    if (rewritten.name === from) rewritten.name = to;
+    if (rewritten.identity === from) rewritten.identity = to;
+  }
+  return rewritten;
 }
 
 function modelFunctionTool(request: JsonObject | undefined, name: string): Record<string, unknown> {

@@ -100,6 +100,7 @@ Per-repo config the engineering skills read before acting (see the
 ## Subsystems
 
 - [home-assistant.md](home-assistant.md) - persistent Home conversation and focused-session handoff contract
+- [agent-context-search.md](agent-context-search.md) - Clovy agent context-search host-tool name, schema, and legacy dispatch alias
 - [companion-architecture.md](companion-architecture.md) - iPhone/iPad companion topology, responsibility split, data flow, and limits
 - [companion-protocol.md](companion-protocol.md) - versioned encrypted application protocol and capability allowlist
 - [companion-threat-model.md](companion-threat-model.md) - assets, attackers, mitigations, and accepted risks
