@@ -6,6 +6,10 @@ use std::{
 
 pub const CLOVY_OBSIDIAN_SKILL_ID: &str = "clovy-obsidian";
 pub const LEGACY_OBSIDIAN_SKILL_ID: &str = "june-obsidian";
+pub const CLOVY_OBSIDIAN_SKILL_DESCRIPTION: &str =
+    "Work with the Obsidian vault currently selected in Clovy.";
+pub const LEGACY_OBSIDIAN_SKILL_DESCRIPTION: &str =
+    "Work with the Obsidian vault currently selected in June.";
 
 pub fn canonical_skill_id(skill_id: &str) -> &str {
     if skill_id == LEGACY_OBSIDIAN_SKILL_ID {
@@ -65,16 +69,29 @@ pub fn reconcile_managed_obsidian_skill(root: &Path) -> io::Result<()> {
     let canonical = skill_file(root, CLOVY_OBSIDIAN_SKILL_ID);
     let legacy = skill_file(root, LEGACY_OBSIDIAN_SKILL_ID);
     if legacy.is_file() {
-        let content = fs::read_to_string(&legacy)?;
+        let content = migrate_known_legacy_obsidian_presentation(&fs::read_to_string(&legacy)?);
         write_skill_file(&legacy, &content, LEGACY_OBSIDIAN_SKILL_ID)?;
         write_skill_file(&canonical, &content, CLOVY_OBSIDIAN_SKILL_ID)
     } else if canonical.is_file() {
-        let content = fs::read_to_string(&canonical)?;
+        let content = migrate_known_legacy_obsidian_presentation(&fs::read_to_string(&canonical)?);
         write_skill_file(&canonical, &content, CLOVY_OBSIDIAN_SKILL_ID)?;
         write_skill_file(&legacy, &content, LEGACY_OBSIDIAN_SKILL_ID)
     } else {
         Ok(())
     }
+}
+
+fn migrate_known_legacy_obsidian_presentation(content: &str) -> String {
+    content
+        .replace(
+            LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
+            CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
+        )
+        .replace("# June Obsidian vault", "# Clovy Obsidian vault")
+        .replace(
+            "no Obsidian vault is connected in\n  June. Do not guess a default path.",
+            "no Obsidian vault is connected in\n  Clovy. Do not guess a default path.",
+        )
 }
 
 pub fn skill_content_for_id(content: &str, skill_id: &str) -> String {
@@ -150,6 +167,34 @@ fn write_skill_file(destination: &Path, content: &str, skill_id: &str) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn released_obsidian_presentation_is_migrated_without_touching_custom_june_text() {
+        let root = tempfile::tempdir().expect("managed skill root");
+        let legacy = skill_file(root.path(), LEGACY_OBSIDIAN_SKILL_ID);
+        fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+        fs::write(
+            &legacy,
+            format!(
+                "---\nname: june-obsidian\ndescription: {LEGACY_OBSIDIAN_SKILL_DESCRIPTION}\n---\n\n# June Obsidian vault\n\nIf no Obsidian vault is connected in\n  June. Do not guess a default path.\n\nKeep the note about June Carter.\n"
+            ),
+        )
+        .expect("legacy skill");
+
+        reconcile_managed_obsidian_skill(root.path()).expect("migrate legacy presentation");
+
+        let canonical = fs::read_to_string(skill_file(root.path(), CLOVY_OBSIDIAN_SKILL_ID))
+            .expect("canonical skill");
+        let legacy = fs::read_to_string(legacy).expect("legacy skill remains");
+        for content in [canonical, legacy] {
+            assert!(content.contains(CLOVY_OBSIDIAN_SKILL_DESCRIPTION));
+            assert!(content.contains("# Clovy Obsidian vault"));
+            assert!(content.contains("connected in\n  Clovy. Do not guess"));
+            assert!(content.contains("June Carter"));
+            assert!(!content.contains(LEGACY_OBSIDIAN_SKILL_DESCRIPTION));
+            assert!(!content.contains("# June Obsidian vault"));
+        }
+    }
 
     #[test]
     fn legacy_managed_edits_are_promoted_and_remain_rollback_readable() {

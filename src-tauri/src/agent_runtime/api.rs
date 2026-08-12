@@ -1,6 +1,6 @@
 use super::skill_identity::{
     canonical_skill_id, canonical_skill_ids, read_skill_ids, skill_content_for_id, skill_file,
-    write_skill_ids,
+    write_skill_ids, CLOVY_OBSIDIAN_SKILL_DESCRIPTION, LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
 };
 use super::{
     repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
@@ -2254,21 +2254,54 @@ fn migrate_resumable_presentation_descriptions(params: &mut Value) {
             let Some(skill) = skill.as_object_mut() else {
                 continue;
             };
-            let fallback = skill
+            let Some(name) = skill
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(description) = skill
                 .get("description")
                 .and_then(Value::as_str)
-                .is_some_and(|description| {
-                    matches!(description, "June agent skill" | "Enabled June skill")
-                });
-            if !fallback {
+                .map(str::to_string)
+            else {
                 continue;
-            }
-            if let Some(description) = skill.get_mut("description") {
-                if let Some(value) = description.as_str() {
-                    *description = json!(value.replace("June", "Clovy"));
+            };
+            let source = skill
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if source.as_deref() == Some("managed") {
+                let canonical_name = canonical_skill_id(&name);
+                if canonical_name != name {
+                    skill.insert("name".into(), json!(canonical_name));
                 }
             }
+            if let Some(migrated) =
+                migrated_managed_skill_description(&name, &description, source.as_deref())
+            {
+                skill.insert("description".into(), json!(migrated));
+            }
         }
+    }
+}
+
+fn migrated_managed_skill_description(
+    name: &str,
+    description: &str,
+    source: Option<&str>,
+) -> Option<&'static str> {
+    if source != Some("managed") {
+        return None;
+    }
+    match (canonical_skill_id(name), description) {
+        (_, "June agent skill") => Some("Clovy agent skill"),
+        (_, "Enabled June skill") => Some("Enabled Clovy skill"),
+        ("clovy-obsidian", LEGACY_OBSIDIAN_SKILL_DESCRIPTION) => {
+            Some(CLOVY_OBSIDIAN_SKILL_DESCRIPTION)
+        }
+        _ => None,
     }
 }
 
@@ -3642,8 +3675,13 @@ mod tests {
             ],
             "skills": [
                 { "name": "calendar", "description": "June agent skill", "source": "managed" },
+                { "name": "june-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
+                { "name": "clovy-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
                 { "name": "artist", "description": "Research June Carter", "source": "managed" },
-                { "name": "biography", "description": "Research a person named June", "source": "external" }
+                { "name": "biography", "description": "Research a person named June", "source": "external" },
+                { "name": "custom-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "managed" },
+                { "name": "external-fallback", "description": "June agent skill", "source": "user_global" },
+                { "name": "june-obsidian", "description": "Work with the Obsidian vault currently selected in June.", "source": "user_global" }
             ]
         });
 
@@ -3660,10 +3698,29 @@ mod tests {
             "Look up a person named June."
         );
         assert_eq!(config["skills"][0]["description"], "Clovy agent skill");
-        assert_eq!(config["skills"][1]["description"], "Research June Carter");
+        assert_eq!(config["skills"][1]["name"], "clovy-obsidian");
+        assert_eq!(
+            config["skills"][1]["description"],
+            "Work with the Obsidian vault currently selected in Clovy."
+        );
         assert_eq!(
             config["skills"][2]["description"],
+            "Work with the Obsidian vault currently selected in Clovy."
+        );
+        assert_eq!(config["skills"][3]["description"], "Research June Carter");
+        assert_eq!(
+            config["skills"][4]["description"],
             "Research a person named June"
+        );
+        assert_eq!(
+            config["skills"][5]["description"],
+            "Work with the Obsidian vault currently selected in June."
+        );
+        assert_eq!(config["skills"][6]["description"], "June agent skill");
+        assert_eq!(config["skills"][7]["name"], "june-obsidian");
+        assert_eq!(
+            config["skills"][7]["description"],
+            "Work with the Obsidian vault currently selected in June."
         );
     }
 
