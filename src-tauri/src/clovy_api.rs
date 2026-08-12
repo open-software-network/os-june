@@ -2163,7 +2163,16 @@ fn clovy_home_has_prior_context(
                 .as_str()
                 .is_some_and(|content| !content.trim().is_empty())
     }) || history_context.is_some_and(|context| !context.trim().is_empty())
-        || memory_context.is_some_and(|context| !context.trim().is_empty())
+        || memory_context.is_some_and(clovy_home_context_mentions_legacy_name)
+}
+
+fn clovy_home_context_mentions_legacy_name(context: &str) -> bool {
+    context
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|word| word == "june")
 }
 
 fn clovy_home_requires_current_information(message: &str) -> bool {
@@ -4853,6 +4862,16 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
             None,
             Some("On-device memories:\n- June leads the research project."),
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- Ｊｕｎｅ leads the research project."),
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- Prefers dark mode."),
         ));
         assert!(!clovy_home_has_prior_context(
             &[serde_json::json!({ "role": "user", "content": "Who is June?" })],

@@ -131,8 +131,8 @@ Ambiguous questions such as `Who is June?` use that direct reply only when the
 turn has no earlier conversation context. With prior conversation context, the
 question continues through the normal model path so a person, month, or project
 already under discussion is not mistaken for an assistant-name question. The
-same rule applies when the relevant context comes from an on-device memory in a
-fresh Home thread.
+same rule applies when an on-device memory in a fresh Home thread mentions the
+legacy name. Unrelated memories do not disable the deterministic identity reply.
 
 The direct matcher does not claim an identity question when an attachment is
 present because the name may refer to content in that attachment. Those turns
