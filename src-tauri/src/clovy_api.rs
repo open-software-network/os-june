@@ -2154,6 +2154,7 @@ fn clovy_identity_reply(message: &str, allow_ambiguous_legacy_name: bool) -> Opt
 fn clovy_home_has_prior_context(
     retained: &[serde_json::Value],
     history_context: Option<&str>,
+    memory_context: Option<&str>,
 ) -> bool {
     let prior_message_count = retained.len().saturating_sub(1);
     retained[..prior_message_count].iter().any(|message| {
@@ -2162,6 +2163,7 @@ fn clovy_home_has_prior_context(
                 .as_str()
                 .is_some_and(|content| !content.trim().is_empty())
     }) || history_context.is_some_and(|context| !context.trim().is_empty())
+        || memory_context.is_some_and(|context| !context.trim().is_empty())
 }
 
 fn clovy_home_requires_current_information(message: &str) -> bool {
@@ -2374,7 +2376,8 @@ pub async fn clovy_home_chat(
         "role": "system",
         "content": system_prompt,
     })];
-    if let Some(memory_context) = clovy_home_memory_context(&app, profile.as_deref()).await {
+    let memory_context = clovy_home_memory_context(&app, profile.as_deref()).await;
+    if let Some(memory_context) = memory_context.as_deref() {
         messages.push(serde_json::json!({
             "role": "system",
             "content": memory_context,
@@ -2402,8 +2405,11 @@ pub async fn clovy_home_chat(
         .and_then(|message| message["content"].as_str())
         .unwrap_or_default()
         .to_string();
-    let has_prior_context =
-        clovy_home_has_prior_context(&retained, request.history_context.as_deref());
+    let has_prior_context = clovy_home_has_prior_context(
+        &retained,
+        request.history_context.as_deref(),
+        memory_context.as_deref(),
+    );
     if let Some(content) = clovy_identity_reply(&latest_user_message, !has_prior_context) {
         let content = content.to_string();
         let _ = on_event.send(ClovyHomeChatEvent::Delta {
@@ -4836,13 +4842,21 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
                 serde_json::json!({ "role": "user", "content": "Who is June?" }),
             ],
             None,
+            None,
         ));
         assert!(clovy_home_has_prior_context(
             &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
             Some("Earlier context about a person named June."),
+            None,
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+            Some("On-device memories:\n- June leads the research project."),
         ));
         assert!(!clovy_home_has_prior_context(
             &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
             None,
         ));
     }
