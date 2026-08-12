@@ -10,6 +10,8 @@ pub const CLOVY_OBSIDIAN_SKILL_DESCRIPTION: &str =
     "Work with the Obsidian vault currently selected in Clovy.";
 pub const LEGACY_OBSIDIAN_SKILL_DESCRIPTION: &str =
     "Work with the Obsidian vault currently selected in June.";
+const BUNDLED_CLOVY_OBSIDIAN_SKILL: &str =
+    include_str!("../../resources/agent-skills/clovy-obsidian/SKILL.md");
 
 pub fn canonical_skill_id(skill_id: &str) -> &str {
     if skill_id == LEGACY_OBSIDIAN_SKILL_ID {
@@ -82,16 +84,24 @@ pub fn reconcile_managed_obsidian_skill(root: &Path) -> io::Result<()> {
 }
 
 fn migrate_known_legacy_obsidian_presentation(content: &str) -> String {
-    content
+    let legacy_content = BUNDLED_CLOVY_OBSIDIAN_SKILL
         .replace(
-            LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
             CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
+            LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
         )
-        .replace("# June Obsidian vault", "# Clovy Obsidian vault")
+        .replace("# Clovy Obsidian vault", "# June Obsidian vault")
         .replace(
-            "no Obsidian vault is connected in\n  June. Do not guess a default path.",
             "no Obsidian vault is connected in\n  Clovy. Do not guess a default path.",
-        )
+            "no Obsidian vault is connected in\n  June. Do not guess a default path.",
+        );
+    let matches_released_content = [CLOVY_OBSIDIAN_SKILL_ID, LEGACY_OBSIDIAN_SKILL_ID]
+        .into_iter()
+        .any(|skill_id| skill_content_for_id(&legacy_content, skill_id) == content);
+    if matches_released_content {
+        BUNDLED_CLOVY_OBSIDIAN_SKILL.to_string()
+    } else {
+        content.to_string()
+    }
 }
 
 pub fn skill_content_for_id(content: &str, skill_id: &str) -> String {
@@ -173,13 +183,18 @@ mod tests {
         let root = tempfile::tempdir().expect("managed skill root");
         let legacy = skill_file(root.path(), LEGACY_OBSIDIAN_SKILL_ID);
         fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
-        fs::write(
-            &legacy,
-            format!(
-                "---\nname: june-obsidian\ndescription: {LEGACY_OBSIDIAN_SKILL_DESCRIPTION}\n---\n\n# June Obsidian vault\n\nIf no Obsidian vault is connected in\n  June. Do not guess a default path.\n\nKeep the note about June Carter.\n"
-            ),
-        )
-        .expect("legacy skill");
+        let released = BUNDLED_CLOVY_OBSIDIAN_SKILL
+            .replace("name: clovy-obsidian", "name: june-obsidian")
+            .replace(
+                CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
+                LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
+            )
+            .replace("# Clovy Obsidian vault", "# June Obsidian vault")
+            .replace(
+                "no Obsidian vault is connected in\n  Clovy. Do not guess a default path.",
+                "no Obsidian vault is connected in\n  June. Do not guess a default path.",
+            );
+        fs::write(&legacy, released).expect("legacy skill");
 
         reconcile_managed_obsidian_skill(root.path()).expect("migrate legacy presentation");
 
@@ -190,10 +205,33 @@ mod tests {
             assert!(content.contains(CLOVY_OBSIDIAN_SKILL_DESCRIPTION));
             assert!(content.contains("# Clovy Obsidian vault"));
             assert!(content.contains("connected in\n  Clovy. Do not guess"));
-            assert!(content.contains("June Carter"));
             assert!(!content.contains(LEGACY_OBSIDIAN_SKILL_DESCRIPTION));
             assert!(!content.contains("# June Obsidian vault"));
         }
+    }
+
+    #[test]
+    fn user_edited_legacy_presentation_phrases_are_preserved() {
+        let root = tempfile::tempdir().expect("managed skill root");
+        let legacy = skill_file(root.path(), LEGACY_OBSIDIAN_SKILL_ID);
+        fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
+        let edited = format!(
+            "---\nname: june-obsidian\ndescription: {LEGACY_OBSIDIAN_SKILL_DESCRIPTION}\n---\n\n# June Obsidian vault\n\nUser-edited instructions about June Carter.\n"
+        );
+        fs::write(&legacy, &edited).expect("edited legacy skill");
+
+        reconcile_managed_obsidian_skill(root.path()).expect("preserve user edit");
+
+        assert_eq!(
+            fs::read_to_string(&legacy).expect("legacy skill remains"),
+            edited
+        );
+        let canonical = fs::read_to_string(skill_file(root.path(), CLOVY_OBSIDIAN_SKILL_ID))
+            .expect("canonical skill");
+        assert_eq!(
+            canonical,
+            edited.replace("name: june-obsidian", "name: clovy-obsidian")
+        );
     }
 
     #[test]
