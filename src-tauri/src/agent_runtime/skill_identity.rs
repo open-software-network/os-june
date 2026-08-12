@@ -137,8 +137,9 @@ fn migrate_sdk_state_value(state: &mut Value, managed_skill_root: Option<&Path>)
     collect_load_skill_result_provenance(state, managed_skill_root, &mut load_skill_results);
     let managed_load_skill_call_ids = load_skill_results
         .into_iter()
-        .filter_map(|(call_id, (all_results, managed_results))| {
-            (all_results.len() == 1 && managed_results == all_results).then_some(call_id)
+        .filter_map(|(call_id, (all_results, managed_results, malformed))| {
+            (!malformed && all_results.len() == 1 && managed_results == all_results)
+                .then_some(call_id)
         })
         .collect();
     migrate_sdk_value(state, &managed_load_skill_call_ids, managed_skill_root)
@@ -147,7 +148,7 @@ fn migrate_sdk_state_value(state: &mut Value, managed_skill_root: Option<&Path>)
 fn collect_load_skill_result_provenance(
     value: &Value,
     managed_skill_root: Option<&Path>,
-    results: &mut HashMap<String, (HashSet<String>, HashSet<String>)>,
+    results: &mut HashMap<String, (HashSet<String>, HashSet<String>, bool)>,
 ) {
     match value {
         Value::Array(values) => {
@@ -163,15 +164,21 @@ fn collect_load_skill_result_provenance(
                     object.get("callId").and_then(Value::as_str),
                     object.get("output"),
                 ) {
+                    let entry = results.entry(call_id.to_string()).or_default();
                     if let Some(result) = load_skill_result_value(output) {
                         if let Ok(fingerprint) = serde_json::to_string(&result) {
-                            let entry = results.entry(call_id.to_string()).or_default();
                             entry.0.insert(fingerprint.clone());
                             if is_managed_obsidian_skill_result(&result, managed_skill_root) {
                                 entry.1.insert(fingerprint);
                             }
+                        } else {
+                            entry.2 = true;
                         }
+                    } else {
+                        entry.2 = true;
                     }
+                } else if let Some(call_id) = object.get("callId").and_then(Value::as_str) {
+                    results.entry(call_id.to_string()).or_default().2 = true;
                 }
             }
             for value in object.values() {
@@ -729,6 +736,49 @@ mod tests {
                         "output": { "type": "text", "text": managed_output }
                     },
                     "output": managed_output
+                }
+            ]
+        });
+        let raw = serde_json::to_string(&state).expect("raw state");
+        let envelope = serde_json::to_string(&serde_json::json!({
+            "juneVersion": 1,
+            "sdkState": raw
+        }))
+        .expect("state envelope");
+        let managed_root = Path::new("/Library/June/agents/skills");
+
+        assert_eq!(migrate_resumable_skill_state(&raw, Some(managed_root)), raw);
+        assert_eq!(
+            migrate_resumable_skill_state(&envelope, Some(managed_root)),
+            envelope
+        );
+    }
+
+    #[test]
+    fn malformed_same_id_sdk_results_preserve_the_entire_ambiguous_group() {
+        let managed_output = serde_json::to_string(&released_skill_result(
+            "/Library/June/agents/skills/june-obsidian/SKILL.md",
+        ))
+        .expect("managed output");
+        let state = serde_json::json!({
+            "generatedItems": [
+                {
+                    "type": "function_call",
+                    "callId": "duplicate-id",
+                    "name": "load_skill",
+                    "arguments": "{\"name\":\"june-obsidian\"}"
+                },
+                {
+                    "type": "function_call_result",
+                    "name": "load_skill",
+                    "callId": "duplicate-id",
+                    "output": managed_output
+                },
+                {
+                    "type": "function_call_result",
+                    "name": "load_skill",
+                    "callId": "duplicate-id",
+                    "output": "not-json"
                 }
             ]
         });
