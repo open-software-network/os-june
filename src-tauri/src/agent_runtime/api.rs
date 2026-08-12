@@ -2254,14 +2254,13 @@ fn migrate_resumable_presentation_descriptions(params: &mut Value) {
             let Some(skill) = skill.as_object_mut() else {
                 continue;
             };
-            let managed = skill.get("source").and_then(Value::as_str) == Some("managed");
             let fallback = skill
                 .get("description")
                 .and_then(Value::as_str)
                 .is_some_and(|description| {
                     matches!(description, "June agent skill" | "Enabled June skill")
                 });
-            if !managed && !fallback {
+            if !fallback {
                 continue;
             }
             if let Some(description) = skill.get_mut("description") {
@@ -3643,6 +3642,7 @@ mod tests {
             ],
             "skills": [
                 { "name": "calendar", "description": "June agent skill", "source": "managed" },
+                { "name": "artist", "description": "Research June Carter", "source": "managed" },
                 { "name": "biography", "description": "Research a person named June", "source": "external" }
             ]
         });
@@ -3660,8 +3660,9 @@ mod tests {
             "Look up a person named June."
         );
         assert_eq!(config["skills"][0]["description"], "Clovy agent skill");
+        assert_eq!(config["skills"][1]["description"], "Research June Carter");
         assert_eq!(
-            config["skills"][1]["description"],
+            config["skills"][2]["description"],
             "Research a person named June"
         );
     }
