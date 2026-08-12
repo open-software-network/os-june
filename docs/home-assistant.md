@@ -148,7 +148,8 @@ preserving the rest of the attended or unattended run policy. Old descriptions
 owned by built-in Clovy tools and known historical built-in skill presentation
 strings are updated at the same boundary; execution names, schemas, approval
 metadata, and custom descriptions remain unchanged. The released app-owned
-Obsidian skill id is canonicalized before it reaches the current model catalog.
+Obsidian skill id is canonicalized in saved tool guidance and before it reaches
+the current model catalog.
 
 ## Structured task handoff
 

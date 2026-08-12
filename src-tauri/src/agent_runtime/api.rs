@@ -2235,15 +2235,19 @@ fn migrate_resumable_presentation_descriptions(params: &mut Value) {
             let Some(tool) = tool.as_object_mut() else {
                 continue;
             };
-            let Some(name) = tool.get("name").and_then(Value::as_str) else {
+            let Some(name) = tool.get("name").and_then(Value::as_str).map(str::to_string) else {
                 continue;
             };
-            if !is_clovy_builtin_tool(name) {
+            if !is_clovy_builtin_tool(&name) {
                 continue;
             }
             if let Some(description) = tool.get_mut("description") {
                 if let Some(value) = description.as_str() {
-                    *description = json!(value.replace("June", "Clovy"));
+                    let mut migrated = value.replace("June", "Clovy");
+                    if name == "get_obsidian_vault" {
+                        migrated = migrated.replace("june-obsidian", "clovy-obsidian");
+                    }
+                    *description = json!(migrated);
                 }
             }
         }
@@ -3671,6 +3675,16 @@ mod tests {
                     "name": "mcp_person_lookup",
                     "description": "Look up a person named June.",
                     "parameters": { "type": "object" }
+                },
+                {
+                    "name": "get_obsidian_vault",
+                    "description": "Discover the current Obsidian vault selected in June. When the june-obsidian skill is available, load it before Obsidian note work.",
+                    "parameters": { "type": "object" }
+                },
+                {
+                    "name": "mcp_obsidian_guide",
+                    "description": "Compare June and Clovy with the june-obsidian project.",
+                    "parameters": { "type": "object" }
                 }
             ],
             "skills": [
@@ -3696,6 +3710,14 @@ mod tests {
         assert_eq!(
             config["tools"][1]["description"],
             "Look up a person named June."
+        );
+        assert_eq!(
+            config["tools"][2]["description"],
+            "Discover the current Obsidian vault selected in Clovy. When the clovy-obsidian skill is available, load it before Obsidian note work."
+        );
+        assert_eq!(
+            config["tools"][3]["description"],
+            "Compare June and Clovy with the june-obsidian project."
         );
         assert_eq!(config["skills"][0]["description"], "Clovy agent skill");
         assert_eq!(config["skills"][1]["name"], "clovy-obsidian");

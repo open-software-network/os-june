@@ -736,7 +736,7 @@ describe("Clovy technical identity", () => {
     expect(skillIdentity).toContain('pub const LEGACY_OBSIDIAN_SKILL_ID: &str = "june-obsidian"');
     expect(skillIdentity).toContain("write_skill_ids");
     expect(agentApi).toContain("When the clovy-obsidian skill is available");
-    expect(agentApi).not.toContain("When the june-obsidian skill is available");
+    expect(agentApi).toContain('migrated.replace("june-obsidian", "clovy-obsidian")');
   });
 
   it("uses Clovy for ephemeral build and dictation artifacts", async () => {
