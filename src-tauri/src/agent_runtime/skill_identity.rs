@@ -12,6 +12,7 @@ pub const LEGACY_OBSIDIAN_SKILL_DESCRIPTION: &str =
     "Work with the Obsidian vault currently selected in June.";
 const BUNDLED_CLOVY_OBSIDIAN_SKILL: &str =
     include_str!("../../resources/agent-skills/clovy-obsidian/SKILL.md");
+const RELEASED_LEGACY_OBSIDIAN_SKILL_V1: &str = include_str!("fixtures/legacy-obsidian-v1.md");
 
 pub fn canonical_skill_id(skill_id: &str) -> &str {
     if skill_id == LEGACY_OBSIDIAN_SKILL_ID {
@@ -84,19 +85,9 @@ pub fn reconcile_managed_obsidian_skill(root: &Path) -> io::Result<()> {
 }
 
 fn migrate_known_legacy_obsidian_presentation(content: &str) -> String {
-    let legacy_content = BUNDLED_CLOVY_OBSIDIAN_SKILL
-        .replace(
-            CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
-            LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
-        )
-        .replace("# Clovy Obsidian vault", "# June Obsidian vault")
-        .replace(
-            "no Obsidian vault is connected in\n  Clovy. Do not guess a default path.",
-            "no Obsidian vault is connected in\n  June. Do not guess a default path.",
-        );
-    let matches_released_content = [CLOVY_OBSIDIAN_SKILL_ID, LEGACY_OBSIDIAN_SKILL_ID]
-        .into_iter()
-        .any(|skill_id| skill_content_for_id(&legacy_content, skill_id) == content);
+    let matches_released_content = content == RELEASED_LEGACY_OBSIDIAN_SKILL_V1
+        || content
+            == skill_content_for_id(RELEASED_LEGACY_OBSIDIAN_SKILL_V1, CLOVY_OBSIDIAN_SKILL_ID);
     if matches_released_content {
         BUNDLED_CLOVY_OBSIDIAN_SKILL.to_string()
     } else {
@@ -183,18 +174,7 @@ mod tests {
         let root = tempfile::tempdir().expect("managed skill root");
         let legacy = skill_file(root.path(), LEGACY_OBSIDIAN_SKILL_ID);
         fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("legacy directory");
-        let released = BUNDLED_CLOVY_OBSIDIAN_SKILL
-            .replace("name: clovy-obsidian", "name: june-obsidian")
-            .replace(
-                CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
-                LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
-            )
-            .replace("# Clovy Obsidian vault", "# June Obsidian vault")
-            .replace(
-                "no Obsidian vault is connected in\n  Clovy. Do not guess a default path.",
-                "no Obsidian vault is connected in\n  June. Do not guess a default path.",
-            );
-        fs::write(&legacy, released).expect("legacy skill");
+        fs::write(&legacy, RELEASED_LEGACY_OBSIDIAN_SKILL_V1).expect("legacy skill");
 
         reconcile_managed_obsidian_skill(root.path()).expect("migrate legacy presentation");
 

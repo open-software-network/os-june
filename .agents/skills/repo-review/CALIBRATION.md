@@ -120,6 +120,7 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #804 | Adversarial (claude, cross-harness) | 0 | — | two detailed approve passes traced timer ordering, explicit failure propagation, reduced motion, demo cleanup, and exact spinner/mark geometry |
 | #1057 | Codex managed-skill exact-head review | 1 | 1 | caught a non-fallback June-era description persisted for the bundled Obsidian skill; migrated the exact managed id and description pair while preserving custom and external text |
 | #1057 | Standards managed-skill convergence | 1 | 1 | caught phrase-level disk rewriting that could alter user-edited skill instructions; restricted the upgrade to exact released bundled content |
+| #1057 | Adversarial managed-skill convergence | 1 | 1 | caught self-derived historical-template detection that would drift with future bundled edits; froze the actual released legacy bytes as an independent compatibility fixture |
 | #804 | Greptile (stale initial SHA) | 2 | 2 | both real: raw mark sizing duplicated the Standards finding and failure styling depended on message wording; precise despite reviewing the initial commit |
 | #786 | Standards (codex, r1+final) | 3 | 3 | caught two OS Accounts glossary-name violations, raw avatar effect sizes instead of tokens, and the missing canonical avatar-seed term; final clean |
 | #786 | Spec (codex, r1+final) | 2 | 2 | found the old remote seed suppressing a required unsynced local fallback, then the unmount path that bypassed the first stale-response guard; final clean |
