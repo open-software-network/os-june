@@ -1,8 +1,8 @@
 use super::skill_identity::{
     canonical_skill_id, canonical_skill_ids, canonicalize_load_skill_arguments,
-    migrate_load_skill_result, migrate_resumable_skill_state, read_skill_ids, skill_content_for_id,
-    skill_file, write_skill_ids, CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
-    LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
+    is_managed_obsidian_skill_result, migrate_load_skill_result, migrate_resumable_skill_state,
+    read_skill_ids, skill_content_for_id, skill_file, write_skill_ids,
+    CLOVY_OBSIDIAN_SKILL_DESCRIPTION, LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
 };
 use super::{
     repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
@@ -293,10 +293,8 @@ pub async fn compact_agent_session(
     let run_id: String = row.get("id");
     let items = repository.items(&session_id).await?;
     let expected_last_item_sequence = items.last().map_or(-1, |item| item.sequence);
-    let history = items
-        .into_iter()
-        .filter_map(history_item)
-        .collect::<Vec<_>>();
+    let managed_skill_root = managed_agent_skill_root(&app);
+    let history = runtime_history_with_skill_root(items, None, managed_skill_root.as_deref());
     let model = normalize_agent_model(&session.model);
     let context_window = crate::providers::clovy_model_runtime_capabilities(&model)
         .await
@@ -642,6 +640,7 @@ pub async fn delete_agent_session(app: AppHandle, session_id: String) -> Result<
 #[tauri::command]
 pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<Value>, AppError> {
     let repository = repository(&app).await?;
+    let managed_skill_root = managed_agent_skill_root(&app);
     let active_run_id = repository
         .latest_run(&session_id)
         .await
@@ -653,12 +652,11 @@ pub async fn list_agent_items(app: AppHandle, session_id: String) -> Result<Vec<
             )
         })
         .map(|run| run.id);
-    repository
-        .items(&session_id)
-        .await?
-        .into_iter()
-        .map(|item| item_json_with_active_run(item, active_run_id.as_deref()))
-        .collect()
+    items_json_with_active_run(
+        repository.items(&session_id).await?,
+        active_run_id.as_deref(),
+        managed_skill_root.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1378,7 +1376,11 @@ async fn resolve_agent_interruption_inner(
         .as_object_mut()
         .expect("run params object")
         .remove("history");
-    params["serializedState"] = json!(migrate_resumable_skill_state(serialized_state));
+    let managed_skill_root = managed_agent_skill_root(app);
+    params["serializedState"] = json!(migrate_resumable_skill_state(
+        serialized_state,
+        managed_skill_root.as_deref(),
+    ));
     if let Some(resolved_model) = resolved_model {
         params["resolvedModel"] = json!(resolved_model);
     }
@@ -2056,15 +2058,20 @@ fn skill_description(text: &str) -> Option<String> {
 }
 
 fn skill_roots(app: &AppHandle) -> Vec<(PathBuf, bool)> {
-    let mut roots = crate::app_paths::app_data_dir(app)
-        .ok()
-        .map(|path| (path.join("agents").join("skills"), true))
+    let mut roots = managed_agent_skill_root(app)
+        .map(|path| (path, true))
         .into_iter()
         .collect::<Vec<_>>();
     if let Some(home) = std::env::var_os("HOME") {
         roots.push((PathBuf::from(home).join(".agents").join("skills"), false));
     }
     roots
+}
+
+fn managed_agent_skill_root(app: &AppHandle) -> Option<PathBuf> {
+    crate::app_paths::app_data_dir(app)
+        .ok()
+        .map(|path| path.join("agents").join("skills"))
 }
 
 fn normalize_agent_model(model: &str) -> String {
@@ -2112,9 +2119,11 @@ async fn run_params(
         .context_tokens
         .unwrap_or(128_000)
         .max(1_024);
-    let mut history = runtime_history(
+    let managed_skill_root = managed_agent_skill_root(app);
+    let mut history = runtime_history_with_skill_root(
         repository.items(request.session_id).await?,
         request.excluded_history_run_id,
+        managed_skill_root.as_deref(),
     );
     if !supports_vision {
         for item in &mut history {
@@ -2445,7 +2454,16 @@ async fn tool_descriptors(
     Ok(tools)
 }
 
+#[cfg(test)]
 fn history_item(item: AgentItemDto) -> Option<Value> {
+    history_item_with_skill_root(item, None, &HashSet::new())
+}
+
+fn history_item_with_skill_root(
+    item: AgentItemDto,
+    managed_skill_root: Option<&Path>,
+    managed_load_skill_call_ids: &HashSet<String>,
+) -> Option<Value> {
     match item.payload {
         AgentItemPayload::UserMessage(message)
         | AgentItemPayload::AssistantMessage(message)
@@ -2462,7 +2480,7 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
             let mut arguments = tool.arguments.unwrap_or_else(|| json!({}));
-            if name == "load_skill" {
+            if name == "load_skill" && managed_load_skill_call_ids.contains(&call_id) {
                 canonicalize_load_skill_arguments(&mut arguments);
             }
             let arguments = serde_json::to_string(&arguments).ok()?;
@@ -2486,7 +2504,7 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
             let call_id = tool.tool_call_id?;
             let mut result = tool.result.unwrap_or(Value::Null);
             if name == "load_skill" {
-                migrate_load_skill_result(&mut result);
+                migrate_load_skill_result(&mut result, managed_skill_root);
             }
             let output = serde_json::to_string(&result).ok()?;
             Some(json!({
@@ -2508,11 +2526,26 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
     }
 }
 
+#[cfg(test)]
 fn runtime_history(items: Vec<AgentItemDto>, excluded_run_id: Option<&str>) -> Vec<Value> {
-    items
+    runtime_history_with_skill_root(items, excluded_run_id, None)
+}
+
+fn runtime_history_with_skill_root(
+    items: Vec<AgentItemDto>,
+    excluded_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+) -> Vec<Value> {
+    let items = items
         .into_iter()
         .filter(|item| item.run_id.as_deref() != excluded_run_id)
-        .filter_map(history_item)
+        .collect::<Vec<_>>();
+    let managed_load_skill_call_ids = managed_load_skill_call_ids(&items, managed_skill_root);
+    items
+        .into_iter()
+        .filter_map(|item| {
+            history_item_with_skill_root(item, managed_skill_root, &managed_load_skill_call_ids)
+        })
         .collect()
 }
 
@@ -2523,9 +2556,19 @@ fn run_json(run: super::AgentRunDto) -> Value {
     json!({ "id": run.id, "sessionId": run.session_id, "status": run.status, "model": run.model, "reasoningEffort": run.reasoning_effort, "startedAt": run.started_at, "completedAt": run.completed_at, "usage": run.usage, "error": run.error_message })
 }
 
+#[cfg(test)]
 fn item_json_with_active_run(
     item: AgentItemDto,
     active_run_id: Option<&str>,
+) -> Result<Value, AppError> {
+    item_json_with_active_run_and_managed_calls(item, active_run_id, None, &HashSet::new())
+}
+
+fn item_json_with_active_run_and_managed_calls(
+    item: AgentItemDto,
+    active_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+    managed_load_skill_call_ids: &HashSet<String>,
 ) -> Result<Value, AppError> {
     let is_active_run = item.run_id.as_deref() == active_run_id;
     let stable_stream_id = is_active_run
@@ -2585,19 +2628,20 @@ fn item_json_with_active_run(
         AgentItemPayload::ToolCall(v) => {
             let name = v.tool_name.unwrap_or_default();
             let mut arguments = v.arguments;
-            if name == "load_skill" {
+            let call_id = v.tool_call_id.unwrap_or_default();
+            if name == "load_skill" && managed_load_skill_call_ids.contains(&call_id) {
                 if let Some(arguments) = arguments.as_mut() {
                     canonicalize_load_skill_arguments(arguments);
                 }
             }
-            json!({ "kind": "tool_call", "callId": v.tool_call_id.unwrap_or_default(), "name": name, "arguments": arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
+            json!({ "kind": "tool_call", "callId": call_id, "name": name, "arguments": arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
         }
         AgentItemPayload::ToolResult(v) => {
             let name = v.tool_name.unwrap_or_default();
             let mut result = v.result;
             if name == "load_skill" {
                 if let Some(result) = result.as_mut() {
-                    migrate_load_skill_result(result);
+                    migrate_load_skill_result(result, managed_skill_root);
                 }
             }
             json!({ "kind": "tool_result", "callId": v.tool_call_id.unwrap_or_default(), "name": name, "output": result, "isError": v.status.as_deref() == Some("failed") })
@@ -2609,6 +2653,45 @@ fn item_json_with_active_run(
     };
     object.extend(fields.as_object().cloned().expect("fields object"));
     Ok(Value::Object(object))
+}
+
+fn managed_load_skill_call_ids(
+    items: &[AgentItemDto],
+    managed_skill_root: Option<&Path>,
+) -> HashSet<String> {
+    items
+        .iter()
+        .filter_map(|item| match &item.payload {
+            AgentItemPayload::ToolResult(tool)
+                if tool.tool_name.as_deref() == Some("load_skill")
+                    && tool.result.as_ref().is_some_and(|result| {
+                        is_managed_obsidian_skill_result(result, managed_skill_root)
+                    }) =>
+            {
+                tool.tool_call_id.clone()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn items_json_with_active_run(
+    items: Vec<AgentItemDto>,
+    active_run_id: Option<&str>,
+    managed_skill_root: Option<&Path>,
+) -> Result<Vec<Value>, AppError> {
+    let managed_load_skill_call_ids = managed_load_skill_call_ids(&items, managed_skill_root);
+    items
+        .into_iter()
+        .map(|item| {
+            item_json_with_active_run_and_managed_calls(
+                item,
+                active_run_id,
+                managed_skill_root,
+                &managed_load_skill_call_ids,
+            )
+        })
+        .collect()
 }
 
 fn session_workspace(app: &AppHandle, session_id: Option<&str>) -> Result<PathBuf, AppError> {
@@ -4092,8 +4175,6 @@ mod tests {
                 status: Some("complete".into()),
             }),
         );
-        let call = history_item(call_item.clone()).expect("skill call");
-        let public_call = item_json_with_active_run(call_item, None).expect("public skill call");
         let result_item = item(
             "result",
             AgentItemPayload::ToolResult(super::super::ToolPayload {
@@ -4108,9 +4189,6 @@ mod tests {
                 status: Some("complete".into()),
             }),
         );
-        let result = history_item(result_item.clone()).expect("skill result");
-        let public_result =
-            item_json_with_active_run(result_item, None).expect("public skill result");
         let edited_item = item(
             "edited",
             AgentItemPayload::ToolResult(super::super::ToolPayload {
@@ -4125,9 +4203,6 @@ mod tests {
                 status: Some("complete".into()),
             }),
         );
-        let edited_result = history_item(edited_item.clone()).expect("edited skill result");
-        let public_edited =
-            item_json_with_active_run(edited_item, None).expect("public edited skill result");
         let custom_item = item(
             "custom",
             AgentItemPayload::ToolResult(super::super::ToolPayload {
@@ -4142,15 +4217,81 @@ mod tests {
                 status: Some("complete".into()),
             }),
         );
-        let custom_result = history_item(custom_item.clone()).expect("custom result");
-        let public_custom =
-            item_json_with_active_run(custom_item, None).expect("public custom result");
+        let copied_item = item(
+            "copied",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-4".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "copied-reference",
+                    "content": legacy_skill,
+                    "path": "/custom/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let user_global_call_item = item(
+            "user-global-call",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-5".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let user_global_result_item = item(
+            "user-global-result",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-5".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let items = vec![
+            call_item,
+            result_item,
+            edited_item,
+            custom_item,
+            copied_item,
+            user_global_call_item,
+            user_global_result_item,
+        ];
+        let managed_root = Path::new("/Library/June/skills");
+        let history = runtime_history_with_skill_root(items.clone(), None, Some(managed_root));
+        let public = items_json_with_active_run(items, None, Some(managed_root))
+            .expect("public skill items");
+        let history_item = |id: &str| {
+            history
+                .iter()
+                .find(|value| value["id"] == id)
+                .expect("history item")
+        };
+        let public_item = |id: &str| {
+            public
+                .iter()
+                .find(|value| value["id"] == id)
+                .expect("public item")
+        };
 
-        assert_eq!(call["payload"]["arguments"], r#"{"name":"clovy-obsidian"}"#);
-        assert_eq!(public_call["arguments"]["name"], "clovy-obsidian");
-        let result: Value =
-            serde_json::from_str(result["payload"]["output"].as_str().expect("result output"))
-                .expect("result JSON");
+        assert_eq!(
+            history_item("call")["payload"]["arguments"],
+            r#"{"name":"clovy-obsidian"}"#
+        );
+        assert_eq!(public_item("call")["arguments"]["name"], "clovy-obsidian");
+        let result: Value = serde_json::from_str(
+            history_item("result")["payload"]["output"]
+                .as_str()
+                .expect("result output"),
+        )
+        .expect("result JSON");
         assert_eq!(result["name"], "clovy-obsidian");
         assert!(result["content"]
             .as_str()
@@ -4159,25 +4300,55 @@ mod tests {
             result["path"],
             "/Library/June/skills/clovy-obsidian/SKILL.md"
         );
-        assert_eq!(public_result["output"], result);
+        assert_eq!(public_item("result")["output"], result);
         let edited: Value = serde_json::from_str(
-            edited_result["payload"]["output"]
+            history_item("edited")["payload"]["output"]
                 .as_str()
                 .expect("edited output"),
         )
         .expect("edited JSON");
         assert_eq!(edited["name"], "clovy-obsidian");
         assert_eq!(edited["content"], "Keep June Carter research");
-        assert_eq!(public_edited["output"], edited);
+        assert_eq!(public_item("edited")["output"], edited);
         let custom: Value = serde_json::from_str(
-            custom_result["payload"]["output"]
+            history_item("custom")["payload"]["output"]
                 .as_str()
                 .expect("custom output"),
         )
         .expect("custom JSON");
         assert_eq!(custom["name"], "june-obsidian");
         assert_eq!(custom["content"], legacy_skill);
-        assert_eq!(public_custom["output"], custom);
+        assert_eq!(public_item("custom")["output"], custom);
+        let copied: Value = serde_json::from_str(
+            history_item("copied")["payload"]["output"]
+                .as_str()
+                .expect("copied output"),
+        )
+        .expect("copied JSON");
+        assert_eq!(copied["name"], "copied-reference");
+        assert_eq!(copied["content"], legacy_skill);
+        assert_eq!(copied["path"], "/custom/june-obsidian/SKILL.md");
+        assert_eq!(public_item("copied")["output"], copied);
+        assert_eq!(
+            history_item("user-global-call")["payload"]["arguments"],
+            r#"{"name":"june-obsidian"}"#
+        );
+        assert_eq!(
+            public_item("user-global-call")["arguments"]["name"],
+            "june-obsidian"
+        );
+        let user_global: Value = serde_json::from_str(
+            history_item("user-global-result")["payload"]["output"]
+                .as_str()
+                .expect("user-global output"),
+        )
+        .expect("user-global JSON");
+        assert_eq!(user_global["name"], "june-obsidian");
+        assert_eq!(
+            user_global["path"],
+            "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+        );
+        assert_eq!(public_item("user-global-result")["output"], user_global);
     }
 
     #[test]

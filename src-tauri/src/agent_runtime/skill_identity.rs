@@ -35,10 +35,26 @@ pub(crate) fn canonicalize_load_skill_arguments(arguments: &mut Value) -> bool {
     true
 }
 
-pub(crate) fn migrate_load_skill_result(result: &mut Value) -> bool {
+pub(crate) fn migrate_load_skill_result(
+    result: &mut Value,
+    managed_skill_root: Option<&Path>,
+) -> bool {
+    if !is_managed_obsidian_skill_result(result, managed_skill_root) {
+        return false;
+    }
     let Some(result) = result.as_object_mut() else {
         return false;
     };
+    let path = result
+        .get("path")
+        .and_then(Value::as_str)
+        .expect("managed skill result path")
+        .to_string();
+    let canonical_path = canonical_managed_load_skill_path(
+        &path,
+        managed_skill_root.expect("managed skill result root"),
+    )
+    .expect("managed skill result canonical path");
     let mut changed = false;
     if result.get("name").and_then(Value::as_str) == Some(LEGACY_OBSIDIAN_SKILL_ID) {
         result.insert("name".into(), Value::String(CLOVY_OBSIDIAN_SKILL_ID.into()));
@@ -54,18 +70,39 @@ pub(crate) fn migrate_load_skill_result(result: &mut Value) -> bool {
             }
         }
     }
-    if let Some(path) = result.get_mut("path") {
-        if let Some(value) = path.as_str() {
-            if let Some(migrated) = canonical_load_skill_path(value) {
-                *path = Value::String(migrated);
-                changed = true;
-            }
-        }
+    if canonical_path != path {
+        result.insert("path".into(), Value::String(canonical_path));
+        changed = true;
     }
     changed
 }
 
-pub(crate) fn migrate_resumable_skill_state(serialized_state: &str) -> String {
+pub(crate) fn is_managed_obsidian_skill_result(
+    result: &Value,
+    managed_skill_root: Option<&Path>,
+) -> bool {
+    let Some(result) = result.as_object() else {
+        return false;
+    };
+    if !matches!(
+        result.get("name").and_then(Value::as_str),
+        Some(LEGACY_OBSIDIAN_SKILL_ID | CLOVY_OBSIDIAN_SKILL_ID)
+    ) {
+        return false;
+    }
+    let (Some(path), Some(managed_skill_root)) = (
+        result.get("path").and_then(Value::as_str),
+        managed_skill_root,
+    ) else {
+        return false;
+    };
+    canonical_managed_load_skill_path(path, managed_skill_root).is_some()
+}
+
+pub(crate) fn migrate_resumable_skill_state(
+    serialized_state: &str,
+    managed_skill_root: Option<&Path>,
+) -> String {
     let Ok(mut outer) = serde_json::from_str::<Value>(serialized_state) else {
         return serialized_state.to_string();
     };
@@ -74,62 +111,77 @@ pub(crate) fn migrate_resumable_skill_state(serialized_state: &str) -> String {
         .and_then(Value::as_str)
         .map(str::to_string)
     {
-        let migrated = migrate_sdk_state(&sdk_state);
+        let migrated = migrate_sdk_state(&sdk_state, managed_skill_root);
         if migrated == sdk_state {
             return serialized_state.to_string();
         }
         outer["sdkState"] = Value::String(migrated);
-    } else if !migrate_sdk_state_value(&mut outer) {
+    } else if !migrate_sdk_state_value(&mut outer, managed_skill_root) {
         return serialized_state.to_string();
     }
     serde_json::to_string(&outer).unwrap_or_else(|_| serialized_state.to_string())
 }
 
-fn migrate_sdk_state(sdk_state: &str) -> String {
+fn migrate_sdk_state(sdk_state: &str, managed_skill_root: Option<&Path>) -> String {
     let Ok(mut state) = serde_json::from_str::<Value>(sdk_state) else {
         return sdk_state.to_string();
     };
-    if !migrate_sdk_state_value(&mut state) {
+    if !migrate_sdk_state_value(&mut state, managed_skill_root) {
         return sdk_state.to_string();
     }
     serde_json::to_string(&state).unwrap_or_else(|_| sdk_state.to_string())
 }
 
-fn migrate_sdk_state_value(state: &mut Value) -> bool {
-    let mut load_skill_call_ids = HashSet::new();
-    collect_load_skill_call_ids(state, &mut load_skill_call_ids);
-    migrate_sdk_value(state, &load_skill_call_ids)
+fn migrate_sdk_state_value(state: &mut Value, managed_skill_root: Option<&Path>) -> bool {
+    let mut managed_load_skill_call_ids = HashSet::new();
+    collect_managed_load_skill_call_ids(
+        state,
+        managed_skill_root,
+        &mut managed_load_skill_call_ids,
+    );
+    migrate_sdk_value(state, &managed_load_skill_call_ids, managed_skill_root)
 }
 
-fn collect_load_skill_call_ids(value: &Value, call_ids: &mut HashSet<String>) {
+fn collect_managed_load_skill_call_ids(
+    value: &Value,
+    managed_skill_root: Option<&Path>,
+    call_ids: &mut HashSet<String>,
+) {
     match value {
         Value::Array(values) => {
             for value in values {
-                collect_load_skill_call_ids(value, call_ids);
+                collect_managed_load_skill_call_ids(value, managed_skill_root, call_ids);
             }
         }
         Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("function_call")
+            if object.get("type").and_then(Value::as_str) == Some("function_call_result")
                 && object.get("name").and_then(Value::as_str) == Some("load_skill")
+                && object
+                    .get("output")
+                    .is_some_and(|output| load_skill_output_is_managed(output, managed_skill_root))
             {
                 if let Some(call_id) = object.get("callId").and_then(Value::as_str) {
                     call_ids.insert(call_id.to_string());
                 }
             }
             for value in object.values() {
-                collect_load_skill_call_ids(value, call_ids);
+                collect_managed_load_skill_call_ids(value, managed_skill_root, call_ids);
             }
         }
         _ => {}
     }
 }
 
-fn migrate_sdk_value(value: &mut Value, load_skill_call_ids: &HashSet<String>) -> bool {
+fn migrate_sdk_value(
+    value: &mut Value,
+    load_skill_call_ids: &HashSet<String>,
+    managed_skill_root: Option<&Path>,
+) -> bool {
     let mut changed = false;
     match value {
         Value::Array(values) => {
             for value in values {
-                changed |= migrate_sdk_value(value, load_skill_call_ids);
+                changed |= migrate_sdk_value(value, load_skill_call_ids, managed_skill_root);
             }
         }
         Value::Object(object) => {
@@ -145,11 +197,14 @@ fn migrate_sdk_value(value: &mut Value, load_skill_call_ids: &HashSet<String>) -
                 .get("callId")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            let managed_call_id = call_id
+                .as_deref()
+                .is_some_and(|call_id| load_skill_call_ids.contains(call_id));
             let load_skill_call = item_type.as_deref() == Some("function_call")
-                && name.as_deref() == Some("load_skill");
-            let load_skill_result = item_type.as_deref() == Some("function_call_result")
-                && (name.as_deref() == Some("load_skill")
-                    || call_id.is_some_and(|call_id| load_skill_call_ids.contains(&call_id)));
+                && name.as_deref() == Some("load_skill")
+                && managed_call_id;
+            let load_skill_result =
+                item_type.as_deref() == Some("function_call_result") && managed_call_id;
 
             if load_skill_call {
                 if let Some(arguments) = object.get_mut("arguments") {
@@ -158,7 +213,7 @@ fn migrate_sdk_value(value: &mut Value, load_skill_call_ids: &HashSet<String>) -
             }
             if load_skill_result {
                 if let Some(output) = object.get_mut("output") {
-                    changed |= migrate_load_skill_output(output);
+                    changed |= migrate_load_skill_output(output, managed_skill_root);
                 }
             }
             if item_type.as_deref() == Some("tool_call_output_item") {
@@ -170,15 +225,15 @@ fn migrate_sdk_value(value: &mut Value, load_skill_call_ids: &HashSet<String>) -
                     .and_then(|raw| raw.get("callId"))
                     .and_then(Value::as_str);
                 if wrapped_name == Some("load_skill")
-                    || wrapped_call_id.is_some_and(|call_id| load_skill_call_ids.contains(call_id))
+                    && wrapped_call_id.is_some_and(|call_id| load_skill_call_ids.contains(call_id))
                 {
                     if let Some(output) = object.get_mut("output") {
-                        changed |= migrate_load_skill_output(output);
+                        changed |= migrate_load_skill_output(output, managed_skill_root);
                     }
                 }
             }
             for value in object.values_mut() {
-                changed |= migrate_sdk_value(value, load_skill_call_ids);
+                changed |= migrate_sdk_value(value, load_skill_call_ids, managed_skill_root);
             }
         }
         _ => {}
@@ -203,12 +258,12 @@ fn migrate_json_arguments(arguments: &mut Value) -> bool {
     canonicalize_load_skill_arguments(arguments)
 }
 
-fn migrate_load_skill_output(output: &mut Value) -> bool {
+fn migrate_load_skill_output(output: &mut Value, managed_skill_root: Option<&Path>) -> bool {
     if let Some(value) = output.as_str() {
         let Ok(mut parsed) = serde_json::from_str::<Value>(value) else {
             return false;
         };
-        if !migrate_load_skill_result(&mut parsed) {
+        if !migrate_load_skill_result(&mut parsed, managed_skill_root) {
             return false;
         }
         if let Ok(serialized) = serde_json::to_string(&parsed) {
@@ -220,20 +275,42 @@ fn migrate_load_skill_output(output: &mut Value) -> bool {
     if output.get("type").and_then(Value::as_str) == Some("text") {
         return output
             .get_mut("text")
-            .is_some_and(migrate_load_skill_output);
+            .is_some_and(|text| migrate_load_skill_output(text, managed_skill_root));
     }
-    migrate_load_skill_result(output)
+    migrate_load_skill_result(output, managed_skill_root)
 }
 
-fn canonical_load_skill_path(path: &str) -> Option<String> {
+fn load_skill_output_is_managed(output: &Value, managed_skill_root: Option<&Path>) -> bool {
+    if let Some(value) = output.as_str() {
+        return serde_json::from_str::<Value>(value)
+            .ok()
+            .is_some_and(|parsed| is_managed_obsidian_skill_result(&parsed, managed_skill_root));
+    }
+    if output.get("type").and_then(Value::as_str) == Some("text") {
+        return output
+            .get("text")
+            .is_some_and(|text| load_skill_output_is_managed(text, managed_skill_root));
+    }
+    is_managed_obsidian_skill_result(output, managed_skill_root)
+}
+
+fn canonical_managed_load_skill_path(path: &str, managed_skill_root: &Path) -> Option<String> {
+    let root = managed_skill_root.to_string_lossy();
+    let root = root.trim_end_matches(['/', '\\']);
     for (separator, legacy_suffix) in [
         ('/', "/june-obsidian/SKILL.md"),
         ('\\', "\\june-obsidian\\SKILL.md"),
     ] {
-        if let Some(prefix) = path.strip_suffix(legacy_suffix) {
+        let legacy_path = format!("{root}{legacy_suffix}");
+        if path == legacy_path {
             return Some(format!(
-                "{prefix}{separator}{CLOVY_OBSIDIAN_SKILL_ID}{separator}SKILL.md"
+                "{root}{separator}{CLOVY_OBSIDIAN_SKILL_ID}{separator}SKILL.md"
             ));
+        }
+        let canonical_path =
+            format!("{root}{separator}{CLOVY_OBSIDIAN_SKILL_ID}{separator}SKILL.md");
+        if path == canonical_path {
+            return Some(canonical_path);
         }
     }
     None
@@ -404,15 +481,27 @@ mod tests {
         let edited_output = serde_json::to_string(&serde_json::json!({
             "name": LEGACY_OBSIDIAN_SKILL_ID,
             "content": edited_content,
-            "path": "C:\\June\\june-obsidian\\SKILL.md"
+            "path": "/Library/June/agents/skills/june-obsidian/SKILL.md"
         }))
         .expect("edited output");
         let custom_output = serde_json::to_string(&serde_json::json!({
             "name": LEGACY_OBSIDIAN_SKILL_ID,
             "content": RELEASED_LEGACY_OBSIDIAN_SKILL_V1,
-            "path": "/custom/june-obsidian/SKILL.md"
+            "path": "/Library/June/agents/skills/june-obsidian/SKILL.md"
         }))
         .expect("custom output");
+        let copied_output = serde_json::to_string(&serde_json::json!({
+            "name": "copied-reference",
+            "content": RELEASED_LEGACY_OBSIDIAN_SKILL_V1,
+            "path": "/Users/me/.agents/skills/copied-reference/SKILL.md"
+        }))
+        .expect("copied output");
+        let user_global_output = serde_json::to_string(&serde_json::json!({
+            "name": LEGACY_OBSIDIAN_SKILL_ID,
+            "content": edited_content,
+            "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+        }))
+        .expect("user-global output");
         let sdk_state = serde_json::json!({
             "modelResponses": [{
                 "output": [{
@@ -470,6 +559,44 @@ mod tests {
                         "output": { "type": "text", "text": custom_output }
                     },
                     "output": custom_output
+                },
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "call-copied",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"copied-reference\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "call-copied",
+                        "output": { "type": "text", "text": copied_output }
+                    },
+                    "output": copied_output
+                },
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "call-user-global",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"june-obsidian\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "call-user-global",
+                        "output": { "type": "text", "text": user_global_output }
+                    },
+                    "output": user_global_output
                 }
             ]
         });
@@ -478,8 +605,10 @@ mod tests {
             "sdkState": serde_json::to_string(&sdk_state).expect("SDK state")
         });
 
+        let managed_root = Path::new("/Library/June/agents/skills");
         let migrated = migrate_resumable_skill_state(
             &serde_json::to_string(&envelope).expect("serialized envelope"),
+            Some(managed_root),
         );
         let migrated_envelope: Value = serde_json::from_str(&migrated).expect("migrated envelope");
         let migrated_state: Value = serde_json::from_str(
@@ -518,9 +647,29 @@ mod tests {
                 .expect("edited payload JSON");
             assert_eq!(payload["name"], CLOVY_OBSIDIAN_SKILL_ID);
             assert_eq!(payload["content"], edited_content);
-            assert_eq!(payload["path"], "C:\\June\\clovy-obsidian\\SKILL.md");
+            assert_eq!(
+                payload["path"],
+                "/Library/June/agents/skills/clovy-obsidian/SKILL.md"
+            );
         }
         assert_eq!(migrated_state["generatedItems"][4]["output"], custom_output);
+        assert_eq!(migrated_state["generatedItems"][6]["output"], copied_output);
+        assert_eq!(
+            migrated_state["generatedItems"][6]["rawItem"]["output"]["text"],
+            copied_output
+        );
+        assert_eq!(
+            migrated_state["generatedItems"][7]["rawItem"]["arguments"],
+            r#"{"name":"june-obsidian"}"#
+        );
+        assert_eq!(
+            migrated_state["generatedItems"][8]["output"],
+            user_global_output
+        );
+        assert_eq!(
+            migrated_state["generatedItems"][8]["rawItem"]["output"]["text"],
+            user_global_output
+        );
     }
 
     #[test]
