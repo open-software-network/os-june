@@ -15,7 +15,9 @@ execution identifier because tool catalogs are persisted in resumable runs. A
 rollback build recognizes only that identifier, so renaming it would strand a
 run created by Clovy and then resumed after downgrade. The descriptor and all
 user-facing copy call the product Clovy. Search remains scoped to the current
-data partition and returns the existing bounded, sanitized result shape.
+data partition and returns the existing bounded, sanitized result shape. The
+presentation boundary renders this identifier as **Search Clovy notes** in the
+activity transcript and usage panel.
 
 ## Legacy dispatch compatibility
 

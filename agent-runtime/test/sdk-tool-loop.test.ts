@@ -1087,6 +1087,7 @@ test("resumes a serialized approval and continues after the host tool result", a
     takeSteering: () => [],
     params: {
       ...commonParams,
+      instructions: "You are June. Use the requested file tool.",
       input: "Create the file.",
       history: [],
     },
@@ -1101,6 +1102,11 @@ test("resumes a serialized approval and continues after the host tool result", a
   assert.equal(nativeStateEnvelope.clovyVersion, 1);
   assert.equal(nativeStateEnvelope.juneVersion, 1);
   assert.equal(nativeStateEnvelope.reasoningWireFormat, "reasoning");
+  const legacySdkState = JSON.parse(String(nativeStateEnvelope.sdkState)) as Record<
+    string,
+    unknown
+  >;
+  assert.deepEqual(legacySdkState.currentAgent, { name: "June" });
 
   const resumed = await engine.resume({
     sessionId: "session-resume",
@@ -1143,6 +1149,7 @@ test("resumes a serialized approval and continues after the host tool result", a
   );
   assert.ok(isRecord(resumedSystem));
   assert.match(String(resumedSystem.content), /Use Clovy only/);
+  assert.doesNotMatch(String(resumedSystem.content), /You are June/);
   const resumedAssistant = resumedMessages.find(
     (message) =>
       isRecord(message) &&

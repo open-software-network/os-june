@@ -12,6 +12,7 @@ import {
   type ResolveAgentInterruptionRequest,
 } from "./agent-runtime-contract";
 import { stripProjectContext } from "./agent-project-context";
+import { toolDisplayName } from "./agent-tool-labels";
 
 export type AgentRuntimeProjection = {
   session?: AgentSessionDto;
@@ -383,7 +384,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
               {
                 type: "tool",
                 id: item.callId,
-                name: item.name,
+                name: toolDisplayName(item.name),
                 text: readableValue(item.arguments),
                 status: item.status,
               },
@@ -399,7 +400,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
                 {
                   type: "tool",
                   id: item.callId,
-                  name: item.name,
+                  name: toolDisplayName(item.name),
                   text: readableValue(item.output),
                   status: "complete",
                 },
@@ -416,7 +417,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
                 {
                   type: "tool",
                   id: item.callId,
-                  name: item.name,
+                  name: toolDisplayName(item.name),
                   text: readableValue(item.output),
                   status: "complete",
                 },
@@ -431,7 +432,7 @@ export function agentItemsToChatTurns(items: AgentItemDto[]): AgentChatTurn[] {
               {
                 type: "tool",
                 id: item.callId,
-                name: item.name,
+                name: toolDisplayName(item.name),
                 text: readableValue(item.output),
                 status: item.isError ? "failed" : "complete",
               },

@@ -1360,6 +1360,10 @@ async fn resolve_agent_interruption_inner(
             ),
         },
     };
+    refresh_resumable_run_instructions(
+        &mut params,
+        super::persona::instructions_for_app(app, INSTRUCTIONS),
+    );
     params["model"] = json!(model);
     params
         .as_object_mut()
@@ -2206,6 +2210,10 @@ pub(crate) fn resumable_run_config(params: &Value) -> Value {
         object.remove("history");
     }
     config
+}
+
+fn refresh_resumable_run_instructions(params: &mut Value, instructions: String) {
+    params["instructions"] = json!(instructions);
 }
 
 async fn tool_descriptors(
@@ -3492,6 +3500,25 @@ mod tests {
             instructions.contains("Depth 90/100")
                 && instructions.contains("Instruction order and untrusted content")
         }));
+        assert_eq!(config["tools"][0]["name"], "read_file");
+    }
+
+    #[test]
+    fn resumed_configuration_replaces_saved_app_identity_instructions() {
+        let mut config = json!({
+            "instructions": "You are June. Use the tools provided by the old app.",
+            "tools": [{ "name": "read_file" }]
+        });
+
+        refresh_resumable_run_instructions(
+            &mut config,
+            "You are Clovy. Use the tools provided by Clovy.".to_string(),
+        );
+
+        assert_eq!(
+            config["instructions"],
+            "You are Clovy. Use the tools provided by Clovy."
+        );
         assert_eq!(config["tools"][0]["name"], "read_file");
     }
 

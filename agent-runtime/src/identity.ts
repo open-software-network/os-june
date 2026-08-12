@@ -17,6 +17,9 @@ const LEGACY_NAME_QUESTIONS = new Set([
   "was your name june",
   "were you called june",
   "were you june",
+]);
+
+const AMBIGUOUS_LEGACY_NAME_QUESTIONS = new Set([
   "what is june",
   "whats june",
   "who is june",
@@ -87,7 +90,13 @@ const LEADING_CONVERSATIONAL_FILLERS = new Set([
 const TRAILING_FILLERS = new Set(["clovy", "june", "please"]);
 
 export function clovyIdentityResult(params: RunStartParams): EngineResult | undefined {
-  const reply = identityReply(params.input);
+  const hasConversationContext = params.history.some(
+    (item) =>
+      ((item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
+        item.kind === "context_summary") &&
+      Boolean(item.text?.trim()),
+  );
+  const reply = identityReply(params.input, !hasConversationContext);
   if ((params.attachments?.length ?? 0) > 0 || !reply) {
     return undefined;
   }
@@ -113,7 +122,7 @@ export function clovyIdentityResult(params: RunStartParams): EngineResult | unde
   };
 }
 
-function identityReply(input: string): string | undefined {
+function identityReply(input: string, allowAmbiguousLegacyName: boolean): string | undefined {
   const normalized = input
     .normalize("NFKC")
     .toLowerCase()
@@ -131,6 +140,12 @@ function identityReply(input: string): string | undefined {
   while (namedEnd > namedStart && words[namedEnd - 1] === "please") namedEnd -= 1;
   const namedQuestion = words.slice(namedStart, namedEnd).join(" ");
   if (LEGACY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_IDENTITY_REPLY;
+  if (
+    allowAmbiguousLegacyName &&
+    AMBIGUOUS_LEGACY_NAME_QUESTIONS.has(namedQuestion)
+  ) {
+    return CLOVY_IDENTITY_REPLY;
+  }
   if (CLOVY_NAME_QUESTIONS.has(namedQuestion)) return CLOVY_IDENTITY_REPLY;
 
   let start = 0;

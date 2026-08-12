@@ -75,6 +75,7 @@ import {
 } from "../../lib/companion-frontend-router";
 import { persistAgentDefaultModel } from "../../lib/agent-default-model";
 import { agentModelSelection, agentRunModelId } from "../../lib/agent-model-selection";
+import { toolDisplayName } from "../../lib/agent-tool-labels";
 import {
   clearQueuedAgentFollowUpSteering,
   loadQueuedAgentFollowUps,
@@ -3113,7 +3114,7 @@ export function AgentWorkspace({
                           <p className="agent-usage-section-title">Tools</p>
                           {[...toolUsage.entries()].map(([name, usage]) => (
                             <div className="agent-usage-row" key={name}>
-                              <span className="agent-usage-primary">{name}</span>
+                              <span className="agent-usage-primary">{toolDisplayName(name)}</span>
                               <span className="agent-usage-value">
                                 {usage.calls} {usage.calls === 1 ? "call" : "calls"}
                                 {usage.failures > 0 ? `, ${usage.failures} failed` : ""}

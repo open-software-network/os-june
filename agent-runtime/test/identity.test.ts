@@ -16,6 +16,15 @@ const params = (input: string, attachments: RunStartParams["attachments"] = []):
   contextWindow: 16_000,
 });
 
+const conversationHistory: RunStartParams["history"] = [
+  {
+    id: "person-context",
+    kind: "message",
+    role: "assistant",
+    text: "June is the project lead mentioned in the brief.",
+  },
+];
+
 test("answers legacy identity variants as Clovy only", () => {
   for (const input of [
     "Are you called June?",
@@ -39,5 +48,25 @@ test("leaves attachment questions on the attachment-aware path", () => {
       ]),
     ),
     undefined,
+  );
+});
+
+test("leaves ambiguous legacy-name questions on the contextual model path", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: conversationHistory,
+    }),
+    undefined,
+  );
+});
+
+test("answers explicit legacy assistant-name questions despite earlier context", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Are you called June?"),
+      history: conversationHistory,
+    })?.finalOutput,
+    CLOVY_IDENTITY_REPLY,
   );
 });

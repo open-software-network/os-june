@@ -18,6 +18,27 @@ const frame = {
 };
 
 describe("agent runtime adapter", () => {
+  it("presents the rollback search identifier as a Clovy tool", () => {
+    const turns = agentItemsToChatTurns([
+      {
+        id: "search-result",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 1,
+        createdAt: "2026-07-22T12:00:01Z",
+        kind: "tool_result",
+        callId: "search-call",
+        name: "search_june",
+        output: "Found one note",
+        isError: false,
+      },
+    ]);
+
+    expect(turns[0]?.parts).toMatchObject([
+      { type: "tool", id: "search-call", name: "Search Clovy notes" },
+    ]);
+  });
+
   it("coalesces consecutive internal activity from one agent run", () => {
     const turns = agentItemsToChatTurns([
       {

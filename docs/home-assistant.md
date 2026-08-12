@@ -127,11 +127,21 @@ accepted as compatibility input and receive the same concise Clovy identity
 reply as any other identity question. Replies never explain, repeat, or present
 the former name as a product, assistant, persona, or identity.
 
+Ambiguous questions such as `Who is June?` use that direct reply only when the
+turn has no earlier conversation context. With prior conversation context, the
+question continues through the normal model path so a person, month, or project
+already under discussion is not mistaken for an assistant-name question.
+
 The direct matcher does not claim an identity question when an attachment is
 present because the name may refer to content in that attachment. Those turns
 continue through the normal model path under the same Clovy-only identity
 instruction. The app invokes `clovy_home_chat`; `june_home_chat` remains only as
 a Tauri command alias for released callers.
+
+The Agents SDK also retains its released internal Agent serialization key so
+pending approvals and clarifications can survive both upgrades and downgrades.
+That key is a persisted compatibility value only. Resumed runs replace saved
+app-owned instructions with the current Clovy identity policy before execution.
 
 ## Structured task handoff
 

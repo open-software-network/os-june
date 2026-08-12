@@ -2036,7 +2036,7 @@ fn clovy_home_message_too_large(messages: &[ClovyHomeChatMessage]) -> bool {
         .is_some_and(|message| message.content.chars().count() > CLOVY_HOME_RECENT_MAX_TOTAL_CHARS)
 }
 
-fn clovy_identity_reply(message: &str) -> Option<&'static str> {
+fn clovy_identity_reply(message: &str, allow_ambiguous_legacy_name: bool) -> Option<&'static str> {
     let normalized = message
         .nfkc()
         .filter(|character| !matches!(character, '\'' | '’'))
@@ -2079,11 +2079,15 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
             | "was your name june"
             | "were you called june"
             | "were you june"
-            | "what is june"
-            | "whats june"
-            | "who is june"
-            | "whos june"
     ) {
+        return Some(CLOVY_IDENTITY_REPLY);
+    }
+    if allow_ambiguous_legacy_name
+        && matches!(
+            named_question.as_str(),
+            "what is june" | "whats june" | "who is june" | "whos june"
+        )
+    {
         return Some(CLOVY_IDENTITY_REPLY);
     }
     if matches!(
@@ -2145,6 +2149,19 @@ fn clovy_identity_reply(message: &str) -> Option<&'static str> {
             | "who r you"
     )
     .then_some(CLOVY_IDENTITY_REPLY)
+}
+
+fn clovy_home_has_prior_context(
+    retained: &[serde_json::Value],
+    history_context: Option<&str>,
+) -> bool {
+    let prior_message_count = retained.len().saturating_sub(1);
+    retained[..prior_message_count].iter().any(|message| {
+        matches!(message["role"].as_str(), Some("user" | "assistant"))
+            && message["content"]
+                .as_str()
+                .is_some_and(|content| !content.trim().is_empty())
+    }) || history_context.is_some_and(|context| !context.trim().is_empty())
 }
 
 fn clovy_home_requires_current_information(message: &str) -> bool {
@@ -2385,7 +2402,9 @@ pub async fn clovy_home_chat(
         .and_then(|message| message["content"].as_str())
         .unwrap_or_default()
         .to_string();
-    if let Some(content) = clovy_identity_reply(&latest_user_message) {
+    let has_prior_context =
+        clovy_home_has_prior_context(&retained, request.history_context.as_deref());
+    if let Some(content) = clovy_identity_reply(&latest_user_message, !has_prior_context) {
         let content = content.to_string();
         let _ = on_event.send(ClovyHomeChatEvent::Delta {
             content: content.clone(),
@@ -4771,7 +4790,10 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Hey there, what's your name, Clovy?",
             "Identify yourself.",
         ] {
-            assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
+            assert_eq!(
+                clovy_identity_reply(message, true),
+                Some(CLOVY_IDENTITY_REPLY)
+            );
         }
     }
 
@@ -4790,12 +4812,39 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Should I call you June?",
             "Was your name June?",
         ] {
-            assert_eq!(clovy_identity_reply(message), Some(CLOVY_IDENTITY_REPLY));
+            assert_eq!(
+                clovy_identity_reply(message, true),
+                Some(CLOVY_IDENTITY_REPLY)
+            );
         }
         assert_eq!(
-            clovy_identity_reply("What is Clovy?"),
+            clovy_identity_reply("What is Clovy?", true),
             Some(CLOVY_IDENTITY_REPLY)
         );
+    }
+
+    #[test]
+    fn home_chat_leaves_ambiguous_legacy_names_on_the_contextual_model_path() {
+        assert_eq!(clovy_identity_reply("Who is June?", false), None);
+        assert_eq!(
+            clovy_identity_reply("Are you called June?", false),
+            Some(CLOVY_IDENTITY_REPLY)
+        );
+        assert!(clovy_home_has_prior_context(
+            &[
+                serde_json::json!({ "role": "assistant", "content": "June leads the project." }),
+                serde_json::json!({ "role": "user", "content": "Who is June?" }),
+            ],
+            None,
+        ));
+        assert!(clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            Some("Earlier context about a person named June."),
+        ));
+        assert!(!clovy_home_has_prior_context(
+            &[serde_json::json!({ "role": "user", "content": "Who is June?" })],
+            None,
+        ));
     }
 
     #[test]
@@ -4806,7 +4855,7 @@ data: \"data\":{\"content\":\"Joined\",\"titleSuggestion\":null,\"provider\":\"v
             "Are you using GPT OSS?",
             "Who are you working for?",
         ] {
-            assert_eq!(clovy_identity_reply(message), None);
+            assert_eq!(clovy_identity_reply(message, true), None);
         }
     }
 

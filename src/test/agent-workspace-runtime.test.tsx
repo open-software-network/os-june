@@ -1835,8 +1835,8 @@ describe("AgentWorkspace runtime wiring", () => {
           data: {
             itemId: "tool-item-1",
             callId: "call-1",
-            name: "read_file",
-            arguments: { path: "notes.md" },
+            name: "search_june",
+            arguments: { query: "project notes" },
             createdAt: "2026-07-25T12:00:01Z",
           },
         },
@@ -1861,6 +1861,9 @@ describe("AgentWorkspace runtime wiring", () => {
       });
     });
 
+    expect(await screen.findByText("Search Clovy notes")).toBeInTheDocument();
+    expect(screen.queryByText("search_june")).toBeNull();
+
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Usage" }));
     const usagePanel = screen.getByRole("dialog", { name: "Usage" });
@@ -1869,7 +1872,8 @@ describe("AgentWorkspace runtime wiring", () => {
     expect(usageOverlay?.parentElement).toBe(document.querySelector(".app-shell"));
     expect(usagePanel).toHaveTextContent("10,000 of 200,000 (5.0%)");
     expect(usagePanel).toHaveTextContent("28 credits (about $0.0280)");
-    expect(usagePanel).toHaveTextContent("read_file");
+    expect(usagePanel).toHaveTextContent("Search Clovy notes");
+    expect(usagePanel).not.toHaveTextContent("search_june");
     expect(usagePanel).toHaveTextContent("1 call");
     expect(usagePanel).toHaveTextContent("phala");
     expect(usagePanel).toHaveTextContent("tee");
