@@ -220,8 +220,9 @@ fn migrate_sdk_value(
             let load_skill_call = item_type.as_deref() == Some("function_call")
                 && name.as_deref() == Some("load_skill")
                 && managed_call_id;
-            let load_skill_result =
-                item_type.as_deref() == Some("function_call_result") && managed_call_id;
+            let load_skill_result = item_type.as_deref() == Some("function_call_result")
+                && name.as_deref() == Some("load_skill")
+                && managed_call_id;
 
             if load_skill_call {
                 if let Some(arguments) = object.get_mut("arguments") {
@@ -795,6 +796,53 @@ mod tests {
             migrate_resumable_skill_state(&envelope, Some(managed_root)),
             envelope
         );
+    }
+
+    #[test]
+    fn custom_same_id_sdk_results_are_not_migrated_as_load_skill_output() {
+        let managed_output = serde_json::to_string(&released_skill_result(
+            "/Library/June/agents/skills/june-obsidian/SKILL.md",
+        ))
+        .expect("managed output");
+        let state = serde_json::json!({
+            "generatedItems": [
+                {
+                    "type": "function_call",
+                    "callId": "shared-id",
+                    "name": "load_skill",
+                    "arguments": "{\"name\":\"june-obsidian\"}"
+                },
+                {
+                    "type": "function_call_result",
+                    "name": "load_skill",
+                    "callId": "shared-id",
+                    "output": managed_output
+                },
+                {
+                    "type": "function_call_result",
+                    "name": "mcp_custom",
+                    "callId": "shared-id",
+                    "output": managed_output
+                }
+            ]
+        });
+        let raw = serde_json::to_string(&state).expect("raw state");
+        let managed_root = Path::new("/Library/June/agents/skills");
+        let migrated = migrate_resumable_skill_state(&raw, Some(managed_root));
+        let migrated: Value = serde_json::from_str(&migrated).expect("migrated state");
+
+        assert_eq!(
+            migrated["generatedItems"][0]["arguments"],
+            r#"{"name":"clovy-obsidian"}"#
+        );
+        let managed: Value = serde_json::from_str(
+            migrated["generatedItems"][1]["output"]
+                .as_str()
+                .expect("managed output"),
+        )
+        .expect("managed JSON");
+        assert_eq!(managed["name"], CLOVY_OBSIDIAN_SKILL_ID);
+        assert_eq!(migrated["generatedItems"][2]["output"], managed_output);
     }
 
     #[test]
