@@ -28,7 +28,6 @@ const LEGACY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
     "You are June executing an unattended routine.";
 const CLOVY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
     "You are Clovy executing an unattended routine.";
-type ManagedSkillCallKey = (Option<String>, String);
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
 const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
 const MAX_STAGED_AGENT_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
@@ -2463,9 +2462,9 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
 fn history_item_with_skill_root(
     item: AgentItemDto,
     managed_skill_root: Option<&Path>,
-    managed_load_skill_call_ids: &HashSet<ManagedSkillCallKey>,
+    managed_load_skill_call_item_ids: &HashSet<String>,
 ) -> Option<Value> {
-    let run_id = item.run_id.clone();
+    let item_id = item.id.clone();
     match item.payload {
         AgentItemPayload::UserMessage(message)
         | AgentItemPayload::AssistantMessage(message)
@@ -2482,9 +2481,7 @@ fn history_item_with_skill_root(
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
             let mut arguments = tool.arguments.unwrap_or_else(|| json!({}));
-            if name == "load_skill"
-                && managed_load_skill_call_ids.contains(&(run_id, call_id.clone()))
-            {
+            if name == "load_skill" && managed_load_skill_call_item_ids.contains(&item_id) {
                 canonicalize_load_skill_arguments(&mut arguments);
             }
             let arguments = serde_json::to_string(&arguments).ok()?;
@@ -2544,11 +2541,16 @@ fn runtime_history_with_skill_root(
         .into_iter()
         .filter(|item| item.run_id.as_deref() != excluded_run_id)
         .collect::<Vec<_>>();
-    let managed_load_skill_call_ids = managed_load_skill_call_ids(&items, managed_skill_root);
+    let managed_load_skill_call_item_ids =
+        managed_load_skill_call_item_ids(&items, managed_skill_root);
     items
         .into_iter()
         .filter_map(|item| {
-            history_item_with_skill_root(item, managed_skill_root, &managed_load_skill_call_ids)
+            history_item_with_skill_root(
+                item,
+                managed_skill_root,
+                &managed_load_skill_call_item_ids,
+            )
         })
         .collect()
 }
@@ -2572,9 +2574,9 @@ fn item_json_with_active_run_and_managed_calls(
     item: AgentItemDto,
     active_run_id: Option<&str>,
     managed_skill_root: Option<&Path>,
-    managed_load_skill_call_ids: &HashSet<ManagedSkillCallKey>,
+    managed_load_skill_call_item_ids: &HashSet<String>,
 ) -> Result<Value, AppError> {
-    let run_id = item.run_id.clone();
+    let item_id = item.id.clone();
     let is_active_run = item.run_id.as_deref() == active_run_id;
     let stable_stream_id = is_active_run
         .then_some(item.external_id.as_deref())
@@ -2634,9 +2636,7 @@ fn item_json_with_active_run_and_managed_calls(
             let name = v.tool_name.unwrap_or_default();
             let mut arguments = v.arguments;
             let call_id = v.tool_call_id.unwrap_or_default();
-            if name == "load_skill"
-                && managed_load_skill_call_ids.contains(&(run_id, call_id.clone()))
-            {
+            if name == "load_skill" && managed_load_skill_call_item_ids.contains(&item_id) {
                 if let Some(arguments) = arguments.as_mut() {
                     canonicalize_load_skill_arguments(arguments);
                 }
@@ -2662,26 +2662,45 @@ fn item_json_with_active_run_and_managed_calls(
     Ok(Value::Object(object))
 }
 
-fn managed_load_skill_call_ids(
+fn managed_load_skill_call_item_ids(
     items: &[AgentItemDto],
     managed_skill_root: Option<&Path>,
-) -> HashSet<ManagedSkillCallKey> {
-    items
-        .iter()
-        .filter_map(|item| match &item.payload {
-            AgentItemPayload::ToolResult(tool)
-                if tool.tool_name.as_deref() == Some("load_skill")
-                    && tool.result.as_ref().is_some_and(|result| {
-                        is_managed_obsidian_skill_result(result, managed_skill_root)
-                    }) =>
-            {
-                tool.tool_call_id
-                    .as_ref()
-                    .map(|call_id| (item.run_id.clone(), call_id.clone()))
+) -> HashSet<String> {
+    let mut pending_calls: HashMap<(Option<&str>, &str), Vec<&str>> = HashMap::new();
+    let mut managed_call_items = HashSet::new();
+    for item in items {
+        match &item.payload {
+            AgentItemPayload::ToolCall(tool) if tool.tool_name.as_deref() == Some("load_skill") => {
+                if let Some(call_id) = tool.tool_call_id.as_deref() {
+                    pending_calls
+                        .entry((item.run_id.as_deref(), call_id))
+                        .or_default()
+                        .push(&item.id);
+                }
             }
-            _ => None,
-        })
-        .collect()
+            AgentItemPayload::ToolResult(tool)
+                if tool.tool_name.as_deref() == Some("load_skill") =>
+            {
+                let Some(call_id) = tool.tool_call_id.as_deref() else {
+                    continue;
+                };
+                let Some(call_items) = pending_calls.get_mut(&(item.run_id.as_deref(), call_id))
+                else {
+                    continue;
+                };
+                let Some(call_item_id) = call_items.pop() else {
+                    continue;
+                };
+                if tool.result.as_ref().is_some_and(|result| {
+                    is_managed_obsidian_skill_result(result, managed_skill_root)
+                }) {
+                    managed_call_items.insert(call_item_id.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    managed_call_items
 }
 
 fn items_json_with_active_run(
@@ -2689,7 +2708,8 @@ fn items_json_with_active_run(
     active_run_id: Option<&str>,
     managed_skill_root: Option<&Path>,
 ) -> Result<Vec<Value>, AppError> {
-    let managed_load_skill_call_ids = managed_load_skill_call_ids(&items, managed_skill_root);
+    let managed_load_skill_call_item_ids =
+        managed_load_skill_call_item_ids(&items, managed_skill_root);
     items
         .into_iter()
         .map(|item| {
@@ -2697,7 +2717,7 @@ fn items_json_with_active_run(
                 item,
                 active_run_id,
                 managed_skill_root,
-                &managed_load_skill_call_ids,
+                &managed_load_skill_call_item_ids,
             )
         })
         .collect()
@@ -4176,7 +4196,7 @@ mod tests {
         let legacy_skill = include_str!("fixtures/legacy-obsidian-v1.md");
         let call_item = item(
             "call",
-            "run-managed",
+            "run-copied-branch",
             AgentItemPayload::ToolCall(super::super::ToolPayload {
                 tool_name: Some("load_skill".into()),
                 tool_call_id: Some("call-1".into()),
@@ -4187,7 +4207,7 @@ mod tests {
         );
         let result_item = item(
             "result",
-            "run-managed",
+            "run-copied-branch",
             AgentItemPayload::ToolResult(super::super::ToolPayload {
                 tool_name: Some("load_skill".into()),
                 tool_call_id: Some("call-1".into()),
@@ -4247,7 +4267,7 @@ mod tests {
         );
         let user_global_call_item = item(
             "user-global-call",
-            "run-user-global",
+            "run-copied-branch",
             AgentItemPayload::ToolCall(super::super::ToolPayload {
                 tool_name: Some("load_skill".into()),
                 tool_call_id: Some("call-1".into()),
@@ -4258,7 +4278,7 @@ mod tests {
         );
         let user_global_result_item = item(
             "user-global-result",
-            "run-user-global",
+            "run-copied-branch",
             AgentItemPayload::ToolResult(super::super::ToolPayload {
                 tool_name: Some("load_skill".into()),
                 tool_call_id: Some("call-1".into()),

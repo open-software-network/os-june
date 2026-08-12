@@ -127,6 +127,7 @@ data-driven: discount reviewer patterns with a bad true/findings ratio
 | #1057 | Spec persisted-skill ownership | 1 | 1 | caught content migration based on fixture equality without matching the released skill identity; added copied-content and user-global regression controls |
 | #1057 | Adversarial persisted-skill ownership | 1 | 1 | reproduced both custom copied content and a user-global legacy id through resume, history, and transcript boundaries; correlated call migration to a verified managed result |
 | #1057 | Adversarial persisted-skill run correlation | 1 | 1 | caught provider call ids colliding across session runs; scoped history and transcript correlation by both run id and call id |
+| #1057 | Adversarial persisted-skill ambiguous correlation | 2 | 2 | caught branch copies collapsing run ids and SDK state reusing bare call ids; paired copied history groups by item order and preserved ambiguous serialized records |
 | #804 | Greptile (stale initial SHA) | 2 | 2 | both real: raw mark sizing duplicated the Standards finding and failure styling depended on message wording; precise despite reviewing the initial commit |
 | #786 | Standards (codex, r1+final) | 3 | 3 | caught two OS Accounts glossary-name violations, raw avatar effect sizes instead of tokens, and the missing canonical avatar-seed term; final clean |
 | #786 | Spec (codex, r1+final) | 2 | 2 | found the old remote seed suppressing a required unsynced local fallback, then the unmount path that bypassed the first stale-response guard; final clean |

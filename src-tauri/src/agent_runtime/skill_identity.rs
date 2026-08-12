@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -133,39 +133,49 @@ fn migrate_sdk_state(sdk_state: &str, managed_skill_root: Option<&Path>) -> Stri
 }
 
 fn migrate_sdk_state_value(state: &mut Value, managed_skill_root: Option<&Path>) -> bool {
-    let mut managed_load_skill_call_ids = HashSet::new();
-    collect_managed_load_skill_call_ids(
-        state,
-        managed_skill_root,
-        &mut managed_load_skill_call_ids,
-    );
+    let mut load_skill_results = HashMap::new();
+    collect_load_skill_result_provenance(state, managed_skill_root, &mut load_skill_results);
+    let managed_load_skill_call_ids = load_skill_results
+        .into_iter()
+        .filter_map(|(call_id, (all_results, managed_results))| {
+            (all_results.len() == 1 && managed_results == all_results).then_some(call_id)
+        })
+        .collect();
     migrate_sdk_value(state, &managed_load_skill_call_ids, managed_skill_root)
 }
 
-fn collect_managed_load_skill_call_ids(
+fn collect_load_skill_result_provenance(
     value: &Value,
     managed_skill_root: Option<&Path>,
-    call_ids: &mut HashSet<String>,
+    results: &mut HashMap<String, (HashSet<String>, HashSet<String>)>,
 ) {
     match value {
         Value::Array(values) => {
             for value in values {
-                collect_managed_load_skill_call_ids(value, managed_skill_root, call_ids);
+                collect_load_skill_result_provenance(value, managed_skill_root, results);
             }
         }
         Value::Object(object) => {
             if object.get("type").and_then(Value::as_str) == Some("function_call_result")
                 && object.get("name").and_then(Value::as_str) == Some("load_skill")
-                && object
-                    .get("output")
-                    .is_some_and(|output| load_skill_output_is_managed(output, managed_skill_root))
             {
-                if let Some(call_id) = object.get("callId").and_then(Value::as_str) {
-                    call_ids.insert(call_id.to_string());
+                if let (Some(call_id), Some(output)) = (
+                    object.get("callId").and_then(Value::as_str),
+                    object.get("output"),
+                ) {
+                    if let Some(result) = load_skill_result_value(output) {
+                        if let Ok(fingerprint) = serde_json::to_string(&result) {
+                            let entry = results.entry(call_id.to_string()).or_default();
+                            entry.0.insert(fingerprint.clone());
+                            if is_managed_obsidian_skill_result(&result, managed_skill_root) {
+                                entry.1.insert(fingerprint);
+                            }
+                        }
+                    }
                 }
             }
             for value in object.values() {
-                collect_managed_load_skill_call_ids(value, managed_skill_root, call_ids);
+                collect_load_skill_result_provenance(value, managed_skill_root, results);
             }
         }
         _ => {}
@@ -280,18 +290,14 @@ fn migrate_load_skill_output(output: &mut Value, managed_skill_root: Option<&Pat
     migrate_load_skill_result(output, managed_skill_root)
 }
 
-fn load_skill_output_is_managed(output: &Value, managed_skill_root: Option<&Path>) -> bool {
+fn load_skill_result_value(output: &Value) -> Option<Value> {
     if let Some(value) = output.as_str() {
-        return serde_json::from_str::<Value>(value)
-            .ok()
-            .is_some_and(|parsed| is_managed_obsidian_skill_result(&parsed, managed_skill_root));
+        return serde_json::from_str(value).ok();
     }
     if output.get("type").and_then(Value::as_str) == Some("text") {
-        return output
-            .get("text")
-            .is_some_and(|text| load_skill_output_is_managed(text, managed_skill_root));
+        return output.get("text").and_then(load_skill_result_value);
     }
-    is_managed_obsidian_skill_result(output, managed_skill_root)
+    output.is_object().then(|| output.clone())
 }
 
 fn canonical_managed_load_skill_path(path: &str, managed_skill_root: &Path) -> Option<String> {
@@ -669,6 +675,75 @@ mod tests {
         assert_eq!(
             migrated_state["generatedItems"][8]["rawItem"]["output"]["text"],
             user_global_output
+        );
+    }
+
+    #[test]
+    fn ambiguous_sdk_call_ids_preserve_managed_and_user_global_skill_records() {
+        let managed_output = serde_json::to_string(&released_skill_result(
+            "/Library/June/agents/skills/june-obsidian/SKILL.md",
+        ))
+        .expect("managed output");
+        let user_global_output = serde_json::to_string(&serde_json::json!({
+            "name": LEGACY_OBSIDIAN_SKILL_ID,
+            "content": "Keep June Carter research",
+            "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+        }))
+        .expect("user-global output");
+        let state = serde_json::json!({
+            "generatedItems": [
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "duplicate-id",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"june-obsidian\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "duplicate-id",
+                        "output": { "type": "text", "text": user_global_output }
+                    },
+                    "output": user_global_output
+                },
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "duplicate-id",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"june-obsidian\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "duplicate-id",
+                        "output": { "type": "text", "text": managed_output }
+                    },
+                    "output": managed_output
+                }
+            ]
+        });
+        let raw = serde_json::to_string(&state).expect("raw state");
+        let envelope = serde_json::to_string(&serde_json::json!({
+            "juneVersion": 1,
+            "sdkState": raw
+        }))
+        .expect("state envelope");
+        let managed_root = Path::new("/Library/June/agents/skills");
+
+        assert_eq!(migrate_resumable_skill_state(&raw, Some(managed_root)), raw);
+        assert_eq!(
+            migrate_resumable_skill_state(&envelope, Some(managed_root)),
+            envelope
         );
     }
 
