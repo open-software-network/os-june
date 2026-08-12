@@ -1,8 +1,10 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     fs, io,
     path::{Path, PathBuf},
 };
+
+use serde_json::Value;
 
 pub const CLOVY_OBSIDIAN_SKILL_ID: &str = "clovy-obsidian";
 pub const LEGACY_OBSIDIAN_SKILL_ID: &str = "june-obsidian";
@@ -20,6 +22,221 @@ pub fn canonical_skill_id(skill_id: &str) -> &str {
     } else {
         skill_id
     }
+}
+
+pub(crate) fn canonicalize_load_skill_arguments(arguments: &mut Value) -> bool {
+    let Some(arguments) = arguments.as_object_mut() else {
+        return false;
+    };
+    if arguments.get("name").and_then(Value::as_str) != Some(LEGACY_OBSIDIAN_SKILL_ID) {
+        return false;
+    }
+    arguments.insert("name".into(), Value::String(CLOVY_OBSIDIAN_SKILL_ID.into()));
+    true
+}
+
+pub(crate) fn migrate_load_skill_result(result: &mut Value) -> bool {
+    let Some(result) = result.as_object_mut() else {
+        return false;
+    };
+    let mut changed = false;
+    if result.get("name").and_then(Value::as_str) == Some(LEGACY_OBSIDIAN_SKILL_ID) {
+        result.insert("name".into(), Value::String(CLOVY_OBSIDIAN_SKILL_ID.into()));
+        changed = true;
+    }
+    if let Some(content) = result.get_mut("content") {
+        if let Some(value) = content.as_str() {
+            let canonical_legacy =
+                skill_content_for_id(RELEASED_LEGACY_OBSIDIAN_SKILL_V1, CLOVY_OBSIDIAN_SKILL_ID);
+            if value == RELEASED_LEGACY_OBSIDIAN_SKILL_V1 || value == canonical_legacy {
+                *content = Value::String(BUNDLED_CLOVY_OBSIDIAN_SKILL.into());
+                changed = true;
+            }
+        }
+    }
+    if let Some(path) = result.get_mut("path") {
+        if let Some(value) = path.as_str() {
+            if let Some(migrated) = canonical_load_skill_path(value) {
+                *path = Value::String(migrated);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+pub(crate) fn migrate_resumable_skill_state(serialized_state: &str) -> String {
+    let Ok(mut outer) = serde_json::from_str::<Value>(serialized_state) else {
+        return serialized_state.to_string();
+    };
+    if let Some(sdk_state) = outer
+        .get("sdkState")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let migrated = migrate_sdk_state(&sdk_state);
+        if migrated == sdk_state {
+            return serialized_state.to_string();
+        }
+        outer["sdkState"] = Value::String(migrated);
+    } else if !migrate_sdk_state_value(&mut outer) {
+        return serialized_state.to_string();
+    }
+    serde_json::to_string(&outer).unwrap_or_else(|_| serialized_state.to_string())
+}
+
+fn migrate_sdk_state(sdk_state: &str) -> String {
+    let Ok(mut state) = serde_json::from_str::<Value>(sdk_state) else {
+        return sdk_state.to_string();
+    };
+    if !migrate_sdk_state_value(&mut state) {
+        return sdk_state.to_string();
+    }
+    serde_json::to_string(&state).unwrap_or_else(|_| sdk_state.to_string())
+}
+
+fn migrate_sdk_state_value(state: &mut Value) -> bool {
+    let mut load_skill_call_ids = HashSet::new();
+    collect_load_skill_call_ids(state, &mut load_skill_call_ids);
+    migrate_sdk_value(state, &load_skill_call_ids)
+}
+
+fn collect_load_skill_call_ids(value: &Value, call_ids: &mut HashSet<String>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_load_skill_call_ids(value, call_ids);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("function_call")
+                && object.get("name").and_then(Value::as_str) == Some("load_skill")
+            {
+                if let Some(call_id) = object.get("callId").and_then(Value::as_str) {
+                    call_ids.insert(call_id.to_string());
+                }
+            }
+            for value in object.values() {
+                collect_load_skill_call_ids(value, call_ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn migrate_sdk_value(value: &mut Value, load_skill_call_ids: &HashSet<String>) -> bool {
+    let mut changed = false;
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                changed |= migrate_sdk_value(value, load_skill_call_ids);
+            }
+        }
+        Value::Object(object) => {
+            let item_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let name = object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let call_id = object
+                .get("callId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let load_skill_call = item_type.as_deref() == Some("function_call")
+                && name.as_deref() == Some("load_skill");
+            let load_skill_result = item_type.as_deref() == Some("function_call_result")
+                && (name.as_deref() == Some("load_skill")
+                    || call_id.is_some_and(|call_id| load_skill_call_ids.contains(&call_id)));
+
+            if load_skill_call {
+                if let Some(arguments) = object.get_mut("arguments") {
+                    changed |= migrate_json_arguments(arguments);
+                }
+            }
+            if load_skill_result {
+                if let Some(output) = object.get_mut("output") {
+                    changed |= migrate_load_skill_output(output);
+                }
+            }
+            if item_type.as_deref() == Some("tool_call_output_item") {
+                let wrapped_result = object.get("rawItem").and_then(Value::as_object);
+                let wrapped_name = wrapped_result
+                    .and_then(|raw| raw.get("name"))
+                    .and_then(Value::as_str);
+                let wrapped_call_id = wrapped_result
+                    .and_then(|raw| raw.get("callId"))
+                    .and_then(Value::as_str);
+                if wrapped_name == Some("load_skill")
+                    || wrapped_call_id.is_some_and(|call_id| load_skill_call_ids.contains(call_id))
+                {
+                    if let Some(output) = object.get_mut("output") {
+                        changed |= migrate_load_skill_output(output);
+                    }
+                }
+            }
+            for value in object.values_mut() {
+                changed |= migrate_sdk_value(value, load_skill_call_ids);
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn migrate_json_arguments(arguments: &mut Value) -> bool {
+    if let Some(value) = arguments.as_str() {
+        let Ok(mut parsed) = serde_json::from_str::<Value>(value) else {
+            return false;
+        };
+        if !canonicalize_load_skill_arguments(&mut parsed) {
+            return false;
+        }
+        if let Ok(serialized) = serde_json::to_string(&parsed) {
+            *arguments = Value::String(serialized);
+            return true;
+        }
+        return false;
+    }
+    canonicalize_load_skill_arguments(arguments)
+}
+
+fn migrate_load_skill_output(output: &mut Value) -> bool {
+    if let Some(value) = output.as_str() {
+        let Ok(mut parsed) = serde_json::from_str::<Value>(value) else {
+            return false;
+        };
+        if !migrate_load_skill_result(&mut parsed) {
+            return false;
+        }
+        if let Ok(serialized) = serde_json::to_string(&parsed) {
+            *output = Value::String(serialized);
+            return true;
+        }
+        return false;
+    }
+    if output.get("type").and_then(Value::as_str) == Some("text") {
+        return output
+            .get_mut("text")
+            .is_some_and(migrate_load_skill_output);
+    }
+    migrate_load_skill_result(output)
+}
+
+fn canonical_load_skill_path(path: &str) -> Option<String> {
+    for (separator, legacy_suffix) in [
+        ('/', "/june-obsidian/SKILL.md"),
+        ('\\', "\\june-obsidian\\SKILL.md"),
+    ] {
+        if let Some(prefix) = path.strip_suffix(legacy_suffix) {
+            return Some(format!(
+                "{prefix}{separator}{CLOVY_OBSIDIAN_SKILL_ID}{separator}SKILL.md"
+            ));
+        }
+    }
+    None
 }
 
 pub fn canonical_skill_ids<'a>(skill_ids: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
@@ -168,6 +385,143 @@ fn write_skill_file(destination: &Path, content: &str, skill_id: &str) -> io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn released_skill_result(path: &str) -> Value {
+        serde_json::json!({
+            "name": LEGACY_OBSIDIAN_SKILL_ID,
+            "content": RELEASED_LEGACY_OBSIDIAN_SKILL_V1,
+            "path": path
+        })
+    }
+
+    #[test]
+    fn resumable_load_skill_state_migrates_only_correlated_app_owned_payloads() {
+        let released_output = serde_json::to_string(&released_skill_result(
+            "/Library/June/agents/skills/june-obsidian/SKILL.md",
+        ))
+        .expect("released output");
+        let edited_content = "User-edited instructions about June Carter.";
+        let edited_output = serde_json::to_string(&serde_json::json!({
+            "name": LEGACY_OBSIDIAN_SKILL_ID,
+            "content": edited_content,
+            "path": "C:\\June\\june-obsidian\\SKILL.md"
+        }))
+        .expect("edited output");
+        let custom_output = serde_json::to_string(&serde_json::json!({
+            "name": LEGACY_OBSIDIAN_SKILL_ID,
+            "content": RELEASED_LEGACY_OBSIDIAN_SKILL_V1,
+            "path": "/custom/june-obsidian/SKILL.md"
+        }))
+        .expect("custom output");
+        let sdk_state = serde_json::json!({
+            "modelResponses": [{
+                "output": [{
+                    "type": "function_call",
+                    "callId": "call-released",
+                    "name": "load_skill",
+                    "arguments": "{\"name\":\"june-obsidian\"}"
+                }]
+            }],
+            "generatedItems": [
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "call-released",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"june-obsidian\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "call-released",
+                        "output": { "type": "text", "text": released_output }
+                    },
+                    "output": released_output
+                },
+                {
+                    "type": "tool_call_item",
+                    "rawItem": {
+                        "type": "function_call",
+                        "callId": "call-edited",
+                        "name": "load_skill",
+                        "arguments": "{\"name\":\"june-obsidian\"}"
+                    }
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "load_skill",
+                        "callId": "call-edited",
+                        "output": { "type": "text", "text": edited_output }
+                    },
+                    "output": edited_output
+                },
+                {
+                    "type": "tool_call_output_item",
+                    "rawItem": {
+                        "type": "function_call_result",
+                        "name": "mcp_custom",
+                        "callId": "call-custom",
+                        "output": { "type": "text", "text": custom_output }
+                    },
+                    "output": custom_output
+                }
+            ]
+        });
+        let envelope = serde_json::json!({
+            "juneVersion": 1,
+            "sdkState": serde_json::to_string(&sdk_state).expect("SDK state")
+        });
+
+        let migrated = migrate_resumable_skill_state(
+            &serde_json::to_string(&envelope).expect("serialized envelope"),
+        );
+        let migrated_envelope: Value = serde_json::from_str(&migrated).expect("migrated envelope");
+        let migrated_state: Value = serde_json::from_str(
+            migrated_envelope["sdkState"]
+                .as_str()
+                .expect("migrated SDK state"),
+        )
+        .expect("migrated SDK JSON");
+
+        assert_eq!(
+            migrated_state["modelResponses"][0]["output"][0]["arguments"],
+            r#"{"name":"clovy-obsidian"}"#
+        );
+        assert_eq!(
+            migrated_state["generatedItems"][0]["rawItem"]["arguments"],
+            r#"{"name":"clovy-obsidian"}"#
+        );
+        for path in [
+            &migrated_state["generatedItems"][1]["rawItem"]["output"]["text"],
+            &migrated_state["generatedItems"][1]["output"],
+        ] {
+            let payload: Value = serde_json::from_str(path.as_str().expect("released payload"))
+                .expect("released payload JSON");
+            assert_eq!(payload["name"], CLOVY_OBSIDIAN_SKILL_ID);
+            assert_eq!(payload["content"], BUNDLED_CLOVY_OBSIDIAN_SKILL);
+            assert_eq!(
+                payload["path"],
+                "/Library/June/agents/skills/clovy-obsidian/SKILL.md"
+            );
+        }
+        for path in [
+            &migrated_state["generatedItems"][3]["rawItem"]["output"]["text"],
+            &migrated_state["generatedItems"][3]["output"],
+        ] {
+            let payload: Value = serde_json::from_str(path.as_str().expect("edited payload"))
+                .expect("edited payload JSON");
+            assert_eq!(payload["name"], CLOVY_OBSIDIAN_SKILL_ID);
+            assert_eq!(payload["content"], edited_content);
+            assert_eq!(payload["path"], "C:\\June\\clovy-obsidian\\SKILL.md");
+        }
+        assert_eq!(migrated_state["generatedItems"][4]["output"], custom_output);
+    }
 
     #[test]
     fn released_obsidian_presentation_is_migrated_without_touching_custom_june_text() {

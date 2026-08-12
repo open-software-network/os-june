@@ -1,6 +1,8 @@
 use super::skill_identity::{
-    canonical_skill_id, canonical_skill_ids, read_skill_ids, skill_content_for_id, skill_file,
-    write_skill_ids, CLOVY_OBSIDIAN_SKILL_DESCRIPTION, LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
+    canonical_skill_id, canonical_skill_ids, canonicalize_load_skill_arguments,
+    migrate_load_skill_result, migrate_resumable_skill_state, read_skill_ids, skill_content_for_id,
+    skill_file, write_skill_ids, CLOVY_OBSIDIAN_SKILL_DESCRIPTION,
+    LEGACY_OBSIDIAN_SKILL_DESCRIPTION,
 };
 use super::{
     repository::ContextSummaryReplacement, AgentItemDto, AgentItemPayload, AgentRepository,
@@ -1376,7 +1378,7 @@ async fn resolve_agent_interruption_inner(
         .as_object_mut()
         .expect("run params object")
         .remove("history");
-    params["serializedState"] = json!(serialized_state);
+    params["serializedState"] = json!(migrate_resumable_skill_state(serialized_state));
     if let Some(resolved_model) = resolved_model {
         params["resolvedModel"] = json!(resolved_model);
     }
@@ -2459,8 +2461,11 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::ToolCall(tool) => {
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
-            let arguments =
-                serde_json::to_string(&tool.arguments.unwrap_or_else(|| json!({}))).ok()?;
+            let mut arguments = tool.arguments.unwrap_or_else(|| json!({}));
+            if name == "load_skill" {
+                canonicalize_load_skill_arguments(&mut arguments);
+            }
+            let arguments = serde_json::to_string(&arguments).ok()?;
             Some(json!({
                 "id": item.id,
                 "kind": "tool_call",
@@ -2479,7 +2484,11 @@ fn history_item(item: AgentItemDto) -> Option<Value> {
         AgentItemPayload::ToolResult(tool) => {
             let name = tool.tool_name?;
             let call_id = tool.tool_call_id?;
-            let output = serde_json::to_string(&tool.result.unwrap_or(Value::Null)).ok()?;
+            let mut result = tool.result.unwrap_or(Value::Null);
+            if name == "load_skill" {
+                migrate_load_skill_result(&mut result);
+            }
+            let output = serde_json::to_string(&result).ok()?;
             Some(json!({
                 "id": item.id,
                 "kind": "tool_result",
@@ -2574,10 +2583,24 @@ fn item_json_with_active_run(
             json!({ "kind": "context_summary", "text": v.text, "metadata": v.metadata })
         }
         AgentItemPayload::ToolCall(v) => {
-            json!({ "kind": "tool_call", "callId": v.tool_call_id.unwrap_or_default(), "name": v.tool_name.unwrap_or_default(), "arguments": v.arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
+            let name = v.tool_name.unwrap_or_default();
+            let mut arguments = v.arguments;
+            if name == "load_skill" {
+                if let Some(arguments) = arguments.as_mut() {
+                    canonicalize_load_skill_arguments(arguments);
+                }
+            }
+            json!({ "kind": "tool_call", "callId": v.tool_call_id.unwrap_or_default(), "name": name, "arguments": arguments, "status": v.status.unwrap_or_else(|| "complete".into()) })
         }
         AgentItemPayload::ToolResult(v) => {
-            json!({ "kind": "tool_result", "callId": v.tool_call_id.unwrap_or_default(), "name": v.tool_name.unwrap_or_default(), "output": v.result, "isError": v.status.as_deref() == Some("failed") })
+            let name = v.tool_name.unwrap_or_default();
+            let mut result = v.result;
+            if name == "load_skill" {
+                if let Some(result) = result.as_mut() {
+                    migrate_load_skill_result(result);
+                }
+            }
+            json!({ "kind": "tool_result", "callId": v.tool_call_id.unwrap_or_default(), "name": name, "output": result, "isError": v.status.as_deref() == Some("failed") })
         }
         AgentItemPayload::Interruption(v) => json!({ "kind": "interruption", "interruption": v }),
         AgentItemPayload::Error(v) => {
@@ -4045,6 +4068,116 @@ mod tests {
             tool_result["payload"]["output"],
             r#"{"files":["brief.md"]}"#
         );
+    }
+
+    #[test]
+    fn persisted_load_skill_history_migrates_only_app_owned_identity_fields() {
+        let item = |id: &str, payload: AgentItemPayload| AgentItemDto {
+            id: id.into(),
+            session_id: "session-1".into(),
+            run_id: Some("run-1".into()),
+            sequence: 1,
+            payload,
+            external_id: None,
+            created_at: "2026-07-24T12:00:00Z".into(),
+        };
+        let legacy_skill = include_str!("fixtures/legacy-obsidian-v1.md");
+        let call_item = item(
+            "call",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let call = history_item(call_item.clone()).expect("skill call");
+        let public_call = item_json_with_active_run(call_item, None).expect("public skill call");
+        let result_item = item(
+            "result",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-1".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let result = history_item(result_item.clone()).expect("skill result");
+        let public_result =
+            item_json_with_active_run(result_item, None).expect("public skill result");
+        let edited_item = item(
+            "edited",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("call-2".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let edited_result = history_item(edited_item.clone()).expect("edited skill result");
+        let public_edited =
+            item_json_with_active_run(edited_item, None).expect("public edited skill result");
+        let custom_item = item(
+            "custom",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("mcp_custom".into()),
+                tool_call_id: Some("call-3".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/custom/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let custom_result = history_item(custom_item.clone()).expect("custom result");
+        let public_custom =
+            item_json_with_active_run(custom_item, None).expect("public custom result");
+
+        assert_eq!(call["payload"]["arguments"], r#"{"name":"clovy-obsidian"}"#);
+        assert_eq!(public_call["arguments"]["name"], "clovy-obsidian");
+        let result: Value =
+            serde_json::from_str(result["payload"]["output"].as_str().expect("result output"))
+                .expect("result JSON");
+        assert_eq!(result["name"], "clovy-obsidian");
+        assert!(result["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("# Clovy Obsidian vault")));
+        assert_eq!(
+            result["path"],
+            "/Library/June/skills/clovy-obsidian/SKILL.md"
+        );
+        assert_eq!(public_result["output"], result);
+        let edited: Value = serde_json::from_str(
+            edited_result["payload"]["output"]
+                .as_str()
+                .expect("edited output"),
+        )
+        .expect("edited JSON");
+        assert_eq!(edited["name"], "clovy-obsidian");
+        assert_eq!(edited["content"], "Keep June Carter research");
+        assert_eq!(public_edited["output"], edited);
+        let custom: Value = serde_json::from_str(
+            custom_result["payload"]["output"]
+                .as_str()
+                .expect("custom output"),
+        )
+        .expect("custom JSON");
+        assert_eq!(custom["name"], "june-obsidian");
+        assert_eq!(custom["content"], legacy_skill);
+        assert_eq!(public_custom["output"], custom);
     }
 
     #[test]
