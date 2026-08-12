@@ -1,4 +1,4 @@
-import type { EngineResult, RunStartParams } from "./types.js";
+import type { EngineResult, JsonValue, RunStartParams, RuntimeHistoryItem } from "./types.js";
 
 export const CLOVY_IDENTITY_REPLY = "I'm Clovy, your personal AI assistant.";
 
@@ -98,10 +98,7 @@ export function clovyIdentityResult(params: RunStartParams): EngineResult | unde
       return contextMentionsLegacyName(item.text);
     }
     if (item.kind === "tool_result") {
-      return (
-        contextMentionsLegacyName(item.text) ||
-        contextMentionsLegacyName(JSON.stringify(item.payload ?? null))
-      );
+      return toolResultMentionsLegacyName(item);
     }
     return false;
   });
@@ -129,6 +126,36 @@ export function clovyIdentityResult(params: RunStartParams): EngineResult | unde
     usage: {},
     interruptions: [],
   };
+}
+
+function toolResultMentionsLegacyName(item: RuntimeHistoryItem): boolean {
+  if (contextMentionsLegacyName(item.text)) return true;
+  let content = item.payload;
+  let toolName = item.name;
+  if (isJsonObject(content)) {
+    if (!toolName && typeof content.name === "string") toolName = content.name;
+    if ("output" in content) content = content.output;
+    else if ("result" in content) content = content.result;
+  }
+  if (typeof content === "string") {
+    const serializedContent = content;
+    try {
+      content = JSON.parse(serializedContent) as JsonValue;
+    } catch {
+      return contextMentionsLegacyName(serializedContent);
+    }
+  }
+  if (toolName === "load_skill" && isJsonObject(content)) {
+    return (
+      contextMentionsLegacyName(typeof content.content === "string" ? content.content : undefined) ||
+      contextMentionsLegacyName(typeof content.text === "string" ? content.text : undefined)
+    );
+  }
+  return contextMentionsLegacyName(JSON.stringify(content ?? null));
+}
+
+function isJsonObject(value: JsonValue | undefined): value is { [key: string]: JsonValue } {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function contextMentionsLegacyName(text: string | undefined): boolean {

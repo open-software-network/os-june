@@ -141,3 +141,31 @@ test("answers ambiguous legacy-name questions after unrelated tool results", () 
     CLOVY_IDENTITY_REPLY,
   );
 });
+
+test("ignores compatibility-only paths in managed skill results", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: [
+        {
+          id: "managed-skill-result",
+          kind: "tool_result",
+          name: "load_skill",
+          callId: "load-skill-1",
+          payload: {
+            type: "function_call_result",
+            name: "load_skill",
+            callId: "load-skill-1",
+            status: "completed",
+            output: JSON.stringify({
+              name: "clovy-obsidian",
+              content: "Use the Clovy Obsidian integration.",
+              path: "/Library/Application Support/co.opensoftware.june/skills/clovy-obsidian/SKILL.md",
+            }),
+          },
+        },
+      ],
+    })?.finalOutput,
+    CLOVY_IDENTITY_REPLY,
+  );
+});
