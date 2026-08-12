@@ -31,7 +31,7 @@ managed_enabled = true
 # Public facts shown on the /verify attestation page. source_commit is not
 # set here - the Docker build stamps it via CLOVY__ATTESTATION__SOURCE_COMMIT.
 [attestation]
-source_repo_url = "https://github.com/open-software-network/os-june"
+source_repo_url = "https://github.com/open-software-network/os-clovy"
 image_repo = "ghcr.io/open-software-network/clovy-api"
 trust_center_url = "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"
 

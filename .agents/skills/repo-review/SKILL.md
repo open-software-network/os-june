@@ -1,7 +1,7 @@
 ---
 name: repo-review
 description: >-
-  Run the os-june review battery over the diff between HEAD and a fixed point:
+  Run the os-clovy review battery over the diff between HEAD and a fixed point:
   a two-axis review (Standards — does the code follow this repo's documented
   rules; Spec — does it faithfully implement the originating issue/design) in
   parallel sub-agents, plus an adversarial review that attacks the change's

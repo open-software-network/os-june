@@ -1186,7 +1186,7 @@ impl Default for AppConfig {
             },
             attestation: AttestationConfig {
                 source_commit: String::new(),
-                source_repo_url: "https://github.com/open-software-network/os-june".to_string(),
+                source_repo_url: "https://github.com/open-software-network/os-clovy".to_string(),
                 image_repo: "ghcr.io/open-software-network/clovy-api".to_string(),
                 trust_center_url:
                     "https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54"

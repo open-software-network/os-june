@@ -27,7 +27,7 @@ import urllib.request
 
 EXCLUDE_FILE = "scripts/cargo-release-age-exclude.txt"
 CRATES_IO_REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-USER_AGENT = "clovy-release-age-check (https://github.com/open-software-network/os-june)"
+USER_AGENT = "clovy-release-age-check (https://github.com/open-software-network/os-clovy)"
 API = "https://crates.io/api/v1/crates/{name}/versions"
 
 

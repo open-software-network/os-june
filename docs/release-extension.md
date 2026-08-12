@@ -86,12 +86,17 @@ already out:
    Account -> Service account. Chrome currently permits one service account per
    publisher.
 5. Create a GitHub OIDC Workload Identity Pool and Provider. Restrict the
-   provider to the `open-software-network/os-june` repository. Because the jobs
+   provider to the `open-software-network/os-clovy` repository. Because the jobs
    use the `production` GitHub Environment, the expected GitHub subject is:
 
    ```text
-   repo:open-software-network/os-june:environment:production
+   repo:open-software-network/os-clovy:environment:production
    ```
+
+   During the source-repository rename, allow both the old and new repository
+   subjects until a production-environment OIDC probe succeeds from
+   `os-clovy`. Remove the old subject before clearing
+   `CHROME_WEB_STORE_PENDING_REVIEW` and re-enabling extension publication.
 
 6. Grant that federated principal `roles/iam.workloadIdentityUser` on the
    dedicated service account. The service account needs no broad Google Cloud

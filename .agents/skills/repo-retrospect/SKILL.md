@@ -1,7 +1,7 @@
 ---
 name: repo-retrospect
 description: >-
-  Post-cycle retrospective for the os-june build pipeline: mine the finished
+  Post-cycle retrospective for the os-clovy build pipeline: mine the finished
   session conversation, every PR review surface, and the user's corrections
   for evidence-backed lessons, then fold each lesson into the one skill or
   doc file that owns it (repo-review axes and CALIBRATION.md, repo-build-pr

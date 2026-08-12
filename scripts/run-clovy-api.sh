@@ -24,7 +24,8 @@ if [[ -n "$existing_pids" ]]; then
       exit 0
     fi
 
-    if [[ "$command" == *"target/debug/clovy-api"* && "$cwd" == */conductor/workspaces/os-june/*/clovy-api ]]; then
+    if [[ "$command" == *"target/debug/clovy-api"* ]] &&
+      [[ "$cwd" == */conductor/workspaces/os-clovy/*/clovy-api || "$cwd" == */conductor/workspaces/os-june/*/clovy-api ]]; then
       echo "Stopping clovy-api from another workspace: $cwd (pid $pid)" >&2
       kill "$pid" 2>/dev/null || true
       continue

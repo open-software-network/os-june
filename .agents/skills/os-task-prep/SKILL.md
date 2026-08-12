@@ -32,7 +32,7 @@ It composes two existing skills and adds the one capability they lack:
 
 - `OS_PLATFORM_API_KEY` must be set in the environment (see the `os-platform`
   skill). Never ask the user to paste it into chat; never echo it.
-- Run from a checkout of `open-software-network/os-june` so the diagnosis step
+- Run from a checkout of `open-software-network/os-clovy` so the diagnosis step
   can read the real code.
 - The default org/project come from `os-platform.json` (`org`, `limit`).
 
@@ -114,7 +114,7 @@ AgentWorkspace.tsx); depends-on: none; blocked-by: none.` Write
 "none -- independent" when the Issue is genuinely standalone.
 
 Keep notes tight and end with a drift caveat, e.g.
-`_Investigated against os-june @ <sha>. Line refs may drift; confirm before editing._`
+`_Investigated against os-clovy @ <sha>. Line refs may drift; confirm before editing._`
 
 Use plain hyphens, not en/em dashes, per repo copy conventions.
 

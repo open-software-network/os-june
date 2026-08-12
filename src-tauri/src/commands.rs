@@ -1101,7 +1101,7 @@ pub fn clovy_open_verify_page() -> Result<(), AppError> {
     crate::os_accounts::open_in_browser(&crate::clovy_api::verify_url())
 }
 
-const CLOVY_COMMUNITY_URL: &str = "https://t.me/osjune";
+const CLOVY_COMMUNITY_URL: &str = "https://t.me/+B4Z8KUqEsRc4ZGVh";
 
 /// Opens the Clovy Telegram community in the default browser.
 #[tauri::command]

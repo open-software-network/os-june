@@ -66,7 +66,7 @@ substitute; put durable learnings in the PR description. At handoff, state
 ## Structure
 
 ```
-os-june/
+os-clovy/
 ├── src/                     # React frontend
 │   ├── app/                 # app shell, routing, update-decision
 │   ├── components/          # agent (chat), settings, account, onboarding, note-editor, recorder, sidebar, ...

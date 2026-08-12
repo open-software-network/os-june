@@ -153,3 +153,11 @@ Workload Identity Provider must restrict its trust to the
   change, Chrome requires one manual publish before API publishing works again.
 - A staged submission expires after Chrome's deferred-publication window. If it
   expires, cut a higher desktop RC rather than bypassing the gate.
+
+## 2026-08-12 addendum: source repository rename
+
+The source repository moved to `open-software-network/os-clovy`. Before
+extension publication is enabled, the Workload Identity Provider must trust
+that repository and the production-environment subject documented in
+`docs/release-extension.md`. The earlier `os-june` subject above describes the
+repository coordinate in effect when this decision was accepted.

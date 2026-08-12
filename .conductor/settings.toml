@@ -1,7 +1,7 @@
 #:schema https://conductor.build/schemas/settings.repo.schema.json
 
-# Shared Conductor config for the os-june Tauri desktop app. Committed so every
-# workspace of this repo (and the os-june checkouts of the same remote) loads
+# Shared Conductor config for the os-clovy Tauri desktop app. Committed so every
+# workspace of this repo (and the os-clovy checkouts of the same remote) loads
 # the same setup/run behavior. Supersedes the legacy conductor.json, which only
 # defined `run` + `runScriptMode`.
 

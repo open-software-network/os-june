@@ -1,7 +1,7 @@
 ---
 name: agent-e2e-qa
 description: >-
-  Run live, agent-driven end-to-end QA for os-june by opening the real app or
+  Run live, agent-driven end-to-end QA for os-clovy by opening the real app or
   web preview, clicking through changed flows, inspecting visible state,
   recording and compressing video, attaching QA videos to PRs through
   os-platform file uploads, capturing screenshots/logs, and reporting

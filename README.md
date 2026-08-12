@@ -29,15 +29,12 @@
 </p>
 
 <p align="center">
-  <a href="https://opensoftware.co/june">Website</a> ·
-  <a href="https://opensoftware.co/june/changelog">Changelog</a> ·
-  <a href="https://june-api.opensoftware.co/verify">Verify</a> ·
-  <a href="https://t.me/osjune">Telegram</a> ·
+  <a href="https://opensoftware.co/clovy">Website</a> ·
+  <a href="https://opensoftware.co/clovy/changelog">Changelog</a> ·
+  <a href="https://opensoftware.co/verify">Verify</a> ·
+  <a href="https://t.me/+B4Z8KUqEsRc4ZGVh">Telegram</a> ·
   <a href="https://x.com/OpenSoftwareCo">X</a>
 </p>
-
-![A 30 second tour of Clovy: dictation, a detected meeting turning into live transcription, and an agent analyzing a spreadsheet](.github/assets/clovy-demo.gif)
-
 
 ## Why Clovy
 
@@ -112,13 +109,13 @@ verifiable.
    - **Source:** this repository. The production image records its source
      commit in the OCI `org.opencontainers.image.revision` label.
    - **Image:** [`build-clovy-api.yml`](.github/workflows/build-clovy-api.yml)
-     publishes [`ghcr.io/open-software-network/clovy-api`](https://github.com/open-software-network/os-june/pkgs/container/clovy-api);
+     publishes [`ghcr.io/open-software-network/clovy-api`](https://github.com/open-software-network/os-clovy/pkgs/container/clovy-api);
      deploys pin immutable per-commit tags recorded as signed `deploy/<env>/<sha>` git tags.
    - **Attestation:** the [Phala Trust Center report](https://trust.phala.com/app/6514acb0e08dc4825e2b6e22a46f0ed0ff455b54)
      reports evidence for the image running inside the TEE.
 
    Every deployment serves a self-contained walkthrough at
-   [`/verify`](https://june-api.opensoftware.co/verify). This evidence describes
+   [`/verify`](https://opensoftware.co/verify). This evidence describes
    Clovy API only. The Open Software API and Chat publish their own source and
    runtime evidence, and Clovy does not need to pin their releases. Model privacy
    remains explicit provider evidence, which is why zero-retention private
@@ -168,8 +165,8 @@ You need Node.js with pnpm 11 and a Rust toolchain. The exact pnpm version is
 pinned in `package.json`.
 
 ```sh
-git clone https://github.com/open-software-network/os-june
-cd os-june
+git clone https://github.com/open-software-network/os-clovy
+cd os-clovy
 cp .env.example .env
 cp clovy-api/.env.example clovy-api/.env
 # Edit clovy-api/.env and set CLOVY__UPSTREAMS__VENICE__API_KEY.
@@ -212,9 +209,9 @@ pnpm test:clovy-api # Clovy API
 rules live in [spec/](spec/index.md). Report bugs through GitHub issues, and
 report security vulnerabilities privately per [SECURITY.md](SECURITY.md).
 
-- Community: [t.me/osjune](https://t.me/osjune)
+- Community: [Clovy on Telegram](https://t.me/+B4Z8KUqEsRc4ZGVh)
 - Updates: [@OpenSoftwareCo](https://x.com/OpenSoftwareCo) and the
-  [changelog](https://opensoftware.co/june/changelog)
+  [changelog](https://opensoftware.co/clovy/changelog)
 
 ## License
 

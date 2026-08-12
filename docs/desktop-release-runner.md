@@ -6,7 +6,7 @@ desktop releases. The release workflows target this runner when
 
 ## Required labels
 
-Register the runner for the `open-software-network/os-june` repo with these
+Register the runner for the `open-software-network/os-clovy` repo with these
 labels:
 
 ```text
@@ -23,10 +23,10 @@ self-hosted machine.
 
 ## One-time setup
 
-1. In GitHub, open `open-software-network/os-june` -> Settings -> Actions ->
+1. In GitHub, open `open-software-network/os-clovy` -> Settings -> Actions ->
    Runners -> New self-hosted runner.
 2. Choose `macOS` and `ARM64`, then install the runner under a dedicated
-   directory such as `~/actions-runner/os-june-desktop-release`.
+   directory such as `~/actions-runner/os-clovy-desktop-release`.
 3. Configure it with the `desktop-release` label.
 4. Install it as a launchd service so it survives restarts:
 

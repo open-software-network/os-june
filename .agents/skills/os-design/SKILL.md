@@ -1,6 +1,6 @@
 ---
 name: os-design
-description: Stand up design-featuring work the Open Software way. Use when building, redesigning, or polishing any UI surface in an OS repo (os-june, os-scribe, os-marketing-page, os-platform), when a feature needs visual design decisions before or during implementation, when reviewing interface work for house taste, or when someone asks to "stand up the design", "design this feature", "make it feel like ours", "make it feel better", or wants the Open Software design sensibility applied. Orchestrates specialist design skills (impeccable, emil-design-eng, make-interfaces-feel-better, transitions-dev, mobbin) when installed, but is fully self-sufficient without them. Core commitments it enforces - compose from the repo's existing design-system blocks rather than inventing new ones, and quiet, subtle, elegant over loud.
+description: Stand up design-featuring work the Open Software way. Use when building, redesigning, or polishing any UI surface in an OS repo (os-clovy, os-scribe, os-marketing-page, os-platform), when a feature needs visual design decisions before or during implementation, when reviewing interface work for house taste, or when someone asks to "stand up the design", "design this feature", "make it feel like ours", "make it feel better", or wants the Open Software design sensibility applied. Orchestrates specialist design skills (impeccable, emil-design-eng, make-interfaces-feel-better, transitions-dev, mobbin) when installed, but is fully self-sufficient without them. Core commitments it enforces - compose from the repo's existing design-system blocks rather than inventing new ones, and quiet, subtle, elegant over loud.
 ---
 
 # Standing up design work at Open Software
@@ -27,7 +27,7 @@ design system:
 
 | Repo | Where the system lives |
 |---|---|
-| os-june | `docs/design/{foundations,components,conventions,taste}.md`, enforceable rules in `spec/` (read every spec in scope), tokens in `src/styles/tokens.css`, live gallery at `styleguide.html` (`pnpm dev`, then `/styleguide.html?section=<id>`) |
+| os-clovy | `docs/design/{foundations,components,conventions,taste}.md`, enforceable rules in `spec/` (read every spec in scope), tokens in `src/styles/tokens.css`, live gallery at `styleguide.html` (`pnpm dev`, then `/styleguide.html?section=<id>`) |
 | os-scribe | `src/styles/tokens.css` |
 | os-marketing-page | Tailwind theme + existing component families; per-repo judgment file if present |
 | anything else | Look for `docs/design/`, `DESIGN.md`, a `tokens.css` / theme file, and a components or `ui/` directory |
@@ -39,10 +39,10 @@ Then follow these rules without exception:
   If a value genuinely needs to exist and no token covers it, extract a new
   token so the system gains a knob, rather than scattering literals.
 - **Primitive before bespoke.** Check the repo's pattern-to-canonical map
-  (os-june: `docs/design/components.md`) or `ui/` directory before writing
+  (os-clovy: `docs/design/components.md`) or `ui/` directory before writing
   new markup for a button, input, toggle, select, tooltip, dialog, chip,
   empty state, spinner, or menu. If a canonical block exists, use it.
-- **Grep before coining.** In flat-CSS repos (os-june's `app.css`), grep for
+- **Grep before coining.** In flat-CSS repos (os-clovy's `app.css`), grep for
   a class name before creating it, and prefix by feature.
 - **No system yet?** Then the first deliverable of the work is the start of
   one: mine the existing CSS for de facto tokens and write a short
@@ -125,7 +125,7 @@ Quick routing:
 | Final detail-polish pass before shipping | make-interfaces-feel-better checklist, impeccable `polish` |
 | A standard enter/exit/swap transition | transitions-dev, re-tokened to the repo's `--t-*` / `--ease-*` |
 | Pattern research for a flow | mobbin MCP if available, else the fallback canon in workflow.md |
-| Verifying visually | os-june: `browser-test-tauri-fe` / `agent-e2e-qa`; elsewhere: playwriter, agentation, or a Playwright screenshot harness |
+| Verifying visually | os-clovy: `browser-test-tauri-fe` / `agent-e2e-qa`; elsewhere: playwriter, agentation, or a Playwright screenshot harness |
 
 Use impeccable's `bolder` / `overdrive` / `delight` only for marketing or
 hero moments where design is the product, never for product chrome.

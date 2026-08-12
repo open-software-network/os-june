@@ -11,9 +11,9 @@ this skill's references.
 **Skills advise; the system decides.** Every suggestion from a specialist
 skill passes through three gates before it lands in code:
 
-1. **Repo specs win.** If the repo documents a rule (os-june `spec/`,
+1. **Repo specs win.** If the repo documents a rule (os-clovy `spec/`,
    `docs/design/conventions.md`), it overrides the skill's advice. Example:
-   external skills recommend `tabular-nums` for numbers; os-june bans it
+   external skills recommend `tabular-nums` for numbers; os-clovy bans it
    outside live-ticking values.
 2. **Tokens replace magic numbers.** A skill's duration, easing, radius,
    shadow, or color suggestion gets mapped to the repo's nearest token. If
@@ -85,7 +85,7 @@ before landing.
 
 ## Verification and research
 
-| Need | os-june | Elsewhere |
+| Need | os-clovy | Elsewhere |
 |---|---|---|
 | Screenshot/drive the UI | `browser-test-tauri-fe` | playwriter (live Chrome tab), agentation, Playwright harness |
 | Live click-through + video evidence | `agent-e2e-qa` | share-video after manual drive |
@@ -99,5 +99,5 @@ before landing.
 
 Design PRs close out through the same loop as any PR: shepherd (Greptile
 primary, Codex/Octopus advisory) plus the repo's review battery
-(os-june: `repo-review`). Visual evidence attached; Andrew does the final
+(os-clovy: `repo-review`). Visual evidence attached; Andrew does the final
 merge.

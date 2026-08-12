@@ -1,7 +1,7 @@
 # Implementation plan: Private connectors & away-mode relay
 
 **Owner:** CTO · **Date:** 2026-07-09 · **Status:** Draft for review · **PRD:** [private-connectors-prd.md](private-connectors-prd.md)
-**Repos:** `os-june` (app + Clovy API), `os-accounts` (metering/action slugs), `os-marketing-page` (verify page, comparison copy)
+**Repos:** `os-clovy` (app + Clovy API), `os-accounts` (metering/action slugs), `os-marketing-page` (verify page, comparison copy)
 
 > **Stale integration point.** This plan predates the runtime migration:
 > "Hermes" and "the Hermes bridge" refer to the removed embedded Hermes

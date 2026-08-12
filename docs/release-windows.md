@@ -29,7 +29,7 @@ shell execution with approval for sensitive actions.
 Create or confirm these before cutting the first Windows release:
 
 - Public GitHub repo: `open-software-network/os-june-releases`.
-- Release GitHub App installed on `os-june` and `os-june-releases` with
+- Release GitHub App installed on `os-clovy` and `os-june-releases` with
   `contents:write`, exposed as `RELEASE_APP_ID` and
   `RELEASE_APP_PRIVATE_KEY`.
 - Authenticode signing certificate exported as a password-protected PFX. Store

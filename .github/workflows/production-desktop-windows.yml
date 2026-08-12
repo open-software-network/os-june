@@ -31,7 +31,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       # Read which source commit the stable macOS release was built from (no
       # checkout needed yet) so Windows rebuilds that exact tree rather than

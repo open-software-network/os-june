@@ -7,7 +7,7 @@
 ## Architecture at a glance
 
 ```
-┌──────────────── desktop (os-june) ────────────────┐
+┌──────────────── desktop (os-clovy) ───────────────┐
 │ feature code ──► p3a::record(Question::…)         │
 │                    │ (no-op unless consented)     │
 │                    ▼                              │

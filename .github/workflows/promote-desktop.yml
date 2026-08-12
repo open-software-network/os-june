@@ -59,7 +59,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -154,7 +154,7 @@ jobs:
         run: |
           set -euo pipefail
           compare_status="$(gh api \
-            "repos/open-software-network/os-june/compare/${SOURCE_COMMIT}...main" \
+            "repos/${GITHUB_REPOSITORY}/compare/${SOURCE_COMMIT}...main" \
             --jq .status)"
           if [ "$compare_status" = "ahead" ] || [ "$compare_status" = "identical" ]; then
             echo "RC source commit $SOURCE_COMMIT is an ancestor of main."
@@ -257,7 +257,7 @@ jobs:
           owner: open-software-network
           # homebrew-tap: the tap cask bump below pushes as this same release
           # App, so the App must be installed on that repo too.
-          repositories: os-june,os-june-releases,homebrew-tap
+          repositories: ${{ github.event.repository.name }},os-june-releases,homebrew-tap
 
       - name: Download frozen RC metadata
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -802,7 +802,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -904,7 +904,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -1007,7 +1007,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases,homebrew-tap
+          repositories: ${{ github.event.repository.name }},os-june-releases,homebrew-tap
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

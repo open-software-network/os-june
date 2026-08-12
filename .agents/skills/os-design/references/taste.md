@@ -1,9 +1,9 @@
 # The house taste, in full
 
-Distilled from os-june's `docs/design/taste.md` and several months of design
-sessions across os-june, os-scribe, and os-marketing-page. Where a number is
+Distilled from os-clovy's `docs/design/taste.md` and several months of design
+sessions across os-clovy, os-scribe, and os-marketing-page. Where a number is
 given, it is a number that survived iteration in a shipping product; treat it
-as the starting value, not a law. os-june token names are used for
+as the starting value, not a law. os-clovy token names are used for
 concreteness — map them to the local repo's equivalents.
 
 ## The governing idea
@@ -41,10 +41,10 @@ diff is a bug, not a style note:
 - **The default weight is the voice.** Body, labels, nav, and chrome sit at
   regular weight. Medium is punctuation, not prose: headings, row titles,
   structural emphasis, little else. If a screen feels flat, fix hierarchy or
-  spacing before reaching for weight. In one os-june pass, 205 font-weight
+  spacing before reaching for weight. In one os-clovy pass, 205 font-weight
   declarations were normalized down to exactly two values.
 - **Check the shipped faces before trusting a declared weight.** With
-  `font-synthesis: none` and a limited family (os-june ships 400 + 600
+  `font-synthesis: none` and a limited family (os-clovy ships 400 + 600
   only), CSS resolves 500 DOWN to 400 but 700 UP to 600 — declarations can
   lie. Grep the `@font-face` blocks first.
 - **"Presence without heaviness":** a title can match body size and regular
@@ -57,7 +57,7 @@ diff is a bug, not a style note:
 - **Family roles:** sans is the product's voice; serif appears at display
   moments (view titles, empty states, welcome) where warmth earns its place;
   mono is for code and technical identifiers only — it spreads if you let
-  it. Optical trims are fair game (os-june renders its code font at 0.92em).
+  it. Optical trims are fair game (os-clovy renders its code font at 0.92em).
 - **No typographic dashes in copy.** Hyphens or "to".
 
 ## Color
@@ -78,7 +78,7 @@ diff is a bug, not a style note:
 - **Every color is a token.** When tuning, tune the token so the whole
   system moves with one knob. When a needed value has no token, extract one
   rather than scattering `color-mix` percentages.
-- **White-on-solid needs its own token** (os-june: `--on-solid`), because
+- **White-on-solid needs its own token** (os-clovy: `--on-solid`), because
   the default foreground token inverts in dark mode and silently breaks on
   fixed brand/destructive solids.
 

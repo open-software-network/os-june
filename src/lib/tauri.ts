@@ -788,7 +788,7 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
-export const CLOVY_COMMUNITY_URL = "https://t.me/osjune";
+export const CLOVY_COMMUNITY_URL = "https://t.me/+B4Z8KUqEsRc4ZGVh";
 
 /** Opens the clovy-api /verify page (attestation, routing, retention) in
  * the default browser. Routed through Rust because the webview drops

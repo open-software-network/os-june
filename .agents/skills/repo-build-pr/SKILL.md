@@ -1,7 +1,7 @@
 ---
 name: repo-build-pr
 description: >-
-  End-to-end implementation loop for the os-june repo: study the prompt, ask
+  End-to-end implementation loop for the os-clovy repo: study the prompt, ask
   the clarifying questions that change what gets built, plan and architect on
   the session model while delegating bulk implementation and review to cheaper
   strong models, isolate work in git worktrees, validate with deterministic
@@ -9,14 +9,14 @@ description: >-
   evidence through os-platform, open a draft PR, run the automated Greptile and
   Codex review loop with judgment, and mark it ready. Use when the user invokes
   /repo-build-pr (or $repo-build-pr in Codex), or asks to build, implement,
-  ship, or fix something in os-june from a feature prompt, bug report,
+  ship, or fix something in os-clovy from a feature prompt, bug report,
   screenshot, PR comment, or tracker task id, optionally with a cross-harness
   implementer directive like "/repo-build-pr JUN-200 with codex".
 ---
 
 # Repo build PR
 
-Use this skill for the end-to-end implementation loop in `open-software-network/os-june`. The goal is not only to make code changes. The goal is to understand the prompt, isolate the work in worktrees, ship a coherent PR, and run the automated review loop with judgment.
+Use this skill for the end-to-end implementation loop in `open-software-network/os-clovy`. The goal is not only to make code changes. The goal is to understand the prompt, isolate the work in worktrees, ship a coherent PR, and run the automated review loop with judgment.
 
 To hand this entire workflow to a *different* harness as orchestrator (e.g. dispatch a whole build to Codex from Claude Code, or vice versa), use the `repo-orchestrate` skill instead — it wraps this workflow in a per-harness runner with a stop-before-publish default.
 

@@ -51,7 +51,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -578,7 +578,7 @@ jobs:
             "https://github.com/open-software-network/os-june-releases/releases/tag/rc";
           const downloadUrl =
             `https://github.com/open-software-network/os-june-releases/releases/download/rc/Clovy_v${version}_universal.dmg`;
-          const commitUrl = `https://github.com/open-software-network/os-june/commit/${commit}`;
+          const commitUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/commit/${commit}`;
 
           const payload = {
             text: `Clovy v${version} release candidate is ready for testing`,
@@ -670,7 +670,7 @@ jobs:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           owner: open-software-network
-          repositories: os-june,os-june-releases
+          repositories: ${{ github.event.repository.name }},os-june-releases
 
       - name: Resolve the published desktop RC
         id: rc

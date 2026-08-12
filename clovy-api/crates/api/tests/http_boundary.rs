@@ -2058,7 +2058,7 @@ async fn integration_verify_page_is_public_html() -> Result<(), Box<dyn Error>> 
     assert!(!body.to_ascii_lowercase().contains("scribe api"));
     assert!(body.contains("ghcr.io/open-software-network/clovy-api:0123abc"));
     assert!(body.contains(&format!(
-        "https://github.com/open-software-network/os-june/commit/{TEST_COMMIT}"
+        "https://github.com/open-software-network/os-clovy/commit/{TEST_COMMIT}"
     )));
     assert!(body.contains("https://trust.phala.com/app/test-app-id"));
     Ok(())

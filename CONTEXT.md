@@ -700,9 +700,10 @@ _Avoid_: appcast.
 
 **Releases repo**:
 The separate public repo `open-software-network/os-june-releases` that hosts
-signed artifacts + the update manifest (the source repo is private; the
-updater's unauthenticated GET would 404 against it — see
-[ADR-0001](docs/adr/0001-auto-updates-via-tauri-updater.md)).
+signed artifacts + the update manifest. The source repo is also public, but the
+updater retains this June-era release coordinate for compatibility (see
+[ADR-0001](docs/adr/0001-auto-updates-via-tauri-updater.md) and
+[ADR-0055](docs/adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md)).
 _Avoid_: "GitHub release" (unqualified).
 
 **Provider settings / Model mode**:

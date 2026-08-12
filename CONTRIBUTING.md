@@ -14,12 +14,12 @@ development happens in the open, so contributions of every size land fast.
 
 ## Ways to contribute
 
-- **Report a bug.** Open a [GitHub issue](https://github.com/open-software-network/os-june/issues/new/choose).
+- **Report a bug.** Open a [GitHub issue](https://github.com/open-software-network/os-clovy/issues/new/choose).
   You can also report directly from inside Clovy, which attaches diagnostics.
 - **Report a security vulnerability.** Never through a public issue; follow
   [SECURITY.md](SECURITY.md).
 - **Propose a feature.** Open a feature request issue, or discuss it first in
-  [Telegram](https://t.me/osjune).
+  [Telegram](https://t.me/+B4Z8KUqEsRc4ZGVh).
 - **Send a PR.** For anything beyond a small fix, open an issue first so the
   approach is agreed before you build it.
 

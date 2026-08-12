@@ -7,8 +7,8 @@
 
 ## Why
 
-When we open-source `os-june` we want to make a claim a skeptic can check
-without trusting us:
+For the open source `os-clovy` repository, we want to make a claim a skeptic
+can check without trusting us:
 
 > "The code in this public commit is **exactly** what runs in the TEE."
 

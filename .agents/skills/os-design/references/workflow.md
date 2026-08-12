@@ -50,7 +50,7 @@ Design decisions start from pattern consensus, not invention.
 Never judge UI from code. Get the change on screen, in both themes, in the
 real rendering engine.
 
-- **Screenshot loop:** os-june has `browser-test-tauri-fe` (drives the
+- **Screenshot loop:** os-clovy has `browser-test-tauri-fe` (drives the
   Vite frontend in a real browser, fakes the Tauri IPC bridge) and
   `agent-e2e-qa` (live click-through with video). Elsewhere use playwriter
   (the user's live Chrome tab), agentation, or a small Playwright script
@@ -94,12 +94,12 @@ PR, hand the tending to the repo's review loop (shepherd) and follow the
 repo's PR conventions:
 
 - Screenshots or a short recording, light and dark, attached to the PR (UI
-  PRs state that the change was tested visually — os-june's PR template has
+  PRs state that the change was tested visually — os-clovy's PR template has
   a section for it).
 - Say which dials are open to eyeball and what the next notch on each would
   be; flag "one potential nudge" if you see one.
 - List deliberate deviations from the system (with why) rather than letting
   a reviewer discover them; if you voiced or learned a new taste rule
-  during the work, fold it into the repo's taste doc (os-june:
+  during the work, fold it into the repo's taste doc (os-clovy:
   `docs/design/taste.md`) in the same change.
 - Leave the work as one clean diff that can be eyeballed as a whole.
