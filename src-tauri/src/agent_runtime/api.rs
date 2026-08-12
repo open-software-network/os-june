@@ -21,6 +21,11 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 
 const INSTRUCTIONS: &str = "You are Clovy, a private personal AI assistant. Use the tools provided by the Clovy app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
+const LEGACY_ATTENDED_INSTRUCTIONS: &str = "You are June, a private personal AI assistant. Use the tools provided by the June app when they help answer the user's request. Never claim a tool succeeded unless its result confirms success. If an MCP tool returns elicitationRequired, call request_clarification with its clarificationQuestion exactly, then retry the same MCP tool after the user answers.";
+const LEGACY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
+    "You are June executing an unattended routine.";
+const CLOVY_UNATTENDED_IDENTITY_INSTRUCTION: &str =
+    "You are Clovy executing an unattended routine.";
 const MAX_INLINE_VISION_BYTES: i64 = 6 * 1024 * 1024;
 const AGENT_MODEL_OUTPUT_RESERVE: i64 = 8_192;
 const MAX_STAGED_AGENT_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
@@ -1360,10 +1365,8 @@ async fn resolve_agent_interruption_inner(
             ),
         },
     };
-    refresh_resumable_run_instructions(
-        &mut params,
-        super::persona::instructions_for_app(app, INSTRUCTIONS),
-    );
+    migrate_resumable_identity_instructions(&mut params);
+    migrate_resumable_presentation_descriptions(&mut params);
     params["model"] = json!(model);
     params
         .as_object_mut()
@@ -2212,8 +2215,99 @@ pub(crate) fn resumable_run_config(params: &Value) -> Value {
     config
 }
 
-fn refresh_resumable_run_instructions(params: &mut Value, instructions: String) {
-    params["instructions"] = json!(instructions);
+fn migrate_resumable_identity_instructions(params: &mut Value) {
+    let Some(instructions) = params.get("instructions").and_then(Value::as_str) else {
+        return;
+    };
+    let migrated = instructions
+        .replacen(LEGACY_ATTENDED_INSTRUCTIONS, INSTRUCTIONS, 1)
+        .replacen(
+            LEGACY_UNATTENDED_IDENTITY_INSTRUCTION,
+            CLOVY_UNATTENDED_IDENTITY_INSTRUCTION,
+            1,
+        );
+    params["instructions"] = json!(migrated);
+}
+
+fn migrate_resumable_presentation_descriptions(params: &mut Value) {
+    if let Some(tools) = params.get_mut("tools").and_then(Value::as_array_mut) {
+        for tool in tools {
+            let Some(tool) = tool.as_object_mut() else {
+                continue;
+            };
+            let Some(name) = tool.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            if !is_clovy_builtin_tool(name) {
+                continue;
+            }
+            if let Some(description) = tool.get_mut("description") {
+                if let Some(value) = description.as_str() {
+                    *description = json!(value.replace("June", "Clovy"));
+                }
+            }
+        }
+    }
+
+    if let Some(skills) = params.get_mut("skills").and_then(Value::as_array_mut) {
+        for skill in skills {
+            let Some(skill) = skill.as_object_mut() else {
+                continue;
+            };
+            let managed = skill.get("source").and_then(Value::as_str) == Some("managed");
+            let fallback = skill
+                .get("description")
+                .and_then(Value::as_str)
+                .is_some_and(|description| {
+                    matches!(description, "June agent skill" | "Enabled June skill")
+                });
+            if !managed && !fallback {
+                continue;
+            }
+            if let Some(description) = skill.get_mut("description") {
+                if let Some(value) = description.as_str() {
+                    *description = json!(value.replace("June", "Clovy"));
+                }
+            }
+        }
+    }
+}
+
+fn is_clovy_builtin_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "search_june"
+            | "list_memories"
+            | "save_memory"
+            | "forget_memory"
+            | "edit_image"
+            | "get_obsidian_vault"
+            | "start_recording"
+            | "stop_recording"
+            | "recording_status"
+            | "start_session"
+            | "close_session"
+            | "navigate"
+            | "snapshot"
+            | "screenshot"
+            | "click"
+            | "fill"
+            | "press"
+            | "back"
+            | "list_tabs"
+            | "open_tab"
+            | "switch_tab"
+            | "close_tab"
+            | "list_skills"
+            | "load_skill"
+            | "list_routines"
+            | "create_routine"
+            | "update_routine"
+            | "pause_routine"
+            | "resume_routine"
+            | "delete_routine"
+            | "computer_use"
+    )
 }
 
 async fn tool_descriptors(
@@ -3504,22 +3598,72 @@ mod tests {
     }
 
     #[test]
-    fn resumed_configuration_replaces_saved_app_identity_instructions() {
-        let mut config = json!({
-            "instructions": "You are June. Use the tools provided by the old app.",
+    fn resumed_configuration_migrates_only_saved_app_identity_instructions() {
+        let persona = "\n\nClovy personality:\n- Depth 90/100";
+        let mut attended = json!({
+            "instructions": format!("{LEGACY_ATTENDED_INSTRUCTIONS}{persona}"),
+            "tools": [{ "name": "read_file" }]
+        });
+        let mut unattended = json!({
+            "instructions": "You are June executing an unattended routine. Complete the requested work without asking questions. If a tool needs approval, pause and wait for the user.",
             "tools": [{ "name": "read_file" }]
         });
 
-        refresh_resumable_run_instructions(
-            &mut config,
-            "You are Clovy. Use the tools provided by Clovy.".to_string(),
-        );
+        migrate_resumable_identity_instructions(&mut attended);
+        migrate_resumable_identity_instructions(&mut unattended);
+
+        assert_eq!(attended["instructions"], format!("{INSTRUCTIONS}{persona}"));
+        assert!(unattended["instructions"]
+            .as_str()
+            .is_some_and(|instructions| instructions
+                .starts_with(CLOVY_UNATTENDED_IDENTITY_INSTRUCTION)
+                && instructions.contains("without asking questions")
+                && instructions.contains("pause and wait for the user")));
+        assert_eq!(attended["tools"][0]["name"], "read_file");
+        assert_eq!(unattended["tools"][0]["name"], "read_file");
+    }
+
+    #[test]
+    fn resumed_configuration_migrates_only_app_owned_presentation_descriptions() {
+        let custom_schema =
+            json!({ "type": "object", "properties": { "query": { "type": "string" } } });
+        let mut config = json!({
+            "tools": [
+                {
+                    "name": "search_june",
+                    "description": "Search June notes, transcripts, and dictations.",
+                    "parameters": custom_schema.clone(),
+                    "requiresApproval": false
+                },
+                {
+                    "name": "mcp_person_lookup",
+                    "description": "Look up a person named June.",
+                    "parameters": { "type": "object" }
+                }
+            ],
+            "skills": [
+                { "name": "calendar", "description": "June agent skill", "source": "managed" },
+                { "name": "biography", "description": "Research a person named June", "source": "external" }
+            ]
+        });
+
+        migrate_resumable_presentation_descriptions(&mut config);
 
         assert_eq!(
-            config["instructions"],
-            "You are Clovy. Use the tools provided by Clovy."
+            config["tools"][0]["description"],
+            "Search Clovy notes, transcripts, and dictations."
         );
-        assert_eq!(config["tools"][0]["name"], "read_file");
+        assert_eq!(config["tools"][0]["parameters"], custom_schema);
+        assert_eq!(config["tools"][0]["requiresApproval"], false);
+        assert_eq!(
+            config["tools"][1]["description"],
+            "Look up a person named June."
+        );
+        assert_eq!(config["skills"][0]["description"], "Clovy agent skill");
+        assert_eq!(
+            config["skills"][1]["description"],
+            "Research a person named June"
+        );
     }
 
     #[tokio::test]

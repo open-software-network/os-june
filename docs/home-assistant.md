@@ -140,8 +140,12 @@ a Tauri command alias for released callers.
 
 The Agents SDK also retains its released internal Agent serialization key so
 pending approvals and clarifications can survive both upgrades and downgrades.
-That key is a persisted compatibility value only. Resumed runs replace saved
-app-owned instructions with the current Clovy identity policy before execution.
+That key is a persisted compatibility value only. Resume accepts both released
+serialization keys. It migrates only the old app-owned identity sentence while
+preserving the rest of the attended or unattended run policy. Old descriptions
+owned by built-in Clovy tools and managed skill defaults are updated at the same
+boundary; execution names, schemas, approval metadata, and custom descriptions
+remain unchanged.
 
 ## Structured task handoff
 
