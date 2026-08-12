@@ -105,3 +105,39 @@ test("recognizes normalized legacy-name context in compact summaries", () => {
     undefined,
   );
 });
+
+test("recognizes legacy-name context in prior tool results", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: [
+        {
+          id: "tool-result-context",
+          kind: "tool_result",
+          name: "search_notes",
+          callId: "search-1",
+          payload: { matches: [{ text: "June is the project lead." }] },
+        },
+      ],
+    }),
+    undefined,
+  );
+});
+
+test("answers ambiguous legacy-name questions after unrelated tool results", () => {
+  assert.equal(
+    clovyIdentityResult({
+      ...params("Who is June?"),
+      history: [
+        {
+          id: "unrelated-tool-result",
+          kind: "tool_result",
+          name: "search_notes",
+          callId: "search-2",
+          payload: { matches: [{ text: "The project uses dark mode." }] },
+        },
+      ],
+    })?.finalOutput,
+    CLOVY_IDENTITY_REPLY,
+  );
+});

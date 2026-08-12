@@ -90,12 +90,21 @@ const LEADING_CONVERSATIONAL_FILLERS = new Set([
 const TRAILING_FILLERS = new Set(["clovy", "june", "please"]);
 
 export function clovyIdentityResult(params: RunStartParams): EngineResult | undefined {
-  const hasRelevantLegacyNameContext = params.history.some(
-    (item) =>
-      ((item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
-        item.kind === "context_summary") &&
-      contextMentionsLegacyName(item.text),
-  );
+  const hasRelevantLegacyNameContext = params.history.some((item) => {
+    if (
+      (item.kind === "message" && (item.role === "user" || item.role === "assistant")) ||
+      item.kind === "context_summary"
+    ) {
+      return contextMentionsLegacyName(item.text);
+    }
+    if (item.kind === "tool_result") {
+      return (
+        contextMentionsLegacyName(item.text) ||
+        contextMentionsLegacyName(JSON.stringify(item.payload ?? null))
+      );
+    }
+    return false;
+  });
   const reply = identityReply(params.input, !hasRelevantLegacyNameContext);
   if ((params.attachments?.length ?? 0) > 0 || !reply) {
     return undefined;

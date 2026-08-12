@@ -2667,15 +2667,20 @@ fn managed_load_skill_call_item_ids(
     managed_skill_root: Option<&Path>,
 ) -> HashSet<String> {
     let mut pending_calls: HashMap<(Option<&str>, &str), Vec<&str>> = HashMap::new();
+    let mut call_items_by_key: HashMap<(Option<&str>, &str), Vec<&str>> = HashMap::new();
+    let mut ambiguous_keys = HashSet::new();
     let mut managed_call_items = HashSet::new();
     for item in items {
         match &item.payload {
             AgentItemPayload::ToolCall(tool) if tool.tool_name.as_deref() == Some("load_skill") => {
                 if let Some(call_id) = tool.tool_call_id.as_deref() {
-                    pending_calls
-                        .entry((item.run_id.as_deref(), call_id))
-                        .or_default()
-                        .push(&item.id);
+                    let key = (item.run_id.as_deref(), call_id);
+                    let pending = pending_calls.entry(key).or_default();
+                    if !pending.is_empty() {
+                        ambiguous_keys.insert(key);
+                    }
+                    pending.push(&item.id);
+                    call_items_by_key.entry(key).or_default().push(&item.id);
                 }
             }
             AgentItemPayload::ToolResult(tool)
@@ -2684,11 +2689,16 @@ fn managed_load_skill_call_item_ids(
                 let Some(call_id) = tool.tool_call_id.as_deref() else {
                     continue;
                 };
-                let Some(call_items) = pending_calls.get_mut(&(item.run_id.as_deref(), call_id))
-                else {
+                let key = (item.run_id.as_deref(), call_id);
+                let Some(call_items) = pending_calls.get_mut(&key) else {
+                    ambiguous_keys.insert(key);
                     continue;
                 };
+                if call_items.len() != 1 {
+                    ambiguous_keys.insert(key);
+                }
                 let Some(call_item_id) = call_items.pop() else {
+                    ambiguous_keys.insert(key);
                     continue;
                 };
                 if tool.result.as_ref().is_some_and(|result| {
@@ -2698,6 +2708,13 @@ fn managed_load_skill_call_item_ids(
                 }
             }
             _ => {}
+        }
+    }
+    for key in ambiguous_keys {
+        if let Some(call_item_ids) = call_items_by_key.get(&key) {
+            for call_item_id in call_item_ids {
+                managed_call_items.remove(*call_item_id);
+            }
         }
     }
     managed_call_items
@@ -4291,6 +4308,58 @@ mod tests {
                 status: Some("complete".into()),
             }),
         );
+        let ambiguous_managed_call_item = item(
+            "ambiguous-managed-call",
+            "run-ambiguous",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_user_call_item = item(
+            "ambiguous-user-call",
+            "run-ambiguous",
+            AgentItemPayload::ToolCall(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: Some(json!({"name":"june-obsidian"})),
+                result: None,
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_managed_result_item = item(
+            "ambiguous-managed-result",
+            "run-ambiguous",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": legacy_skill,
+                    "path": "/Library/June/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
+        let ambiguous_user_result_item = item(
+            "ambiguous-user-result",
+            "run-ambiguous",
+            AgentItemPayload::ToolResult(super::super::ToolPayload {
+                tool_name: Some("load_skill".into()),
+                tool_call_id: Some("duplicate-call".into()),
+                arguments: None,
+                result: Some(json!({
+                    "name": "june-obsidian",
+                    "content": "Keep June Carter research",
+                    "path": "/Users/me/.agents/skills/june-obsidian/SKILL.md"
+                })),
+                status: Some("complete".into()),
+            }),
+        );
         let items = vec![
             call_item,
             result_item,
@@ -4299,6 +4368,10 @@ mod tests {
             copied_item,
             user_global_call_item,
             user_global_result_item,
+            ambiguous_managed_call_item,
+            ambiguous_user_call_item,
+            ambiguous_managed_result_item,
+            ambiguous_user_result_item,
         ];
         let managed_root = Path::new("/Library/June/skills");
         let history = runtime_history_with_skill_root(items.clone(), None, Some(managed_root));
@@ -4385,6 +4458,13 @@ mod tests {
             "/Users/me/.agents/skills/june-obsidian/SKILL.md"
         );
         assert_eq!(public_item("user-global-result")["output"], user_global);
+        for id in ["ambiguous-managed-call", "ambiguous-user-call"] {
+            assert_eq!(
+                history_item(id)["payload"]["arguments"],
+                r#"{"name":"june-obsidian"}"#
+            );
+            assert_eq!(public_item(id)["arguments"]["name"], "june-obsidian");
+        }
     }
 
     #[test]
