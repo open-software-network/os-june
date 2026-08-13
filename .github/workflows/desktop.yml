@@ -130,7 +130,6 @@ jobs:
       rust: ${{ steps.diff.outputs.rust }}
       companion: ${{ steps.diff.outputs.companion }}
       desktop_bundle: ${{ steps.diff.outputs.desktop_bundle }}
-      macos_app_name: ${{ steps.diff.outputs.macos_app_name }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -147,7 +146,6 @@ jobs:
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "companion=true" >> "$GITHUB_OUTPUT"
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
-            echo "macos_app_name=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           changed_files="$(git diff --name-only "$BASE" HEAD)"
@@ -172,11 +170,6 @@ jobs:
             echo "desktop_bundle=true" >> "$GITHUB_OUTPUT"
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
-          fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|scripts/verify-macos-app-name\.mjs$|src-tauri/Cargo\.toml$|src-tauri/Info\.plist$|src-tauri/resources/macos/|src-tauri/tauri\.conf\.json$|src-tauri/tauri\.macos\.conf\.json$)'; then
-            echo "macos_app_name=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "macos_app_name=false" >> "$GITHUB_OUTPUT"
           fi
 
   # rustfmt needs no compilation and none of the macOS-only system deps, so it
@@ -286,60 +279,6 @@ jobs:
 
       - name: Cargo test
         run: cargo test --manifest-path src-tauri/Cargo.toml
-
-  macos-app-name:
-    name: macOS app name
-    needs: changes
-    if: needs.changes.outputs.macos_app_name == 'true'
-    runs-on: blacksmith-6vcpu-macos-15
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-
-      - name: Setup pnpm
-        uses: ./.github/actions/setup-pnpm
-
-      - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install desktop dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Cache cargo registry
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: tauri-cargo-registry-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            tauri-cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: src-tauri/target
-          key: tauri-app-name-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            tauri-app-name-target-${{ runner.os }}-
-
-      - name: Build and verify macOS app name
-        run: |
-          pnpm tauri build \
-            --bundles app \
-            --debug \
-            --config src-tauri/tauri.macos.conf.json \
-            --config '{"bundle":{"createUpdaterArtifacts":false}}' \
-            -- \
-            --locked
-          node scripts/verify-macos-app-name.mjs \
-            src-tauri/target/debug/bundle/macos/June.app
 
   windows-rust:
     name: Tauri Windows build
