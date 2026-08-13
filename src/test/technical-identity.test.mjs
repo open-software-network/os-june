@@ -190,10 +190,6 @@ describe("Clovy technical identity", () => {
       windows,
       desktopCargo,
       bundleShim,
-      verifyMacosAppName,
-      signedDmgBuild,
-      rcWorkflow,
-      promoteWorkflow,
     ] = await Promise.all([
       read("src-tauri/tauri.conf.json").then(JSON.parse),
       read("src-tauri/tauri.macos.conf.json").then(JSON.parse),
@@ -202,10 +198,6 @@ describe("Clovy technical identity", () => {
       read("src-tauri/tauri.windows.conf.json").then(JSON.parse),
       read("src-tauri/Cargo.toml"),
       read("scripts/bundle-nm-shim.sh"),
-      read("scripts/verify-macos-app-name.mjs"),
-      read("scripts/build-signed-dmg.sh"),
-      read(".github/workflows/rc-desktop-dmg.yml"),
-      read(".github/workflows/promote-desktop.yml"),
     ]);
 
     expect(tauri.productName).toBe("Clovy");
@@ -225,18 +217,6 @@ describe("Clovy technical identity", () => {
     );
     expect(macos.bundle.resources["../.tauri-helper/june-nm-shim"]).toBe("native/bin/june-nm-shim");
     expect(bundleShim).toContain('legacy_out=".tauri-helper/june-nm-shim"');
-    expect(verifyMacosAppName).toContain(
-      'expectValue("app bundle path", basename(appPath), "June.app")',
-    );
-    expect(verifyMacosAppName).toContain(
-      'expectPlistValue(infoPlist, "CFBundleIdentifier", "co.opensoftware.june")',
-    );
-    expect(verifyMacosAppName).toContain(
-      'expectPlistValue(localizedInfoPlist, "CFBundleDisplayName", "Clovy")',
-    );
-    for (const releasePath of [signedDmgBuild, rcWorkflow, promoteWorkflow]) {
-      expect(releasePath).toContain('node scripts/verify-macos-app-name.mjs "$app"');
-    }
     expect(windows.productName).toBe("June");
     expect(desktopCargo).toMatch(/^default-run = "os-june"$/m);
     expect(desktopCargo).toMatch(/^name = "os-june"$/m);

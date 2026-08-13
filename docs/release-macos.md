@@ -12,8 +12,11 @@ compatibility identities under
 The bundle keeps `CFBundleDisplayName=June` in its base `Info.plist` so macOS
 recognizes that the physical `June.app` path has not been renamed, then maps the
 localized display name to Clovy through `en.lproj/InfoPlist.strings`. Finder and
-the Dock therefore present Clovy while updater and permission continuity stay
-attached to `June.app`.
+newly pinned Dock items therefore present Clovy while updater and permission
+continuity stay attached to `June.app`. A Dock item pinned before the rebrand
+may retain its own cached `June` label after an in-place update. macOS exposes
+no supported application API for rewriting that per-user Dock state; remove the
+old item and choose **Keep in Dock** again once to refresh it to Clovy.
 
 ## macOS support
 
@@ -255,10 +258,19 @@ The release workflow reads the packaged sidecar entitlements and runs both
 architecture slices before notarization.
 
 For the first updater-to-updater validation, install an older updater-capable
-build, run **Clovy -> Check for updates…**, confirm the prompt shows the
-new version and release notes, install, and verify the app relaunches without
-Gatekeeper warnings. Also confirm microphone and Accessibility permissions are
-still granted after relaunch. During the relaunch, confirm the app remains
+build and pin its June item in the Dock before updating. Run **Clovy -> Check
+for updates…**, confirm the prompt shows the new version and release notes,
+install, and verify the app relaunches without Gatekeeper warnings. Run
+`verify-macos-app-name.mjs` against `/Applications/June.app`, confirm Finder
+shows Clovy, and hover the already-pinned Dock item. Capture the Dock result as
+release evidence. If macOS retained its cached June label, remove the item,
+choose **Keep in Dock** again, and confirm the refreshed item says Clovy.
+
+Also confirm microphone and Accessibility permissions are still granted after
+relaunch. On a clean validation account, capture the microphone and Screen
+Recording permission prompts plus the Privacy & Security and Login Items rows;
+each user-facing name must say Clovy even though the base plist name remains the
+`June.app` compatibility key. During the relaunch, confirm the app remains
 responsive after the command is accepted: the main event loop must return in
 under one second while bounded child cleanup continues off-thread. For the
 forced-child check, stop the tracked `clovy-agent-runtime` process with
