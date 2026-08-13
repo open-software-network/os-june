@@ -173,7 +173,7 @@ jobs:
           else
             echo "desktop_bundle=false" >> "$GITHUB_OUTPUT"
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|scripts/verify-macos-app-name\.mjs$|src-tauri/Info\.plist$|src-tauri/resources/macos/|src-tauri/tauri\.macos\.conf\.json$)'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '^(\.github/workflows/desktop\.yml$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|scripts/verify-macos-app-name\.mjs$|src-tauri/Cargo\.toml$|src-tauri/Info\.plist$|src-tauri/resources/macos/|src-tauri/tauri\.conf\.json$|src-tauri/tauri\.macos\.conf\.json$)'; then
             echo "macos_app_name=true" >> "$GITHUB_OUTPUT"
           else
             echo "macos_app_name=false" >> "$GITHUB_OUTPUT"
