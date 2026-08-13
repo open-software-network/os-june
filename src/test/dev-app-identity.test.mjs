@@ -18,6 +18,10 @@ const windowsConfig = JSON.parse(
   readFileSync(resolve(process.cwd(), "src-tauri/tauri.windows.conf.json"), "utf8"),
 );
 const macosInfoPlist = readFileSync(resolve(process.cwd(), "src-tauri/Info.plist"), "utf8");
+const macosLocalizedInfoPlist = readFileSync(
+  resolve(process.cwd(), "src-tauri/resources/macos/en.lproj/InfoPlist.strings"),
+  "utf8",
+);
 const stableUpdaterEndpoint =
   "https://github.com/open-software-network/os-june-releases/releases/latest/download/latest.json";
 
@@ -60,7 +64,13 @@ describe("macOS release identity", () => {
   it("keeps the shipped app path while presenting the Clovy display name", () => {
     expect(macosConfig.productName).toBe("June");
     expect(macosConfig.bundle.macOS.bundleName).toBe("Clovy");
-    expect(macosInfoPlist).toContain("<key>CFBundleDisplayName</key>\n  <string>Clovy</string>");
+    expect(macosInfoPlist).toContain("<key>CFBundleDisplayName</key>\n  <string>June</string>");
+    expect(macosInfoPlist).toContain("<key>LSHasLocalizedDisplayName</key>\n  <true/>");
+    expect(macosLocalizedInfoPlist).toContain('CFBundleDisplayName = "Clovy";');
+    expect(macosLocalizedInfoPlist).toContain('CFBundleName = "Clovy";');
+    expect(macosConfig.bundle.resources["resources/macos/en.lproj/InfoPlist.strings"]).toBe(
+      "en.lproj/InfoPlist.strings",
+    );
   });
 });
 

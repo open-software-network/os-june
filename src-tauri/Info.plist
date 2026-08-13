@@ -2,8 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <!-- Finder localizes this to Clovy only when the base value matches June.app. -->
   <key>CFBundleDisplayName</key>
-  <string>Clovy</string>
+  <string>June</string>
+  <key>LSHasLocalizedDisplayName</key>
+  <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>Clovy records microphone audio locally so it can transcribe and generate your notes.</string>
   <key>NSAudioCaptureUsageDescription</key>

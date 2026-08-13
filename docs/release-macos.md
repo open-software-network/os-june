@@ -9,6 +9,11 @@ signatures, the DMG, and `latest.json` are published to the public
 repository, June-named artifact aliases, and installed `June.app` path remain
 compatibility identities under
 [ADR-0055](adr/0055-clovy-technical-identity-migrates-through-a-compatibility-bridge.md).
+The bundle keeps `CFBundleDisplayName=June` in its base `Info.plist` so macOS
+recognizes that the physical `June.app` path has not been renamed, then maps the
+localized display name to Clovy through `en.lproj/InfoPlist.strings`. Finder and
+the Dock therefore present Clovy while updater and permission continuity stay
+attached to `June.app`.
 
 ## macOS support
 
@@ -230,6 +235,16 @@ prints both `x86_64` and `arm64`. The runtime checksum and signature must pass,
 and both architecture commands must execute successfully. On an
 Apple Silicon validation host, the x86_64 command is a real Rosetta execution,
 not an architecture inferred from file metadata.
+
+Also confirm the compatibility path resolves to the Clovy presentation name:
+
+```sh
+node scripts/verify-macos-app-name.mjs "$APP"
+```
+
+Do not replace this with a raw `CFBundleDisplayName` assertion. Finder requires
+the base display name to match the physical bundle name before it applies the
+localized Clovy value.
 
 The Node sidecar is a separate hardened executable and must retain both
 `com.apple.security.cs.allow-jit` and

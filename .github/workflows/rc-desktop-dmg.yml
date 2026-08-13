@@ -435,6 +435,7 @@ jobs:
           node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch arm64
           node scripts/build-agent-runtime.mjs --smoke "$smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
           codesign --verify --deep --strict --verbose=2 "$app"
+          node scripts/verify-macos-app-name.mjs "$app"
 
           dmg="${dmgs[0]}"
           xcrun notarytool submit "$dmg" \

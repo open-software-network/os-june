@@ -254,6 +254,7 @@ cp "$runtime" "$packaged_runtime_smoke_dir/clovy-agent-runtime"
 node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/clovy-agent-runtime" --smoke-arch arm64
 node scripts/build-agent-runtime.mjs --smoke "$packaged_runtime_smoke_dir/clovy-agent-runtime" --smoke-arch x86_64
 codesign --verify --deep --strict --verbose=2 "$app"
+node scripts/verify-macos-app-name.mjs "$app"
 
 dmgs=(
   "$ROOT_DIR"/src-tauri/target/*-apple-darwin/release/bundle/dmg/*.dmg

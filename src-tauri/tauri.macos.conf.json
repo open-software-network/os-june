@@ -7,6 +7,7 @@
   "bundle": {
     "targets": ["app", "dmg"],
     "resources": {
+      "resources/macos/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",
       "../.tauri-helper/June.app": "native/bin/June.app",
       "../.tauri-helper/June Dictation Helper.app": "native/bin/June Dictation Helper.app",
       "../.tauri-helper/clovy-nm-shim": "native/bin/clovy-nm-shim",
