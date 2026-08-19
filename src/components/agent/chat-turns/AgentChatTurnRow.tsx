@@ -133,6 +133,7 @@ export function AgentChatTurnRow({
   homeUserRunEnd?: boolean;
   turn: AgentChatTurn;
 }) {
+  const presentationId = turn.renderId ?? turn.id;
   const textParts = turn.parts.filter(
     (part): part is Extract<AgentChatPart, { type: "text" }> => part.type === "text",
   );
@@ -195,8 +196,8 @@ export function AgentChatTurnRow({
       parts: [part],
       completedKey:
         reasoningGroups.size === 0
-          ? `turn:${turn.id}:thinking`
-          : `turn:${turn.id}:thinking:${index}`,
+          ? `turn:${presentationId}:thinking`
+          : `turn:${presentationId}:thinking:${index}`,
       startIndex: index,
     };
     reasoningGroups.set(part, reasoningGroup);
@@ -209,7 +210,7 @@ export function AgentChatTurnRow({
     group.parts.some((part) => part.status === "running"),
   );
   const lastRunningCompletedKeyRef = useRef(
-    runningReasoningGroup?.completedKey ?? `turn:${turn.id}:thinking`,
+    runningReasoningGroup?.completedKey ?? `turn:${presentationId}:thinking`,
   );
   if (runningReasoningGroup) {
     lastRunningCompletedKeyRef.current = runningReasoningGroup.completedKey;
@@ -234,7 +235,7 @@ export function AgentChatTurnRow({
     const key = running && activeThinkingKey ? activeThinkingKey : group.completedKey;
     return (
       <AgentThinkingGroup
-        key={`${turn.id}:reasoning:${group.startIndex}`}
+        key={`${presentationId}:reasoning:${group.startIndex}`}
         reasoning={group.parts}
         running={running}
         open={thinkingOpen(key) || (carriedOpen && group.completedKey === completedThinkingKey)}
@@ -298,15 +299,15 @@ export function AgentChatTurnRow({
     return (
       (hasAgentCliAccessRequest(part.text) &&
         cliAccess?.enabled !== true &&
-        !dismissedAccessRequestCards.has(accessRequestCardKey(turn.id, index, "cli"))) ||
+        !dismissedAccessRequestCards.has(accessRequestCardKey(presentationId, index, "cli"))) ||
       (hasBrowserAccessRequest(part.text) &&
         browserAccess?.enabled !== true &&
-        !dismissedAccessRequestCards.has(accessRequestCardKey(turn.id, index, "browser")))
+        !dismissedAccessRequestCards.has(accessRequestCardKey(presentationId, index, "browser")))
     );
   });
 
   function dismissAccessRequestCard(index: number, kind: AccessRequestCardKind) {
-    const key = accessRequestCardKey(turn.id, index, kind);
+    const key = accessRequestCardKey(presentationId, index, kind);
     setDismissedAccessRequestCards((current) => {
       if (current.has(key)) return current;
       const next = new Set(current);
@@ -408,7 +409,7 @@ export function AgentChatTurnRow({
     return (
       <>
         {contextParts.map((part, index) => (
-          <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
+          <ContextCompactionPart key={`${presentationId}:context:${index}`} part={part} />
         ))}
       </>
     );
@@ -474,7 +475,7 @@ export function AgentChatTurnRow({
             const markdown = displayedComposerUserMessageText(part.text);
             return markdown ? (
               <MarkdownContent
-                key={`${turn.id}:text:${index}`}
+                key={`${presentationId}:text:${index}`}
                 // Issue-report sessions open with the wrapped investigation
                 // prompt; the transcript shows only what the user typed.
                 markdown={markdown}
@@ -516,7 +517,7 @@ export function AgentChatTurnRow({
           ) : part.type === "tool" ? (
             visibleToolStacks.has(part.id) ? (
               <AgentToolStack
-                key={`${turn.id}:tools:${part.id}`}
+                key={`${presentationId}:tools:${part.id}`}
                 parts={visibleToolStacks.get(part.id) ?? []}
               />
             ) : null
@@ -526,7 +527,7 @@ export function AgentChatTurnRow({
               // access or Browser use setting; each token renders as an
               // approval card, never as text. A reply carrying both tokens
               // gets both cards.
-              <div key={`${turn.id}:text:${index}`}>
+              <div key={`${presentationId}:text:${index}`}>
                 {stripBrowserAccessRequest(stripAgentCliAccessRequest(part.text)) ? (
                   <MarkdownContent
                     markdown={stripBrowserAccessRequest(stripAgentCliAccessRequest(part.text))}
@@ -537,7 +538,7 @@ export function AgentChatTurnRow({
                   <AgentCliAccessCard
                     cliAccess={cliAccess}
                     dismissed={dismissedAccessRequestCards.has(
-                      accessRequestCardKey(turn.id, index, "cli"),
+                      accessRequestCardKey(presentationId, index, "cli"),
                     )}
                     onDismiss={() => dismissAccessRequestCard(index, "cli")}
                   />
@@ -546,14 +547,14 @@ export function AgentChatTurnRow({
                   <AgentBrowserAccessCard
                     browserAccess={browserAccess}
                     dismissed={dismissedAccessRequestCards.has(
-                      accessRequestCardKey(turn.id, index, "browser"),
+                      accessRequestCardKey(presentationId, index, "browser"),
                     )}
                     onDismiss={() => dismissAccessRequestCard(index, "browser")}
                   />
                 ) : null}
               </div>
             ) : (
-              <div key={`${turn.id}:text:${index}`}>
+              <div key={`${presentationId}:text:${index}`}>
                 {/* A part can retain raw MEDIA deltas while streaming or when
                     a terminal/error event arrives without message.complete.
                     Those transport references never belong in assistant prose. */}
@@ -566,43 +567,43 @@ export function AgentChatTurnRow({
               </div>
             )
           ) : part.type === "context" ? (
-            <ContextCompactionPart key={`${turn.id}:context:${index}`} part={part} />
+            <ContextCompactionPart key={`${presentationId}:context:${index}`} part={part} />
           ) : part.type === "approval" ? (
             <ApprovalPart
-              key={`${turn.id}:approval:${part.id}`}
+              key={`${presentationId}:approval:${part.id}`}
               part={part}
               submitting={approvalSubmitting[part.id]}
               onApproval={onApproval}
             />
           ) : part.type === "clarify" ? (
             <ClarifyPart
-              key={`${turn.id}:clarify:${part.id}`}
+              key={`${presentationId}:clarify:${part.id}`}
               part={part}
               submitting={clarifySubmitting[part.id]}
               onClarify={onClarify}
             />
           ) : part.type === "sudo" ? (
             <SudoPart
-              key={`${turn.id}:sudo:${part.id}`}
+              key={`${presentationId}:sudo:${part.id}`}
               part={part}
               submitting={sudoSubmitting[part.id]}
               onSudo={onSudo}
             />
           ) : part.type === "secret" ? (
             <SecretPart
-              key={`${turn.id}:secret:${part.id}`}
+              key={`${presentationId}:secret:${part.id}`}
               part={part}
               submitting={secretSubmitting[part.id]}
               onSecret={onSecret}
             />
           ) : part.type === "notice" ? (
             part.kind === "context-overflow" ? (
-              <ContextOverflowNoticePart key={`${turn.id}:notice:${index}`} />
+              <ContextOverflowNoticePart key={`${presentationId}:notice:${index}`} />
             ) : part.kind === "upstream-provider" ||
               part.kind === "tool" ||
               part.kind === "runtime" ? (
               <UpstreamProviderFailureNoticePart
-                key={`${turn.id}:notice:${index}`}
+                key={`${presentationId}:notice:${index}`}
                 kind={part.kind}
                 attempted={upstreamFailureRetryAttempted}
                 disabled={upstreamFailureRetryDisabled}
@@ -614,17 +615,17 @@ export function AgentChatTurnRow({
               />
             ) : (
               <CreditsNoticePart
-                key={`${turn.id}:notice:${index}`}
+                key={`${presentationId}:notice:${index}`}
                 onTopUp={onTopUp}
                 topUpLabel={topUpLabel}
                 tier={fundingTier}
               />
             )
           ) : part.type === "steering" ? (
-            <SteeringPart key={`${turn.id}:steering:${index}`} part={part} />
+            <SteeringPart key={`${presentationId}:steering:${index}`} part={part} />
           ) : part.type === "image" ? (
             <AgentGeneratedImage
-              key={`${turn.id}:image:${index}`}
+              key={`${presentationId}:image:${index}`}
               part={part}
               onOpen={onOpenImage}
               onDownload={onDownloadImage}
@@ -632,7 +633,7 @@ export function AgentChatTurnRow({
             />
           ) : part.type === "video" ? (
             <AgentGeneratedVideo
-              key={`${turn.id}:video:${index}`}
+              key={`${presentationId}:video:${index}`}
               part={part}
               onDownload={onDownloadVideo}
               onRetry={onRetryVideo ? () => onRetryVideo(turn.id, part) : undefined}

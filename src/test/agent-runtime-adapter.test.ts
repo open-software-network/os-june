@@ -81,6 +81,7 @@ describe("agent runtime adapter", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({
       id: "tool-result-2",
+      renderId: "reasoning-1",
       role: "assistant",
       createdAt: "2026-07-22T12:00:04Z",
       parts: [
@@ -90,6 +91,44 @@ describe("agent runtime adapter", () => {
         { type: "tool", id: "call-2", name: "run_shell" },
       ],
     });
+  });
+
+  it("keeps the activity render identity when the final answer arrives", () => {
+    const turns = agentItemsToChatTurns([
+      {
+        id: "reasoning-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 1,
+        createdAt: "2026-07-22T12:00:01Z",
+        kind: "reasoning",
+        text: "Inspect the file",
+        status: "complete",
+      },
+      {
+        id: "message-1",
+        sessionId: "session-1",
+        runId: "run-1",
+        sequence: 2,
+        createdAt: "2026-07-22T12:00:02Z",
+        kind: "message",
+        role: "assistant",
+        text: "The file is ready.",
+        status: "complete",
+      },
+    ]);
+
+    expect(turns).toMatchObject([
+      {
+        id: "message-1",
+        renderId: "reasoning-1",
+        createdAt: "2026-07-22T12:00:02Z",
+        parts: [
+          { type: "reasoning", text: "Inspect the file" },
+          { type: "text", text: "The file is ready." },
+        ],
+      },
+    ]);
   });
 
   it("keeps adjacent activity from different agent runs in separate turns", () => {

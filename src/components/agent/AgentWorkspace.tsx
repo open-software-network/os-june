@@ -2724,7 +2724,7 @@ export function AgentWorkspace({
                       <div className="agent-home-day">{clovyHomeDayLabel(turn.createdAt)}</div>
                     ) : null;
                   return (
-                    <Fragment key={turn.id}>
+                    <Fragment key={turn.renderId ?? turn.id}>
                       {dayMarker}
                       <AgentChatTurnRow
                         turn={turn}
@@ -2845,7 +2845,7 @@ export function AgentWorkspace({
               <div className="agent-timeline">
                 {visibleTurns.map((turn) => (
                   <AgentChatTurnRow
-                    key={turn.id}
+                    key={turn.renderId ?? turn.id}
                     turn={turn}
                     approvalSubmitting={approvalSubmitting}
                     clarifySubmitting={clarifySubmitting}
