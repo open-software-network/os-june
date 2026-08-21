@@ -889,7 +889,9 @@ describe("notes recording reliability", () => {
   });
 
   it("shows a system audio warning returned after recording finalization", async () => {
-    const warning =
+    const microphoneWarning =
+      "Microphone input stopped unexpectedly. Audio after this point may be missing.";
+    const systemWarning =
       "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details.";
     mocks.finishRecording.mockResolvedValue({
       note: { ...first, processingStatus: "transcribing" },
@@ -898,9 +900,14 @@ describe("notes recording reliability", () => {
       processingStarted: true,
       warnings: [
         {
+          source: "microphone",
+          code: "microphone_stream_stalled",
+          message: microphoneWarning,
+        },
+        {
           source: "system",
           code: "system_audio_capture_unavailable",
-          message: warning,
+          message: systemWarning,
         },
       ],
     });
@@ -908,11 +915,14 @@ describe("notes recording reliability", () => {
     await startRecordingOnFirstNote();
     await userEvent.click(await screen.findByRole("button", { name: "Done" }));
 
-    expect(await screen.findByText(warning)).toHaveClass("error-banner");
+    expect(await screen.findByText(`${microphoneWarning} ${systemWarning}`)).toHaveClass(
+      "error-banner",
+    );
   });
 
   it("shows a warning when starting a recording auto-finalizes the previous capture", async () => {
-    const warning =
+    const microphoneWarning = "Microphone audio may be incomplete.";
+    const systemWarning =
       "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it.";
 
     render(<App />);
@@ -924,15 +934,22 @@ describe("notes recording reliability", () => {
       await mocks.listeners.get(RECORDING_FINALIZATION_WARNING_EVENT)?.({
         payload: [
           {
+            source: "microphone",
+            code: "microphone_stream_stalled",
+            message: microphoneWarning,
+          },
+          {
             source: "system",
             code: "system_audio_capture_warning",
-            message: warning,
+            message: systemWarning,
           },
         ],
       });
     });
 
-    expect(await screen.findByText(warning)).toHaveClass("error-banner");
+    expect(await screen.findByText(`${microphoneWarning} ${systemWarning}`)).toHaveClass(
+      "error-banner",
+    );
   });
 
   it("keeps provisional transcript visible after Stop while saved-audio processing is pending", async () => {
@@ -1841,6 +1858,7 @@ describe("notes recording reliability", () => {
             ...first,
             processingStatus: "failed",
             lastError: "Network unreachable",
+            retryRecordingSessionId: "recording-to-retry",
             audio: {
               id: "audio-1",
               format: "wav",
@@ -1970,6 +1988,46 @@ describe("notes recording reliability", () => {
       expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-system-gap"),
     );
     expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
+  });
+
+  it("keeps a ready partial warning targeted after retry preflight fails", async () => {
+    const warningNote = {
+      ...first,
+      lastError: "System: upstream_provider_failed",
+      transcriptionWarnings: [
+        {
+          recordingSessionId: "recording-with-missing-file",
+          message: "System: upstream_provider_failed",
+        },
+      ],
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [warningNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : warningNote,
+    );
+    mocks.retryProcessing.mockRejectedValue({
+      code: "audio_artifact_missing",
+      message: "The saved system audio for this recording is unavailable.",
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+
+    await waitFor(() =>
+      expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-missing-file"),
+    );
+    expect(await screen.findByText(/saved system audio.*unavailable/i)).toHaveClass("error-banner");
+    expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled();
+    expect(container.querySelector(".note-failure-banner")).toBeNull();
   });
 
   it("changes to Max in place and announces success only after the credit grant", async () => {

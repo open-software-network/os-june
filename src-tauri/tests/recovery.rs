@@ -145,6 +145,78 @@ async fn boot_recovery_marks_note_recoverable_when_audio_survived() {
 }
 
 #[tokio::test]
+async fn scan_recovers_a_finalized_session_waiting_for_processing() {
+    let repos = repos().await;
+    let dir = tempdir().expect("tempdir");
+    let final_path = dir.path().join("queued.wav");
+    std::fs::write(&final_path, b"finalized audio").expect("audio bytes");
+    let note = repos.create_note("default", None).await.expect("note");
+    repos
+        .create_recording_session(
+            &note.id,
+            "queued-session",
+            RecordingSourceMode::MicrophoneOnly,
+            &dir.path().join("queued.partial.wav").to_string_lossy(),
+            &final_path.to_string_lossy(),
+            None,
+        )
+        .await
+        .expect("session");
+    let artifact = repos
+        .create_pending_source_artifact(
+            &note.id,
+            "queued-session",
+            "microphone",
+            &dir.path().join("queued.partial.wav").to_string_lossy(),
+            &final_path.to_string_lossy(),
+        )
+        .await
+        .expect("artifact");
+    repos
+        .finalize_source_artifact(
+            &artifact.id,
+            &final_path.to_string_lossy(),
+            "valid",
+            1_000,
+            15,
+            "checksum",
+            1_000,
+            None,
+            None,
+        )
+        .await
+        .expect("finalize artifact");
+    repos
+        .update_recording_session(
+            "queued-session",
+            "valid",
+            1_000,
+            Some(15),
+            Some(1_000),
+            Some("checksum".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("finalize session");
+    repos
+        .mark_recording_processing_pending("queued-session")
+        .await
+        .expect("persist processing handoff");
+
+    let recoveries = scan_recoverable_recordings(&repos.pool)
+        .await
+        .expect("recovery scan");
+
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].session_id, "queued-session");
+    assert_eq!(recoveries[0].note_id, note.id);
+    assert_eq!(recoveries[0].bytes_found, 15);
+}
+
+#[tokio::test]
 async fn scan_ignores_missing_audio_bytes() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");

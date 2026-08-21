@@ -222,10 +222,12 @@ pub(crate) fn note_audio_failure_is_transient(error: &AppError) -> bool {
     code == "clovy_api_response_invalid"
         || code == "june_api_response_invalid"
         || code == "empty_response"
+        || code == "server_busy"
         || (matches!(
             code.as_str(),
             "clovy_request_failed" | "june_request_failed"
         ) && (message == "authorization_denied"
+            || message == "server_busy"
             || message == "timeout"
             || message.contains("connection")
             || message.contains("error sending request")))

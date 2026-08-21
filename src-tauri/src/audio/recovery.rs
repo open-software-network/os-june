@@ -11,7 +11,7 @@ pub async fn scan_recoverable_recordings(
     let rows = query(
         "SELECT id, note_id, source_mode, started_at, partial_path, final_path
          FROM recording_sessions
-         WHERE status IN ('recording', 'paused', 'finalizing', 'validating', 'transcribing', 'generating', 'failed', 'recoverable')",
+         WHERE status IN ('recording', 'paused', 'finalizing', 'validating', 'transcribing', 'generating', 'processing_pending', 'failed', 'recoverable')",
     )
     .fetch_all(pool)
     .await?;

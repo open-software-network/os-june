@@ -1377,6 +1377,17 @@ const MIGRATIONS: &[Migration] = &[
             columns: NOTE_RETRY_CONTEXT_COLUMNS,
         }],
     },
+    Migration {
+        version: 53,
+        name: "note_processing_failures",
+        requirements: &[
+            SchemaRequirement::Table("note_processing_failures"),
+            SchemaRequirement::Index("idx_note_processing_failures_note_updated"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/035_note_processing_failures.sql"
+        ))],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -2392,6 +2403,7 @@ mod tests {
                 (50, "agent_artifact_display_names".to_string()),
                 (51, "generation_block_warnings".to_string()),
                 (52, "note_retry_context".to_string()),
+                (53, "note_processing_failures".to_string()),
             ]
         );
         assert_latest_stamp(&pool).await;
@@ -2714,6 +2726,7 @@ mod tests {
                 (50, "agent_artifact_display_names".to_string()),
                 (51, "generation_block_warnings".to_string()),
                 (52, "note_retry_context".to_string()),
+                (53, "note_processing_failures".to_string()),
             ]
         );
 

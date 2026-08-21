@@ -734,16 +734,21 @@ describe("NoteEditor", () => {
               message:
                 "Microphone input stopped unexpectedly. Audio after this point may be missing.",
             },
+            {
+              source: "system" as const,
+              code: "system_audio_capture_warning",
+              message: "System audio may be incomplete.",
+            },
           ],
         }}
       />,
     );
 
-    expect(
-      screen.getByText(
-        "Microphone input stopped unexpectedly. Audio after this point may be missing.",
-      ),
-    ).toBeInTheDocument();
+    const warning = screen.getByRole("status", { name: "Recording source warning" });
+    expect(warning).toHaveTextContent(
+      "Microphone input stopped unexpectedly. Audio after this point may be missing.",
+    );
+    expect(warning).toHaveTextContent("System audio may be incomplete.");
     expect(
       screen.queryByText("Make sure everyone has agreed to be recorded."),
     ).not.toBeInTheDocument();
@@ -1182,7 +1187,7 @@ describe("NoteEditor", () => {
     });
   });
 
-  it("offers retry when transcript failed and audio exists", async () => {
+  it("offers retry when the failed recording session is available", async () => {
     const user = userEvent.setup();
     const onRetry = vi.fn();
     render(
@@ -1202,6 +1207,7 @@ describe("NoteEditor", () => {
             checksum: "abc",
             createdAt: now,
           },
+          retryRecordingSessionId: "recording-1",
         })}
       />,
     );
@@ -1209,6 +1215,29 @@ describe("NoteEditor", () => {
     await user.click(screen.getByRole("button", { name: /Retry/i }));
 
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it("disables retry when only unrelated historical audio is available", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "failed",
+          lastError: "No source audio passed validation.",
+          audio: {
+            id: "older-audio",
+            source: "microphone",
+            format: "wav",
+            durationMs: 1200,
+            sizeBytes: 2048,
+            checksum: "older",
+            createdAt: now,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
   });
 
   it("keeps the record button available and hides retry while processing", () => {

@@ -2445,6 +2445,13 @@ async fn finish_recording_session_with_timing(
         });
     }
 
+    // Persist the handoff before registering the in-memory queue entry. If the
+    // app closes while this session waits behind another recording, startup
+    // recovery can still surface its finalized Source audio.
+    repos
+        .mark_recording_processing_pending(&finished.session_id)
+        .await?;
+
     // Capture is single-instance, but processing runs asynchronously — so the
     // user may have already recorded (and stopped) another message on this note
     // while a previous one is still in flight. Register this recording behind
@@ -2701,6 +2708,9 @@ pub async fn retry_processing(
                 "No saved audio is available for retry.",
             )
         })?;
+    repos
+        .mark_recording_processing_pending(&task_recording_session_id)
+        .await?;
     let Some((ticket, depth)) =
         processing_queue::enqueue(&request.note_id, &task_recording_session_id)
     else {
@@ -2913,6 +2923,9 @@ pub async fn recover_recording(
         repos
             .mark_recording_recovery_valid(&info.session_id)
             .await?;
+        repos
+            .mark_recording_processing_pending(&info.session_id)
+            .await?;
         return process_recovered_source_audio(
             &repos,
             &info.note_id,
@@ -2981,6 +2994,9 @@ pub async fn recover_recording(
             file_size,
             &checksum,
         )
+        .await?;
+    repos
+        .mark_recording_processing_pending(&info.session_id)
         .await?;
     process_recovered_source_audio(
         &repos,

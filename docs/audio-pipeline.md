@@ -20,7 +20,8 @@ preview).
    non-blockingly feeds the **live preview** sink; its worker transcribes ~8s
    chunks and emits ephemeral `live-transcript-event`s that are **never
    persisted**. The Microphone and System live transcript preview workers share
-   a recording-scoped service circuit. Transient failures are retried once; two
+   a recording-scoped service circuit. Transient failures, including an
+   explicit busy-service response, are retried once; two
    consecutive shared or ambiguous failures pause both preview lanes for 30
    seconds before one half-open request probes for recovery. Results carry the
    circuit epoch that admitted them, so an older in-flight success cannot close
@@ -225,4 +226,11 @@ the same saved audio. A failed Note also stores the exact recording session and
 processing stage that failed, preventing an older partial session from
 displacing the recording that actually needs Retry. Partial-Source warnings on
 a Ready Note retain their own recording-session identity, so the warning's
-Retry action reprocesses the affected saved audio directly.
+Retry action reprocesses the affected saved audio directly. Retryable failures
+remain durable per recording session: a later queued success cannot clear an
+earlier failure, and recovering one session reveals the next unresolved one.
+A finalized session is marked `processing_pending` before its in-memory queue
+registration, so an app restart reconstructs a recovery prompt instead of
+stranding audio that was waiting behind another recording. Simultaneous Source
+warnings are de-duplicated and shown together rather than truncating the System
+warning behind an earlier Microphone diagnostic.

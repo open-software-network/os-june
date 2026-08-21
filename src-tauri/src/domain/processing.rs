@@ -155,6 +155,17 @@ async fn complete_note_processing_run(
 ) -> Result<NoteDto, AppError> {
     match result {
         Ok(note) => {
+            if let Err(status_error) = repos
+                .mark_recording_processing_finished(recording_session_id, None)
+                .await
+            {
+                tracing::warn!(
+                    note_id,
+                    recording_session_id,
+                    %status_error,
+                    "failed to mark recording processing complete"
+                );
+            }
             progress.emit(
                 note_id,
                 recording_session_id,
@@ -190,6 +201,17 @@ async fn complete_note_processing_run(
                         "failed to persist terminal note processing status"
                     );
                 }
+            }
+            if let Err(status_error) = repos
+                .mark_recording_processing_finished(recording_session_id, Some(&error.message))
+                .await
+            {
+                tracing::warn!(
+                    note_id,
+                    recording_session_id,
+                    %status_error,
+                    "failed to mark recording processing failed"
+                );
             }
             Err(error)
         }
@@ -6069,6 +6091,14 @@ mod tests {
         assert!(note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",
             "timeout"
+        )));
+        assert!(note_audio_failure_is_transient(&AppError::new(
+            "june_request_failed",
+            "server_busy"
+        )));
+        assert!(note_audio_failure_is_transient(&AppError::new(
+            "server_busy",
+            "Try again later"
         )));
         assert!(!note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",

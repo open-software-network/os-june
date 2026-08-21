@@ -13,6 +13,7 @@ import { playRecordingSound } from "../lib/recording-sounds";
 import { AGENT_RECORDER_REQUEST_EVENT, RECORDING_FINALIZATION_WARNING_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
+import { recordingWarningsMessage } from "../lib/recording-warnings";
 import type { RecordingSourceMode, SourceWarningDto } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import type { AgentRecorderRequestPayload } from "./app-shell";
@@ -158,7 +159,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     let aborted = false;
     let unlisten: (() => void) | undefined;
     void listen<SourceWarningDto[]>(RECORDING_FINALIZATION_WARNING_EVENT, ({ payload }) => {
-      const warning = payload.map((item) => item.message.trim()).find(Boolean);
+      const warning = recordingWarningsMessage(payload);
       if (warning) setError(warning);
     }).then((cleanup) => {
       if (aborted) cleanup();
@@ -235,9 +236,7 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     }
     try {
       const result = await finishRecording(sessionId);
-      const finalizationWarning = result.warnings
-        ?.map((warning) => warning.message.trim())
-        .find(Boolean);
+      const finalizationWarning = recordingWarningsMessage(result.warnings);
       if (finalizationWarning) setError(finalizationWarning);
       // The result belongs to the partition where recording started. Once that
       // partition's temporary recording view has been retired, do not let the

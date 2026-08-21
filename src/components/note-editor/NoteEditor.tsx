@@ -43,6 +43,7 @@ import {
   transcriptFollowLatestKey,
 } from "../../lib/live-transcript-preview";
 import { useFollowLatestScroll } from "../../lib/use-follow-latest-scroll";
+import { recordingWarningsMessage } from "../../lib/recording-warnings";
 import {
   isInvalidClovyResponseMessage,
   NoteFailureBanner,
@@ -593,7 +594,7 @@ export function NoteEditor({
         {note.processingStatus === "failed" ? (
           <NoteFailureBanner
             errorMessage={note.lastError}
-            audioPreserved={!!(note.audio || note.audioSources?.length)}
+            audioPreserved={Boolean(note.retryRecordingSessionId)}
             onRetry={() => onRetry()}
             onTopUp={onTopUp}
             topUpLabel={topUpLabel}
@@ -790,7 +791,7 @@ export function NoteEditor({
                   <InlineNotice
                     className="record-consent-note-surface"
                     aria-label="Recording source warning"
-                    body={recordingForNote.warnings[0].message}
+                    body={recordingWarningsMessage(recordingForNote.warnings)}
                   />
                 </motion.div>
               ) : null}
