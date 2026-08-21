@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_session_on_the_same_note_is_suppressed() {
+    fn duplicate_recording_session_on_the_same_note_is_suppressed() {
         let (ticket, depth) = enqueue("note-duplicate", "session-1").unwrap();
         assert_eq!(depth, 1);
 
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn distinct_sessions_on_the_same_note_remain_ordered() {
+    fn distinct_recording_sessions_on_the_same_note_remain_ordered() {
         let (first, first_depth) = enqueue("note-distinct", "session-1").unwrap();
         let (second, second_depth) = enqueue("note-distinct", "session-2").unwrap();
 
@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn finished_session_can_be_enqueued_again() {
+    fn finished_recording_session_can_be_enqueued_again() {
         let (first, _) = enqueue("note-retry", "session-retry").unwrap();
         let (next_session, _) = enqueue("note-retry", "session-next").unwrap();
         first.finish();

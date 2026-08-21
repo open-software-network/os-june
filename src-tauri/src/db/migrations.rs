@@ -2689,7 +2689,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processing_failure_migration_keeps_failed_job_and_invalid_blocker_distinct() {
+    async fn processing_failure_migration_keeps_failed_note_transcription_job_and_invalid_blocker_distinct(
+    ) {
         let pool = test_pool().await;
         run_migration_catalog(&pool, &MIGRATIONS[..52])
             .await
@@ -2792,7 +2793,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processing_failure_migration_ignores_succeeded_job_without_exact_context() {
+    async fn processing_failure_migration_ignores_succeeded_note_transcription_job_without_exact_context(
+    ) {
         let pool = test_pool().await;
         run_migration_catalog(&pool, &MIGRATIONS[..52])
             .await

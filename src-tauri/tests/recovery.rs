@@ -146,7 +146,7 @@ async fn boot_recovery_marks_note_recoverable_when_audio_survived() {
 }
 
 #[tokio::test]
-async fn scan_recovers_a_finalized_session_waiting_for_processing() {
+async fn scan_recovers_a_finalized_recording_session_waiting_for_note_transcription() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");
     let final_path = dir.path().join("queued.wav");

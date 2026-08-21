@@ -4530,7 +4530,7 @@ mod retry_audio_source_tests {
     }
 
     #[tokio::test]
-    async fn stale_recovery_claim_cannot_revive_processed_session_or_artifact() {
+    async fn stale_recovery_claim_cannot_revive_processed_recording_session_or_artifact() {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

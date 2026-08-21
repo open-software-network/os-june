@@ -8848,7 +8848,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_uses_the_session_that_failed_generation_over_an_older_partial_session() {
+    async fn retry_uses_the_recording_session_that_failed_generation_over_an_older_partial_recording_session(
+    ) {
         let repos = test_repositories().await;
         let note = repos.create_note("default", None).await.expect("note");
 
@@ -9113,7 +9114,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_wrapper_failure_does_not_inherit_another_sessions_stage() {
+    async fn terminal_wrapper_failure_does_not_inherit_stage_from_another_recording_session() {
         let repos = test_repositories().await;
         let note = repos.create_note("default", None).await.expect("note");
         for (session_id, checksum) in [
@@ -9211,7 +9212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn later_session_success_keeps_an_earlier_retryable_failure_visible() {
+    async fn later_recording_session_success_keeps_an_earlier_retryable_failure_visible() {
         let repos = test_repositories().await;
         let note = repos.create_note("default", None).await.expect("note");
         for session_id in ["earlier-failed-session", "later-successful-session"] {
