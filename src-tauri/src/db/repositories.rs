@@ -4156,6 +4156,35 @@ impl Repositories {
         Ok(row.map(|row| RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str())))
     }
 
+    pub async fn has_older_recoverable_recording(
+        &self,
+        note_id: &str,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let row = query(
+            "SELECT EXISTS (
+               SELECT 1
+               FROM recording_sessions older
+               INNER JOIN recording_sessions current
+                 ON current.id = ? AND current.note_id = ?
+               WHERE older.note_id = current.note_id
+                 AND older.status = 'recoverable'
+                 AND (
+                   older.started_at < current.started_at
+                   OR (
+                     older.started_at = current.started_at
+                     AND older.rowid < current.rowid
+                   )
+                 )
+             ) AS has_older_recovery",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("has_older_recovery") != 0)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn update_recording_session(
         &self,
@@ -6069,22 +6098,48 @@ impl Repositories {
         }))
     }
 
+    pub async fn recoverable_recording_info(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RecordingRecoveryInfo>, sqlx::error::Error> {
+        let row = query(
+            "SELECT id, note_id, source_mode, partial_path, final_path, expected_elapsed_ms
+             FROM recording_sessions
+             WHERE id = ? AND status = 'recoverable'",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| RecordingRecoveryInfo {
+            session_id: row.get("id"),
+            note_id: row.get("note_id"),
+            source_mode: RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str()),
+            partial_path: row.get("partial_path"),
+            final_path: row.get("final_path"),
+            expected_elapsed_ms: row.get("expected_elapsed_ms"),
+        }))
+    }
+
     pub async fn mark_recording_discarded(
         &self,
         session_id: &str,
         note_id: &str,
-    ) -> Result<NoteDto, sqlx::error::Error> {
+    ) -> Result<Option<NoteDto>, sqlx::error::Error> {
         let now = timestamp();
         let mut tx = self.pool.begin().await?;
-        query(
+        let transitioned = query(
             "UPDATE recording_sessions
              SET status = 'discarded', last_error = 'Discarded by user'
-             WHERE id = ? AND note_id = ?",
+             WHERE id = ? AND note_id = ? AND status = 'recoverable'",
         )
         .bind(session_id)
         .bind(note_id)
         .execute(&mut *tx)
         .await?;
+        if transitioned.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
         query(
             "UPDATE audio_artifacts
              SET status = 'discarded', last_error = 'Discarded by user'
@@ -6151,7 +6206,7 @@ impl Repositories {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        self.get_note(note_id).await
+        self.get_note(note_id).await.map(Some)
     }
 
     async fn folder_ids(&self, note_id: &str) -> Result<Vec<String>, sqlx::error::Error> {

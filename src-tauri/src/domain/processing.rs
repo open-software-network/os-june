@@ -222,17 +222,6 @@ async fn complete_note_processing_run(
                     );
                 }
             }
-            if let Err(status_error) = repos
-                .mark_recording_processing_finished(recording_session_id, Some(&error.message))
-                .await
-            {
-                tracing::warn!(
-                    note_id,
-                    recording_session_id,
-                    %status_error,
-                    "failed to mark recording processing failed"
-                );
-            }
             Err(error)
         }
     }
@@ -4394,6 +4383,72 @@ mod tests {
         );
         assert_eq!(events[2].revision, done_revision);
         assert!(events.iter().all(|event| event.note_id == note.id));
+    }
+
+    #[tokio::test]
+    async fn failed_atomic_note_transition_does_not_terminalize_recording_separately() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite memory");
+        crate::db::migrations::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let recording_session_id = "atomic-terminal-failure";
+        repos
+            .create_recording_session(
+                &note.id,
+                recording_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone.partial.wav",
+                "microphone.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_finished(recording_session_id, None)
+            .await
+            .expect("seed terminal recording status");
+        repos
+            .mark_recording_processing_pending(recording_session_id)
+            .await
+            .expect("pending recording");
+        sqlx::query::query(
+            "CREATE TRIGGER reject_terminal_note_update
+             BEFORE UPDATE OF processing_status ON notes
+             WHEN NEW.id = OLD.id AND NEW.processing_status = 'failed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected terminal note failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        let original_error = AppError::new("server_busy", "The service is temporarily busy.");
+        let returned_error = complete_note_processing_run(
+            &repos,
+            &NoteProcessingProgressReporter::default(),
+            &note.id,
+            recording_session_id,
+            Err(original_error.clone()),
+        )
+        .await
+        .expect_err("terminal transaction should fail internally");
+        assert_eq!(returned_error.code, original_error.code);
+        assert_eq!(returned_error.message, original_error.message);
+
+        let recording_status: String =
+            sqlx::query_scalar::query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind(recording_session_id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("recording status");
+        assert_eq!(recording_status, "processing_pending");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

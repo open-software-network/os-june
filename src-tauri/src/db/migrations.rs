@@ -2499,6 +2499,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processing_failure_migration_prefers_exact_retry_session_over_older_job() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error,
+              retry_recording_session_id, retry_processing_stage)
+             VALUES ('exact-retry-note', '', 'failed',
+                     '2026-08-21T09:00:00.000Z', '2026-08-21T11:05:00.000Z',
+                     'Generation failed', 'exact-generation', 'generating')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note with exact retry context");
+        for (session_id, started_at) in [
+            ("older-unfinished", "2026-08-21T09:00:00.000Z"),
+            ("exact-generation", "2026-08-21T11:00:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO recording_sessions
+                 (id, note_id, status, started_at, expected_elapsed_ms,
+                  permission_state, partial_path, final_path)
+                 VALUES (?, 'exact-retry-note', 'processing_failed', ?, 5000,
+                         'granted', ?, ?)",
+            )
+            .bind(session_id)
+            .bind(started_at)
+            .bind(format!("/tmp/{session_id}.partial.wav"))
+            .bind(format!("/tmp/{session_id}.wav"))
+            .execute(&pool)
+            .await
+            .expect("recording session");
+            query(
+                "INSERT INTO audio_artifacts
+                 (id, note_id, recording_session_id, path, format, duration_ms,
+                  size_bytes, checksum, status, created_at)
+                 VALUES (?, 'exact-retry-note', ?, ?, 'wav', 5000, 160000,
+                         ?, 'valid', ?)",
+            )
+            .bind(format!("{session_id}-audio"))
+            .bind(session_id)
+            .bind(format!("/tmp/{session_id}.wav"))
+            .bind(format!("{session_id}-checksum"))
+            .bind(started_at)
+            .execute(&pool)
+            .await
+            .expect("valid audio artifact");
+        }
+        for (session_id, status, updated_at) in [
+            ("older-unfinished", "failed", "2026-08-21T09:05:00.000Z"),
+            ("exact-generation", "succeeded", "2026-08-21T11:05:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO note_transcription_jobs (
+                   id, note_id, recording_session_id, audio_artifact_id,
+                   source, source_mode, job_kind, start_ms, end_ms, turn_index,
+                   input_fingerprint, configuration_fingerprint, operation_id,
+                   provider, max_chunk_ms, pipeline_version, status, attempt_count,
+                   created_at, updated_at, completed_at
+                 ) VALUES (?, 'exact-retry-note', ?, ?, 'microphone',
+                           'microphone_only', 'turn', 0, 5000, 0, 'input',
+                           'configuration', ?, 'provider', NULL,
+                           'pipeline', ?, 1, ?, ?, ?)",
+            )
+            .bind(format!("{session_id}-job"))
+            .bind(session_id)
+            .bind(format!("{session_id}-audio"))
+            .bind(format!("{session_id}-operation"))
+            .bind(status)
+            .bind(updated_at)
+            .bind(updated_at)
+            .bind(updated_at)
+            .execute(&pool)
+            .await
+            .expect("transcription job");
+        }
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let failure = query(
+            "SELECT recording_session_id, processing_stage
+             FROM note_processing_failures
+             WHERE note_id = 'exact-retry-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("exact retry ledger row");
+        assert_eq!(
+            failure.get::<String, _>("recording_session_id"),
+            "exact-generation"
+        );
+        assert_eq!(failure.get::<String, _>("processing_stage"), "generating");
+    }
+
+    #[tokio::test]
     async fn processing_failure_migration_does_not_retry_older_audio_after_invalid_recording() {
         let pool = test_pool().await;
         run_migration_catalog(&pool, &MIGRATIONS[..52])

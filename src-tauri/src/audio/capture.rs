@@ -87,6 +87,19 @@ pub struct FinishedRecording {
     pub recording: RecordingSessionDto,
 }
 
+pub struct ConsumedCapture {
+    pub session_id: String,
+    pub note_id: String,
+}
+
+pub struct CaptureFinishError {
+    pub error: Box<AppError>,
+    /// Present only after this call removed and consumed the live capture.
+    /// Callers may recover this exact durable session without confusing a
+    /// concurrent stale Stop request for a finalization failure.
+    pub consumed: Option<ConsumedCapture>,
+}
+
 pub struct StartedSource {
     pub source: RecordingSource,
     pub partial_path: PathBuf,
@@ -769,11 +782,28 @@ pub fn is_capture_active() -> bool {
 }
 
 pub fn finish_active_capture() -> Result<Option<FinishedRecording>, AppError> {
-    let mut active = lock_active()?;
+    finish_active_capture_with_recovery_context().map_err(|failure| *failure.error)
+}
+
+pub fn finish_active_capture_with_recovery_context(
+) -> Result<Option<FinishedRecording>, CaptureFinishError> {
+    let mut active = lock_active().map_err(|error| CaptureFinishError {
+        error: Box::new(error),
+        consumed: None,
+    })?;
     let Some(recording) = active.take() else {
         return Ok(None);
     };
-    finalize_recording(recording).map(Some)
+    let consumed = ConsumedCapture {
+        session_id: recording.session_id.clone(),
+        note_id: recording.note_id.clone(),
+    };
+    finalize_recording(recording)
+        .map(Some)
+        .map_err(|error| CaptureFinishError {
+            error: Box::new(error),
+            consumed: Some(consumed),
+        })
 }
 
 /// Snapshot of whatever recording is currently active, regardless of session
@@ -786,25 +816,47 @@ pub fn current_status() -> Option<RecordingStatusDto> {
 }
 
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
-    let mut active = lock_active()?;
+    finish_capture_with_recovery_context(session_id).map_err(|failure| *failure.error)
+}
+
+pub fn finish_capture_with_recovery_context(
+    session_id: &str,
+) -> Result<FinishedRecording, CaptureFinishError> {
+    let mut active = lock_active().map_err(|error| CaptureFinishError {
+        error: Box::new(error),
+        consumed: None,
+    })?;
     let Some(recording) = active.take() else {
-        return Err(AppError::new(
-            "recording_not_found",
-            "Recording session was not found.",
-        ));
+        return Err(CaptureFinishError {
+            error: Box::new(AppError::new(
+                "recording_not_found",
+                "Recording session was not found.",
+            )),
+            consumed: None,
+        });
     };
     if recording.session_id != session_id {
         let status = recording.status();
         *active = Some(recording);
-        return Err(AppError::new(
-            "recording_not_found",
-            format!(
-                "Active recording is {}, not {}",
-                status.session_id, session_id
-            ),
-        ));
+        return Err(CaptureFinishError {
+            error: Box::new(AppError::new(
+                "recording_not_found",
+                format!(
+                    "Active recording is {}, not {}",
+                    status.session_id, session_id
+                ),
+            )),
+            consumed: None,
+        });
     }
-    finalize_recording(recording)
+    let consumed = ConsumedCapture {
+        session_id: recording.session_id.clone(),
+        note_id: recording.note_id.clone(),
+    };
+    finalize_recording(recording).map_err(|error| CaptureFinishError {
+        error: Box::new(error),
+        consumed: Some(consumed),
+    })
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {

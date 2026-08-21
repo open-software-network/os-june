@@ -194,6 +194,18 @@ pub fn queued_behind(note_id: &str) -> i64 {
 }
 
 #[cfg(test)]
+pub fn is_registered(note_id: &str, recording_session_id: &str) -> bool {
+    let map = QUEUES.lock().expect("processing queue mutex poisoned");
+    map.get(note_id)
+        .map(|queue| {
+            queue
+                .registered_recording_session_ids
+                .contains(recording_session_id)
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -78,6 +78,10 @@ ranked_sessions AS (
     ROW_NUMBER() OVER (
       PARTITION BY session_evidence.note_id
       ORDER BY
+        CASE
+          WHEN session_evidence.exact_session_id = session_evidence.recording_session_id THEN 0
+          ELSE 1
+        END,
         CASE WHEN session_evidence.has_unfinished_job = 1 THEN 0 ELSE 1 END,
         session_evidence.job_updated_at DESC,
         session_evidence.duration_ms DESC,
