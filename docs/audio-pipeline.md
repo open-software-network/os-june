@@ -20,9 +20,10 @@ preview).
    non-blockingly feeds the **live preview** sink; its worker transcribes ~8s
    chunks and emits ephemeral `live-transcript-event`s that are **never
    persisted**. The Microphone and System live transcript preview workers share
-   a recording-scoped service circuit. A shared or ambiguous provider failure
-   ends both preview lanes for the rest of that recording, while saved-audio
-   capture continues for final note transcription and Retry. The ring holds 30
+   a recording-scoped service circuit. Transient failures are retried once; two
+   consecutive shared or ambiguous failures pause both preview lanes for 30
+   seconds before the workers probe for recovery. Saved-audio capture continues
+   throughout for final note transcription and Retry. The ring holds 30
    seconds at the configured sample rate and channel count, with a memory cap
    for unusual high-channel devices. If disk
    writing ever falls more than that capacity behind, the oldest queued blocks
@@ -40,8 +41,10 @@ preview).
    preview. Completed microphone byte metadata is replaced from the writer
    watermark returned after that final drain. A terminal system-audio helper
    error remains sticky until shutdown: Clovy preserves any WAV bytes already
-   written, but finalization records that Source as failed instead of treating a
-   later level sample or clean helper exit as recovery.
+   written and records the diagnostic instead of treating a later level sample
+   or clean helper exit as recovery. Final WAV validation is authoritative, so
+   audio that is still readable and duration-valid remains available to final
+   note transcription and Retry.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
@@ -55,10 +58,13 @@ preview).
    An unambiguous shared-service note-transcription failure is persisted
    against the attempted durable job, then opens the pipeline circuit. The
    compatibility API can also report deterministic provider rejections as
-   `upstream_provider_failed`, so that ambiguous response needs two consecutive
-   failed Turns before opening the circuit. Already in-flight requests are
-   drained, no more Turns or fallbacks are launched, and untouched jobs remain
-   pending for a later Retry.
+   `upstream_provider_failed`. Consecutive ambiguous failures from distinct
+   Sources open the pipeline circuit; two consecutive ambiguous failures from
+   only one Source quarantine that Source while the other Source continues. A
+   successful or content-specific Turn breaks pipeline-wide corroboration and
+   resets that Source's evidence. Already in-flight requests are drained after
+   a pipeline-wide failure, no more Turns or fallbacks are launched, and
+   untouched jobs remain pending for a later Retry.
 
 While capture is active, the native meeting-HUD supervisor samples capture at
 20 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
@@ -155,7 +161,10 @@ The helper is controlled and observed out-of-process (see ADR-0004):
   Source failure. Continued zero-filled buffers remain a transient `stalled`
   warning because real system silence is indistinguishable from that signal;
   later nonzero audio clears the warning, and a Source that stays silent is
-  handled by the saved-audio speech gate below.
+  handled by the saved-audio speech gate below. Isolated conversion/write
+  failures and trailing-silence flush failures are also `stalled` warnings;
+  three consecutive buffer failures become terminal. Even then, finalized WAV
+  bytes remain usable when they pass the normal saved-audio validation gate.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.

@@ -9,6 +9,7 @@ import IOKit.pwr_mgt
 private let zeroSignalRMSFloor: Float = 1.0e-7
 private let startupZeroSignalRecoverySeconds: TimeInterval = 10
 private let activeZeroSignalRecoverySeconds: TimeInterval = 30
+private let bufferFailureThreshold = 3
 
 extension String: @retroactive Error {}
 
@@ -115,6 +116,7 @@ final class SystemAudioRecorder {
     private var attemptedGraphRecovery = false
     private var reportedTerminalInputStall = false
     private var reportedZeroSignalWarning = false
+    private var consecutiveBufferFailures = 0
     private var maxLevel: Double = 0
     private var stallTimer: DispatchSourceTimer?
     private var powerAssertionID: IOPMAssertionID = 0
@@ -407,6 +409,7 @@ final class SystemAudioRecorder {
         attemptedGraphRecovery = false
         reportedTerminalInputStall = false
         reportedZeroSignalWarning = false
+        consecutiveBufferFailures = 0
         healthLock.unlock()
     }
 
@@ -489,6 +492,26 @@ final class SystemAudioRecorder {
         return true
     }
 
+    private func clearBufferFailures() {
+        healthLock.lock()
+        consecutiveBufferFailures = 0
+        healthLock.unlock()
+    }
+
+    private func reportBufferFailure(_ error: Error) {
+        healthLock.lock()
+        consecutiveBufferFailures += 1
+        let failureCount = consecutiveBufferFailures
+        healthLock.unlock()
+
+        let message = "System audio buffer processing failed \(failureCount)/\(bufferFailureThreshold): \(describeError(error))"
+        log(message)
+        emit([
+            "event": failureCount >= bufferFailureThreshold ? "error" : "stalled",
+            "message": message,
+        ])
+    }
+
     private func startStallWatchdog() {
         stopStallWatchdog()
         let timer = DispatchSource.makeTimerSource(queue: .main)
@@ -563,7 +586,7 @@ final class SystemAudioRecorder {
         } catch {
             let message = "Failed to write trailing system-audio silence: \(describeError(error))"
             log(message)
-            emit(["event": "error", "message": message])
+            emit(["event": "stalled", "message": message])
         }
     }
 
@@ -628,9 +651,10 @@ final class SystemAudioRecorder {
                 try writeTimelineSilenceIfNeeded(beforeWriting: convertedBuffer.frameLength, to: audioFile, format: outputFormat)
                 try audioFile.write(from: convertedBuffer)
                 outputFramesWritten += AVAudioFramePosition(convertedBuffer.frameLength)
+                clearBufferFailures()
             }
         } catch {
-            emit(["event": "error", "message": describeError(error)])
+            reportBufferFailure(error)
         }
     }
 

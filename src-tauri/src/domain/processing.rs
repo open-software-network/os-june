@@ -9,9 +9,9 @@ use crate::{
         },
     },
     clovy_api::{
-        generate_note_from_transcript, note_audio_failure_scope, transcribe_saved_audio,
-        GenerationRequest, NoteAudioFailureScope, TranscriptionProviderResult,
-        TranscriptionRequest,
+        generate_note_from_transcript, note_audio_failure_is_transient, note_audio_failure_scope,
+        transcribe_saved_audio, GenerationRequest, NoteAudioFailureScope,
+        TranscriptionProviderResult, TranscriptionRequest,
     },
     db::repositories::Repositories,
     domain::types::{
@@ -52,7 +52,7 @@ const NOTE_TRANSCRIPTION_PIPELINE_VERSION: &str = "saved-audio-v3";
 const TRANSCRIPT_COVERAGE_WARN_RATIO: f64 = 0.8;
 const TRANSCRIPT_COVERAGE_WARN_MIN_MISSING_MS: i64 = 60_000;
 const TRANSIENT_TRANSCRIPTION_ATTEMPTS: usize = 3;
-const AMBIGUOUS_PROVIDER_FAILURE_THRESHOLD: usize = 2;
+const AMBIGUOUS_PROVIDER_SOURCE_FAILURE_THRESHOLD: usize = 2;
 const SHORT_FULL_SOURCE_RECOVERY_MAX_MS: i64 = 2 * 60 * 1000;
 #[cfg(not(test))]
 const TRANSIENT_TRANSCRIPTION_RETRY_BASE_BACKOFF_MS: u64 = 300;
@@ -2157,6 +2157,15 @@ struct CompletedTurnTranscription {
     circuit_signal: Option<NoteTranscriptionCircuitSignal>,
 }
 
+impl CompletedTurnTranscription {
+    fn source(&self) -> &str {
+        match &self.result {
+            TurnTranscriptionResult::Candidate(candidate) => &candidate.input.source,
+            TurnTranscriptionResult::Failure(failure) => &failure.input.source,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum NoteTranscriptionCircuitSignal {
     SharedService(AppError),
@@ -2177,28 +2186,55 @@ impl NoteTranscriptionCircuitSignal {
 
 #[derive(Debug, Clone, Default)]
 struct NoteTranscriptionCircuit {
-    consecutive_ambiguous_provider_failures: usize,
+    ambiguous_failures_by_source: HashMap<String, usize>,
+    last_ambiguous_source: Option<String>,
+    quarantined_sources: HashSet<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteTranscriptionCircuitDecision {
+    Continue,
+    QuarantineSource,
 }
 
 impl NoteTranscriptionCircuit {
-    fn observe(&mut self, signal: Option<NoteTranscriptionCircuitSignal>) -> Result<(), AppError> {
+    fn observe(
+        &mut self,
+        source: &str,
+        signal: Option<NoteTranscriptionCircuitSignal>,
+    ) -> Result<NoteTranscriptionCircuitDecision, AppError> {
         match signal {
             None => {
-                self.consecutive_ambiguous_provider_failures = 0;
-                Ok(())
+                self.ambiguous_failures_by_source.remove(source);
+                self.last_ambiguous_source = None;
+                Ok(NoteTranscriptionCircuitDecision::Continue)
             }
             Some(NoteTranscriptionCircuitSignal::SharedService(error)) => Err(error),
             Some(NoteTranscriptionCircuitSignal::AmbiguousProvider(error)) => {
-                self.consecutive_ambiguous_provider_failures += 1;
-                if self.consecutive_ambiguous_provider_failures
-                    >= AMBIGUOUS_PROVIDER_FAILURE_THRESHOLD
-                {
-                    Err(error)
-                } else {
-                    Ok(())
+                let corroborated_by_another_source = self
+                    .last_ambiguous_source
+                    .as_deref()
+                    .is_some_and(|previous| previous != source);
+                self.last_ambiguous_source = Some(source.to_string());
+                if corroborated_by_another_source {
+                    return Err(error);
                 }
+                let failures = self
+                    .ambiguous_failures_by_source
+                    .entry(source.to_string())
+                    .or_default();
+                *failures += 1;
+                if *failures >= AMBIGUOUS_PROVIDER_SOURCE_FAILURE_THRESHOLD {
+                    self.quarantined_sources.insert(source.to_string());
+                    return Ok(NoteTranscriptionCircuitDecision::QuarantineSource);
+                }
+                Ok(NoteTranscriptionCircuitDecision::Continue)
             }
         }
+    }
+
+    fn source_is_quarantined(&self, source: &str) -> bool {
+        self.quarantined_sources.contains(source)
     }
 }
 
@@ -2724,7 +2760,7 @@ async fn transcribe_with_transient_retries(
             Ok(transcript) => return Ok(transcript),
             Err(error) => {
                 if attempt + 1 < TRANSIENT_TRANSCRIPTION_ATTEMPTS
-                    && is_retryable_transcription_error(&error)
+                    && note_audio_failure_is_transient(&error)
                 {
                     let retry_delay = transient_retry_delay(&operation_id, attempt, &error);
                     tracing::warn!(
@@ -2742,21 +2778,6 @@ async fn transcribe_with_transient_retries(
         }
     }
     unreachable!("transcription retry loop always returns")
-}
-
-fn is_retryable_transcription_error(error: &AppError) -> bool {
-    let code = error.code.trim().to_ascii_lowercase();
-    let message = error.message.trim().to_ascii_lowercase();
-    code == "clovy_api_response_invalid"
-        || code == "june_api_response_invalid"
-        || code == "empty_response"
-        || (matches!(
-            code.as_str(),
-            "clovy_request_failed" | "june_request_failed"
-        ) && (message == "authorization_denied"
-            || message == "timeout"
-            || message.contains("connection")
-            || message.contains("error sending request")))
 }
 
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
@@ -2824,10 +2845,11 @@ async fn sink_and_record_completed_turn(
     result_sink: Option<&TurnResultSink>,
     completed_by_source: &mut HashMap<String, Vec<SourceTranscriptInput>>,
     outcome: &mut TranscriptionOutcome,
-) -> Result<(), AppError> {
+) -> Result<NoteTranscriptionCircuitDecision, AppError> {
     if let Some(sink) = result_sink {
         sink(event.clone()).await?;
     }
+    let source = event.source().to_string();
     let circuit_signal = event.circuit_signal.clone();
     match event.result {
         TurnTranscriptionResult::Candidate(candidate) => {
@@ -2845,7 +2867,7 @@ async fn sink_and_record_completed_turn(
             outcome.failures.push(failure);
         }
     }
-    outcome.circuit.observe(circuit_signal)
+    outcome.circuit.observe(&source, circuit_signal)
 }
 
 fn stop_stream_after_error(
@@ -3015,6 +3037,12 @@ async fn transcribe_prepared_turn_stream(
                             continue;
                         }
                         received_count += 1;
+                        if outcome
+                            .circuit
+                            .source_is_quarantined(&prepared.job.source)
+                        {
+                            continue;
+                        }
                         ready_by_source
                             .entry(prepared.job.source.clone())
                             .or_default()
@@ -3056,13 +3084,19 @@ async fn transcribe_prepared_turn_stream(
                             &mut outcome,
                         )
                         .await;
-                        if let Err(error) = accepted {
-                            stop_stream_after_error(
-                                &mut terminal_error,
-                                &mut receiver,
-                                &mut ready_by_source,
-                                error,
-                            );
+                        match accepted {
+                            Ok(NoteTranscriptionCircuitDecision::Continue) => {}
+                            Ok(NoteTranscriptionCircuitDecision::QuarantineSource) => {
+                                ready_by_source.remove(&source);
+                            }
+                            Err(error) => {
+                                stop_stream_after_error(
+                                    &mut terminal_error,
+                                    &mut receiver,
+                                    &mut ready_by_source,
+                                    error,
+                                );
+                            }
                         }
                     }
                     Ok((source, Err(error))) => {
@@ -3143,7 +3177,8 @@ async fn transcribe_source_fallbacks(
     result_sink: Option<&TurnResultSink>,
 ) -> Result<(), AppError> {
     for plan in fallback_plans {
-        if !plan.eligible()
+        if outcome.circuit.source_is_quarantined(&plan.source)
+            || !plan.eligible()
             || !source_lane_needs_full_source_fallback(
                 &plan,
                 &outcome.candidates,
@@ -3168,6 +3203,7 @@ async fn transcribe_source_fallbacks(
         if let Some(sink) = result_sink {
             sink(event.clone()).await?;
         }
+        let source = event.source().to_string();
         let circuit_signal = event.circuit_signal.clone();
         match event.result {
             TurnTranscriptionResult::Candidate(candidate) => {
@@ -3183,7 +3219,7 @@ async fn transcribe_source_fallbacks(
             }
             TurnTranscriptionResult::Failure(failure) => outcome.failures.push(failure),
         }
-        outcome.circuit.observe(circuit_signal)?;
+        outcome.circuit.observe(&source, circuit_signal)?;
     }
     sort_transcription_outcome(outcome);
     Ok(())
@@ -5700,7 +5736,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguous_provider_failure_opens_circuit_after_corroboration() {
+    async fn repeated_ambiguous_provider_failures_quarantine_one_source() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let attempts = Arc::clone(&attempts);
+            Arc::new(move |_request: TranscriptionRequest| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    let mut error =
+                        AppError::new("june_request_failed", "upstream_provider_failed");
+                    error.details = Some(serde_json::json!({ "attempt": attempt }));
+                    Err(error)
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sunk_count = Arc::new(AtomicUsize::new(0));
+        let result_sink = {
+            let sunk_count = Arc::clone(&sunk_count);
+            Arc::new(move |_event: CompletedTurnTranscription| {
+                let sunk_count = Arc::clone(&sunk_count);
+                Box::pin(async move {
+                    sunk_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            vec![
+                test_job("first", "microphone", 0),
+                test_job("second", "microphone", 1),
+                test_job("must-not-start", "microphone", 2),
+            ],
+            Vec::new(),
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            Arc::new(prepare_source_fallback),
+            transcriber,
+            Some(result_sink),
+            1,
+        )
+        .await
+        .expect("one rejected Source must not abort the whole note transcription");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(sunk_count.load(Ordering::SeqCst), 2);
+        assert_eq!(outcome.failures.len(), 2);
+        assert!(outcome.circuit.source_is_quarantined("microphone"));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_provider_failures_across_sources_open_the_circuit() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let transcriber = {
             let attempts = Arc::clone(&attempts);
@@ -5729,8 +5818,8 @@ mod tests {
 
         let error = transcribe_turn_jobs_bounded(
             vec![
-                test_job("first", "microphone", 0),
-                test_job("second", "microphone", 1),
+                test_job("microphone-first", "microphone", 0),
+                test_job("system-first", "system", 1),
                 test_job("must-not-start", "microphone", 2),
             ],
             Vec::new(),
@@ -5744,13 +5833,110 @@ mod tests {
             1,
         )
         .await
-        .expect_err("corroborated provider failures must open the circuit");
+        .expect_err("matching provider failures across Sources must open the circuit");
 
         assert_eq!(error.code, "june_request_failed");
         assert_eq!(error.message, "upstream_provider_failed");
         assert_eq!(error.details, Some(serde_json::json!({ "attempt": 2 })));
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
         assert_eq!(sunk_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn successful_turn_breaks_cross_source_ambiguous_corroboration() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let attempts = Arc::clone(&attempts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if request.audio_path == std::path::Path::new("microphone-success") {
+                        return Ok(test_provider_result(&request.operation_id()));
+                    }
+                    Err(AppError::new(
+                        "june_request_failed",
+                        "upstream_provider_failed",
+                    ))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            vec![
+                test_job("system-failure", "system", 0),
+                test_job("microphone-success", "microphone", 1),
+                test_job("microphone-failure", "microphone", 2),
+            ],
+            Vec::new(),
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            Arc::new(prepare_source_fallback),
+            transcriber,
+            None,
+            1,
+        )
+        .await
+        .expect("a successful Turn must break cross-Source outage evidence");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.failures.len(), 2);
+        assert!(!outcome.circuit.source_is_quarantined("system"));
+        assert!(!outcome.circuit.source_is_quarantined("microphone"));
+    }
+
+    #[tokio::test]
+    async fn quarantined_source_does_not_starve_a_healthy_source() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let attempts = Arc::clone(&attempts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    if request.audio_path.to_string_lossy().starts_with("system") {
+                        return Err(AppError::new(
+                            "june_request_failed",
+                            "upstream_provider_failed",
+                        ));
+                    }
+                    Ok(test_provider_result(&request.operation_id()))
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let outcome = transcribe_turn_jobs_bounded(
+            vec![
+                test_job("system-first", "system", 0),
+                test_job("microphone-first", "microphone", 1),
+                test_job("system-second", "system", 2),
+                test_job("microphone-second", "microphone", 3),
+                test_job("system-must-not-start", "system", 4),
+            ],
+            Vec::new(),
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            Arc::new(prepare_source_fallback),
+            transcriber,
+            None,
+            1,
+        )
+        .await
+        .expect("one rejected Source must not block a healthy Source");
+
+        assert_eq!(attempts.load(Ordering::SeqCst), 4);
+        assert_eq!(outcome.failures.len(), 2);
+        assert_eq!(outcome.candidates.len(), 2);
+        assert!(outcome
+            .candidates
+            .iter()
+            .all(|candidate| candidate.input.source == "microphone"));
+        assert!(outcome.circuit.source_is_quarantined("system"));
     }
 
     #[tokio::test]
@@ -5814,24 +6000,24 @@ mod tests {
 
     #[test]
     fn server_timeout_envelope_is_retryable_but_client_timeout_is_not() {
-        assert!(is_retryable_transcription_error(&AppError::new(
+        assert!(note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",
             "timeout"
         )));
-        assert!(!is_retryable_transcription_error(&AppError::new(
+        assert!(!note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",
             "operation timed out"
         )));
         // `upstream_provider_failed` is not precise enough for desktop retry:
         // Clovy API uses the same envelope for transient 5xxs and deterministic
         // provider 4xxs after taking a Hold.
-        assert!(!is_retryable_transcription_error(&AppError::new(
+        assert!(!note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",
             "upstream_provider_failed"
         )));
         // `metering_provider_failed` can come from a post-ASR charge failure;
         // replaying the desktop request would redo paid upstream work.
-        assert!(!is_retryable_transcription_error(&AppError::new(
+        assert!(!note_audio_failure_is_transient(&AppError::new(
             "june_request_failed",
             "metering_provider_failed"
         )));

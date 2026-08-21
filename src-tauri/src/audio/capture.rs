@@ -491,17 +491,14 @@ pub fn start_capture_with_cancel(
             Duration::ZERO,
         ) {
             Ok(capture) => {
-                if let Some(shared_service_circuit_open) = live_preview
-                    .as_ref()
-                    .map(LivePreviewController::shared_service_circuit)
-                {
+                if let Some(circuit) = live_preview.as_ref().map(LivePreviewController::circuit) {
                     system_live_preview = Some(start_system_live_transcript_preview(
                         app.clone(),
                         note_id.clone(),
                         session_id.clone(),
                         source_mode,
                         system_partial_path,
-                        shared_service_circuit_open,
+                        circuit,
                     ));
                 }
                 Some(capture)

@@ -66,6 +66,13 @@ const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
 const ISSUE_REPORT_ATTACHMENT_LIMIT: usize = 20;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn finished_source_audio_is_valid(
+    source: &crate::audio::capture::FinishedSource,
+    validation: &crate::domain::types::AudioValidationDto,
+) -> bool {
+    source_audio_passes_validation(source.source, validation)
+}
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 // React StrictMode and renderer reloads may call `bootstrap_app` more than once
@@ -2238,8 +2245,10 @@ async fn finish_recording_session_with_timing(
         let file_size = std::fs::metadata(&source.final_path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
-        let valid =
-            source.failure.is_none() && source_audio_passes_validation(source.source, &validation);
+        // Bytes on disk are authoritative. A helper failure remains a durable
+        // diagnostic, but a readable, duration-valid Source can still contain
+        // useful audio captured before or after the reported problem.
+        let valid = finished_source_audio_is_valid(source, &validation);
         let validation_taxonomy = validation_taxonomy_code(&validation, valid);
         let validation_checkpoint_details = serde_json::json!({
             "path": source.final_path.to_string_lossy(),
@@ -2311,7 +2320,16 @@ async fn finish_recording_session_with_timing(
                 ));
             }
         }
-        if !valid {
+        if valid {
+            if let Some(failure) = source.failure.as_ref() {
+                warnings.push(crate::domain::types::SourceWarningDto {
+                    source: source.source,
+                    code: failure.code.clone(),
+                    message: "System audio capture reported a problem, but the saved audio was preserved and will still be processed."
+                        .to_string(),
+                });
+            }
+        } else {
             let failure_message = source
                 .failure
                 .as_ref()
@@ -3404,8 +3422,9 @@ mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
         capture_start_timeout_error, copy_directory, copy_directory_contents,
-        create_memory_with_settings, delete_profile_records_with_share_revoker, is_share_not_found,
-        load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
+        create_memory_with_settings, delete_profile_records_with_share_revoker,
+        finished_source_audio_is_valid, is_share_not_found, load_memory_settings,
+        persist_memory_settings, recovery_validation_expected_duration_ms,
         replace_directory_from_staging, should_probe_system_audio_permission,
         start_capture_with_timeout_and_cleanup, update_memory_with_settings,
         validated_folder_instructions, CaptureStartupGuard, MEMORY_SETTINGS_LOCK,
@@ -3432,11 +3451,17 @@ mod tests {
     }
     use crate::{
         app_paths::AppPaths,
-        audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
+        audio::{
+            capture::{
+                is_capture_active, CaptureStartState, FinishedSource, StartedRecording,
+                StartedSource,
+            },
+            system_audio::SystemAudioFailure,
+        },
         db::repositories::{Repositories, ShareKeyRecord},
         domain::types::{
-            AppError, AudioLevelDto, MemorySettingsDto, RecordingSource, RecordingSourceMode,
-            RecordingState, RecordingStatusDto, SourceReadinessDto,
+            AppError, AudioLevelDto, AudioValidationDto, MemorySettingsDto, RecordingSource,
+            RecordingSourceMode, RecordingState, RecordingStatusDto, SourceReadinessDto,
         },
     };
     use std::{
@@ -3447,6 +3472,36 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[test]
+    fn valid_saved_system_audio_survives_a_helper_failure_diagnostic() {
+        let source = FinishedSource {
+            source: RecordingSource::System,
+            final_path: PathBuf::from("system.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 0,
+            capture_issue: None,
+            failure: Some(SystemAudioFailure {
+                code: "system_audio_capture_failed".to_string(),
+                message: "late helper failure".to_string(),
+            }),
+        };
+        let validation = AudioValidationDto {
+            file_exists: true,
+            non_zero_size: true,
+            readable_audio: true,
+            expected_duration_ms: 2_000,
+            actual_duration_ms: 2_000,
+            duration_within_tolerance: true,
+            non_silent_signal: true,
+            recorded_silence: false,
+            peak_amplitude: 0.5,
+            rms_amplitude: 0.2,
+            warnings: Vec::new(),
+        };
+
+        assert!(finished_source_audio_is_valid(&source, &validation));
+    }
 
     #[cfg(unix)]
     #[test]

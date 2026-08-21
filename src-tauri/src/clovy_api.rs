@@ -216,6 +216,21 @@ pub(crate) fn note_audio_failure_scope(error: &AppError) -> NoteAudioFailureScop
     }
 }
 
+pub(crate) fn note_audio_failure_is_transient(error: &AppError) -> bool {
+    let code = error.code.trim().to_ascii_lowercase();
+    let message = error.message.trim().to_ascii_lowercase();
+    code == "clovy_api_response_invalid"
+        || code == "june_api_response_invalid"
+        || code == "empty_response"
+        || (matches!(
+            code.as_str(),
+            "clovy_request_failed" | "june_request_failed"
+        ) && (message == "authorization_denied"
+            || message == "timeout"
+            || message.contains("connection")
+            || message.contains("error sending request")))
+}
+
 #[derive(Debug, Clone)]
 pub struct GenerationRequest {
     pub provider: String,
