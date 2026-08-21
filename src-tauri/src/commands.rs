@@ -2493,11 +2493,7 @@ async fn finish_recording_session_inner(
     repos
         .update_recording_session(
             &finished.session_id,
-            if valid_sources.is_empty() {
-                "invalid"
-            } else {
-                "processing_pending"
-            },
+            "processing_pending",
             finished.elapsed_ms,
             Some(primary_file_size),
             Some(validation.actual_duration_ms),
@@ -3527,11 +3523,7 @@ async fn prepare_recovered_recording(
     repos
         .update_recording_session(
             &info.session_id,
-            if source_audio_passes_validation(RecordingSource::Microphone, &validation) {
-                "processing_pending"
-            } else {
-                "invalid"
-            },
+            "processing_pending",
             expected_elapsed_ms,
             Some(file_size),
             Some(validation.actual_duration_ms),
@@ -3894,8 +3886,9 @@ mod note_transcription_benchmark;
 mod retry_audio_source_tests {
     use super::{
         claim_recording_recovery, enqueue_retry_processing, finish_recording_session,
-        recover_abandoned_processing_run, recover_and_release_processing_ticket,
-        recover_processing_run_or_supervise, retry_audio_sources,
+        prepare_recovered_recording, recover_abandoned_processing_run,
+        recover_and_release_processing_ticket, recover_processing_run_or_supervise,
+        retry_audio_sources,
     };
     use crate::{
         app_paths::AppPaths,
@@ -3914,6 +3907,7 @@ mod retry_audio_source_tests {
         },
     };
     use sqlx::{query::query, query_scalar::query_scalar};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -4611,6 +4605,111 @@ mod retry_audio_source_tests {
     }
 
     #[tokio::test]
+    async fn legacy_validation_failure_remains_recoverable_when_terminal_write_fails() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let paths = AppPaths::from_data_dir(directory.path().join("data")).expect("app paths");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "legacy-validation-transaction-failure";
+        let session_dir = paths
+            .recording_session_dir(&note.id, session_id)
+            .expect("session path");
+        std::fs::create_dir_all(&session_dir).expect("session directory");
+        let partial_path = session_dir.join("microphone.partial.wav");
+        let final_path = session_dir.join("microphone.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&final_path, spec).expect("WAV writer");
+        for _ in 0..16_000 {
+            writer.write_sample(1_000_i16).expect("WAV sample");
+        }
+        writer.finalize().expect("finalize WAV");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .update_recording_session(
+                session_id,
+                "recording",
+                10_000,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("recording duration");
+        assert!(repos
+            .mark_recording_recoverable(session_id, &note.id)
+            .await
+            .expect("recoverable recording"));
+        let info = repos
+            .recoverable_recording_info(session_id)
+            .await
+            .expect("recovery lookup")
+            .expect("recovery info");
+        let progress = NoteProcessingProgressReporter::default();
+        let ticket = claim_recording_recovery(&repos, &note.id, session_id, &progress)
+            .await
+            .expect("recovery claim")
+            .expect("recovery ticket");
+        query(
+            "CREATE TRIGGER reject_recovered_terminal_note_update
+             BEFORE UPDATE OF processing_status ON notes
+             WHEN NEW.id = OLD.id AND NEW.processing_status = 'failed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected recovered terminal note failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        assert!(
+            prepare_recovered_recording(&repos, &paths, &info)
+                .await
+                .is_err(),
+            "terminal recovery transaction should fail"
+        );
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after terminal write failure");
+        assert_eq!(status, "processing_pending");
+
+        recover_and_release_processing_ticket(ticket, &repos, &note.id, session_id, &progress)
+            .await;
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after recovery");
+        assert_eq!(status, "recoverable");
+    }
+
+    #[tokio::test]
     async fn finalization_error_promotes_consumed_capture_to_recovery() {
         let pool = sqlx_sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -4658,34 +4757,7 @@ mod retry_audio_source_tests {
         .execute(&repos.pool)
         .await
         .expect("failure trigger");
-        let finished = FinishedRecording {
-            session_id: session_id.to_string(),
-            note_id: note.id.clone(),
-            source_mode: RecordingSourceMode::MicrophoneOnly,
-            final_path: final_path.clone(),
-            sources: vec![FinishedSource {
-                source: RecordingSource::Microphone,
-                final_path,
-                elapsed_ms: 5_000,
-                dropped_samples: 0,
-                capture_issue: None,
-                failure: None,
-            }],
-            elapsed_ms: 5_000,
-            recording: RecordingSessionDto {
-                id: session_id.to_string(),
-                note_id: note.id.clone(),
-                source_mode: RecordingSourceMode::MicrophoneOnly,
-                state: RecordingState::Validating,
-                started_at: crate::db::repositories::timestamp(),
-                elapsed_ms: 5_000,
-                device_label: None,
-                level: AudioLevelDto::default(),
-                live_preview_enabled: false,
-                sources: Vec::new(),
-                warnings: Vec::new(),
-            },
-        };
+        let finished = finished_microphone_recording(&note.id, session_id, final_path);
 
         finish_recording_session(&repos, finished, Instant::now())
             .await
@@ -4706,6 +4778,109 @@ mod retry_audio_source_tests {
             .expect("recovery scan");
         assert_eq!(recoveries.len(), 1);
         assert_eq!(recoveries[0].session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn fresh_validation_failure_remains_recoverable_when_terminal_write_fails() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("fresh-validation.partial.wav");
+        let final_path = directory.path().join("fresh-validation.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "fresh-validation-transaction-failure";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("source artifact");
+        query(
+            "CREATE TRIGGER reject_fresh_terminal_note_update
+             BEFORE UPDATE OF processing_status ON notes
+             WHEN NEW.id = OLD.id AND NEW.processing_status = 'failed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected fresh terminal note failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        finish_recording_session(
+            &repos,
+            finished_microphone_recording(&note.id, session_id, final_path),
+            Instant::now(),
+        )
+        .await
+        .expect_err("terminal finalization transaction should fail");
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after terminal write failure");
+        assert_eq!(status, "recoverable");
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+    }
+
+    fn finished_microphone_recording(
+        note_id: &str,
+        session_id: &str,
+        final_path: PathBuf,
+    ) -> FinishedRecording {
+        FinishedRecording {
+            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            final_path: final_path.clone(),
+            sources: vec![FinishedSource {
+                source: RecordingSource::Microphone,
+                final_path,
+                elapsed_ms: 5_000,
+                dropped_samples: 0,
+                capture_issue: None,
+                failure: None,
+            }],
+            elapsed_ms: 5_000,
+            recording: RecordingSessionDto {
+                id: session_id.to_string(),
+                note_id: note_id.to_string(),
+                source_mode: RecordingSourceMode::MicrophoneOnly,
+                state: RecordingState::Validating,
+                started_at: crate::db::repositories::timestamp(),
+                elapsed_ms: 5_000,
+                device_label: None,
+                level: AudioLevelDto::default(),
+                live_preview_enabled: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            },
+        }
     }
 }
 
