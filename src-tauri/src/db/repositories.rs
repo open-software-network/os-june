@@ -3486,6 +3486,26 @@ impl Repositories {
         title: Option<String>,
         content: String,
     ) -> Result<NoteDto, sqlx::error::Error> {
+        self.set_generated_note_for_session_with_warning(
+            note_id,
+            recording_session_id,
+            generation_result_id,
+            title,
+            content,
+            None,
+        )
+        .await
+    }
+
+    pub async fn set_generated_note_for_session_with_warning(
+        &self,
+        note_id: &str,
+        recording_session_id: Option<&str>,
+        generation_result_id: Option<&str>,
+        title: Option<String>,
+        content: String,
+        warning: Option<&str>,
+    ) -> Result<NoteDto, sqlx::error::Error> {
         let current = self.get_note(note_id).await?;
         let title = if is_replaceable_generated_title(&current.title) {
             usable_generated_title(title.as_deref())
@@ -3576,7 +3596,7 @@ impl Repositories {
                  END,
                  active_tab = 'notes',
                  processing_status = 'ready',
-                 last_error = NULL,
+                 last_error = ?,
                  updated_at = ?,
                  revision = revision + 1
              WHERE id = ?",
@@ -3587,6 +3607,7 @@ impl Repositories {
         .bind(expected_edited_content.as_deref())
         .bind(expected_edited_content.as_deref())
         .bind(next_edited_content)
+        .bind(warning)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)

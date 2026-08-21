@@ -885,6 +885,29 @@ describe("notes recording reliability", () => {
     expect(screen.queryByText(/Transcribing audio/)).not.toBeInTheDocument();
   });
 
+  it("shows a system audio warning returned after recording finalization", async () => {
+    const warning =
+      "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details.";
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+      warnings: [
+        {
+          source: "system",
+          code: "system_audio_capture_unavailable",
+          message: warning,
+        },
+      ],
+    });
+
+    await startRecordingOnFirstNote();
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+
+    expect(await screen.findByText(warning)).toHaveClass("error-banner");
+  });
+
   it("keeps provisional transcript visible after Stop while saved-audio processing is pending", async () => {
     const pendingFinish = deferred<never>();
     mocks.finishRecording.mockReturnValue(pendingFinish.promise);

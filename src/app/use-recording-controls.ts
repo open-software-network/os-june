@@ -219,6 +219,10 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     }
     try {
       const result = await finishRecording(sessionId);
+      const finalizationWarning = result.warnings
+        ?.map((warning) => warning.message.trim())
+        .find(Boolean);
+      if (finalizationWarning) setError(finalizationWarning);
       // The result belongs to the partition where recording started. Once that
       // partition's temporary recording view has been retired, do not let the
       // finish response upsert the old note into the newly selected data partition.

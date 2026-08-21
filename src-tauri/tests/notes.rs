@@ -465,6 +465,28 @@ async fn generated_note_replaces_existing_session_block() {
 }
 
 #[tokio::test]
+async fn generated_note_preserves_partial_source_warning() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    let warning = "System: The transcription provider could not process this audio.";
+
+    let updated = repos
+        .set_generated_note_for_session_with_warning(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Microphone transcript result".to_string(),
+            Some(warning),
+        )
+        .await
+        .expect("generated note with partial-Source warning");
+
+    assert_eq!(updated.processing_status, ProcessingStatus::Ready);
+    assert_eq!(updated.last_error.as_deref(), Some(warning));
+}
+
+#[tokio::test]
 async fn generated_note_composes_distinct_session_blocks_in_order() {
     let repos = repos().await;
     let note = repos.create_note("default", None).await.expect("note");

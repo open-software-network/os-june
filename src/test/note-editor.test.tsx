@@ -812,6 +812,25 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
+  it("keeps a partial-Source warning visible on a generated note", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "ready",
+          lastError: "System: upstream_provider_failed",
+          generatedContent: "Notes generated from the healthy Source.",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      "System: The transcription provider could not process this audio.",
+    );
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
   it("orders source transcript turns by persisted turn metadata", () => {
     const { container } = render(
       <NoteEditor

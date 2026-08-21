@@ -1580,24 +1580,7 @@ async fn process_saved_source_audio_pipeline(
         .await?;
     drop(turn_wav_dir_cleanup);
 
-    let mut fresh_outcome = pipeline.outcome;
-    for source in &fresh_outcome.replaced_sources {
-        transcription_outcome
-            .candidates
-            .retain(|candidate| candidate.input.source != *source);
-        transcription_outcome
-            .failures
-            .retain(|failure| failure.input.source != *source);
-    }
-    transcription_outcome
-        .candidates
-        .append(&mut fresh_outcome.candidates);
-    transcription_outcome
-        .failures
-        .append(&mut fresh_outcome.failures);
-    transcription_outcome
-        .replaced_sources
-        .extend(fresh_outcome.replaced_sources);
+    merge_fresh_transcription_outcome(&mut transcription_outcome, pipeline.outcome);
 
     let has_valid_transcript = !transcription_outcome.candidates.is_empty();
     let visible_failures =
@@ -1699,12 +1682,22 @@ async fn process_saved_source_audio_pipeline(
         .map(source_transcript_input_from_row)
         .collect::<Vec<_>>();
     let valid_sources = valid_sources_for_processing(transcript_inputs);
+    let nonblocking_quarantined_sources = nonblocking_quarantined_sources(
+        &valid_sources,
+        &transcription_outcome.circuit.quarantined_sources,
+    );
+    let partial_source_failures = visible_failures
+        .iter()
+        .filter(|failure| nonblocking_quarantined_sources.contains(failure.input.source.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let partial_source_warning = source_failure_summary(&partial_source_failures);
     let blocking_error = if valid_sources.is_empty() {
         let failure_message = source_failure_summary(&transcription_outcome.failures)
             .unwrap_or_else(|| "No selected source produced a usable transcript.".to_string());
         Some(AppError::new("transcription_failed", failure_message))
     } else {
-        blocking_transcription_failure_summary(&visible_failures)
+        blocking_transcription_failure_summary(&visible_failures, &nonblocking_quarantined_sources)
             .map(|failure_message| AppError::new("transcription_partially_failed", failure_message))
     };
     timeline.flush(repos, session_id).await;
@@ -1835,12 +1828,13 @@ async fn process_saved_source_audio_pipeline(
         }
     };
     let note = match repos
-        .set_generated_note_for_session(
+        .set_generated_note_for_session_with_warning(
             note_id,
             Some(session_id),
             Some(&generation_result_id),
             generated.title_suggestion,
             generated.content,
+            partial_source_warning.as_deref(),
         )
         .await
     {
@@ -2146,6 +2140,27 @@ struct TranscriptionOutcome {
     failures: Vec<FailedTranscriptCandidate>,
     replaced_sources: HashSet<String>,
     circuit: NoteTranscriptionCircuit,
+}
+
+fn merge_fresh_transcription_outcome(
+    current: &mut TranscriptionOutcome,
+    mut fresh: TranscriptionOutcome,
+) {
+    for source in &fresh.replaced_sources {
+        current
+            .candidates
+            .retain(|candidate| candidate.input.source != *source);
+        current
+            .failures
+            .retain(|failure| failure.input.source != *source);
+    }
+    current.candidates.append(&mut fresh.candidates);
+    current.failures.append(&mut fresh.failures);
+    current.replaced_sources.extend(fresh.replaced_sources);
+    current
+        .circuit
+        .quarantined_sources
+        .extend(fresh.circuit.quarantined_sources);
 }
 
 #[derive(Debug, Clone)]
@@ -3782,10 +3797,14 @@ fn visible_transcription_failures(
 
 fn blocking_transcription_failure_summary(
     failures: &[FailedTranscriptCandidate],
+    nonblocking_sources: &HashSet<String>,
 ) -> Option<String> {
     let blocking_failures = failures
         .iter()
         .filter(|failure| {
+            if nonblocking_sources.contains(failure.input.source.as_str()) {
+                return false;
+            }
             let warning = failure
                 .input
                 .warning
@@ -3801,6 +3820,20 @@ fn blocking_transcription_failure_summary(
         .cloned()
         .collect::<Vec<_>>();
     source_failure_summary(&blocking_failures)
+}
+
+fn nonblocking_quarantined_sources(
+    valid_sources: &[SourceTranscriptInput],
+    quarantined_sources: &HashSet<String>,
+) -> HashSet<String> {
+    if valid_sources
+        .iter()
+        .any(|source| !quarantined_sources.contains(&source.source))
+    {
+        quarantined_sources.clone()
+    } else {
+        HashSet::new()
+    }
 }
 
 struct DroppedSource {
@@ -6588,7 +6621,7 @@ mod tests {
         );
 
         assert_eq!(visible.len(), 1);
-        assert!(blocking_transcription_failure_summary(&visible).is_none());
+        assert!(blocking_transcription_failure_summary(&visible, &HashSet::new()).is_none());
     }
 
     #[test]
@@ -6610,7 +6643,7 @@ mod tests {
             },
         }];
 
-        assert!(blocking_transcription_failure_summary(&visible).is_none());
+        assert!(blocking_transcription_failure_summary(&visible, &HashSet::new()).is_none());
     }
 
     #[test]
@@ -6625,9 +6658,85 @@ mod tests {
         );
 
         assert_eq!(
-            blocking_transcription_failure_summary(&visible).as_deref(),
+            blocking_transcription_failure_summary(&visible, &HashSet::new()).as_deref(),
             Some("Microphone: The processing service returned an invalid response.")
         );
+    }
+
+    #[test]
+    fn merged_quarantine_keeps_a_healthy_source_nonblocking_and_visible() {
+        let mut current = TranscriptionOutcome::default();
+        let mut fresh = TranscriptionOutcome::default();
+        fresh.candidates.push(TranscriptCandidate {
+            artifact_id: "microphone-artifact".to_string(),
+            language: Some("en".to_string()),
+            input: SourceTranscriptInput {
+                source: "microphone".to_string(),
+                text: "Usable microphone transcript".to_string(),
+                valid: true,
+                warning: None,
+                recorded_silence: false,
+                start_ms: Some(0),
+                end_ms: Some(1_000),
+                turn_index: Some(0),
+            },
+        });
+        fresh.failures.push(failed_candidate(
+            "system",
+            "The transcription provider could not process this audio.",
+            1,
+        ));
+        fresh
+            .circuit
+            .quarantined_sources
+            .insert("system".to_string());
+
+        merge_fresh_transcription_outcome(&mut current, fresh);
+
+        let valid_sources = current
+            .candidates
+            .iter()
+            .map(|candidate| candidate.input.clone())
+            .collect::<Vec<_>>();
+        let nonblocking =
+            nonblocking_quarantined_sources(&valid_sources, &current.circuit.quarantined_sources);
+        assert_eq!(nonblocking, HashSet::from(["system".to_string()]));
+        assert!(blocking_transcription_failure_summary(&current.failures, &nonblocking).is_none());
+
+        let warning_failures = current
+            .failures
+            .iter()
+            .filter(|failure| nonblocking.contains(&failure.input.source))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_failure_summary(&warning_failures).as_deref(),
+            Some("System: The transcription provider could not process this audio.")
+        );
+    }
+
+    #[test]
+    fn quarantine_stays_blocking_without_a_distinct_healthy_source() {
+        let valid_sources = vec![SourceTranscriptInput {
+            source: "system".to_string(),
+            text: "Earlier partial system transcript".to_string(),
+            valid: true,
+            warning: None,
+            recorded_silence: false,
+            start_ms: Some(0),
+            end_ms: Some(1_000),
+            turn_index: Some(0),
+        }];
+        let quarantined = HashSet::from(["system".to_string()]);
+        let nonblocking = nonblocking_quarantined_sources(&valid_sources, &quarantined);
+        let failures = vec![failed_candidate(
+            "system",
+            "The transcription provider could not process this audio.",
+            1,
+        )];
+
+        assert!(nonblocking.is_empty());
+        assert!(blocking_transcription_failure_summary(&failures, &nonblocking).is_some());
     }
 
     #[test]

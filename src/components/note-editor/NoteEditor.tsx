@@ -454,6 +454,11 @@ export function NoteEditor({
   // stays disabled via processingLock so nothing can re-trigger.
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
+  const showNoteTranscriptionWarning =
+    Boolean(note.lastError) &&
+    (note.processingStatus === "transcribing" ||
+      note.processingStatus === "generating" ||
+      note.processingStatus === "ready");
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
   const fallbackTranscriptScrollRef = useRef<HTMLElement>(null);
   const transcriptDisplayContentKey = useMemo(
@@ -543,7 +548,7 @@ export function NoteEditor({
             recoverBlockedReason={recoveryBlockedReason}
           />
         ) : null}
-        {note.processingStatus === "transcribing" && note.lastError ? (
+        {showNoteTranscriptionWarning && note.lastError ? (
           <InlineNotice
             className="note-transcription-warning"
             tone="warning"

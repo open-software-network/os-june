@@ -60,6 +60,8 @@ const MICROPHONE_WRITER_WARNING_MESSAGE: &str =
     "Clovy stopped saving microphone audio. Stop the recording now to preserve the audio already written.";
 const MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE: &str =
     "Microphone recording could not keep up. Some audio may be missing.";
+const SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE: &str =
+    "System audio capture needs attention. Clovy is still recording and will preserve any audio it captures.";
 
 static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -1033,6 +1035,28 @@ impl ActiveRecording {
                 recent_peaks: recent_peaks.clone(),
             }
         };
+        let sources = source_statuses(
+            self.source_mode,
+            state,
+            elapsed_ms,
+            MicrophoneStatusInput {
+                level: level.clone(),
+                bytes_written,
+                dropped_samples,
+                silence_warning: self.started.elapsed() >= Duration::from_secs(10)
+                    && rms < DEFAULT_SILENCE_THRESHOLD,
+                capture_issue: microphone_capture_issue.clone(),
+            },
+            self.system_capture.as_ref(),
+        );
+        let system_capture_issue = sources
+            .iter()
+            .any(|source| source.source == RecordingSource::System && source.last_error.is_some());
+        let warnings = source_warnings(
+            microphone_capture_issue.as_ref(),
+            dropped_samples,
+            system_capture_issue,
+        );
         RecordingStatusDto {
             session_id: self.session_id.clone(),
             note_id: Some(self.note_id.clone()),
@@ -1044,21 +1068,8 @@ impl ActiveRecording {
                 && rms < DEFAULT_SILENCE_THRESHOLD,
             bytes_written,
             live_preview_enabled: self.live_preview_enabled,
-            sources: source_statuses(
-                self.source_mode,
-                state,
-                elapsed_ms,
-                MicrophoneStatusInput {
-                    level,
-                    bytes_written,
-                    dropped_samples,
-                    silence_warning: self.started.elapsed() >= Duration::from_secs(10)
-                        && rms < DEFAULT_SILENCE_THRESHOLD,
-                    capture_issue: microphone_capture_issue.clone(),
-                },
-                self.system_capture.as_ref(),
-            ),
-            warnings: source_warnings(microphone_capture_issue.as_ref(), dropped_samples),
+            sources,
+            warnings,
         }
     }
 
@@ -1277,6 +1288,7 @@ fn microphone_stream_issue(
 fn source_warnings(
     microphone_capture_issue: Option<&MicrophoneStreamIssue>,
     dropped_samples: u64,
+    system_capture_issue: bool,
 ) -> Vec<SourceWarningDto> {
     let mut warnings = Vec::new();
     if let Some(issue) = microphone_capture_issue {
@@ -1295,6 +1307,13 @@ fn source_warnings(
             source: RecordingSource::Microphone,
             code: "microphone_buffer_overflow".to_string(),
             message: MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE.to_string(),
+        });
+    }
+    if system_capture_issue {
+        warnings.push(SourceWarningDto {
+            source: RecordingSource::System,
+            code: "system_audio_capture_warning".to_string(),
+            message: SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE.to_string(),
         });
     }
     warnings
@@ -1498,7 +1517,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(Some(&issue), 0);
+        let warnings = source_warnings(Some(&issue), 0, false);
 
         let microphone = sources
             .iter()
@@ -1533,7 +1552,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(Some(&issue), 0);
+        let warnings = source_warnings(Some(&issue), 0, false);
 
         assert_eq!(sources[0].bytes_written, 512);
         assert_eq!(
@@ -1566,7 +1585,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(None, 37);
+        let warnings = source_warnings(None, 37, false);
 
         assert_eq!(sources[0].dropped_samples, 37);
         assert_eq!(
@@ -1575,6 +1594,20 @@ mod tests {
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "microphone_buffer_overflow");
+    }
+
+    #[test]
+    fn system_capture_issue_appears_in_top_level_warnings() {
+        let warnings = source_warnings(None, 0, true);
+
+        assert_eq!(
+            warnings,
+            vec![SourceWarningDto {
+                source: RecordingSource::System,
+                code: "system_audio_capture_warning".to_string(),
+                message: SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE.to_string(),
+            }]
+        );
     }
 
     #[test]

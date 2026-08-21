@@ -62,9 +62,11 @@ preview).
    Sources open the pipeline circuit; two consecutive ambiguous failures from
    only one Source quarantine that Source while the other Source continues. A
    successful or content-specific Turn breaks pipeline-wide corroboration and
-   resets that Source's evidence. Already in-flight requests are drained after
-   a pipeline-wide failure, no more Turns or fallbacks are launched, and
-   untouched jobs remain pending for a later Retry.
+   resets that Source's evidence. When the other Source produced a usable
+   transcript, its Note can still be generated and retains a visible warning
+   for the quarantined Source. Already in-flight requests are drained after a
+   pipeline-wide failure, no more Turns or fallbacks are launched, and untouched
+   jobs remain pending for a later Retry.
 
 While capture is active, the native meeting-HUD supervisor samples capture at
 20 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
@@ -165,6 +167,9 @@ The helper is controlled and observed out-of-process (see ADR-0004):
   failures and trailing-silence flush failures are also `stalled` warnings;
   three consecutive buffer failures become terminal. Even then, finalized WAV
   bytes remain usable when they pass the normal saved-audio validation gate.
+  System capture diagnostics are promoted into the recording warning stream;
+  a diagnostic discovered during Stop is returned to the renderer and remains
+  visible while the preserved audio is processed.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.

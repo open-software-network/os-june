@@ -2325,7 +2325,7 @@ async fn finish_recording_session_with_timing(
                 warnings.push(crate::domain::types::SourceWarningDto {
                     source: source.source,
                     code: failure.code.clone(),
-                    message: "System audio capture reported a problem, but the saved audio was preserved and will still be processed."
+                    message: "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details."
                         .to_string(),
                 });
             }
