@@ -1359,6 +1359,24 @@ const MIGRATIONS: &[Migration] = &[
             columns: GENERATION_BLOCK_WARNING_COLUMN,
         }],
     },
+    Migration {
+        version: 52,
+        name: "note_retry_context",
+        requirements: &[
+            SchemaRequirement::Column {
+                table: "notes",
+                column: "retry_recording_session_id",
+            },
+            SchemaRequirement::Column {
+                table: "notes",
+                column: "retry_processing_stage",
+            },
+        ],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "notes",
+            columns: NOTE_RETRY_CONTEXT_COLUMNS,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1385,6 +1403,16 @@ const GENERATION_BLOCK_WARNING_COLUMN: &[ColumnDefinition] = &[ColumnDefinition 
     name: "warning",
     definition: "TEXT",
 }];
+const NOTE_RETRY_CONTEXT_COLUMNS: &[ColumnDefinition] = &[
+    ColumnDefinition {
+        name: "retry_recording_session_id",
+        definition: "TEXT",
+    },
+    ColumnDefinition {
+        name: "retry_processing_stage",
+        definition: "TEXT",
+    },
+];
 
 struct AppliedMigration {
     version: i64,
@@ -2363,6 +2391,7 @@ mod tests {
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
                 (51, "generation_block_warnings".to_string()),
+                (52, "note_retry_context".to_string()),
             ]
         );
         assert_latest_stamp(&pool).await;
@@ -2684,6 +2713,7 @@ mod tests {
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
                 (51, "generation_block_warnings".to_string()),
+                (52, "note_retry_context".to_string()),
             ]
         );
 

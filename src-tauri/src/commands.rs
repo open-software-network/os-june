@@ -2427,8 +2427,10 @@ async fn finish_recording_session_with_timing(
 
     if valid_sources.is_empty() {
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 &finished.note_id,
+                &finished.session_id,
+                Some("validation"),
                 crate::domain::types::ProcessingStatus::Failed,
                 Some(validation.warnings.join("; ")),
             )
@@ -2466,8 +2468,10 @@ async fn finish_recording_session_with_timing(
     if depth <= 1 {
         // First in line: reflect "processing" immediately for snappy feedback.
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 &finished.note_id,
+                &finished.session_id,
+                Some("transcribing"),
                 crate::domain::types::ProcessingStatus::Transcribing,
                 None,
             )
@@ -2706,7 +2710,13 @@ pub async fn retry_processing(
     };
     if depth <= 1 {
         repos
-            .set_note_status(&request.note_id, ProcessingStatus::Transcribing, None)
+            .set_note_status_for_recording_session(
+                &request.note_id,
+                &task_recording_session_id,
+                Some("transcribing"),
+                ProcessingStatus::Transcribing,
+                None,
+            )
             .await?;
     }
 
@@ -2890,8 +2900,10 @@ pub async fn recover_recording(
         }
         if valid_sources.is_empty() {
             repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     &info.note_id,
+                    &info.session_id,
+                    Some("validation"),
                     crate::domain::types::ProcessingStatus::Failed,
                     Some("No recoverable source audio passed validation.".to_string()),
                 )
@@ -2950,8 +2962,10 @@ pub async fn recover_recording(
         .await?;
     if !source_audio_passes_validation(RecordingSource::Microphone, &validation) {
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 &info.note_id,
+                &info.session_id,
+                Some("validation"),
                 crate::domain::types::ProcessingStatus::Failed,
                 Some(validation.warnings.join("; ")),
             )

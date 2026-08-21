@@ -606,7 +606,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
           onFinishRecording={(sessionId) => void handleFinishRecording(sessionId)}
           onKeepRecordingAfterMeetingEnd={handleKeepRecordingAfterMeetingEnd}
           onStopNowAfterMeetingEnd={handleStopNowAfterMeetingEnd}
-          onRetry={async () => {
+          onRetry={async (recordingSessionId) => {
             if (!selectedNote) return;
             if (fundingRequired) {
               setError(NOTE_RETRY_FUNDING_DISABLED_REASON);
@@ -615,7 +615,7 @@ export function renderAppWorkspace(dependencies: RenderAppWorkspaceDependencies)
             try {
               const note = await retryProcessing(
                 selectedNote.id,
-                selectedNote.retryRecordingSessionId,
+                recordingSessionId ?? selectedNote.retryRecordingSessionId,
               );
               dispatch({ type: "noteProcessingUpdated", note });
             } catch (err) {

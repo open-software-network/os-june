@@ -22,8 +22,10 @@ preview).
    persisted**. The Microphone and System live transcript preview workers share
    a recording-scoped service circuit. Transient failures are retried once; two
    consecutive shared or ambiguous failures pause both preview lanes for 30
-   seconds before the workers probe for recovery. Saved-audio capture continues
-   throughout for final note transcription and Retry. The ring holds 30
+   seconds before one half-open request probes for recovery. Results carry the
+   circuit epoch that admitted them, so an older in-flight success cannot close
+   a newer cooldown. Saved-audio capture continues throughout for final note
+   transcription and Retry. The ring holds 30
    seconds at the configured sample rate and channel count, with a memory cap
    for unusual high-channel devices. If disk
    writing ever falls more than that capacity behind, the oldest queued blocks
@@ -153,7 +155,9 @@ The helper is controlled and observed out-of-process (see ADR-0004):
   `message`). An `error` event is terminal for that capture and remains
   observable until the parent has recorded it; later level events cannot
   overwrite it. The helper can still publish `stopped` during an orderly
-  shutdown.
+  shutdown. That final event is authoritative: it carries any buffer-write or
+  trailing-flush warning that must survive Stop, while an absent message proves
+  that a transient pre-TERM warning recovered.
 - **Routing:** a private stereo process tap is bound to the current default
   system output device, so it records the same device stream the user hears.
   The private aggregate contains the tap only; adding a physical output
@@ -217,4 +221,8 @@ attempt state; interrupted `running` jobs return to `pending`, and explicit
 Retry resumes only jobs whose fingerprint has not already succeeded. Queue
 registration is idempotent per Note and recording session while work is queued
 or running, so repeated Retry requests cannot fan out duplicate processing for
-the same saved audio.
+the same saved audio. A failed Note also stores the exact recording session and
+processing stage that failed, preventing an older partial session from
+displacing the recording that actually needs Retry. Partial-Source warnings on
+a Ready Note retain their own recording-session identity, so the warning's
+Retry action reprocesses the affected saved audio directly.

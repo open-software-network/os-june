@@ -626,6 +626,11 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Session-scoped partial transcription warnings that can be retried after Ready. */
+  transcriptionWarnings?: Array<{
+    recordingSessionId: string;
+    message: string;
+  }>;
   /** Recording whose saved-audio artifacts should be used by Retry. */
   retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */

@@ -124,6 +124,8 @@ final class SystemAudioRecorder {
     private var rebuildScheduled = false
     private var terminalErrorMessage: String?
     private var activeWarningMessage: String?
+    private var bufferWarningMessage: String?
+    private var finalizationWarningMessage: String?
 
     init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
         self.outputURL = outputURL
@@ -376,7 +378,7 @@ final class SystemAudioRecorder {
         let channelCount = Int(buffer.format.channelCount)
         guard frameLength > 0, channelCount > 0, let channels = buffer.floatChannelData else {
             var status = ["event": "level", "level": "0"]
-            if let warning = currentZeroSignalWarning() {
+            if let warning = currentLevelWarning() {
                 status["message"] = warning
             }
             emit(status)
@@ -399,7 +401,7 @@ final class SystemAudioRecorder {
         let level = min(1, Double(rms) * 4)
         maxLevel = max(maxLevel, level)
         var status = ["event": "level", "level": String(level), "maxLevel": String(maxLevel)]
-        if let warning = currentZeroSignalWarning() {
+        if let warning = currentLevelWarning() {
             status["message"] = warning
         }
         emit(status)
@@ -420,6 +422,7 @@ final class SystemAudioRecorder {
         reportedTerminalInputStall = false
         reportedZeroSignalWarning = false
         consecutiveBufferFailures = 0
+        bufferWarningMessage = nil
         healthLock.unlock()
     }
 
@@ -439,9 +442,9 @@ final class SystemAudioRecorder {
         healthLock.unlock()
     }
 
-    private func currentZeroSignalWarning() -> String? {
+    private func currentLevelWarning() -> String? {
         healthLock.lock()
-        let warning = reportedZeroSignalWarning ? postRecoveryZeroSignalWarningMessage : nil
+        let warning = bufferWarningMessage ?? (reportedZeroSignalWarning ? postRecoveryZeroSignalWarningMessage : nil)
         healthLock.unlock()
         return warning
     }
@@ -520,9 +523,13 @@ final class SystemAudioRecorder {
         healthLock.lock()
         consecutiveBufferFailures += 1
         let failureCount = consecutiveBufferFailures
+        let message = "System audio buffer processing failed \(failureCount)/\(bufferFailureThreshold): \(describeError(error))"
+        // Even an isolated conversion or write failure can leave a gap in the
+        // saved Source. Keep it visible through Stop; a later successful write
+        // resets only the consecutive-failure counter, not this diagnostic.
+        bufferWarningMessage = message
         healthLock.unlock()
 
-        let message = "System audio buffer processing failed \(failureCount)/\(bufferFailureThreshold): \(describeError(error))"
         log(message)
         emit([
             "event": failureCount >= bufferFailureThreshold ? "error" : "stalled",
@@ -604,6 +611,9 @@ final class SystemAudioRecorder {
         } catch {
             let message = "Failed to write trailing system-audio silence: \(describeError(error))"
             log(message)
+            statusLock.lock()
+            finalizationWarningMessage = message
+            statusLock.unlock()
             emit(["event": "stalled", "message": message])
         }
     }
@@ -638,10 +648,10 @@ final class SystemAudioRecorder {
             // Rust reads the terminal failure before TERM. Carry it on the
             // stopped event too so a failure racing with TERM is not lost.
             emittedObject["terminalError"] = terminalErrorMessage
-        } else if event == "stopped", let activeWarningMessage {
+        } else if event == "stopped", let warningMessage = finalizationWarningMessage ?? currentLevelWarning() ?? activeWarningMessage {
             // Finalization can emit a late warning after Rust's pre-TERM
             // snapshot. Carry it across the stopped boundary as well.
-            emittedObject["message"] = activeWarningMessage
+            emittedObject["message"] = warningMessage
         }
         let data = try! JSONSerialization.data(withJSONObject: emittedObject)
         print(String(data: data, encoding: .utf8)!)

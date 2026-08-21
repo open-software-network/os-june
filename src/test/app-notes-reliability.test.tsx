@@ -1933,6 +1933,45 @@ describe("notes recording reliability", () => {
     );
   });
 
+  it("retries the exact recording behind a ready partial transcription warning", async () => {
+    const warningNote = {
+      ...first,
+      lastError: "System: upstream_provider_failed",
+      transcriptionWarnings: [
+        {
+          recordingSessionId: "recording-with-system-gap",
+          message: "System: upstream_provider_failed",
+        },
+      ],
+    };
+    const retryingNote = {
+      ...warningNote,
+      processingStatus: "transcribing" as const,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [warningNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : warningNote,
+    );
+    mocks.retryProcessing.mockResolvedValue(retryingNote);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+
+    await waitFor(() =>
+      expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-system-gap"),
+    );
+    expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
+  });
+
   it("changes to Max in place and announces success only after the credit grant", async () => {
     const failedNote = {
       ...first,

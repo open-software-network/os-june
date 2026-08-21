@@ -183,10 +183,11 @@ impl SystemAudioCapture {
                 // This closes the small race where the helper reports a
                 // terminal failure after the pre-TERM read but before it
                 // handles TERM.
-                terminal_error = terminal_error.or(stopped.terminal_error);
-                if stopped.message.is_some() {
-                    warning = stopped.message;
-                }
+                terminal_error = terminal_error.or_else(|| stopped.terminal_error.clone());
+                // `stopped` is the authoritative final snapshot. A
+                // message-free stop after a late recovery must clear the
+                // warning captured before TERM instead of resurrecting it.
+                warning = reconcile_stopped_warning(warning, Some(&stopped));
             }
             Err(_) => {
                 dev_log(format!(
@@ -293,6 +294,15 @@ fn apply_helper_status(stats: &mut SystemAudioStats, status: &HelperStatus) {
     } else if status.event == "ready" || status.event == "level" {
         stats.last_error = None;
     }
+}
+
+fn reconcile_stopped_warning(
+    pre_stop_warning: Option<String>,
+    stopped: Option<&HelperStatus>,
+) -> Option<String> {
+    stopped
+        .map(|status| status.message.clone())
+        .unwrap_or(pre_stop_warning)
 }
 
 pub fn system_audio_readiness() -> SourceReadinessDto {
@@ -713,7 +723,8 @@ fn dump_helper_log(_path: &Path) {}
 mod tests {
     use super::{
         apply_helper_status, helper_error_code, macos_version_string_supports_system_audio,
-        system_audio_min_macos_version_label, HelperStatus, SystemAudioStats,
+        reconcile_stopped_warning, system_audio_min_macos_version_label, HelperStatus,
+        SystemAudioStats,
     };
 
     #[test]
@@ -922,6 +933,25 @@ mod tests {
         );
 
         assert_eq!(stats.last_error, Some(warning));
+    }
+
+    #[test]
+    fn message_free_stopped_status_is_authoritative_after_a_warning() {
+        let stopped = HelperStatus {
+            event: "stopped".to_string(),
+            level: None,
+            max_level: None,
+            message: None,
+            terminal_error: None,
+        };
+
+        assert_eq!(
+            reconcile_stopped_warning(
+                Some("System audio was temporarily stalled.".to_string()),
+                Some(&stopped),
+            ),
+            None
+        );
     }
 
     #[test]

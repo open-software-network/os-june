@@ -831,6 +831,35 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
+  it("retries the recording session named by a partial transcription warning", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        onRetry={onRetry}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "ready",
+          lastError: "System: upstream_provider_failed",
+          transcriptionWarnings: [
+            {
+              recordingSessionId: "session-with-system-gap",
+              message: "System: upstream_provider_failed",
+            },
+          ],
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry transcription" }));
+
+    expect(onRetry).toHaveBeenCalledWith("session-with-system-gap");
+    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      "System: The transcription provider could not process this audio.",
+    );
+  });
+
   it("orders source transcript turns by persisted turn metadata", () => {
     const { container } = render(
       <NoteEditor

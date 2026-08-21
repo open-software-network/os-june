@@ -122,8 +122,19 @@ async fn transition_note_processing_stage(
     processing_status: ProcessingStatus,
     progress: &NoteProcessingProgressReporter,
 ) -> Result<(), AppError> {
+    let processing_stage = match stage {
+        NoteProcessingStage::Transcribing => "transcribing",
+        NoteProcessingStage::Generating => "generating",
+        NoteProcessingStage::Done => "done",
+    };
     let revision = repos
-        .set_note_status(note_id, processing_status, None)
+        .set_note_status_for_recording_session(
+            note_id,
+            recording_session_id,
+            Some(processing_stage),
+            processing_status,
+            None,
+        )
         .await?;
     progress.emit(
         note_id,
@@ -155,8 +166,10 @@ async fn complete_note_processing_run(
         }
         Err(error) => {
             match repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     note_id,
+                    recording_session_id,
+                    None,
                     ProcessingStatus::Failed,
                     Some(error.message.clone()),
                 )
@@ -746,7 +759,13 @@ pub(crate) async fn process_saved_audio(
     let note_transcription_started = Instant::now();
     let timeline = FirstEventTimeline::new(timing);
     repos
-        .set_note_status(note_id, ProcessingStatus::Transcribing, None)
+        .set_note_status_for_recording_session(
+            note_id,
+            session_id,
+            Some("transcribing"),
+            ProcessingStatus::Transcribing,
+            None,
+        )
         .await?;
     let temp_dir = session_temp_dir("os-june-transcription", session_id);
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -857,8 +876,10 @@ pub(crate) async fn process_saved_audio(
             )
             .await;
             repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     note_id,
+                    session_id,
+                    Some("transcribing"),
                     ProcessingStatus::Failed,
                     Some(user_message.clone()),
                 )
@@ -929,7 +950,13 @@ pub(crate) async fn process_saved_audio(
     .await;
 
     if let Err(error) = repos
-        .set_note_status(note_id, ProcessingStatus::Generating, None)
+        .set_note_status_for_recording_session(
+            note_id,
+            session_id,
+            Some("generating"),
+            ProcessingStatus::Generating,
+            None,
+        )
         .await
     {
         let error = AppError::from(error);
@@ -973,8 +1000,10 @@ pub(crate) async fn process_saved_audio(
             )
             .await;
             repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     note_id,
+                    session_id,
+                    Some("generating"),
                     ProcessingStatus::Failed,
                     Some(error.message.clone()),
                 )
@@ -1717,8 +1746,10 @@ async fn process_saved_source_audio_pipeline(
         add_processing_complete_checkpoint(repos, session_id, timing, processing_started, "failed")
             .await;
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 note_id,
+                session_id,
+                Some("transcribing"),
                 ProcessingStatus::Failed,
                 Some(error.message.clone()),
             )
@@ -1781,8 +1812,10 @@ async fn process_saved_source_audio_pipeline(
             )
             .await;
             repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     note_id,
+                    session_id,
+                    Some("generating"),
                     ProcessingStatus::Failed,
                     Some(error.message.clone()),
                 )
