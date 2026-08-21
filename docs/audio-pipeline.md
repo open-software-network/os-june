@@ -222,15 +222,21 @@ attempt state; interrupted `running` jobs return to `pending`, and explicit
 Retry resumes only jobs whose fingerprint has not already succeeded. Queue
 registration is idempotent per Note and recording session while work is queued
 or running, so repeated Retry requests cannot fan out duplicate processing for
-the same saved audio. A failed Note also stores the exact recording session and
-processing stage that failed, preventing an older partial session from
-displacing the recording that actually needs Retry. Partial-Source warnings on
-a Ready Note retain their own recording-session identity, so the warning's
-Retry action reprocesses the affected saved audio directly. Retryable failures
-remain durable per recording session: a later queued success cannot clear an
-earlier failure, and recovering one session reveals the next unresolved one.
-A finalized session is marked `processing_pending` before its in-memory queue
-registration, so an app restart reconstructs a recovery prompt instead of
-stranding audio that was waiting behind another recording. Simultaneous Source
-warnings are de-duplicated and shown together rather than truncating the System
-warning behind an earlier Microphone diagnostic.
+the same saved audio. Durable retry state changes only after queue admission,
+so a duplicate request cannot turn already completed work back into pending
+work. A failed Note also stores the exact recording session and processing
+stage that failed, preventing an older partial session from displacing the
+recording that actually needs Retry. The failure-ledger migration backfills
+retryable failed Notes from their strongest unprocessed saved recording.
+Partial-Source warnings on a Ready Note retain their own recording-session
+identity, so the warning's Retry action reprocesses the affected saved audio
+directly. Retryable failures remain durable per recording session: a later
+queued success cannot clear an earlier failure, discarding a recovered session
+removes only its failure, and recovering one session reveals the next
+unresolved one. Finalization commits `processing_pending` with the session's
+validation metadata, and successful Note generation commits the same session
+as `processed` in the Note transaction. A crash therefore reconstructs a
+recovery prompt without reviving work that already completed. Multiple
+recoveries for one Note are returned oldest first to preserve recording order.
+Simultaneous Source warnings are de-duplicated and shown together rather than
+truncating the System warning behind an earlier Microphone diagnostic.

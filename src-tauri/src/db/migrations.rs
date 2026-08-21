@@ -2410,6 +2410,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn processing_failure_migration_backfills_retryable_failed_notes() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error)
+             VALUES ('failed-note', '', 'failed', '2026-08-21T10:00:00.000Z',
+                     '2026-08-21T10:05:00.000Z', 'Generation failed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note");
+        query(
+            "INSERT INTO recording_sessions
+             (id, note_id, status, started_at, expected_elapsed_ms, permission_state,
+              partial_path, final_path)
+             VALUES ('failed-session', 'failed-note', 'failed',
+                     '2026-08-21T10:00:00.000Z', 5000, 'granted',
+                     '/tmp/failed.partial.wav', '/tmp/failed.wav')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed recording session");
+        query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, path, format, duration_ms,
+              size_bytes, checksum, status, created_at)
+             VALUES ('failed-audio', 'failed-note', 'failed-session',
+                     '/tmp/failed.wav', 'wav', 5000, 160000, 'checksum', 'valid',
+                     '2026-08-21T10:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("valid audio artifact");
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let row = query(
+            "SELECT failure.recording_session_id, failure.processing_stage, failure.message,
+                    notes.retry_recording_session_id, notes.retry_processing_stage
+             FROM note_processing_failures failure
+             INNER JOIN notes ON notes.id = failure.note_id
+             WHERE failure.note_id = 'failed-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("backfilled failure");
+        assert_eq!(
+            row.get::<String, _>("recording_session_id"),
+            "failed-session"
+        );
+        assert_eq!(row.get::<String, _>("processing_stage"), "transcribing");
+        assert_eq!(row.get::<String, _>("message"), "Generation failed");
+        assert_eq!(
+            row.get::<Option<String>, _>("retry_recording_session_id")
+                .as_deref(),
+            Some("failed-session")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("retry_processing_stage")
+                .as_deref(),
+            Some("transcribing")
+        );
+    }
+
+    #[tokio::test]
     async fn artifact_display_name_survives_message_compaction() {
         let pool = test_pool().await;
         run_migration_catalog(&pool, &MIGRATIONS[..49])

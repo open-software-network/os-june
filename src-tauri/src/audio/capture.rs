@@ -1288,7 +1288,7 @@ fn microphone_stream_issue(
     })
 }
 
-fn source_warnings(
+pub(crate) fn source_warnings(
     microphone_capture_issue: Option<&MicrophoneStreamIssue>,
     dropped_samples: u64,
     system_capture_issue: bool,
@@ -1611,6 +1611,22 @@ mod tests {
                 message: SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE.to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn simultaneous_source_issues_remain_distinct_top_level_warnings() {
+        let issue = MicrophoneStreamIssue {
+            code: "microphone_stream_error".to_string(),
+            message: "Microphone input stopped unexpectedly".to_string(),
+            elapsed_ms: 2_000,
+        };
+
+        let warnings = source_warnings(Some(&issue), 37, true);
+
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings[0].code, "microphone_stream_error");
+        assert_eq!(warnings[1].code, "microphone_buffer_overflow");
+        assert_eq!(warnings[2].code, "system_audio_capture_warning");
     }
 
     #[test]

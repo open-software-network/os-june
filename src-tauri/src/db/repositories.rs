@@ -3490,7 +3490,10 @@ impl Repositories {
                    WHERE note_id = ? AND recording_session_id = ? AND status = 'valid'
                  )
                  ON CONFLICT(note_id, recording_session_id) DO UPDATE SET
-                   processing_stage = excluded.processing_stage,
+                   processing_stage = COALESCE(
+                     excluded.processing_stage,
+                     note_processing_failures.processing_stage
+                   ),
                    message = excluded.message,
                    updated_at = excluded.updated_at",
             )
@@ -3504,6 +3507,21 @@ impl Repositories {
             .bind(recording_session_id)
             .execute(&mut *tx)
             .await?;
+            if processing_stage != Some("validation") {
+                query(
+                    "UPDATE recording_sessions
+                     SET status = 'processing_failed',
+                         last_error = ?,
+                         ended_at = COALESCE(ended_at, ?)
+                     WHERE id = ? AND note_id = ?",
+                )
+                .bind(last_error.as_deref())
+                .bind(&now)
+                .bind(recording_session_id)
+                .bind(note_id)
+                .execute(&mut *tx)
+                .await?;
+            }
         } else if clear_retry_context {
             query(
                 "DELETE FROM note_processing_failures
@@ -3704,6 +3722,18 @@ impl Repositories {
             )
             .bind(note_id)
             .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+            query(
+                "UPDATE recording_sessions
+                 SET status = 'processed',
+                     last_error = NULL,
+                     ended_at = COALESCE(ended_at, ?)
+                 WHERE id = ? AND note_id = ?",
+            )
+            .bind(&now)
+            .bind(session_id)
+            .bind(note_id)
             .execute(&mut *tx)
             .await?;
         }
@@ -4138,7 +4168,10 @@ impl Repositories {
             "UPDATE recording_sessions
              SET status = ?, expected_elapsed_ms = ?, file_size_bytes = ?, duration_ms = ?, checksum = ?,
                  peak_amplitude = ?, rms_amplitude = ?, validation_summary = ?, last_error = ?,
-                 ended_at = CASE WHEN ? IN ('valid', 'invalid', 'failed') THEN ? ELSE ended_at END
+                 ended_at = CASE
+                     WHEN ? IN ('valid', 'invalid', 'failed', 'processing_pending') THEN ?
+                     ELSE ended_at
+                 END
              WHERE id = ?",
         )
         .bind(status)
@@ -4294,6 +4327,21 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn mark_recovered_recording_processing_pending(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE recording_sessions
+             SET status = 'processing_pending', last_error = NULL
+             WHERE id = ? AND status = 'recoverable'",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn mark_recording_processing_finished(
@@ -6014,24 +6062,83 @@ impl Repositories {
         session_id: &str,
         note_id: &str,
     ) -> Result<NoteDto, sqlx::error::Error> {
-        query("UPDATE recording_sessions SET status = 'failed', last_error = 'Discarded by user' WHERE id = ?")
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        query(
+            "UPDATE recording_sessions
+             SET status = 'discarded', last_error = 'Discarded by user'
+             WHERE id = ? AND note_id = ?",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
         query(
             "UPDATE audio_artifacts
              SET status = 'discarded', last_error = 'Discarded by user'
-             WHERE recording_session_id = ?",
+             WHERE recording_session_id = ? AND note_id = ?",
         )
         .bind(session_id)
-        .execute(&self.pool)
+        .bind(note_id)
+        .execute(&mut *tx)
         .await?;
-        self.set_note_status(
-            note_id,
-            ProcessingStatus::Failed,
-            Some("Recording discarded".to_string()),
+        query(
+            "DELETE FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
         )
+        .bind(note_id)
+        .bind(session_id)
+        .execute(&mut *tx)
         .await?;
+        query(
+            "UPDATE notes
+             SET processing_status = 'failed',
+                 last_error = COALESCE(
+                   (SELECT GROUP_CONCAT(message, '; ')
+                    FROM (
+                      SELECT message FROM note_processing_failures
+                      WHERE note_id = ?
+                      ORDER BY updated_at DESC, rowid DESC
+                    )),
+                   'Recording discarded'
+                 ),
+                 retry_recording_session_id = (
+                   SELECT failure.recording_session_id
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
+                 retry_processing_stage = (
+                   SELECT failure.processing_stage
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(note_id)
+        .bind(note_id)
+        .bind(note_id)
+        .bind(&now)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         self.get_note(note_id).await
     }
 
@@ -6927,6 +7034,7 @@ mod tests {
         NoteTranscriptionJobStatus, ProcessingStatus, RecordingOriginMetadata, RecordingSourceMode,
     };
     use sqlx::query::query;
+    use sqlx::query_scalar::query_scalar;
     use sqlx::row::Row;
     use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::time::Duration as StdDuration;
@@ -8734,6 +8842,16 @@ mod tests {
             )
             .await
             .expect("persist exact generation failure");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "newer-generation-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Note generation failed".to_string()),
+            )
+            .await
+            .expect("persist terminal wrapper failure without erasing stage");
 
         let hydrated = repos.get_note(&note.id).await.expect("hydrate failed note");
         assert_eq!(
@@ -8761,6 +8879,23 @@ mod tests {
             retry_context.get::<Option<String>, _>("retry_processing_stage"),
             Some("generating".to_string())
         );
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("newer-generation-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("failure stage");
+        assert_eq!(failure_stage.as_deref(), Some("generating"));
+        let failed_recording_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind("newer-generation-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("failed recording status");
+        assert_eq!(failed_recording_status, "processing_failed");
         let retry_sources = repos
             .latest_valid_audio_artifact_paths(&note.id)
             .await
@@ -8780,6 +8915,13 @@ mod tests {
             .expect("complete exact retry");
         assert_eq!(recovered.processing_status, ProcessingStatus::Ready);
         assert_eq!(recovered.retry_recording_session_id, None);
+        let recovered_recording_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind("newer-generation-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("recovered recording status");
+        assert_eq!(recovered_recording_status, "processed");
         let cleared_context = query(
             "SELECT retry_recording_session_id, retry_processing_stage
              FROM notes WHERE id = ?",

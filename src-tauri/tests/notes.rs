@@ -3,6 +3,7 @@ use clovy_lib::{
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
 use sqlx::query::query;
+use sqlx::query_scalar::query_scalar;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePoolOptions;
 
@@ -878,6 +879,16 @@ async fn discarded_recording_no_longer_exposes_retryable_audio() {
         .create_audio_artifact(&note.id, session_id, "/tmp/final.wav", 1200, 2048, "abc")
         .await
         .expect("artifact");
+    repos
+        .set_note_status_for_recording_session(
+            &note.id,
+            session_id,
+            Some("transcribing"),
+            ProcessingStatus::Failed,
+            Some("Transcription was interrupted".to_string()),
+        )
+        .await
+        .expect("failed recording");
 
     let discarded = repos
         .mark_recording_discarded(session_id, &note.id)
@@ -886,8 +897,61 @@ async fn discarded_recording_no_longer_exposes_retryable_audio() {
 
     assert_eq!(discarded.processing_status, ProcessingStatus::Failed);
     assert_eq!(discarded.last_error.as_deref(), Some("Recording discarded"));
+    assert_eq!(discarded.retry_recording_session_id, None);
     assert!(discarded.audio.is_none());
     assert!(discarded.audio_sources.is_empty());
+    let recording_status: String =
+        query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("discarded recording status");
+    assert_eq!(recording_status, "discarded");
+    let failure_count: i64 = query_scalar(
+        "SELECT COUNT(*) FROM note_processing_failures
+         WHERE note_id = ? AND recording_session_id = ?",
+    )
+    .bind(&note.id)
+    .bind(session_id)
+    .fetch_one(&repos.pool)
+    .await
+    .expect("failure ledger count");
+    assert_eq!(failure_count, 0);
+
+    let later_session_id = "session-2";
+    repos
+        .create_recording_session(
+            &note.id,
+            later_session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/later.partial.wav",
+            "/tmp/later.wav",
+            None,
+        )
+        .await
+        .expect("later session");
+    repos
+        .create_audio_artifact(
+            &note.id,
+            later_session_id,
+            "/tmp/later.wav",
+            1200,
+            2048,
+            "later",
+        )
+        .await
+        .expect("later artifact");
+    let generated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some(later_session_id),
+            None,
+            None,
+            "Later recording succeeded".to_string(),
+        )
+        .await
+        .expect("later generation");
+    assert_eq!(generated.processing_status, ProcessingStatus::Ready);
 }
 
 #[tokio::test]

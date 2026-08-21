@@ -5,9 +5,9 @@ use crate::{
             capture_recovery_checkpoint, capture_start_timeout_error, capture_status,
             current_status, finish_active_capture, finish_capture, is_capture_active,
             microphone_device_available, microphone_device_hint, microphone_permission_state,
-            pause_capture, resume_capture, start_capture_with_cancel, CaptureRecoverySnapshot,
-            CaptureStartHandshake, CaptureStartState, StartedRecording, CAPTURE_START_TIMEOUT,
-            RECOVERY_SNAPSHOT_INTERVAL,
+            pause_capture, resume_capture, source_warnings, start_capture_with_cancel,
+            CaptureRecoverySnapshot, CaptureStartHandshake, CaptureStartState, StartedRecording,
+            CAPTURE_START_TIMEOUT, RECOVERY_SNAPSHOT_INTERVAL,
         },
         recovery::scan_recoverable_recordings,
         validation::{
@@ -73,6 +73,56 @@ fn finished_source_audio_is_valid(
     validation: &crate::domain::types::AudioValidationDto,
 ) -> bool {
     source_audio_passes_validation(source.source, validation)
+}
+
+fn finished_source_warnings(
+    source: &crate::audio::capture::FinishedSource,
+    validation: &crate::domain::types::AudioValidationDto,
+    valid: bool,
+) -> Vec<crate::domain::types::SourceWarningDto> {
+    let mut warnings =
+        source_warnings(source.capture_issue.as_ref(), source.dropped_samples, false);
+    if valid {
+        if let Some(failure) = source.failure.as_ref() {
+            warnings.push(crate::domain::types::SourceWarningDto {
+                source: source.source,
+                code: failure.code.clone(),
+                message: "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details."
+                    .to_string(),
+            });
+        }
+    } else {
+        let failure_message = source
+            .failure
+            .as_ref()
+            .map(|failure| failure.message.clone())
+            .unwrap_or_else(|| validation.warnings.join("; "));
+        warnings.push(crate::domain::types::SourceWarningDto {
+            source: source.source,
+            code: "source_validation_failed".to_string(),
+            message: format!(
+                "{} source did not pass validation: {}",
+                source.source.as_db(),
+                failure_message
+            ),
+        });
+    }
+    warnings
+}
+
+fn extend_unique_source_warnings(
+    warnings: &mut Vec<crate::domain::types::SourceWarningDto>,
+    additions: impl IntoIterator<Item = crate::domain::types::SourceWarningDto>,
+) {
+    for warning in additions {
+        if warnings
+            .iter()
+            .any(|existing| existing.source == warning.source && existing.code == warning.code)
+        {
+            continue;
+        }
+        warnings.push(warning);
+    }
 }
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -2326,31 +2376,10 @@ async fn finish_recording_session_with_timing(
                 ));
             }
         }
-        if valid {
-            if let Some(failure) = source.failure.as_ref() {
-                warnings.push(crate::domain::types::SourceWarningDto {
-                    source: source.source,
-                    code: failure.code.clone(),
-                    message: "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details."
-                        .to_string(),
-                });
-            }
-        } else {
-            let failure_message = source
-                .failure
-                .as_ref()
-                .map(|failure| failure.message.clone())
-                .unwrap_or_else(|| validation.warnings.join("; "));
-            warnings.push(crate::domain::types::SourceWarningDto {
-                source: source.source,
-                code: "source_validation_failed".to_string(),
-                message: format!(
-                    "{} source did not pass validation: {}",
-                    source.source.as_db(),
-                    failure_message
-                ),
-            });
-        }
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(source, &validation, valid),
+        );
         source_validations.push(crate::domain::types::SourceValidationDto {
             source: source.source,
             file_exists: validation.file_exists,
@@ -2393,10 +2422,10 @@ async fn finish_recording_session_with_timing(
     repos
         .update_recording_session(
             &finished.session_id,
-            if validation.readable_audio && validation.non_zero_size {
-                "valid"
-            } else {
+            if valid_sources.is_empty() {
                 "invalid"
+            } else {
+                "processing_pending"
             },
             finished.elapsed_ms,
             Some(primary_file_size),
@@ -2444,13 +2473,6 @@ async fn finish_recording_session_with_timing(
             warnings,
         });
     }
-
-    // Persist the handoff before registering the in-memory queue entry. If the
-    // app closes while this session waits behind another recording, startup
-    // recovery can still surface its finalized Source audio.
-    repos
-        .mark_recording_processing_pending(&finished.session_id)
-        .await?;
 
     // Capture is single-instance, but processing runs asynchronously — so the
     // user may have already recorded (and stopped) another message on this note
@@ -2708,11 +2730,8 @@ pub async fn retry_processing(
                 "No saved audio is available for retry.",
             )
         })?;
-    repos
-        .mark_recording_processing_pending(&task_recording_session_id)
-        .await?;
     let Some((ticket, depth)) =
-        processing_queue::enqueue(&request.note_id, &task_recording_session_id)
+        enqueue_retry_processing(&repos, &request.note_id, &task_recording_session_id).await?
     else {
         let mut note = repos.get_note(&request.note_id).await?;
         note.queued_recordings = processing_queue::queued_behind(&request.note_id);
@@ -2781,6 +2800,20 @@ pub async fn retry_processing(
         ticket.finish();
     });
     Ok(note)
+}
+
+async fn enqueue_retry_processing(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+) -> Result<Option<(processing_queue::ProcessingTicket, i64)>, AppError> {
+    let Some(registration) = processing_queue::enqueue(note_id, recording_session_id) else {
+        return Ok(None);
+    };
+    repos
+        .mark_recording_processing_pending(recording_session_id)
+        .await?;
+    Ok(Some(registration))
 }
 
 async fn retry_audio_sources(
@@ -2920,12 +2953,6 @@ pub async fn recover_recording(
                 .await?;
             return Ok(repos.get_note(&info.note_id).await?);
         }
-        repos
-            .mark_recording_recovery_valid(&info.session_id)
-            .await?;
-        repos
-            .mark_recording_processing_pending(&info.session_id)
-            .await?;
         return process_recovered_source_audio(
             &repos,
             &info.note_id,
@@ -2954,8 +2981,8 @@ pub async fn recover_recording(
     repos
         .update_recording_session(
             &info.session_id,
-            if validation.readable_audio && validation.non_zero_size {
-                "valid"
+            if source_audio_passes_validation(RecordingSource::Microphone, &validation) {
+                "recoverable"
             } else {
                 "invalid"
             },
@@ -2995,9 +3022,6 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    repos
-        .mark_recording_processing_pending(&info.session_id)
-        .await?;
     process_recovered_source_audio(
         &repos,
         &info.note_id,
@@ -3027,6 +3051,15 @@ async fn process_recovered_source_audio(
         note.queued_recordings = processing_queue::queued_behind(note_id);
         return Ok(note);
     };
+    if !repos
+        .mark_recovered_recording_processing_pending(session_id)
+        .await?
+    {
+        ticket.finish();
+        let mut note = repos.get_note(note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(note_id);
+        return Ok(note);
+    }
     ticket.wait_until_ready().await;
     let note = match repos.get_note(note_id).await {
         Ok(note) => note,
@@ -3307,12 +3340,13 @@ mod note_transcription_benchmark;
 
 #[cfg(test)]
 mod retry_audio_source_tests {
-    use super::retry_audio_sources;
+    use super::{enqueue_retry_processing, retry_audio_sources};
     use crate::{
         app_paths::AppPaths,
         db::{migrations::run_migrations, repositories::Repositories},
-        domain::types::RecordingSourceMode,
+        domain::{processing_queue, types::RecordingSourceMode},
     };
+    use sqlx::query_scalar::query_scalar;
 
     #[tokio::test]
     async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
@@ -3383,6 +3417,49 @@ mod retry_audio_source_tests {
         assert_eq!(error.code, "audio_artifact_missing");
         assert!(error.message.contains("system"));
         assert!(error.message.contains("No transcript was changed"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_retry_does_not_downgrade_a_completed_recording() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "completed-retry";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/completed.partial.wav",
+                "/tmp/completed.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_finished(session_id, None)
+            .await
+            .expect("completed recording");
+        let (active_ticket, _) =
+            processing_queue::enqueue(&note.id, session_id).expect("active queue registration");
+
+        assert!(enqueue_retry_processing(&repos, &note.id, session_id)
+            .await
+            .expect("duplicate admission")
+            .is_none());
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status");
+        assert_eq!(status, "processed");
+
+        active_ticket.finish();
     }
 }
 
@@ -3459,11 +3536,12 @@ mod tests {
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
         capture_start_timeout_error, copy_directory, copy_directory_contents,
         create_memory_with_settings, delete_profile_records_with_share_revoker,
-        finished_source_audio_is_valid, is_share_not_found, load_memory_settings,
-        persist_memory_settings, recovery_validation_expected_duration_ms,
-        replace_directory_from_staging, should_probe_system_audio_permission,
-        start_capture_with_timeout_and_cleanup, update_memory_with_settings,
-        validated_folder_instructions, CaptureStartupGuard, MEMORY_SETTINGS_LOCK,
+        extend_unique_source_warnings, finished_source_audio_is_valid, finished_source_warnings,
+        is_share_not_found, load_memory_settings, persist_memory_settings,
+        recovery_validation_expected_duration_ms, replace_directory_from_staging,
+        should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
+        update_memory_with_settings, validated_folder_instructions, CaptureStartupGuard,
+        MEMORY_SETTINGS_LOCK,
     };
 
     #[test]
@@ -3489,8 +3567,8 @@ mod tests {
         app_paths::AppPaths,
         audio::{
             capture::{
-                is_capture_active, CaptureStartState, FinishedSource, StartedRecording,
-                StartedSource,
+                is_capture_active, CaptureStartState, FinishedSource, MicrophoneStreamIssue,
+                StartedRecording, StartedSource,
             },
             system_audio::SystemAudioFailure,
         },
@@ -3537,6 +3615,65 @@ mod tests {
         };
 
         assert!(finished_source_audio_is_valid(&source, &validation));
+    }
+
+    #[test]
+    fn finalization_keeps_simultaneous_microphone_overflow_and_system_warnings() {
+        let validation = AudioValidationDto {
+            file_exists: true,
+            non_zero_size: true,
+            readable_audio: true,
+            expected_duration_ms: 2_000,
+            actual_duration_ms: 2_000,
+            duration_within_tolerance: true,
+            non_silent_signal: true,
+            recorded_silence: false,
+            peak_amplitude: 0.5,
+            rms_amplitude: 0.2,
+            warnings: Vec::new(),
+        };
+        let microphone = FinishedSource {
+            source: RecordingSource::Microphone,
+            final_path: PathBuf::from("microphone.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 37,
+            capture_issue: Some(MicrophoneStreamIssue {
+                code: "microphone_stream_error".to_string(),
+                message: "Microphone input stopped unexpectedly".to_string(),
+                elapsed_ms: 2_000,
+            }),
+            failure: None,
+        };
+        let system = FinishedSource {
+            source: RecordingSource::System,
+            final_path: PathBuf::from("system.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 0,
+            capture_issue: None,
+            failure: Some(SystemAudioFailure {
+                code: "system_audio_capture_failed".to_string(),
+                message: "late helper failure".to_string(),
+            }),
+        };
+        let mut warnings = Vec::new();
+
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&microphone, &validation, true),
+        );
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&system, &validation, true),
+        );
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&system, &validation, true),
+        );
+
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings[0].code, "microphone_stream_error");
+        assert_eq!(warnings[1].code, "microphone_buffer_overflow");
+        assert_eq!(warnings[2].code, "system_audio_capture_failed");
     }
 
     #[cfg(unix)]

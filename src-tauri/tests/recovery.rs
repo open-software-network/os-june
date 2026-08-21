@@ -3,6 +3,7 @@ use clovy_lib::{
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode, RecordingState},
 };
+use sqlx::query::query;
 use sqlx::query_scalar::query_scalar;
 use sqlx_sqlite::SqlitePoolOptions;
 use tempfile::tempdir;
@@ -189,7 +190,7 @@ async fn scan_recovers_a_finalized_session_waiting_for_processing() {
     repos
         .update_recording_session(
             "queued-session",
-            "valid",
+            "processing_pending",
             1_000,
             Some(15),
             Some(1_000),
@@ -200,11 +201,7 @@ async fn scan_recovers_a_finalized_session_waiting_for_processing() {
             None,
         )
         .await
-        .expect("finalize session");
-    repos
-        .mark_recording_processing_pending("queued-session")
-        .await
-        .expect("persist processing handoff");
+        .expect("finalize session with durable processing handoff");
 
     let recoveries = scan_recoverable_recordings(&repos.pool)
         .await
@@ -214,6 +211,57 @@ async fn scan_recovers_a_finalized_session_waiting_for_processing() {
     assert_eq!(recoveries[0].session_id, "queued-session");
     assert_eq!(recoveries[0].note_id, note.id);
     assert_eq!(recoveries[0].bytes_found, 15);
+}
+
+#[tokio::test]
+async fn scan_orders_same_note_recoveries_by_recording_chronology() {
+    let repos = repos().await;
+    let dir = tempdir().expect("tempdir");
+    let note = repos.create_note("default", None).await.expect("note");
+    for session_id in ["later-session", "earlier-session"] {
+        let path = dir.path().join(format!("{session_id}.wav"));
+        std::fs::write(&path, session_id.as_bytes()).expect("audio bytes");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &dir.path()
+                    .join(format!("{session_id}.partial.wav"))
+                    .to_string_lossy(),
+                &path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("session");
+        repos
+            .mark_recording_processing_pending(session_id)
+            .await
+            .expect("pending handoff");
+    }
+    query(
+        "UPDATE recording_sessions
+         SET started_at = CASE id
+           WHEN 'earlier-session' THEN '2026-08-21T10:00:00.000Z'
+           ELSE '2026-08-21T11:00:00.000Z'
+         END
+         WHERE id IN ('earlier-session', 'later-session')",
+    )
+    .execute(&repos.pool)
+    .await
+    .expect("recording chronology");
+
+    let recoveries = scan_recoverable_recordings(&repos.pool)
+        .await
+        .expect("recovery scan");
+
+    assert_eq!(
+        recoveries
+            .iter()
+            .map(|recovery| recovery.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["earlier-session", "later-session"]
+    );
 }
 
 #[tokio::test]

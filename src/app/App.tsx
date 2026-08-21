@@ -734,8 +734,8 @@ export function App() {
   const recoveriesByNote = useMemo(() => {
     const map = new Map<string, (typeof state.activeRecoveries)[number]>();
     for (const recovery of state.activeRecoveries) {
-      // If multiple recoveries land on one note, the first one wins —
-      // backend should only surface one per note in practice.
+      // Recovery rows arrive oldest first, so one Note always resumes its
+      // recording sessions in the same order they were captured.
       if (!map.has(recovery.noteId)) map.set(recovery.noteId, recovery);
     }
     return map;
