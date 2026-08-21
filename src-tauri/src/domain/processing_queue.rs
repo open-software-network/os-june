@@ -8,9 +8,9 @@
 //!
 //! Those follow-up recordings must still be processed **in order**: generation
 //! is incremental and feeds the note's existing generated content back in as
-//! context, so job N has to finish before job N+1 reads that context. This
-//! queue serializes processing per note and tracks how many jobs are waiting so
-//! the UI can surface a count.
+//! context, so recording session N has to finish before recording session N+1
+//! reads that context. This queue serializes processing per note and tracks how
+//! many recording sessions are waiting so the UI can surface a count.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -19,39 +19,71 @@ use std::{
         Arc, LazyLock, Mutex,
     },
 };
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
+
+struct CompletionSignal {
+    completed: watch::Sender<bool>,
+}
+
+impl CompletionSignal {
+    fn new() -> Self {
+        let (completed, _receiver) = watch::channel(false);
+        Self { completed }
+    }
+
+    async fn wait(&self) {
+        let mut completed = self.completed.subscribe();
+        if *completed.borrow_and_update() {
+            return;
+        }
+        while completed.changed().await.is_ok() {
+            if *completed.borrow_and_update() {
+                return;
+            }
+        }
+    }
+
+    fn complete(&self) {
+        self.completed.send_replace(true);
+    }
+}
 
 struct NoteQueue {
-    /// Held for the duration of a single job; the next job awaits it.
-    lock: Arc<AsyncMutex<()>>,
-    /// Jobs queued or running for this note (1 = running, 2 = one waiting, …).
+    /// Recording sessions queued or running for this note.
     pending: Arc<AtomicI64>,
     /// Recording sessions currently queued or running for this note.
-    registered_job_ids: HashSet<String>,
+    registered_recording_session_ids: HashSet<String>,
+    /// Completion of the last registered session. A new ticket waits on it,
+    /// preserving registration order even when spawned tasks are polled out of
+    /// order by the runtime.
+    tail: Option<Arc<CompletionSignal>>,
 }
 
 static QUEUES: LazyLock<Mutex<HashMap<String, NoteQueue>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// A registered processing job. Acquire the lock before doing work; call
-/// [`ProcessingTicket::finish`] when the job completes.
+/// A registered recording-session processing run. Wait for its turn before
+/// doing work; call [`ProcessingTicket::finish`] when processing completes.
 pub struct ProcessingTicket {
     note_id: String,
-    job_id: String,
-    lock: Arc<AsyncMutex<()>>,
+    recording_session_id: String,
+    predecessor: Option<Arc<CompletionSignal>>,
+    completion: Arc<CompletionSignal>,
     pending: Arc<AtomicI64>,
     finished: AtomicBool,
 }
 
 impl ProcessingTicket {
-    /// Clone the per-note lock. Await `.lock()` on the returned handle to wait
-    /// for any earlier job on the same note to finish before processing.
-    pub fn lock(&self) -> Arc<AsyncMutex<()>> {
-        self.lock.clone()
+    /// Wait until every recording session registered earlier on this note has
+    /// finished processing.
+    pub async fn wait_until_ready(&self) {
+        if let Some(predecessor) = &self.predecessor {
+            predecessor.wait().await;
+        }
     }
 
-    /// Mark this job done: drop it from the pending count and prune the note's
-    /// queue entry once nothing else is waiting.
+    /// Mark this recording session done, release its identity, and wake the
+    /// next registered session.
     pub fn finish(&self) {
         if self.finished.swap(true, Ordering::SeqCst) {
             return;
@@ -60,7 +92,9 @@ impl ProcessingTicket {
         let remaining = self.pending.fetch_sub(1, Ordering::SeqCst) - 1;
         if let Some(queue) = map.get_mut(&self.note_id) {
             if Arc::ptr_eq(&queue.pending, &self.pending) {
-                queue.registered_job_ids.remove(&self.job_id);
+                queue
+                    .registered_recording_session_ids
+                    .remove(&self.recording_session_id);
             }
         }
         if remaining <= 0 {
@@ -74,6 +108,8 @@ impl ProcessingTicket {
                 }
             }
         }
+        drop(map);
+        self.completion.complete();
     }
 }
 
@@ -85,26 +121,31 @@ impl Drop for ProcessingTicket {
 
 /// Register a recording session for processing on `note_id`.
 ///
-/// Returns `None` while the same `(note_id, job_id)` pair is already queued or
-/// running. Otherwise, returns the ticket and queue depth *including* this job
-/// (1 = runs immediately, 2 = one job ahead, …). Finishing or dropping the
-/// ticket releases the identity so an explicit later retry can enqueue it
-/// again.
-pub fn enqueue(note_id: &str, job_id: &str) -> Option<(ProcessingTicket, i64)> {
+/// Returns `None` while the same `(note_id, recording_session_id)` pair is
+/// already queued or running. Otherwise, returns the ticket and queue depth
+/// including this recording session (1 = runs immediately, 2 = one session
+/// ahead, …). Finishing or dropping the ticket releases the identity so an
+/// explicit later Retry can enqueue it again.
+pub fn enqueue(note_id: &str, recording_session_id: &str) -> Option<(ProcessingTicket, i64)> {
     let mut map = QUEUES.lock().expect("processing queue mutex poisoned");
     let queue = map.entry(note_id.to_string()).or_insert_with(|| NoteQueue {
-        lock: Arc::new(AsyncMutex::new(())),
         pending: Arc::new(AtomicI64::new(0)),
-        registered_job_ids: HashSet::new(),
+        registered_recording_session_ids: HashSet::new(),
+        tail: None,
     });
-    if !queue.registered_job_ids.insert(job_id.to_string()) {
+    if !queue
+        .registered_recording_session_ids
+        .insert(recording_session_id.to_string())
+    {
         return None;
     }
     let depth = queue.pending.fetch_add(1, Ordering::SeqCst) + 1;
+    let completion = Arc::new(CompletionSignal::new());
     let ticket = ProcessingTicket {
         note_id: note_id.to_string(),
-        job_id: job_id.to_string(),
-        lock: queue.lock.clone(),
+        recording_session_id: recording_session_id.to_string(),
+        predecessor: queue.tail.replace(Arc::clone(&completion)),
+        completion,
         pending: queue.pending.clone(),
         finished: AtomicBool::new(false),
     };
@@ -189,20 +230,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lock_serializes_jobs_on_the_same_note() {
+    async fn registration_order_wins_when_later_session_is_polled_first() {
         let (first, _) = enqueue("note-serial", "session-1").unwrap();
         let (second, _) = enqueue("note-serial", "session-2").unwrap();
-        let first_lock = first.lock();
-        let second_lock = second.lock();
+        let (second_attempted_tx, second_attempted_rx) = tokio::sync::oneshot::channel();
+        let (second_started_tx, mut second_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let second_task = tokio::spawn(async move {
+            second_attempted_tx.send(()).unwrap();
+            second.wait_until_ready().await;
+            second_started_tx.send(()).unwrap();
+            second.finish();
+        });
 
-        let held = first_lock.lock().await;
-        // The second job cannot acquire the lock while the first holds it.
-        assert!(second_lock.try_lock().is_err());
-        drop(held);
-        assert!(second_lock.try_lock().is_ok());
+        second_attempted_rx.await.unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                second_started_rx.recv()
+            )
+            .await
+            .is_err(),
+            "second session bypassed the first registration"
+        );
 
+        first.wait_until_ready().await;
         first.finish();
-        second.finish();
+        tokio::time::timeout(std::time::Duration::from_secs(1), second_started_rx.recv())
+            .await
+            .expect("second session remained blocked")
+            .expect("second session task ended without starting");
+        second_task.await.unwrap();
     }
 
     #[test]

@@ -2422,8 +2422,9 @@ async fn finish_recording_session_with_timing(
     // Capture is single-instance, but processing runs asynchronously — so the
     // user may have already recorded (and stopped) another message on this note
     // while a previous one is still in flight. Register this recording behind
-    // any in-flight job for the note; the spawned task waits its turn and reads
-    // the note's generated content *after* acquiring the lock, so incremental
+    // any in-flight processing for the note; the spawned task waits its turn
+    // and reads the note's generated content after every earlier recording
+    // session finishes, so incremental
     // generation always builds on whatever the previous job wrote.
     let Some((ticket, depth)) = processing_queue::enqueue(&finished.note_id, &finished.session_id)
     else {
@@ -2457,8 +2458,7 @@ async fn finish_recording_session_with_timing(
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
     tokio::spawn(async move {
-        let queue_lock = ticket.lock();
-        let _guard = queue_lock.lock().await;
+        ticket.wait_until_ready().await;
         #[cfg(test)]
         note_transcription_benchmark::record_processing_dequeued(&task_session_id);
         add_latency_checkpoint(
@@ -2697,8 +2697,7 @@ pub async fn retry_processing(
         .unwrap_or(RecordingSourceMode::MicrophoneOnly);
     let progress = note_processing_progress_reporter(&app);
     tokio::spawn(async move {
-        let queue_lock = ticket.lock();
-        let _guard = queue_lock.lock().await;
+        ticket.wait_until_ready().await;
         let timing = ProcessingTiming::untracked();
         add_latency_checkpoint(
             &task_repos,
@@ -2974,8 +2973,7 @@ async fn process_recovered_source_audio(
         note.queued_recordings = processing_queue::queued_behind(note_id);
         return Ok(note);
     };
-    let queue_lock = ticket.lock();
-    let _guard = queue_lock.lock().await;
+    ticket.wait_until_ready().await;
     let note = match repos.get_note(note_id).await {
         Ok(note) => note,
         Err(error) => {

@@ -790,8 +790,7 @@ mod tests {
     #[test]
     fn helper_terminal_error_survives_later_level_and_ready_statuses() {
         let mut stats = SystemAudioStats::default();
-        let terminal_message =
-            "System audio capture is still returning silence after one restart.".to_string();
+        let terminal_message = "System audio capture did not resume after one restart.".to_string();
 
         apply_helper_status(
             &mut stats,
@@ -829,30 +828,29 @@ mod tests {
     }
 
     #[test]
-    fn helper_transient_message_clears_after_capture_recovers() {
+    fn helper_zero_signal_warning_clears_after_nonzero_level() {
         let mut stats = SystemAudioStats::default();
+        let warning =
+            "System audio capture is still returning silence after one restart.".to_string();
 
         apply_helper_status(
             &mut stats,
             &HelperStatus {
-                event: "restarting".to_string(),
+                event: "stalled".to_string(),
                 level: None,
                 max_level: None,
-                message: Some("Restarting system audio capture.".to_string()),
+                message: Some(warning.clone()),
                 terminal_error: None,
             },
         );
-        assert_eq!(
-            stats.last_error,
-            Some("Restarting system audio capture.".to_string())
-        );
+        assert_eq!(stats.last_error, Some(warning));
 
         apply_helper_status(
             &mut stats,
             &HelperStatus {
-                event: "ready".to_string(),
-                level: None,
-                max_level: None,
+                event: "level".to_string(),
+                level: Some(0.25),
+                max_level: Some(0.25),
                 message: None,
                 terminal_error: None,
             },

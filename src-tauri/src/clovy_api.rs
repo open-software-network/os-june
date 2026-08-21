@@ -138,6 +138,84 @@ pub struct TranscriptionProviderResult {
     pub provider: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NoteAudioFailureScope {
+    Turn,
+    AmbiguousProvider,
+    SharedService,
+}
+
+/// Classifies failures from the shared note-audio request path used by note
+/// transcription and live transcript preview.
+///
+/// Clovy API's compatibility envelope currently collapses both deterministic
+/// provider rejections and dependency outages into `upstream_provider_failed`.
+/// Keep that response distinct so callers can require corroborating failures
+/// before opening a durable note-transcription circuit.
+pub(crate) fn note_audio_failure_scope(error: &AppError) -> NoteAudioFailureScope {
+    let code = error.code.trim().to_ascii_lowercase();
+    let message = error.message.trim().to_ascii_lowercase();
+    if code == "no_speech" || message == "no_speech" || message.contains("no speech detected") {
+        return NoteAudioFailureScope::Turn;
+    }
+    if code.contains("upstream_provider") || message.contains("upstream_provider_failed") {
+        return NoteAudioFailureScope::AmbiguousProvider;
+    }
+
+    let request_boundary_failure = matches!(
+        code.as_str(),
+        "clovy_request_failed" | "june_request_failed" | "request_failed"
+    ) && (matches!(
+        message.as_str(),
+        "authorization_denied"
+            | "metering_provider_failed"
+            | "internal_error"
+            | "server_busy"
+            | "model_not_priced"
+            | "model_type_invalid"
+            | "price_overflow"
+            | "timeout"
+    ) || message.contains("error sending request")
+        || message.contains("error decoding response")
+        || message.contains("timed out")
+        || message.contains("connection")
+        || message.contains("couldn't reach clovy")
+        || message.contains("dns error")
+        || message.contains("response stream ended unexpectedly"));
+
+    if matches!(
+        code.as_str(),
+        "clovy_api_response_invalid"
+            | "june_api_response_invalid"
+            | "empty_response"
+            | "network_error"
+            | "transport_error"
+            | "unauthorized"
+            | "authorization_denied"
+            | "auth_refresh_unavailable"
+            | "signed_out"
+            | "session_expired"
+            | "insufficient_credits"
+            | "internal_error"
+            | "server_busy"
+            | "model_not_priced"
+            | "model_type_invalid"
+            | "price_overflow"
+            | "venice_api_key_invalid"
+            | "venice_api_key_model_unavailable"
+            | "venice_api_key_rejected"
+    ) || request_boundary_failure
+        || code.contains("metering_provider")
+        || message.contains("metering_provider_failed")
+        || message.contains("authorization_denied")
+        || message.contains("insufficient_credits")
+    {
+        NoteAudioFailureScope::SharedService
+    } else {
+        NoteAudioFailureScope::Turn
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GenerationRequest {
     pub provider: String,

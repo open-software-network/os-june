@@ -114,6 +114,7 @@ final class SystemAudioRecorder {
     private var observedSignalSinceGraphStart = false
     private var attemptedGraphRecovery = false
     private var reportedTerminalInputStall = false
+    private var reportedZeroSignalWarning = false
     private var maxLevel: Double = 0
     private var stallTimer: DispatchSourceTimer?
     private var powerAssertionID: IOPMAssertionID = 0
@@ -405,6 +406,7 @@ final class SystemAudioRecorder {
         observedSignalSinceGraphStart = false
         attemptedGraphRecovery = false
         reportedTerminalInputStall = false
+        reportedZeroSignalWarning = false
         healthLock.unlock()
     }
 
@@ -445,21 +447,22 @@ final class SystemAudioRecorder {
     }
 
     /// After the one permitted graph rebuild, continued zero-filled buffers
-    /// are terminal for the system source even though CoreAudio is still
-    /// invoking the callback. Report that state instead of silently padding a
-    /// meeting-length WAV with zeroes.
-    private func terminalZeroSignalMessage() -> String? {
+    /// still deserve a warning, but they are not conclusive capture failure:
+    /// real system silence produces the same samples. A later nonzero buffer
+    /// clears the transient status, while saved-audio validation handles a
+    /// Source that remains silent through finalization.
+    private func postRecoveryZeroSignalWarning() -> String? {
         healthLock.lock()
         defer { healthLock.unlock() }
-        guard attemptedGraphRecovery, !reportedTerminalInputStall else { return nil }
+        guard attemptedGraphRecovery, !reportedZeroSignalWarning else { return nil }
         let now = Date()
-        let terminal = if !observedSignalSinceGraphStart {
+        let warningDue = if !observedSignalSinceGraphStart {
             now.timeIntervalSince(graphStartedAt) >= startupZeroSignalRecoverySeconds
         } else {
             now.timeIntervalSince(lastSignalAt) >= activeZeroSignalRecoverySeconds
         }
-        guard terminal else { return nil }
-        reportedTerminalInputStall = true
+        guard warningDue else { return nil }
+        reportedZeroSignalWarning = true
         return "System audio capture is still returning silence after one restart. Microphone recording can continue."
     }
 
@@ -514,9 +517,9 @@ final class SystemAudioRecorder {
                 self.log(message)
                 self.emit(["event": "stalled", "message": message])
                 self.rebuildAudioGraph(reason: message)
-            } else if let message = self.terminalZeroSignalMessage() {
+            } else if let message = self.postRecoveryZeroSignalWarning() {
                 self.log(message)
-                self.emit(["event": "error", "message": message])
+                self.emit(["event": "stalled", "message": message])
             }
         }
         stallTimer = timer

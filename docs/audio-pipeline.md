@@ -19,8 +19,12 @@ preview).
    A dedicated non-real-time task drains the ring into the WAV writer and
    non-blockingly feeds the **live preview** sink; its worker transcribes ~8s
    chunks and emits ephemeral `live-transcript-event`s that are **never
-   persisted**. The ring holds 30 seconds at the configured sample rate and
-   channel count, with a memory cap for unusual high-channel devices. If disk
+   persisted**. The Microphone and System live transcript preview workers share
+   a recording-scoped service circuit. A shared or ambiguous provider failure
+   ends both preview lanes for the rest of that recording, while saved-audio
+   capture continues for final note transcription and Retry. The ring holds 30
+   seconds at the configured sample rate and channel count, with a memory cap
+   for unusual high-channel devices. If disk
    writing ever falls more than that capacity behind, the oldest queued blocks
    are dropped, exact dropped-sample counts appear in recording status, and
    recovery/finalization checkpoints persist the count. Writer progress is
@@ -48,8 +52,11 @@ preview).
    prepared lazily when a Source is materially incomplete and atomically
    replace that Source's partial rows only after the replacement succeeds.
    No-speech and other audio-specific failures remain isolated to their Turn.
-   A service-wide transcription failure is persisted against the attempted
-   durable job, then opens the pipeline circuit: already in-flight requests are
+   An unambiguous shared-service note-transcription failure is persisted
+   against the attempted durable job, then opens the pipeline circuit. The
+   compatibility API can also report deterministic provider rejections as
+   `upstream_provider_failed`, so that ambiguous response needs two consecutive
+   failed Turns before opening the circuit. Already in-flight requests are
    drained, no more Turns or fallbacks are launched, and untouched jobs remain
    pending for a later Retry.
 
@@ -133,20 +140,22 @@ The helper is controlled and observed out-of-process (see ADR-0004):
 
 - **Control:** Unix signals — `SIGUSR1` / `SIGUSR2` = pause / resume,
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.
-- **Observation:** a `status.json` file with events `ready` / `level` / `error`
-  / `stopped` (fields include `level` / `maxLevel` / `message`). An `error`
-  event is terminal for that capture and remains observable until the parent
-  has recorded it; later level events cannot overwrite it. The helper can still
-  publish `stopped` during an orderly shutdown.
+- **Observation:** a `status.json` file with events `ready` / `level` /
+  `stalled` / `error` / `stopped` (fields include `level` / `maxLevel` /
+  `message`). An `error` event is terminal for that capture and remains
+  observable until the parent has recorded it; later level events cannot
+  overwrite it. The helper can still publish `stopped` during an orderly
+  shutdown.
 - **Routing:** a private stereo process tap is bound to the current default
   system output device, so it records the same device stream the user hears.
   The private aggregate contains the tap only; adding a physical output
   subdevice can create an output-only IO cycle with no tap callbacks. The helper
   performs at most one full-graph rebuild for missing callbacks or zero-filled
-  buffers. If callbacks still stall or remain zero-filled after that rebuild,
-  the helper reports the system source unavailable instead of silently writing
-  a meeting-length silent WAV or entering a restart loop. Ordinary sustained
-  silence remains subject to the saved-audio speech gate below.
+  buffers. Callbacks that do not resume after that rebuild are a terminal
+  Source failure. Continued zero-filled buffers remain a transient `stalled`
+  warning because real system silence is indistinguishable from that signal;
+  later nonzero audio clears the warning, and a Source that stays silent is
+  handled by the saved-audio speech gate below.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.
