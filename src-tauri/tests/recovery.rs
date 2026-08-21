@@ -306,6 +306,38 @@ async fn renderer_reload_scan_ignores_live_pending_processing() {
 }
 
 #[tokio::test]
+async fn recovery_promotion_cannot_overwrite_a_completed_note() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    repos
+        .create_recording_session(
+            &note.id,
+            "completed-session",
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/completed.partial.wav",
+            "/tmp/completed.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    repos
+        .mark_recording_processing_finished("completed-session", None)
+        .await
+        .expect("completed processing");
+    repos
+        .set_note_status(&note.id, ProcessingStatus::Ready, None)
+        .await
+        .expect("ready note");
+
+    assert!(!repos
+        .mark_recording_recoverable("completed-session", &note.id)
+        .await
+        .expect("conditional recovery promotion"));
+    let unchanged = repos.get_note(&note.id).await.expect("unchanged note");
+    assert_eq!(unchanged.processing_status, ProcessingStatus::Ready);
+}
+
+#[tokio::test]
 async fn scan_ignores_missing_audio_bytes() {
     let repos = repos().await;
     let dir = tempdir().expect("tempdir");

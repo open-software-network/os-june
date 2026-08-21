@@ -3484,7 +3484,10 @@ impl Repositories {
             query(
                 "INSERT INTO note_processing_failures
                  (note_id, recording_session_id, processing_stage, message, created_at, updated_at)
-                 SELECT ?, ?, ?, ?, ?, ?
+                 SELECT ?, ?, COALESCE(
+                   ?,
+                   (SELECT retry_processing_stage FROM notes WHERE id = ?)
+                 ), ?, ?, ?
                  WHERE EXISTS (
                    SELECT 1 FROM audio_artifacts
                    WHERE note_id = ? AND recording_session_id = ? AND status = 'valid'
@@ -3500,6 +3503,7 @@ impl Repositories {
             .bind(note_id)
             .bind(recording_session_id)
             .bind(processing_stage)
+            .bind(note_id)
             .bind(failure_message)
             .bind(&now)
             .bind(&now)
@@ -4228,16 +4232,16 @@ impl Repositories {
         &self,
         session_id: &str,
         note_id: &str,
-    ) -> Result<(), sqlx::error::Error> {
+    ) -> Result<bool, sqlx::error::Error> {
         let now = timestamp();
         let message = "Recording interrupted before it could be finished.";
         let mut tx = self.pool.begin().await?;
-        query(
+        let transitioned = query(
             "UPDATE recording_sessions
              SET status = 'recoverable',
                  last_error = COALESCE(last_error, ?),
                  ended_at = COALESCE(ended_at, ?)
-             WHERE id = ?
+             WHERE id = ? AND note_id = ?
                AND status IN (
                  'recording',
                  'paused',
@@ -4253,8 +4257,13 @@ impl Repositories {
         .bind(message)
         .bind(&now)
         .bind(session_id)
+        .bind(note_id)
         .execute(&mut *tx)
         .await?;
+        if transitioned.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         query(
             "UPDATE audio_artifacts
              SET status = 'recoverable',
@@ -4288,7 +4297,8 @@ impl Repositories {
         .bind(note_id)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn mark_recording_recovery_valid(
@@ -8937,6 +8947,69 @@ mod tests {
         assert_eq!(
             cleared_context.get::<Option<String>, _>("retry_processing_stage"),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn first_terminal_wrapper_failure_inherits_the_active_processing_stage() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        recording_artifact_for_note(
+            &repos,
+            &note.id,
+            "setup-failure-session",
+            RecordingSourceMode::MicrophoneOnly,
+            "microphone",
+            "setup-failure-checksum",
+            5_000,
+        )
+        .await;
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "setup-failure-session",
+                Some("transcribing"),
+                ProcessingStatus::Transcribing,
+                None,
+            )
+            .await
+            .expect("enter transcription stage");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "setup-failure-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Audio preparation failed".to_string()),
+            )
+            .await
+            .expect("terminal wrapper failure");
+
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("setup-failure-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("failure stage");
+        assert_eq!(failure_stage.as_deref(), Some("transcribing"));
+        let retry_context = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = ?",
+        )
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("retry context");
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_recording_session_id"),
+            Some("setup-failure-session".to_string())
+        );
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_processing_stage"),
+            Some("transcribing".to_string())
         );
     }
 

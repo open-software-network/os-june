@@ -32,30 +32,33 @@ use crate::{
             DownloadNoteAudioRequest, DownloadNoteAudioResponse, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetNoteRequest,
             ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse, MemoryDto,
-            MemorySettingsDto, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
-            ProcessingStatus, ProfileDataSummaryDto, RecordingOrigin, RecordingOriginMetadata,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SessionFolderDto, SessionProfileDto,
-            SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest, ShareCreateRequest,
-            ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
-            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
-            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
-            ShareSummaryDto, SourceReadinessDto, StartMeetingRecordingRequest,
-            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
-            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
-            UpdateDictionaryEntryRequest, UpdateNoteRequest, UpdateNoteResponse,
+            MemorySettingsDto, MicrophonePermissionResponse, NoteDto, NoteProcessingStage,
+            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto, RecordingOrigin,
+            RecordingOriginMetadata, RecordingSessionDto, RecordingSource, RecordingSourceMode,
+            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
+            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
+            SessionFolderDto, SessionProfileDto, SessionRequest, SetSessionCompletedRequest,
+            ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest,
+            ShareDto, ShareGetRequest, ShareInviteKeyDto, ShareInviteKeySaveRequest,
+            ShareInviteKeysGetRequest, ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest,
+            ShareKeySaveRequest, ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto,
+            StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
+            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            UpdateNoteResponse,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
 };
 use chrono::Utc;
+use futures_util::FutureExt;
 use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::fs;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex};
 use std::{
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -2521,42 +2524,67 @@ async fn finish_recording_session_with_timing(
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
+    let mut task_sources = Some(valid_sources);
     tokio::spawn(async move {
-        ticket.wait_until_ready().await;
-        #[cfg(test)]
-        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
-        add_latency_checkpoint(
-            &task_repos,
-            &task_session_id,
-            "processing_dequeued",
-            timing.checkpoint_details(serde_json::json!({})),
-        )
-        .await;
-        // Now that earlier jobs on this note are done, read the latest note so
-        // generation has the freshest existing content as context.
-        let note = match task_repos.get_note(&task_note_id).await {
-            Ok(note) => note,
+        let run_completed = match AssertUnwindSafe(async {
+            ticket.wait_until_ready().await;
+            #[cfg(test)]
+            note_transcription_benchmark::record_processing_dequeued(&task_session_id);
+            add_latency_checkpoint(
+                &task_repos,
+                &task_session_id,
+                "processing_dequeued",
+                timing.checkpoint_details(serde_json::json!({})),
+            )
+            .await;
+            // Now that earlier jobs on this note are done, read the latest
+            // Note so generation sees every preceding recording's content.
+            let Ok(note) = task_repos.get_note(&task_note_id).await else {
+                return false;
+            };
+            let Some(sources) = task_sources.take() else {
+                return false;
+            };
+            let title = note.title.clone();
+            let existing_generated_note = note.generated_content.clone();
+            let manual_notes = manual_notes_for_generation(&note);
+            let _ = process_saved_source_audio_with_progress(
+                &task_repos,
+                &task_note_id,
+                &task_session_id,
+                task_source_mode,
+                sources,
+                title,
+                existing_generated_note,
+                manual_notes,
+                timing,
+                progress.clone(),
+            )
+            .await;
+            true
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(completed) => completed,
             Err(_) => {
-                ticket.finish();
-                return;
+                tracing::error!(
+                    note_id = task_note_id,
+                    recording_session_id = task_session_id,
+                    "queued note processing panicked"
+                );
+                false
             }
         };
-        let title = note.title.clone();
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
-        let _ = process_saved_source_audio_with_progress(
-            &task_repos,
-            &task_note_id,
-            &task_session_id,
-            task_source_mode,
-            valid_sources,
-            title,
-            existing_generated_note,
-            manual_notes,
-            timing,
-            progress.clone(),
-        )
-        .await;
+        if !run_completed {
+            recover_abandoned_processing_run(
+                &task_repos,
+                &task_note_id,
+                &task_session_id,
+                &progress,
+            )
+            .await;
+        }
         ticket.finish();
     });
     Ok(FinishRecordingResponse {
@@ -2766,44 +2794,71 @@ pub async fn retry_processing(
         .await?
         .unwrap_or(RecordingSourceMode::MicrophoneOnly);
     let progress = note_processing_progress_reporter(&app);
+    let mut task_sources = Some(
+        sources
+            .into_iter()
+            .map(|(id, source, path, _session_id, recorded_silence)| {
+                (id, source, path, recorded_silence)
+            })
+            .collect(),
+    );
     tokio::spawn(async move {
-        ticket.wait_until_ready().await;
-        let timing = ProcessingTiming::untracked();
-        add_latency_checkpoint(
-            &task_repos,
-            &task_recording_session_id,
-            "processing_dequeued",
-            timing.checkpoint_details(serde_json::json!({})),
-        )
-        .await;
-        let note = match task_repos.get_note(&task_note_id).await {
-            Ok(note) => note,
+        let run_completed = match AssertUnwindSafe(async {
+            ticket.wait_until_ready().await;
+            let timing = ProcessingTiming::untracked();
+            add_latency_checkpoint(
+                &task_repos,
+                &task_recording_session_id,
+                "processing_dequeued",
+                timing.checkpoint_details(serde_json::json!({})),
+            )
+            .await;
+            let Ok(note) = task_repos.get_note(&task_note_id).await else {
+                return false;
+            };
+            let Some(sources) = task_sources.take() else {
+                return false;
+            };
+            let title = note.title.clone();
+            let existing_generated_note = note.generated_content.clone();
+            let manual_notes = manual_notes_for_generation(&note);
+            let _ = process_saved_source_audio_with_progress(
+                &task_repos,
+                &task_note_id,
+                &task_recording_session_id,
+                task_source_mode,
+                sources,
+                title,
+                existing_generated_note,
+                manual_notes,
+                timing,
+                progress.clone(),
+            )
+            .await;
+            true
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(completed) => completed,
             Err(_) => {
-                ticket.finish();
-                return;
+                tracing::error!(
+                    note_id = task_note_id,
+                    recording_session_id = task_recording_session_id,
+                    "retried note processing panicked"
+                );
+                false
             }
         };
-        let title = note.title.clone();
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
-        let _ = process_saved_source_audio_with_progress(
-            &task_repos,
-            &task_note_id,
-            &task_recording_session_id,
-            task_source_mode,
-            sources
-                .into_iter()
-                .map(|(id, source, path, _session_id, recorded_silence)| {
-                    (id, source, path, recorded_silence)
-                })
-                .collect(),
-            title,
-            existing_generated_note,
-            manual_notes,
-            timing,
-            progress.clone(),
-        )
-        .await;
+        if !run_completed {
+            recover_abandoned_processing_run(
+                &task_repos,
+                &task_note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+        }
         ticket.finish();
     });
     Ok(note)
@@ -2821,6 +2876,39 @@ async fn enqueue_retry_processing(
         .mark_recording_processing_pending(recording_session_id)
         .await?;
     Ok(Some(registration))
+}
+
+async fn recover_abandoned_processing_run(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) {
+    match repos
+        .mark_recording_recoverable(recording_session_id, note_id)
+        .await
+    {
+        Ok(true) => {
+            if let Ok(note) = repos.get_note(note_id).await {
+                progress.emit(
+                    note_id,
+                    recording_session_id,
+                    NoteProcessingStage::Done,
+                    ProcessingStatus::Recoverable,
+                    note.updated_at,
+                );
+            }
+        }
+        Ok(false) => {}
+        Err(error) => {
+            tracing::error!(
+                note_id,
+                recording_session_id,
+                %error,
+                "failed to recover abandoned note processing"
+            );
+        }
+    }
 }
 
 async fn retry_audio_sources(
@@ -3067,27 +3155,49 @@ async fn process_recovered_source_audio(
         note.queued_recordings = processing_queue::queued_behind(note_id);
         return Ok(note);
     }
-    ticket.wait_until_ready().await;
-    let note = match repos.get_note(note_id).await {
-        Ok(note) => note,
-        Err(error) => {
-            ticket.finish();
-            return Err(error.into());
+    let mut sources = Some(sources);
+    let result = match AssertUnwindSafe(async {
+        ticket.wait_until_ready().await;
+        let note = repos.get_note(note_id).await?;
+        let sources = sources.take().ok_or_else(|| {
+            AppError::new(
+                "processing_state_invalid",
+                "Saved recording processing state is unavailable.",
+            )
+        })?;
+        process_saved_source_audio_with_progress(
+            repos,
+            note_id,
+            session_id,
+            source_mode,
+            sources,
+            note.title.clone(),
+            note.generated_content.clone(),
+            manual_notes_for_generation(&note),
+            ProcessingTiming::untracked(),
+            progress.clone(),
+        )
+        .await
+    })
+    .catch_unwind()
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::error!(
+                note_id,
+                recording_session_id = session_id,
+                "recovered note processing panicked"
+            );
+            Err(AppError::new(
+                "processing_panicked",
+                "Clovy couldn't finish processing this saved recording.",
+            ))
         }
     };
-    let result = process_saved_source_audio_with_progress(
-        repos,
-        note_id,
-        session_id,
-        source_mode,
-        sources,
-        note.title.clone(),
-        note.generated_content.clone(),
-        manual_notes_for_generation(&note),
-        ProcessingTiming::untracked(),
-        progress.clone(),
-    )
-    .await;
+    if result.is_err() {
+        recover_abandoned_processing_run(repos, note_id, session_id, &progress).await;
+    }
     ticket.finish();
     result
 }
@@ -3347,11 +3457,16 @@ mod note_transcription_benchmark;
 
 #[cfg(test)]
 mod retry_audio_source_tests {
-    use super::{enqueue_retry_processing, retry_audio_sources};
+    use super::{enqueue_retry_processing, recover_abandoned_processing_run, retry_audio_sources};
     use crate::{
         app_paths::AppPaths,
+        audio::recovery::scan_marked_recoverable_recordings,
         db::{migrations::run_migrations, repositories::Repositories},
-        domain::{processing_queue, types::RecordingSourceMode},
+        domain::{
+            processing::NoteProcessingProgressReporter,
+            processing_queue,
+            types::{ProcessingStatus, RecordingSourceMode},
+        },
     };
     use sqlx::query_scalar::query_scalar;
 
@@ -3467,6 +3582,59 @@ mod retry_audio_source_tests {
         assert_eq!(status, "processed");
 
         active_ticket.finish();
+    }
+
+    #[tokio::test]
+    async fn abandoned_live_queue_run_becomes_visible_to_renderer_reload() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let final_path = directory.path().join("abandoned.wav");
+        std::fs::write(&final_path, b"abandoned saved audio").expect("saved audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "abandoned-processing";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &directory
+                    .path()
+                    .join("abandoned.partial.wav")
+                    .to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_pending(session_id)
+            .await
+            .expect("pending processing");
+
+        recover_abandoned_processing_run(
+            &repos,
+            &note.id,
+            session_id,
+            &NoteProcessingProgressReporter::default(),
+        )
+        .await;
+
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+        let recoveries = scan_marked_recoverable_recordings(&repos.pool)
+            .await
+            .expect("renderer reload scan");
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].session_id, session_id);
     }
 }
 

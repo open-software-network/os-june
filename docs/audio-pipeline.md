@@ -227,7 +227,9 @@ so a duplicate request cannot turn already completed work back into pending
 work. A failed Note also stores the exact recording session and processing
 stage that failed, preventing an older partial session from displacing the
 recording that actually needs Retry. The failure-ledger migration backfills
-retryable failed Notes from their strongest unprocessed saved recording.
+retryable failed Notes only when an exact session or unfinished durable
+transcription job identifies the recording. A newer invalid recording blocks
+fallback to unrelated historical audio.
 Partial-Source warnings on a Ready Note retain their own recording-session
 identity, so the warning's Retry action reprocesses the affected saved audio
 directly. Retryable failures remain durable per recording session: a later
@@ -239,6 +241,9 @@ as `processed` in the Note transaction. A crash therefore reconstructs a
 recovery prompt without reviving work that already completed. Interrupted-state
 promotion runs once per native process; renderer reloads show only sessions
 already marked recoverable and cannot reclassify live native queue work.
+If a queued worker exits or panics before reaching a durable terminal status,
+its still-registered ticket first promotes that session to recoverable, then
+releases the queue identity, so a reload cannot strand the saved audio.
 Multiple recoveries for one Note are returned oldest first to preserve
 recording order. Simultaneous Source warnings are de-duplicated and shown
 together rather than truncating the System warning behind an earlier
