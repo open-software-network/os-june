@@ -18,7 +18,10 @@ impl From<AppError> for SystemAudioFailure {
 
 pub enum SystemAudioStopResult {
     Failed(SystemAudioFailure),
-    Stopped(PathBuf),
+    Stopped {
+        path: PathBuf,
+        warning: Option<SystemAudioFailure>,
+    },
 }
 
 #[cfg(target_os = "macos")]

@@ -23,6 +23,7 @@ pub struct SystemAudioStats {
     pub level: AudioLevelDto,
     pub max_level: f32,
     pub last_error: Option<String>,
+    terminal_error: Option<String>,
     last_debug_log: Option<Instant>,
 }
 
@@ -153,7 +154,15 @@ impl SystemAudioCapture {
         let (level, error) = self
             .stats
             .lock()
-            .map(|stats| (stats.level.clone(), stats.last_error.clone()))
+            .map(|stats| {
+                (
+                    stats.level.clone(),
+                    stats
+                        .terminal_error
+                        .clone()
+                        .or_else(|| stats.last_error.clone()),
+                )
+            })
             .unwrap_or_default();
         let bytes = std::fs::metadata(&self.partial_path)
             .or_else(|_| std::fs::metadata(&self.final_path))
@@ -163,30 +172,88 @@ impl SystemAudioCapture {
     }
 
     pub fn stop(self) -> SystemAudioStopResult {
+        // Capture a terminal helper failure before requesting shutdown. The
+        // helper must replace its live status with `stopped` so shutdown can
+        // be coordinated without waiting for the timeout.
+        let (mut terminal_error, mut warning) = self.capture_diagnostics();
         dev_log(format!("stopping helper pid={}", self.pid));
         send_signal(self.pid, "-TERM");
-        if wait_for_stopped(&self.status_path, Duration::from_secs(5)).is_err() {
-            dev_log(format!(
-                "helper pid={} did not stop; sending kill",
-                self.pid
-            ));
-            send_signal(self.pid, "-KILL");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        if self.partial_path.exists() {
-            if let Err(error) = std::fs::rename(&self.partial_path, &self.final_path) {
-                return SystemAudioStopResult::Failed(
-                    AppError::new("audio_finalization_failed", error.to_string()).into(),
-                );
+        match wait_for_stopped(&self.status_path, Duration::from_secs(5)) {
+            Ok(stopped) => {
+                // This closes the small race where the helper reports a
+                // terminal failure after the pre-TERM read but before it
+                // handles TERM.
+                terminal_error = terminal_error.or_else(|| stopped.terminal_error.clone());
+                // `stopped` is the authoritative final snapshot. A
+                // message-free stop after a late recovery must clear the
+                // warning captured before TERM instead of resurrecting it.
+                warning = reconcile_stopped_warning(warning, Some(&stopped));
             }
-        }
+            Err(_) => {
+                dev_log(format!(
+                    "helper pid={} did not stop; sending kill",
+                    self.pid
+                ));
+                send_signal(self.pid, "-KILL");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        let finalization_error = if self.partial_path.exists() {
+            std::fs::rename(&self.partial_path, &self.final_path)
+                .err()
+                .map(|error| AppError::new("audio_finalization_failed", error.to_string()))
+        } else {
+            None
+        };
         let _ = std::fs::remove_file(&self.status_path);
         let _ = std::fs::remove_file(&self.pid_path);
         dev_log(format!(
             "preserved helper log at {}",
             self.log_path.display()
         ));
-        SystemAudioStopResult::Stopped(self.final_path)
+        match (terminal_error, finalization_error) {
+            (Some(message), Some(finalization_error)) => SystemAudioStopResult::Failed(
+                AppError::new(
+                    "system_audio_capture_unavailable",
+                    format!(
+                        "{message} System audio file finalization also failed: {}",
+                        finalization_error.message
+                    ),
+                )
+                .into(),
+            ),
+            (Some(message), None) => SystemAudioStopResult::Failed(
+                AppError::new("system_audio_capture_unavailable", message).into(),
+            ),
+            (None, Some(error)) => SystemAudioStopResult::Failed(error.into()),
+            (None, None) => SystemAudioStopResult::Stopped {
+                path: self.final_path,
+                warning: warning.map(|message| crate::audio::system_audio::SystemAudioFailure {
+                    code: "system_audio_capture_warning".to_string(),
+                    message,
+                }),
+            },
+        }
+    }
+
+    fn capture_diagnostics(&self) -> (Option<String>, Option<String>) {
+        if let Ok(status) = read_status(&self.status_path) {
+            if let Ok(mut stats) = self.stats.lock() {
+                apply_helper_status(&mut stats, &status);
+            }
+        }
+        self.stats
+            .lock()
+            .ok()
+            .map(|stats| {
+                let terminal_error = stats.terminal_error.clone();
+                let warning = terminal_error
+                    .is_none()
+                    .then(|| stats.last_error.clone())
+                    .flatten();
+                (terminal_error, warning)
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -206,18 +273,36 @@ fn apply_helper_status(stats: &mut SystemAudioStats, status: &HelperStatus) {
         stats.level = AudioLevelDto::default();
     }
 
-    if status.event == "error" {
-        stats.last_error = Some(
+    let terminal_error = if status.event == "error" {
+        Some(
             status
                 .message
                 .clone()
                 .unwrap_or_else(|| "System audio capture failed.".to_string()),
-        );
+        )
+    } else {
+        status.terminal_error.clone()
+    };
+    if stats.terminal_error.is_none() {
+        stats.terminal_error = terminal_error;
+    }
+
+    if let Some(message) = stats.terminal_error.clone() {
+        stats.last_error = Some(message);
     } else if status.message.is_some() {
         stats.last_error = status.message.clone();
     } else if status.event == "ready" || status.event == "level" {
         stats.last_error = None;
     }
+}
+
+fn reconcile_stopped_warning(
+    pre_stop_warning: Option<String>,
+    stopped: Option<&HelperStatus>,
+) -> Option<String> {
+    stopped
+        .map(|status| status.message.clone())
+        .unwrap_or(pre_stop_warning)
 }
 
 pub fn system_audio_readiness() -> SourceReadinessDto {
@@ -513,6 +598,7 @@ struct HelperStatus {
     level: Option<f32>,
     max_level: Option<f32>,
     message: Option<String>,
+    terminal_error: Option<String>,
 }
 
 fn wait_for_status(
@@ -549,14 +635,13 @@ fn wait_for_status(
     }
 }
 
-fn wait_for_stopped(path: &Path, timeout: Duration) -> Result<(), AppError> {
+fn wait_for_stopped(path: &Path, timeout: Duration) -> Result<HelperStatus, AppError> {
     let started = Instant::now();
     loop {
-        if read_status(path)
-            .map(|status| status.event == "stopped")
-            .unwrap_or(false)
-        {
-            return Ok(());
+        if let Ok(status) = read_status(path) {
+            if status.event == "stopped" {
+                return Ok(status);
+            }
         }
         if started.elapsed() >= timeout {
             return Err(AppError::new(
@@ -588,11 +673,16 @@ fn read_status(path: &Path) -> Result<HelperStatus, std::io::Error> {
         .get("maxLevel")
         .and_then(|level| level.as_str())
         .and_then(|level| level.parse::<f32>().ok());
+    let terminal_error = value
+        .get("terminalError")
+        .and_then(|message| message.as_str())
+        .map(str::to_string);
     Ok(HelperStatus {
         event,
         level,
         max_level,
         message,
+        terminal_error,
     })
 }
 
@@ -633,7 +723,8 @@ fn dump_helper_log(_path: &Path) {}
 mod tests {
     use super::{
         apply_helper_status, helper_error_code, macos_version_string_supports_system_audio,
-        system_audio_min_macos_version_label, HelperStatus, SystemAudioStats,
+        reconcile_stopped_warning, system_audio_min_macos_version_label, HelperStatus,
+        SystemAudioStats,
     };
 
     #[test]
@@ -681,6 +772,7 @@ mod tests {
                 level: Some(0.42),
                 max_level: Some(0.55),
                 message: None,
+                terminal_error: None,
             },
         );
 
@@ -701,6 +793,7 @@ mod tests {
             },
             max_level: 0.8,
             last_error: None,
+            terminal_error: None,
             last_debug_log: None,
         };
 
@@ -711,6 +804,7 @@ mod tests {
                 level: None,
                 max_level: None,
                 message: Some("System audio stalled.".to_string()),
+                terminal_error: None,
             },
         );
 
@@ -719,5 +813,165 @@ mod tests {
         assert!(stats.level.recent_peaks.is_empty());
         assert_eq!(stats.max_level, 0.8);
         assert_eq!(stats.last_error, Some("System audio stalled.".to_string()));
+    }
+
+    #[test]
+    fn helper_terminal_error_survives_later_level_and_ready_statuses() {
+        let mut stats = SystemAudioStats::default();
+        let terminal_message = "System audio capture did not resume after one restart.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "error".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(terminal_message.clone()),
+                terminal_error: None,
+            },
+        );
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "level".to_string(),
+                level: Some(0.4),
+                max_level: Some(0.4),
+                message: None,
+                terminal_error: None,
+            },
+        );
+        assert_eq!(stats.last_error, Some(terminal_message.clone()));
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "ready".to_string(),
+                level: None,
+                max_level: None,
+                message: None,
+                terminal_error: None,
+            },
+        );
+        assert_eq!(stats.last_error, Some(terminal_message));
+    }
+
+    #[test]
+    fn helper_zero_signal_warning_clears_after_nonzero_level() {
+        let mut stats = SystemAudioStats::default();
+        let warning =
+            "System audio capture is still returning silence after one restart.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stalled".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+        assert_eq!(stats.last_error, Some(warning));
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "level".to_string(),
+                level: Some(0.25),
+                max_level: Some(0.25),
+                message: None,
+                terminal_error: None,
+            },
+        );
+        assert_eq!(stats.last_error, None);
+    }
+
+    #[test]
+    fn helper_zero_signal_warning_survives_later_zero_level_status() {
+        let mut stats = SystemAudioStats::default();
+        let warning =
+            "System audio capture is still returning silence after one restart.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stalled".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "level".to_string(),
+                level: Some(0.0),
+                max_level: Some(0.0),
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+
+        assert_eq!(stats.last_error, Some(warning));
+    }
+
+    #[test]
+    fn stopped_status_carries_a_racing_nonterminal_warning() {
+        let mut stats = SystemAudioStats::default();
+        let warning = "Failed to write trailing system-audio silence.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stopped".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+
+        assert_eq!(stats.last_error, Some(warning));
+    }
+
+    #[test]
+    fn message_free_stopped_status_is_authoritative_after_a_warning() {
+        let stopped = HelperStatus {
+            event: "stopped".to_string(),
+            level: None,
+            max_level: None,
+            message: None,
+            terminal_error: None,
+        };
+
+        assert_eq!(
+            reconcile_stopped_warning(
+                Some("System audio was temporarily stalled.".to_string()),
+                Some(&stopped),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stopped_status_carries_a_racing_terminal_error() {
+        let mut stats = SystemAudioStats::default();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stopped".to_string(),
+                level: None,
+                max_level: None,
+                message: None,
+                terminal_error: Some("System audio capture failed while stopping.".to_string()),
+            },
+        );
+
+        assert_eq!(
+            stats.last_error,
+            Some("System audio capture failed while stopping.".to_string())
+        );
     }
 }

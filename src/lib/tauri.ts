@@ -626,6 +626,11 @@ export type NoteDto = NoteListItemDto & {
   audioSources?: AudioArtifactDto[];
   activeTab?: "notes" | "transcription";
   lastError?: string;
+  /** Recording-session-scoped partial note-transcription warnings retryable after Ready. */
+  transcriptionWarnings?: Array<{
+    recordingSessionId: string;
+    message: string;
+  }>;
   /** Recording whose saved-audio artifacts should be used by Retry. */
   retryRecordingSessionId?: string;
   /** Recordings queued behind the one currently processing (0 when none). */
@@ -638,6 +643,7 @@ export type NoteProcessingProgressDto = {
   stage: "transcribing" | "generating" | "done";
   processingStatus: ProcessingStatus;
   revision: string;
+  recovery?: RecoverableRecordingDto;
 };
 
 export type NotePatchDto = Pick<

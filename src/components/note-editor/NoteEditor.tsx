@@ -43,6 +43,7 @@ import {
   transcriptFollowLatestKey,
 } from "../../lib/live-transcript-preview";
 import { useFollowLatestScroll } from "../../lib/use-follow-latest-scroll";
+import { recordingWarningsMessage } from "../../lib/recording-warnings";
 import {
   isInvalidClovyResponseMessage,
   NoteFailureBanner,
@@ -91,7 +92,7 @@ type NoteEditorProps = {
   onFinishRecording: (sessionId: string) => void;
   onKeepRecordingAfterMeetingEnd?: (sessionId: string) => void;
   onStopNowAfterMeetingEnd?: (sessionId: string) => void;
-  onRetry: () => void | Promise<void>;
+  onRetry: (recordingSessionId?: string) => void | Promise<void>;
   onTopUp: () => void;
   topUpLabel?: string;
   onRecoverRecording: (sessionId: string) => void;
@@ -454,6 +455,12 @@ export function NoteEditor({
   // stays disabled via processingLock so nothing can re-trigger.
   const shellState = recordingForNote?.state ?? "idle";
   const processingText = processingMessage(note.processingStatus);
+  const showNoteTranscriptionWarning =
+    Boolean(note.lastError) &&
+    (note.processingStatus === "transcribing" ||
+      note.processingStatus === "generating" ||
+      note.processingStatus === "ready");
+  const transcriptionWarnings = note.transcriptionWarnings ?? [];
   const transcriptText = transcriptToText(note, liveTranscriptTurns);
   const fallbackTranscriptScrollRef = useRef<HTMLElement>(null);
   const transcriptDisplayContentKey = useMemo(
@@ -543,20 +550,52 @@ export function NoteEditor({
             recoverBlockedReason={recoveryBlockedReason}
           />
         ) : null}
-        {note.processingStatus === "transcribing" && note.lastError ? (
+        {transcriptionWarnings.map((warning) => (
+          <InlineNotice
+            key={warning.recordingSessionId}
+            className="note-transcription-warning"
+            tone="warning"
+            role="alert"
+            aria-label="Note transcription warning"
+            body={userFacingFailureMessage(warning.message)}
+            actions={
+              note.processingStatus === "ready" ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={Boolean(retryBlockedReason)}
+                  title={retryBlockedReason}
+                  onClick={() => {
+                    void (async () => {
+                      try {
+                        await onRetry(warning.recordingSessionId);
+                      } catch {
+                        // App owns the error notice; keep click failures from
+                        // surfacing as an unhandled promise rejection.
+                      }
+                    })();
+                  }}
+                >
+                  Retry note transcription
+                </button>
+              ) : undefined
+            }
+          />
+        ))}
+        {transcriptionWarnings.length === 0 && showNoteTranscriptionWarning && note.lastError ? (
           <InlineNotice
             className="note-transcription-warning"
             tone="warning"
             role="alert"
-            aria-label="Transcription warning"
+            aria-label="Note transcription warning"
             body={userFacingFailureMessage(note.lastError)}
           />
         ) : null}
         {note.processingStatus === "failed" ? (
           <NoteFailureBanner
             errorMessage={note.lastError}
-            audioPreserved={!!(note.audio || note.audioSources?.length)}
-            onRetry={onRetry}
+            audioPreserved={Boolean(note.retryRecordingSessionId)}
+            onRetry={() => onRetry()}
             onTopUp={onTopUp}
             topUpLabel={topUpLabel}
             retryBlockedReason={retryBlockedReason}
@@ -752,7 +791,7 @@ export function NoteEditor({
                   <InlineNotice
                     className="record-consent-note-surface"
                     aria-label="Recording source warning"
-                    body={recordingForNote.warnings[0].message}
+                    body={recordingWarningsMessage(recordingForNote.warnings)}
                   />
                 </motion.div>
               ) : null}

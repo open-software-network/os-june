@@ -3,6 +3,7 @@ use clovy_lib::{
     domain::types::{ProcessingStatus, RecordingSourceMode},
 };
 use sqlx::query::query;
+use sqlx::query_scalar::query_scalar;
 use sqlx::row::Row;
 use sqlx_sqlite::SqlitePoolOptions;
 
@@ -465,6 +466,28 @@ async fn generated_note_replaces_existing_session_block() {
 }
 
 #[tokio::test]
+async fn generated_note_preserves_partial_source_warning() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    let warning = "System: The transcription provider could not process this audio.";
+
+    let updated = repos
+        .set_generated_note_for_session_with_warning(
+            &note.id,
+            Some("session-1"),
+            None,
+            Some("Generated title".to_string()),
+            "Microphone transcript result".to_string(),
+            Some(warning),
+        )
+        .await
+        .expect("generated note with partial-Source warning");
+
+    assert_eq!(updated.processing_status, ProcessingStatus::Ready);
+    assert_eq!(updated.last_error.as_deref(), Some(warning));
+}
+
+#[tokio::test]
 async fn generated_note_composes_distinct_session_blocks_in_order() {
     let repos = repos().await;
     let note = repos.create_note("default", None).await.expect("note");
@@ -856,16 +879,134 @@ async fn discarded_recording_no_longer_exposes_retryable_audio() {
         .create_audio_artifact(&note.id, session_id, "/tmp/final.wav", 1200, 2048, "abc")
         .await
         .expect("artifact");
+    assert!(repos
+        .mark_recording_recoverable(session_id, &note.id)
+        .await
+        .expect("recoverable recording"));
 
     let discarded = repos
         .mark_recording_discarded(session_id, &note.id)
         .await
-        .expect("discarded note");
+        .expect("discarded note")
+        .expect("recoverable recording");
 
     assert_eq!(discarded.processing_status, ProcessingStatus::Failed);
     assert_eq!(discarded.last_error.as_deref(), Some("Recording discarded"));
+    assert_eq!(discarded.retry_recording_session_id, None);
     assert!(discarded.audio.is_none());
     assert!(discarded.audio_sources.is_empty());
+    let recording_status: String =
+        query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("discarded recording status");
+    assert_eq!(recording_status, "discarded");
+    let failure_count: i64 = query_scalar(
+        "SELECT COUNT(*) FROM note_processing_failures
+         WHERE note_id = ? AND recording_session_id = ?",
+    )
+    .bind(&note.id)
+    .bind(session_id)
+    .fetch_one(&repos.pool)
+    .await
+    .expect("failure ledger count");
+    assert_eq!(failure_count, 0);
+
+    let later_session_id = "session-2";
+    repos
+        .create_recording_session(
+            &note.id,
+            later_session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/later.partial.wav",
+            "/tmp/later.wav",
+            None,
+        )
+        .await
+        .expect("later session");
+    repos
+        .create_audio_artifact(
+            &note.id,
+            later_session_id,
+            "/tmp/later.wav",
+            1200,
+            2048,
+            "later",
+        )
+        .await
+        .expect("later artifact");
+    let generated = repos
+        .set_generated_note_for_session(
+            &note.id,
+            Some(later_session_id),
+            None,
+            None,
+            "Later recording succeeded".to_string(),
+        )
+        .await
+        .expect("later generation");
+    assert_eq!(generated.processing_status, ProcessingStatus::Ready);
+}
+
+#[tokio::test]
+async fn stale_discard_cannot_mutate_a_processed_recording() {
+    let repos = repos().await;
+    let note = repos.create_note("default", None).await.expect("note");
+    let session_id = "processed-session";
+    repos
+        .create_recording_session(
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophoneOnly,
+            "/tmp/processed.partial.wav",
+            "/tmp/processed.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    let audio = repos
+        .create_audio_artifact(
+            &note.id,
+            session_id,
+            "/tmp/processed.wav",
+            1200,
+            2048,
+            "processed-checksum",
+        )
+        .await
+        .expect("artifact");
+    repos
+        .mark_recording_processing_finished(session_id, None)
+        .await
+        .expect("processed recording");
+    repos
+        .set_note_status(&note.id, ProcessingStatus::Ready, None)
+        .await
+        .expect("ready note");
+
+    assert!(repos
+        .mark_recording_discarded(session_id, &note.id)
+        .await
+        .expect("stale discard check")
+        .is_none());
+
+    let recording_status: String =
+        query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status");
+    assert_eq!(recording_status, "processed");
+    let artifact_status: String = query_scalar("SELECT status FROM audio_artifacts WHERE id = ?")
+        .bind(&audio.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("artifact status");
+    assert_eq!(artifact_status, "valid");
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+    assert_eq!(loaded.processing_status, ProcessingStatus::Ready);
+    assert_eq!(loaded.audio.expect("preserved audio").id, audio.id);
 }
 
 #[tokio::test]

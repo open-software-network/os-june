@@ -3,13 +3,14 @@ use crate::{
     audio::{
         capture::{
             capture_recovery_checkpoint, capture_start_timeout_error, capture_status,
-            current_status, finish_active_capture, finish_capture, is_capture_active,
-            microphone_device_available, microphone_device_hint, microphone_permission_state,
-            pause_capture, resume_capture, start_capture_with_cancel, CaptureRecoverySnapshot,
+            current_status, finish_active_capture_with_recovery_context, finish_capture,
+            finish_capture_with_recovery_context, is_capture_active, microphone_device_available,
+            microphone_device_hint, microphone_permission_state, pause_capture, resume_capture,
+            source_warnings, start_capture_with_cancel, CaptureRecoverySnapshot,
             CaptureStartHandshake, CaptureStartState, StartedRecording, CAPTURE_START_TIMEOUT,
             RECOVERY_SNAPSHOT_INTERVAL,
         },
-        recovery::scan_recoverable_recordings,
+        recovery::{scan_marked_recoverable_recordings, scan_recoverable_recordings},
         validation::{
             checksum_file, source_audio_passes_validation, validate_audio_artifact,
             validation_config_for_source, AudioValidationConfig,
@@ -32,30 +33,33 @@ use crate::{
             DownloadNoteAudioRequest, DownloadNoteAudioResponse, ExplainAgentApprovalRequest,
             ExplainAgentApprovalResponse, FinishRecordingResponse, GetNoteRequest,
             ImportClaudeProjectsRequest, ListNotesRequest, ListNotesResponse, MemoryDto,
-            MemorySettingsDto, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
-            ProcessingStatus, ProfileDataSummaryDto, RecordingOrigin, RecordingOriginMetadata,
-            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
-            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
-            RenameFolderRequest, RetryProcessingRequest, SessionFolderDto, SessionProfileDto,
-            SessionRequest, SetSessionCompletedRequest, ShareAddInvitesRequest, ShareCreateRequest,
-            ShareCreatedDto, ShareDeleteRequest, ShareDto, ShareGetRequest, ShareInviteKeyDto,
-            ShareInviteKeySaveRequest, ShareInviteKeysGetRequest, ShareInvitesAddedDto,
-            ShareKeyDto, ShareKeyGetRequest, ShareKeySaveRequest, ShareRevokeInviteRequest,
-            ShareSummaryDto, SourceReadinessDto, StartMeetingRecordingRequest,
-            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
-            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
-            UpdateDictionaryEntryRequest, UpdateNoteRequest, UpdateNoteResponse,
+            MemorySettingsDto, MicrophonePermissionResponse, NoteDto, NoteProcessingStage,
+            OpenPrivacySettingsRequest, ProcessingStatus, ProfileDataSummaryDto, RecordingOrigin,
+            RecordingOriginMetadata, RecordingSessionDto, RecordingSource, RecordingSourceMode,
+            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
+            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
+            SessionFolderDto, SessionProfileDto, SessionRequest, SetSessionCompletedRequest,
+            ShareAddInvitesRequest, ShareCreateRequest, ShareCreatedDto, ShareDeleteRequest,
+            ShareDto, ShareGetRequest, ShareInviteKeyDto, ShareInviteKeySaveRequest,
+            ShareInviteKeysGetRequest, ShareInvitesAddedDto, ShareKeyDto, ShareKeyGetRequest,
+            ShareKeySaveRequest, ShareRevokeInviteRequest, ShareSummaryDto, SourceReadinessDto,
+            StartMeetingRecordingRequest, StartRecordingRequest, SubmitIssueReportRequest,
+            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            UpdateNoteResponse,
         },
     },
     meeting_detection::{MeetingStartRecordingOutcome, MeetingStartRequestState},
 };
 use chrono::Utc;
+use futures_util::FutureExt;
 use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use std::collections::HashSet;
 use std::fs;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, Mutex};
 use std::{
+    panic::AssertUnwindSafe,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -66,6 +70,69 @@ const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
 const ISSUE_REPORT_ATTACHMENT_LIMIT: usize = 20;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const RECORDING_FINALIZATION_WARNING_EVENT: &str = "clovy://recording-finalization-warning";
+#[cfg(not(test))]
+const PROCESSING_RECOVERY_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const PROCESSING_RECOVERY_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(10);
+const PROCESSING_RECOVERY_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+
+fn finished_source_audio_is_valid(
+    source: &crate::audio::capture::FinishedSource,
+    validation: &crate::domain::types::AudioValidationDto,
+) -> bool {
+    source_audio_passes_validation(source.source, validation)
+}
+
+fn finished_source_warnings(
+    source: &crate::audio::capture::FinishedSource,
+    validation: &crate::domain::types::AudioValidationDto,
+    valid: bool,
+) -> Vec<crate::domain::types::SourceWarningDto> {
+    let mut warnings =
+        source_warnings(source.capture_issue.as_ref(), source.dropped_samples, false);
+    if valid {
+        if let Some(failure) = source.failure.as_ref() {
+            warnings.push(crate::domain::types::SourceWarningDto {
+                source: source.source,
+                code: failure.code.clone(),
+                message: "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details."
+                    .to_string(),
+            });
+        }
+    } else {
+        let failure_message = source
+            .failure
+            .as_ref()
+            .map(|failure| failure.message.clone())
+            .unwrap_or_else(|| validation.warnings.join("; "));
+        warnings.push(crate::domain::types::SourceWarningDto {
+            source: source.source,
+            code: "source_validation_failed".to_string(),
+            message: format!(
+                "{} source did not pass validation: {}",
+                source.source.as_db(),
+                failure_message
+            ),
+        });
+    }
+    warnings
+}
+
+fn extend_unique_source_warnings(
+    warnings: &mut Vec<crate::domain::types::SourceWarningDto>,
+    additions: impl IntoIterator<Item = crate::domain::types::SourceWarningDto>,
+) {
+    for warning in additions {
+        if warnings
+            .iter()
+            .any(|existing| existing.source == warning.source && existing.code == warning.code)
+        {
+            continue;
+        }
+        warnings.push(warning);
+    }
+}
 const SQLITE_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 static MEMORY_SETTINGS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 // React StrictMode and renderer reloads may call `bootstrap_app` more than once
@@ -192,23 +259,30 @@ impl Drop for MeetingStartCompletionGuard<'_> {
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
     let profile = active_profile(&app);
+    let active_recording = current_status();
+    let active_recording_session_id = active_recording
+        .as_ref()
+        .map(|recording| recording.session_id.clone());
     TRANSCRIPTION_STARTUP_REPAIR
         .get_or_try_init(|| async {
             repos.release_interrupted_note_transcription_jobs().await?;
+            let mut interrupted = scan_recoverable_recordings(&repos.pool).await?;
+            if let Some(active_session_id) = active_recording_session_id.as_deref() {
+                interrupted.retain(|recovery| recovery.session_id != active_session_id);
+            }
+            for recovery in &interrupted {
+                repos
+                    .mark_recording_recoverable(&recovery.session_id, &recovery.note_id)
+                    .await?;
+            }
             Ok::<(), sqlx::Error>(())
         })
         .await?;
-    let active_recording = current_status();
-    let mut active_recoveries = scan_recoverable_recordings(&repos.pool)
+    let mut active_recoveries = scan_marked_recoverable_recordings(&repos.pool)
         .await
         .map_err(|error| AppError::new("recovery_scan_failed", error.to_string()))?;
     if let Some(active) = &active_recording {
         active_recoveries.retain(|recovery| recovery.session_id != active.session_id);
-    }
-    for recovery in &active_recoveries {
-        repos
-            .mark_recording_recoverable(&recovery.session_id, &recovery.note_id)
-            .await?;
     }
     let folders = repos
         .list_folders(&profile)
@@ -2046,14 +2120,45 @@ pub async fn finish_recording(
 ) -> Result<FinishRecordingResponse, AppError> {
     let timing = ProcessingTiming::from_done(Instant::now());
     let repos = repositories(&app).await?;
+    let progress = note_processing_progress_reporter(&app);
     let finalization_started = Instant::now();
-    let finished = finish_capture(&request.session_id)?;
+    let mut processing_registration = None;
+    let finished = match finish_capture_with_recovery_context(&request.session_id, |consumed| {
+        processing_registration =
+            processing_queue::enqueue(&consumed.note_id, &consumed.session_id);
+    }) {
+        Ok(finished) => finished,
+        Err(failure) => {
+            if let Some(consumed) = failure.consumed {
+                if let Some((ticket, _depth)) = processing_registration.take() {
+                    recover_and_release_processing_ticket(
+                        ticket,
+                        &repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                } else {
+                    recover_processing_run_or_supervise(
+                        &repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                }
+            }
+            return Err(*failure.error);
+        }
+    };
     let response = finish_recording_session_with_timing(
         &repos,
         finished,
         finalization_started,
         timing,
-        note_processing_progress_reporter(&app),
+        progress,
+        processing_registration,
     )
     .await?;
     if response.processing_started {
@@ -2069,19 +2174,58 @@ async fn finish_active_capture_before_start(
     app: &AppHandle,
     repos: &Repositories,
 ) -> Result<(), AppError> {
+    let progress = note_processing_progress_reporter(app);
     let finalization_started = Instant::now();
-    if let Some(finished) = finish_active_capture()? {
-        finish_recording_session_with_timing(
+    let mut processing_registration = None;
+    let finished = match finish_active_capture_with_recovery_context(|consumed| {
+        processing_registration =
+            processing_queue::enqueue(&consumed.note_id, &consumed.session_id);
+    }) {
+        Ok(finished) => finished,
+        Err(failure) => {
+            if let Some(consumed) = failure.consumed {
+                if let Some((ticket, _depth)) = processing_registration.take() {
+                    recover_and_release_processing_ticket(
+                        ticket,
+                        repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                } else {
+                    recover_processing_run_or_supervise(
+                        repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                }
+            }
+            return Err(*failure.error);
+        }
+    };
+    if let Some(finished) = finished {
+        let response = finish_recording_session_with_timing(
             repos,
             finished,
             finalization_started,
             ProcessingTiming::untracked(),
-            note_processing_progress_reporter(app),
+            progress,
+            processing_registration,
         )
         .await?;
+        if !response.warnings.is_empty() {
+            if let Err(error) = app.emit(RECORDING_FINALIZATION_WARNING_EVENT, &response.warnings) {
+                tracing::warn!(%error, "failed to emit recording finalization warning");
+            }
+        }
     }
     Ok(())
 }
+
+type ProcessingRegistration = (processing_queue::ProcessingTicket, i64);
 
 #[cfg(test)]
 async fn finish_recording_session(
@@ -2089,12 +2233,15 @@ async fn finish_recording_session(
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let processing_registration =
+        processing_queue::enqueue(&finished.note_id, &finished.session_id);
     finish_recording_session_with_timing(
         repos,
         finished,
         finalization_started,
         ProcessingTiming::untracked(),
         NoteProcessingProgressReporter::default(),
+        processing_registration,
     )
     .await
 }
@@ -2105,6 +2252,46 @@ async fn finish_recording_session_with_timing(
     finalization_started: Instant,
     timing: ProcessingTiming,
     progress: NoteProcessingProgressReporter,
+    processing_registration: Option<ProcessingRegistration>,
+) -> Result<FinishRecordingResponse, AppError> {
+    let note_id = finished.note_id.clone();
+    let recording_session_id = finished.session_id.clone();
+    let had_processing_registration = processing_registration.is_some();
+    let mut processing_registration = processing_registration;
+    let result = finish_recording_session_inner(
+        repos,
+        finished,
+        finalization_started,
+        timing,
+        progress.clone(),
+        &mut processing_registration,
+    )
+    .await;
+    if result.is_err() {
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                &note_id,
+                &recording_session_id,
+                &progress,
+            )
+            .await;
+        } else if !had_processing_registration {
+            recover_processing_run_or_supervise(repos, &note_id, &recording_session_id, &progress)
+                .await;
+        }
+    }
+    result
+}
+
+async fn finish_recording_session_inner(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+    timing: ProcessingTiming,
+    progress: NoteProcessingProgressReporter,
+    processing_registration: &mut Option<ProcessingRegistration>,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -2238,8 +2425,10 @@ async fn finish_recording_session_with_timing(
         let file_size = std::fs::metadata(&source.final_path)
             .map(|metadata| metadata.len() as i64)
             .unwrap_or_default();
-        let valid =
-            source.failure.is_none() && source_audio_passes_validation(source.source, &validation);
+        // Bytes on disk are authoritative. A helper failure remains a durable
+        // diagnostic, but a readable, duration-valid Source can still contain
+        // useful audio captured before or after the reported problem.
+        let valid = finished_source_audio_is_valid(source, &validation);
         let validation_taxonomy = validation_taxonomy_code(&validation, valid);
         let validation_checkpoint_details = serde_json::json!({
             "path": source.final_path.to_string_lossy(),
@@ -2311,22 +2500,10 @@ async fn finish_recording_session_with_timing(
                 ));
             }
         }
-        if !valid {
-            let failure_message = source
-                .failure
-                .as_ref()
-                .map(|failure| failure.message.clone())
-                .unwrap_or_else(|| validation.warnings.join("; "));
-            warnings.push(crate::domain::types::SourceWarningDto {
-                source: source.source,
-                code: "source_validation_failed".to_string(),
-                message: format!(
-                    "{} source did not pass validation: {}",
-                    source.source.as_db(),
-                    failure_message
-                ),
-            });
-        }
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(source, &validation, valid),
+        );
         source_validations.push(crate::domain::types::SourceValidationDto {
             source: source.source,
             file_exists: validation.file_exists,
@@ -2369,11 +2546,7 @@ async fn finish_recording_session_with_timing(
     repos
         .update_recording_session(
             &finished.session_id,
-            if validation.readable_audio && validation.non_zero_size {
-                "valid"
-            } else {
-                "invalid"
-            },
+            "processing_pending",
             finished.elapsed_ms,
             Some(primary_file_size),
             Some(validation.actual_duration_ms),
@@ -2403,14 +2576,20 @@ async fn finish_recording_session_with_timing(
 
     if valid_sources.is_empty() {
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 &finished.note_id,
+                &finished.session_id,
+                Some("validation"),
                 crate::domain::types::ProcessingStatus::Failed,
                 Some(validation.warnings.join("; ")),
             )
             .await?;
+        let note = repos.get_note(&finished.note_id).await?;
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            ticket.finish();
+        }
         return Ok(FinishRecordingResponse {
-            note: repos.get_note(&finished.note_id).await?,
+            note,
             recording: finished.recording,
             validation,
             validations: source_validations,
@@ -2419,69 +2598,174 @@ async fn finish_recording_session_with_timing(
         });
     }
 
-    // Capture is single-instance, but processing runs asynchronously — so the
-    // user may have already recorded (and stopped) another message on this note
-    // while a previous one is still in flight. Register this recording behind
-    // any in-flight job for the note; the spawned task waits its turn and reads
-    // the note's generated content *after* acquiring the lock, so incremental
-    // generation always builds on whatever the previous job wrote.
-    let (ticket, depth) = processing_queue::enqueue(&finished.note_id);
+    // An earlier run may have been abandoned before this recording registered
+    // with the in-memory queue. The durable recovery row is the cross-task and
+    // cross-restart ordering barrier in that case.
+    if repos
+        .has_older_recoverable_recording(&finished.note_id, &finished.session_id)
+        .await?
+    {
+        let recovered = recover_abandoned_processing_run(
+            repos,
+            &finished.note_id,
+            &finished.session_id,
+            &progress,
+        )
+        .await?;
+        let mut note = repos.get_note(&finished.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            if recovered {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+        }
+        return Ok(FinishRecordingResponse {
+            note,
+            recording: finished.recording,
+            validation,
+            validations: source_validations,
+            processing_started: false,
+            warnings,
+        });
+    }
+
+    // Capture is single-instance, but processing runs asynchronously. This
+    // registration was reserved atomically when Stop consumed the capture, so
+    // a replacement recording cannot overtake finalization. The spawned task
+    // waits its turn and reads the Note after every earlier recording session
+    // finishes, preserving incremental generation order.
+    let Some((ticket, depth)) = processing_registration.take() else {
+        let mut note = repos.get_note(&finished.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
+        return Ok(FinishRecordingResponse {
+            note,
+            recording: finished.recording,
+            validation,
+            validations: source_validations,
+            processing_started: true,
+            warnings,
+        });
+    };
     if depth <= 1 {
         // First in line: reflect "processing" immediately for snappy feedback.
-        repos
-            .set_note_status(
+        if let Err(error) = repos
+            .set_note_status_for_recording_session(
                 &finished.note_id,
+                &finished.session_id,
+                Some("transcribing"),
                 crate::domain::types::ProcessingStatus::Transcribing,
                 None,
             )
-            .await?;
+            .await
+        {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                &finished.note_id,
+                &finished.session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
     }
 
-    let mut note = repos.get_note(&finished.note_id).await?;
+    let mut note = match repos.get_note(&finished.note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                &finished.note_id,
+                &finished.session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    };
     note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
 
     let task_repos = repos.clone();
     let task_note_id = finished.note_id.clone();
     let task_session_id = finished.session_id.clone();
     let task_source_mode = finished.source_mode;
+    let mut task_sources = Some(valid_sources);
     tokio::spawn(async move {
-        let queue_lock = ticket.lock();
-        let _guard = queue_lock.lock().await;
-        #[cfg(test)]
-        note_transcription_benchmark::record_processing_dequeued(&task_session_id);
-        add_latency_checkpoint(
-            &task_repos,
-            &task_session_id,
-            "processing_dequeued",
-            timing.checkpoint_details(serde_json::json!({})),
-        )
-        .await;
-        // Now that earlier jobs on this note are done, read the latest note so
-        // generation has the freshest existing content as context.
-        let note = match task_repos.get_note(&task_note_id).await {
-            Ok(note) => note,
+        let run_completed = match AssertUnwindSafe(async {
+            if !ticket.wait_until_ready().await {
+                return false;
+            }
+            if !matches!(
+                task_repos
+                    .has_older_recoverable_recording(&task_note_id, &task_session_id)
+                    .await,
+                Ok(false)
+            ) {
+                return false;
+            }
+            #[cfg(test)]
+            note_transcription_benchmark::record_processing_dequeued(&task_session_id);
+            add_latency_checkpoint(
+                &task_repos,
+                &task_session_id,
+                "processing_dequeued",
+                timing.checkpoint_details(serde_json::json!({})),
+            )
+            .await;
+            // Now that earlier jobs on this note are done, read the latest
+            // Note so generation sees every preceding recording's content.
+            let Ok(note) = task_repos.get_note(&task_note_id).await else {
+                return false;
+            };
+            let Some(sources) = task_sources.take() else {
+                return false;
+            };
+            let title = note.title.clone();
+            let existing_generated_note = note.generated_content.clone();
+            let manual_notes = manual_notes_for_generation(&note);
+            process_saved_source_audio_with_progress(
+                &task_repos,
+                &task_note_id,
+                &task_session_id,
+                task_source_mode,
+                sources,
+                title,
+                existing_generated_note,
+                manual_notes,
+                timing,
+                progress.clone(),
+            )
+            .await
+            .is_ok()
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(completed) => completed,
             Err(_) => {
-                ticket.finish();
-                return;
+                tracing::error!(
+                    note_id = task_note_id,
+                    recording_session_id = task_session_id,
+                    "queued note processing panicked"
+                );
+                false
             }
         };
-        let title = note.title.clone();
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
-        let _ = process_saved_source_audio_with_progress(
-            &task_repos,
-            &task_note_id,
-            &task_session_id,
-            task_source_mode,
-            valid_sources,
-            title,
-            existing_generated_note,
-            manual_notes,
-            timing,
-            progress.clone(),
-        )
-        .await;
-        ticket.finish();
+        if run_completed {
+            ticket.finish();
+        } else {
+            recover_and_release_processing_ticket(
+                ticket,
+                &task_repos,
+                &task_note_id,
+                &task_session_id,
+                &progress,
+            )
+            .await;
+        }
     });
     Ok(FinishRecordingResponse {
         note,
@@ -2648,18 +2932,6 @@ pub async fn retry_processing(
         request.recording_session_id.as_deref(),
     )
     .await?;
-    let (ticket, depth) = processing_queue::enqueue(&request.note_id);
-    if depth <= 1 {
-        repos
-            .set_note_status(&request.note_id, ProcessingStatus::Transcribing, None)
-            .await?;
-    }
-
-    let mut note = repos.get_note(&request.note_id).await?;
-    note.queued_recordings = processing_queue::queued_behind(&request.note_id);
-
-    let task_repos = repos.clone();
-    let task_note_id = request.note_id.clone();
     let task_recording_session_id = sources
         .first()
         .map(
@@ -2667,54 +2939,357 @@ pub async fn retry_processing(
                 recording_session_id.clone()
             },
         )
-        .unwrap_or_default();
-    let task_source_mode = repos
-        .recording_session_source_mode(&task_recording_session_id)
-        .await?
-        .unwrap_or(RecordingSourceMode::MicrophoneOnly);
+        .ok_or_else(|| {
+            AppError::new(
+                "audio_artifact_missing",
+                "No saved audio is available for retry.",
+            )
+        })?;
+    let Some((ticket, depth)) =
+        enqueue_retry_processing(&repos, &request.note_id, &task_recording_session_id).await?
+    else {
+        let mut note = repos.get_note(&request.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&request.note_id);
+        return Ok(note);
+    };
     let progress = note_processing_progress_reporter(&app);
+    match repos
+        .has_older_recoverable_recording(&request.note_id, &task_recording_session_id)
+        .await
+    {
+        Ok(false) => {}
+        Ok(true) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            let mut note = repos.get_note(&request.note_id).await?;
+            note.queued_recordings = processing_queue::queued_behind(&request.note_id);
+            return Ok(note);
+        }
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    }
+    if depth <= 1 {
+        if let Err(error) = repos
+            .set_note_status_for_recording_session(
+                &request.note_id,
+                &task_recording_session_id,
+                Some("transcribing"),
+                ProcessingStatus::Transcribing,
+                None,
+            )
+            .await
+        {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    }
+
+    let mut note = match repos.get_note(&request.note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    };
+    note.queued_recordings = processing_queue::queued_behind(&request.note_id);
+
+    let task_repos = repos.clone();
+    let task_note_id = request.note_id.clone();
+    let task_source_mode = match repos
+        .recording_session_source_mode(&task_recording_session_id)
+        .await
+    {
+        Ok(source_mode) => source_mode.unwrap_or(RecordingSourceMode::MicrophoneOnly),
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    };
+    let mut task_sources = Some(
+        sources
+            .into_iter()
+            .map(|(id, source, path, _session_id, recorded_silence)| {
+                (id, source, path, recorded_silence)
+            })
+            .collect(),
+    );
     tokio::spawn(async move {
-        let queue_lock = ticket.lock();
-        let _guard = queue_lock.lock().await;
-        let timing = ProcessingTiming::untracked();
-        add_latency_checkpoint(
-            &task_repos,
-            &task_recording_session_id,
-            "processing_dequeued",
-            timing.checkpoint_details(serde_json::json!({})),
-        )
-        .await;
-        let note = match task_repos.get_note(&task_note_id).await {
-            Ok(note) => note,
+        let run_completed = match AssertUnwindSafe(async {
+            if !ticket.wait_until_ready().await {
+                return false;
+            }
+            if !matches!(
+                task_repos
+                    .has_older_recoverable_recording(&task_note_id, &task_recording_session_id,)
+                    .await,
+                Ok(false)
+            ) {
+                return false;
+            }
+            let timing = ProcessingTiming::untracked();
+            add_latency_checkpoint(
+                &task_repos,
+                &task_recording_session_id,
+                "processing_dequeued",
+                timing.checkpoint_details(serde_json::json!({})),
+            )
+            .await;
+            let Ok(note) = task_repos.get_note(&task_note_id).await else {
+                return false;
+            };
+            let Some(sources) = task_sources.take() else {
+                return false;
+            };
+            let title = note.title.clone();
+            let existing_generated_note = note.generated_content.clone();
+            let manual_notes = manual_notes_for_generation(&note);
+            process_saved_source_audio_with_progress(
+                &task_repos,
+                &task_note_id,
+                &task_recording_session_id,
+                task_source_mode,
+                sources,
+                title,
+                existing_generated_note,
+                manual_notes,
+                timing,
+                progress.clone(),
+            )
+            .await
+            .is_ok()
+        })
+        .catch_unwind()
+        .await
+        {
+            Ok(completed) => completed,
             Err(_) => {
-                ticket.finish();
-                return;
+                tracing::error!(
+                    note_id = task_note_id,
+                    recording_session_id = task_recording_session_id,
+                    "retried note processing panicked"
+                );
+                false
             }
         };
-        let title = note.title.clone();
-        let existing_generated_note = note.generated_content.clone();
-        let manual_notes = manual_notes_for_generation(&note);
-        let _ = process_saved_source_audio_with_progress(
-            &task_repos,
-            &task_note_id,
-            &task_recording_session_id,
-            task_source_mode,
-            sources
-                .into_iter()
-                .map(|(id, source, path, _session_id, recorded_silence)| {
-                    (id, source, path, recorded_silence)
-                })
-                .collect(),
-            title,
-            existing_generated_note,
-            manual_notes,
-            timing,
-            progress.clone(),
-        )
-        .await;
-        ticket.finish();
+        if run_completed {
+            ticket.finish();
+        } else {
+            recover_and_release_processing_ticket(
+                ticket,
+                &task_repos,
+                &task_note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+        }
     });
     Ok(note)
+}
+
+async fn enqueue_retry_processing(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+) -> Result<Option<(processing_queue::ProcessingTicket, i64)>, AppError> {
+    let Some(registration) = processing_queue::enqueue(note_id, recording_session_id) else {
+        return Ok(None);
+    };
+    match repos
+        .mark_recording_retry_processing_pending(note_id, recording_session_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            registration.0.finish();
+            return Ok(None);
+        }
+        Err(error) => {
+            registration.0.abandon();
+            return Err(error.into());
+        }
+    }
+    Ok(Some(registration))
+}
+
+async fn recover_abandoned_processing_run(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) -> Result<bool, AppError> {
+    match repos
+        .mark_recording_recoverable(recording_session_id, note_id)
+        .await
+    {
+        Ok(true) => {
+            let revision = repos
+                .get_note(note_id)
+                .await
+                .map(|note| note.updated_at)
+                .unwrap_or_else(|_| crate::db::repositories::timestamp());
+            let recovery = match scan_marked_recoverable_recordings(&repos.pool).await {
+                Ok(recoveries) => recoveries
+                    .into_iter()
+                    .find(|recovery| recovery.session_id == recording_session_id),
+                Err(error) => {
+                    tracing::warn!(
+                        note_id,
+                        recording_session_id,
+                        %error,
+                        "failed to hydrate recoverable recording event"
+                    );
+                    None
+                }
+            };
+            progress.emit_with_recovery(
+                note_id,
+                recording_session_id,
+                NoteProcessingStage::Done,
+                ProcessingStatus::Recoverable,
+                revision,
+                recovery,
+            );
+            Ok(true)
+        }
+        Ok(false) => Ok(false),
+        Err(error) => {
+            tracing::error!(
+                note_id,
+                recording_session_id,
+                %error,
+                "failed to recover abandoned note processing"
+            );
+            Err(error.into())
+        }
+    }
+}
+
+async fn recover_processing_run_or_supervise(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) {
+    let ticket =
+        processing_queue::enqueue(note_id, recording_session_id).map(|(ticket, _depth)| ticket);
+    match recover_abandoned_processing_run(repos, note_id, recording_session_id, progress).await {
+        Ok(true) => {
+            if let Some(ticket) = ticket.as_ref() {
+                ticket.abandon();
+            }
+        }
+        Ok(false) => {
+            if let Some(ticket) = ticket.as_ref() {
+                ticket.finish();
+            }
+        }
+        Err(_) => spawn_processing_recovery_supervisor(
+            ticket,
+            repos.clone(),
+            note_id.to_string(),
+            recording_session_id.to_string(),
+            progress.clone(),
+        ),
+    }
+}
+
+async fn recover_and_release_processing_ticket(
+    ticket: processing_queue::ProcessingTicket,
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) {
+    match recover_abandoned_processing_run(repos, note_id, recording_session_id, progress).await {
+        Ok(true) => ticket.abandon(),
+        Ok(false) => ticket.finish(),
+        Err(_) => spawn_processing_recovery_supervisor(
+            Some(ticket),
+            repos.clone(),
+            note_id.to_string(),
+            recording_session_id.to_string(),
+            progress.clone(),
+        ),
+    }
+}
+
+fn spawn_processing_recovery_supervisor(
+    ticket: Option<processing_queue::ProcessingTicket>,
+    repos: Repositories,
+    note_id: String,
+    recording_session_id: String,
+    progress: NoteProcessingProgressReporter,
+) {
+    tokio::spawn(async move {
+        let mut retry_delay = PROCESSING_RECOVERY_RETRY_INITIAL_DELAY;
+        loop {
+            tokio::time::sleep(retry_delay).await;
+            match recover_abandoned_processing_run(
+                &repos,
+                &note_id,
+                &recording_session_id,
+                &progress,
+            )
+            .await
+            {
+                Ok(true) => {
+                    if let Some(ticket) = ticket.as_ref() {
+                        ticket.abandon();
+                    }
+                    return;
+                }
+                Ok(false) => {
+                    if let Some(ticket) = ticket.as_ref() {
+                        ticket.finish();
+                    }
+                    return;
+                }
+                Err(_) => {
+                    retry_delay = retry_delay
+                        .checked_mul(2)
+                        .unwrap_or(PROCESSING_RECOVERY_RETRY_MAX_DELAY)
+                        .min(PROCESSING_RECOVERY_RETRY_MAX_DELAY);
+                }
+            }
+        }
+    });
 }
 
 async fn retry_audio_sources(
@@ -2760,7 +3335,10 @@ pub async fn recover_recording(
     let paths = app_paths(&app)?;
     let repos = repositories(&app).await?;
     let progress = note_processing_progress_reporter(&app);
-    let Some(info) = repos.recording_recovery_info(&request.session_id).await? else {
+    let Some(info) = repos
+        .recoverable_recording_info(&request.session_id)
+        .await?
+    else {
         return Err(AppError::new(
             "recording_not_found",
             format!(
@@ -2770,6 +3348,18 @@ pub async fn recover_recording(
         ));
     };
     if request.action == "discard" {
+        let Some(note) = repos
+            .mark_recording_discarded(&info.session_id, &info.note_id)
+            .await?
+        else {
+            return Err(AppError::new(
+                "recording_not_found",
+                format!(
+                    "Recoverable recording {} was not found.",
+                    request.session_id
+                ),
+            ));
+        };
         for artifact in repos
             .source_artifact_paths_for_session(&request.session_id)
             .await?
@@ -2788,17 +3378,137 @@ pub async fn recover_recording(
                 .remove_recording_file(path)
                 .map_err(|error| AppError::new("audio_delete_failed", error.to_string()));
         }
-        return Ok(repos
-            .mark_recording_discarded(&info.session_id, &info.note_id)
-            .await?);
+        return Ok(note);
     }
+    let Some(ticket) =
+        claim_recording_recovery(&repos, &info.note_id, &info.session_id, &progress).await?
+    else {
+        let mut note = repos.get_note(&info.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&info.note_id);
+        return Ok(note);
+    };
+
+    match prepare_recovered_recording(&repos, &paths, &info).await {
+        Ok(RecoveredRecordingPreparation::Ready {
+            source_mode,
+            sources,
+        }) => {
+            process_recovered_source_audio(
+                ticket,
+                &repos,
+                &info.note_id,
+                &info.session_id,
+                source_mode,
+                sources,
+                progress,
+            )
+            .await
+        }
+        Ok(RecoveredRecordingPreparation::Terminal(note)) => {
+            ticket.finish();
+            Ok(*note)
+        }
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                &repos,
+                &info.note_id,
+                &info.session_id,
+                &progress,
+            )
+            .await;
+            Err(error)
+        }
+    }
+}
+
+async fn claim_recording_recovery(
+    repos: &Repositories,
+    note_id: &str,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) -> Result<Option<processing_queue::ProcessingTicket>, AppError> {
+    let Some((ticket, _depth)) = processing_queue::enqueue(note_id, recording_session_id) else {
+        return Ok(None);
+    };
+    if !ticket.wait_until_ready().await {
+        ticket.abandon();
+        return Err(AppError::new(
+            "processing_predecessor_recoverable",
+            "An earlier saved recording must be recovered first.",
+        ));
+    }
+    match repos
+        .has_older_recoverable_recording(note_id, recording_session_id)
+        .await
+    {
+        Ok(false) => {}
+        Ok(true) => {
+            ticket.abandon();
+            return Err(AppError::new(
+                "processing_predecessor_recoverable",
+                "An earlier saved recording must be recovered first.",
+            ));
+        }
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                note_id,
+                recording_session_id,
+                progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    }
+    match repos
+        .mark_recovered_recording_processing_pending(recording_session_id)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            ticket.finish();
+            return Err(AppError::new(
+                "recording_not_found",
+                format!("Recoverable recording {recording_session_id} was not found."),
+            ));
+        }
+        Err(error) => {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                note_id,
+                recording_session_id,
+                progress,
+            )
+            .await;
+            return Err(error.into());
+        }
+    }
+    Ok(Some(ticket))
+}
+
+enum RecoveredRecordingPreparation {
+    Ready {
+        source_mode: RecordingSourceMode,
+        sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
+    },
+    Terminal(Box<NoteDto>),
+}
+
+async fn prepare_recovered_recording(
+    repos: &Repositories,
+    paths: &AppPaths,
+    info: &crate::db::repositories::RecordingRecoveryInfo,
+) -> Result<RecoveredRecordingPreparation, AppError> {
     let source_paths = repos
-        .source_artifact_paths_for_session(&request.session_id)
+        .source_artifact_paths_for_session(&info.session_id)
         .await?;
     if !source_paths.is_empty() {
         let mut valid_sources = Vec::new();
         for artifact in source_paths {
-            let Some(path) = recovery_source_path(&paths, &artifact) else {
+            let Some(path) = recovery_source_path(paths, &artifact) else {
                 continue;
             };
             let expected_duration_ms =
@@ -2844,28 +3554,24 @@ pub async fn recover_recording(
         }
         if valid_sources.is_empty() {
             repos
-                .set_note_status(
+                .set_note_status_for_recording_session(
                     &info.note_id,
+                    &info.session_id,
+                    Some("validation"),
                     crate::domain::types::ProcessingStatus::Failed,
                     Some("No recoverable source audio passed validation.".to_string()),
                 )
                 .await?;
-            return Ok(repos.get_note(&info.note_id).await?);
+            return Ok(RecoveredRecordingPreparation::Terminal(Box::new(
+                repos.get_note(&info.note_id).await?,
+            )));
         }
-        repos
-            .mark_recording_recovery_valid(&info.session_id)
-            .await?;
-        return process_recovered_source_audio(
-            &repos,
-            &info.note_id,
-            &info.session_id,
-            info.source_mode,
-            valid_sources,
-            progress,
-        )
-        .await;
+        return Ok(RecoveredRecordingPreparation::Ready {
+            source_mode: info.source_mode,
+            sources: valid_sources,
+        });
     }
-    let path = recovery_audio_path(&paths, &info).ok_or_else(|| {
+    let path = recovery_audio_path(paths, info).ok_or_else(|| {
         AppError::new(
             "audio_artifact_missing",
             "No recoverable audio bytes are available.",
@@ -2883,11 +3589,7 @@ pub async fn recover_recording(
     repos
         .update_recording_session(
             &info.session_id,
-            if validation.readable_audio && validation.non_zero_size {
-                "valid"
-            } else {
-                "invalid"
-            },
+            "processing_pending",
             expected_elapsed_ms,
             Some(file_size),
             Some(validation.actual_duration_ms),
@@ -2904,13 +3606,17 @@ pub async fn recover_recording(
         .await?;
     if !source_audio_passes_validation(RecordingSource::Microphone, &validation) {
         repos
-            .set_note_status(
+            .set_note_status_for_recording_session(
                 &info.note_id,
+                &info.session_id,
+                Some("validation"),
                 crate::domain::types::ProcessingStatus::Failed,
                 Some(validation.warnings.join("; ")),
             )
             .await?;
-        return Ok(repos.get_note(&info.note_id).await?);
+        return Ok(RecoveredRecordingPreparation::Terminal(Box::new(
+            repos.get_note(&info.note_id).await?,
+        )));
     }
     let artifact = repos
         .create_audio_artifact(
@@ -2922,23 +3628,19 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    process_recovered_source_audio(
-        &repos,
-        &info.note_id,
-        &info.session_id,
-        RecordingSourceMode::MicrophoneOnly,
-        vec![(
+    Ok(RecoveredRecordingPreparation::Ready {
+        source_mode: RecordingSourceMode::MicrophoneOnly,
+        sources: vec![(
             artifact.id,
             RecordingSource::Microphone.as_db().to_string(),
             path,
             validation.recorded_silence,
         )],
-        progress,
-    )
-    .await
+    })
 }
 
 async fn process_recovered_source_audio(
+    ticket: processing_queue::ProcessingTicket,
     repos: &Repositories,
     note_id: &str,
     session_id: &str,
@@ -2946,30 +3648,50 @@ async fn process_recovered_source_audio(
     sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
     progress: NoteProcessingProgressReporter,
 ) -> Result<NoteDto, AppError> {
-    let (ticket, _depth) = processing_queue::enqueue(note_id);
-    let queue_lock = ticket.lock();
-    let _guard = queue_lock.lock().await;
-    let note = match repos.get_note(note_id).await {
-        Ok(note) => note,
-        Err(error) => {
-            ticket.finish();
-            return Err(error.into());
+    let mut sources = Some(sources);
+    let result = match AssertUnwindSafe(async {
+        let note = repos.get_note(note_id).await?;
+        let sources = sources.take().ok_or_else(|| {
+            AppError::new(
+                "processing_state_invalid",
+                "Saved recording processing state is unavailable.",
+            )
+        })?;
+        process_saved_source_audio_with_progress(
+            repos,
+            note_id,
+            session_id,
+            source_mode,
+            sources,
+            note.title.clone(),
+            note.generated_content.clone(),
+            manual_notes_for_generation(&note),
+            ProcessingTiming::untracked(),
+            progress.clone(),
+        )
+        .await
+    })
+    .catch_unwind()
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            tracing::error!(
+                note_id,
+                recording_session_id = session_id,
+                "recovered note processing panicked"
+            );
+            Err(AppError::new(
+                "processing_panicked",
+                "Clovy couldn't finish processing this saved recording.",
+            ))
         }
     };
-    let result = process_saved_source_audio_with_progress(
-        repos,
-        note_id,
-        session_id,
-        source_mode,
-        sources,
-        note.title.clone(),
-        note.generated_content.clone(),
-        manual_notes_for_generation(&note),
-        ProcessingTiming::untracked(),
-        progress.clone(),
-    )
-    .await;
-    ticket.finish();
+    if result.is_ok() {
+        ticket.finish();
+    } else {
+        recover_and_release_processing_ticket(ticket, repos, note_id, session_id, &progress).await;
+    }
     result
 }
 
@@ -3228,12 +3950,32 @@ mod note_transcription_benchmark;
 
 #[cfg(test)]
 mod retry_audio_source_tests {
-    use super::retry_audio_sources;
+    use super::{
+        claim_recording_recovery, enqueue_retry_processing, finish_recording_session,
+        prepare_recovered_recording, recover_abandoned_processing_run,
+        recover_and_release_processing_ticket, recover_processing_run_or_supervise,
+        retry_audio_sources,
+    };
     use crate::{
         app_paths::AppPaths,
+        audio::{
+            capture::{FinishedRecording, FinishedSource},
+            recovery::scan_marked_recoverable_recordings,
+        },
         db::{migrations::run_migrations, repositories::Repositories},
-        domain::types::RecordingSourceMode,
+        domain::{
+            processing::NoteProcessingProgressReporter,
+            processing_queue,
+            types::{
+                AudioLevelDto, ProcessingStatus, RecordingSessionDto, RecordingSource,
+                RecordingSourceMode, RecordingState,
+            },
+        },
     };
+    use sqlx::{query::query, query_scalar::query_scalar};
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     #[tokio::test]
     async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
@@ -3304,6 +4046,991 @@ mod retry_audio_source_tests {
         assert_eq!(error.code, "audio_artifact_missing");
         assert!(error.message.contains("system"));
         assert!(error.message.contains("No transcript was changed"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_retry_does_not_downgrade_a_completed_recording() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "completed-retry";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/completed.partial.wav",
+                "/tmp/completed.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_finished(session_id, None)
+            .await
+            .expect("completed recording");
+        let (active_ticket, _) =
+            processing_queue::enqueue(&note.id, session_id).expect("active queue registration");
+
+        assert!(enqueue_retry_processing(&repos, &note.id, session_id)
+            .await
+            .expect("duplicate admission")
+            .is_none());
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status");
+        assert_eq!(status, "processed");
+
+        active_ticket.finish();
+        assert!(enqueue_retry_processing(&repos, &note.id, session_id)
+            .await
+            .expect("stale completed admission")
+            .is_none());
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after stale Retry");
+        assert_eq!(status, "processed");
+    }
+
+    #[tokio::test]
+    async fn processed_partial_warning_remains_retryable() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "partial-warning-retry";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophonePlusSystem,
+                "/tmp/partial-warning.partial.wav",
+                "/tmp/partial-warning.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .create_audio_artifact(
+                &note.id,
+                session_id,
+                "/tmp/partial-warning.wav",
+                5_000,
+                160_000,
+                "partial-warning-checksum",
+            )
+            .await
+            .expect("audio artifact");
+        repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some(session_id),
+                None,
+                None,
+                "Recovered microphone notes".to_string(),
+                Some("System audio could not be transcribed."),
+            )
+            .await
+            .expect("partial generated note");
+
+        let (ticket, _) = enqueue_retry_processing(&repos, &note.id, session_id)
+            .await
+            .expect("retry admission")
+            .expect("partial warning remains retryable");
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("retry status");
+        assert_eq!(status, "processing_pending");
+        ticket.finish();
+    }
+
+    #[tokio::test]
+    async fn failed_retry_admission_abandons_a_concurrently_registered_successor() {
+        let directory = tempfile::tempdir().expect("database directory");
+        let database_path = directory.path().join("retry-admission.sqlite3");
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(
+                sqlx_sqlite::SqliteConnectOptions::new()
+                    .filename(&database_path)
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        for session_id in ["failed-admission", "admission-successor"] {
+            repos
+                .create_recording_session(
+                    &note.id,
+                    session_id,
+                    RecordingSourceMode::MicrophoneOnly,
+                    &format!("/tmp/{session_id}.partial.wav"),
+                    &format!("/tmp/{session_id}.wav"),
+                    None,
+                )
+                .await
+                .expect("recording session");
+        }
+        repos
+            .mark_recording_processing_finished(
+                "failed-admission",
+                Some("Retry admission test failure"),
+            )
+            .await
+            .expect("retryable session status");
+        query(
+            "CREATE TRIGGER fail_retry_pending_write
+             BEFORE UPDATE OF status ON recording_sessions
+             WHEN NEW.id = 'failed-admission' AND NEW.status = 'processing_pending'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected retry admission failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        let mut blocker = repos.pool.acquire().await.expect("write blocker");
+        query("BEGIN IMMEDIATE")
+            .execute(&mut *blocker)
+            .await
+            .expect("block retry write");
+        let task_repos = repos.clone();
+        let task_note_id = note.id.clone();
+        let admission = tokio::spawn(async move {
+            enqueue_retry_processing(&task_repos, &task_note_id, "failed-admission").await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !processing_queue::is_registered(&note.id, "failed-admission") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("retry registration");
+        let (successor, depth) = processing_queue::enqueue(&note.id, "admission-successor")
+            .expect("successor registration");
+        assert_eq!(depth, 2);
+
+        query("COMMIT")
+            .execute(&mut *blocker)
+            .await
+            .expect("release retry write");
+        let admission_result = admission.await.expect("admission task");
+        assert!(
+            admission_result.is_err(),
+            "injected pending write must fail"
+        );
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), successor.wait_until_ready())
+                .await
+                .expect("successor readiness"),
+            "failed Retry admission looked like successful completion"
+        );
+        successor.abandon();
+    }
+
+    #[tokio::test]
+    async fn abandoned_live_queue_run_becomes_visible_to_renderer_reload() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let final_path = directory.path().join("abandoned.wav");
+        std::fs::write(&final_path, b"abandoned saved audio").expect("saved audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "abandoned-processing";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &directory
+                    .path()
+                    .join("abandoned.partial.wav")
+                    .to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_pending(session_id)
+            .await
+            .expect("pending processing");
+
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emitted_for_sink = Arc::clone(&emitted);
+        let reporter = NoteProcessingProgressReporter::new(move |progress| {
+            emitted_for_sink
+                .lock()
+                .expect("progress sink lock")
+                .push(progress);
+        });
+        assert!(
+            recover_abandoned_processing_run(&repos, &note.id, session_id, &reporter,)
+                .await
+                .expect("recovery transition")
+        );
+
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+        let recoveries = scan_marked_recoverable_recordings(&repos.pool)
+            .await
+            .expect("renderer reload scan");
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].session_id, session_id);
+        let progress = emitted.lock().expect("progress events");
+        assert_eq!(progress.len(), 1);
+        assert_eq!(
+            progress[0]
+                .recovery
+                .as_ref()
+                .map(|recovery| recovery.session_id.as_str()),
+            Some(session_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn late_successor_uses_durable_barrier_after_predecessor_abandons() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        for session_id in ["durable-predecessor", "late-successor"] {
+            repos
+                .create_recording_session(
+                    &note.id,
+                    session_id,
+                    RecordingSourceMode::MicrophoneOnly,
+                    &format!("/tmp/{session_id}.partial.wav"),
+                    &format!("/tmp/{session_id}.wav"),
+                    None,
+                )
+                .await
+                .expect("recording session");
+            repos
+                .mark_recording_processing_pending(session_id)
+                .await
+                .expect("pending recording");
+        }
+        assert!(repos
+            .mark_recording_recoverable("durable-predecessor", &note.id)
+            .await
+            .expect("recoverable predecessor"));
+
+        let (forgotten_predecessor, _) = processing_queue::enqueue(&note.id, "durable-predecessor")
+            .expect("predecessor registration");
+        forgotten_predecessor.abandon();
+        let (successor, depth) =
+            processing_queue::enqueue(&note.id, "late-successor").expect("successor registration");
+        assert_eq!(depth, 1, "the in-memory predecessor was already released");
+        assert!(successor.wait_until_ready().await);
+        assert!(repos
+            .has_older_recoverable_recording(&note.id, "late-successor")
+            .await
+            .expect("durable ordering check"));
+
+        recover_and_release_processing_ticket(
+            successor,
+            &repos,
+            &note.id,
+            "late-successor",
+            &NoteProcessingProgressReporter::default(),
+        )
+        .await;
+        let successor_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = 'late-successor'")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("successor status");
+        assert_eq!(successor_status, "recoverable");
+    }
+
+    #[tokio::test]
+    async fn recovery_write_failure_keeps_successors_blocked_until_retry_succeeds() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        for session_id in ["recovery-write-failure", "blocked-successor"] {
+            repos
+                .create_recording_session(
+                    &note.id,
+                    session_id,
+                    RecordingSourceMode::MicrophoneOnly,
+                    &format!("/tmp/{session_id}.partial.wav"),
+                    &format!("/tmp/{session_id}.wav"),
+                    None,
+                )
+                .await
+                .expect("recording session");
+            repos
+                .mark_recording_processing_pending(session_id)
+                .await
+                .expect("pending recording");
+        }
+        query(
+            "CREATE TRIGGER fail_recovery_transition
+             BEFORE UPDATE OF status ON recording_sessions
+             WHEN NEW.id = 'recovery-write-failure' AND NEW.status = 'recoverable'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected recovery write failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        let (predecessor, _) = processing_queue::enqueue(&note.id, "recovery-write-failure")
+            .expect("predecessor registration");
+        recover_and_release_processing_ticket(
+            predecessor,
+            &repos,
+            &note.id,
+            "recovery-write-failure",
+            &NoteProcessingProgressReporter::default(),
+        )
+        .await;
+        let (successor, depth) = processing_queue::enqueue(&note.id, "blocked-successor")
+            .expect("successor registration");
+        assert_eq!(depth, 2, "failed recovery released its queue ticket");
+        let mut readiness = Box::pin(successor.wait_until_ready());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut readiness)
+                .await
+                .is_err(),
+            "successor bypassed an undurable recovery transition"
+        );
+
+        query("DROP TRIGGER fail_recovery_transition")
+            .execute(&repos.pool)
+            .await
+            .expect("remove failure trigger");
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), &mut readiness)
+                .await
+                .expect("recovery supervisor did not settle the queue"),
+            "successor treated a recovered predecessor as successfully finished"
+        );
+        drop(readiness);
+        successor.abandon();
+        let predecessor_status: String = query_scalar(
+            "SELECT status FROM recording_sessions WHERE id = 'recovery-write-failure'",
+        )
+        .fetch_one(&repos.pool)
+        .await
+        .expect("predecessor status");
+        assert_eq!(predecessor_status, "recoverable");
+    }
+
+    #[tokio::test]
+    async fn finalization_recovery_installs_barrier_before_retrying_failed_write() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        for session_id in ["finalization-gap", "gap-successor"] {
+            repos
+                .create_recording_session(
+                    &note.id,
+                    session_id,
+                    RecordingSourceMode::MicrophoneOnly,
+                    &format!("/tmp/{session_id}.partial.wav"),
+                    &format!("/tmp/{session_id}.wav"),
+                    None,
+                )
+                .await
+                .expect("recording session");
+            repos
+                .mark_recording_processing_finished(session_id, None)
+                .await
+                .expect("seed retryable status");
+            repos
+                .mark_recording_processing_pending(session_id)
+                .await
+                .expect("pending recording");
+        }
+        query(
+            "CREATE TRIGGER fail_finalization_recovery
+             BEFORE UPDATE OF status ON recording_sessions
+             WHEN NEW.id = 'finalization-gap' AND NEW.status = 'recoverable'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected finalization recovery failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        recover_processing_run_or_supervise(
+            &repos,
+            &note.id,
+            "finalization-gap",
+            &NoteProcessingProgressReporter::default(),
+        )
+        .await;
+        let (successor, depth) =
+            processing_queue::enqueue(&note.id, "gap-successor").expect("successor registration");
+        assert_eq!(depth, 2, "finalization recovery left an admission gap");
+        let mut readiness = Box::pin(successor.wait_until_ready());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut readiness)
+                .await
+                .is_err(),
+            "successor bypassed the undurable finalization recovery"
+        );
+
+        query("DROP TRIGGER fail_finalization_recovery")
+            .execute(&repos.pool)
+            .await
+            .expect("remove failure trigger");
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), &mut readiness)
+                .await
+                .expect("recovery supervisor did not release the barrier")
+        );
+        drop(readiness);
+        successor.abandon();
+    }
+
+    #[tokio::test]
+    async fn stale_recovery_claim_cannot_revive_processed_recording_session_or_artifact() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "stale-recovery-claim";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/stale.partial.wav",
+                "/tmp/stale.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        let artifact = repos
+            .create_audio_artifact(
+                &note.id,
+                session_id,
+                "/tmp/stale.wav",
+                5_000,
+                160_000,
+                "stale-checksum",
+            )
+            .await
+            .expect("audio artifact");
+        assert!(repos
+            .mark_recording_recoverable(session_id, &note.id)
+            .await
+            .expect("recoverable recording"));
+        repos
+            .recoverable_recording_info(session_id)
+            .await
+            .expect("stale recovery lookup")
+            .expect("recoverable session");
+        repos
+            .mark_recording_processing_finished(session_id, None)
+            .await
+            .expect("competing completion");
+
+        let error = match claim_recording_recovery(
+            &repos,
+            &note.id,
+            session_id,
+            &NoteProcessingProgressReporter::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("stale recovery unexpectedly won ownership"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "recording_not_found");
+        let session_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("session status");
+        assert_eq!(session_status, "processed");
+        let artifact_status: String =
+            query_scalar("SELECT status FROM audio_artifacts WHERE id = ?")
+                .bind(&artifact.id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("artifact status");
+        assert_eq!(artifact_status, "valid");
+    }
+
+    #[tokio::test]
+    async fn recovered_source_validation_failure_clears_durable_ordering_barrier() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "recovered-validation-failure";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/validation.partial.wav",
+                "/tmp/validation.wav",
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .mark_recording_processing_finished(session_id, None)
+            .await
+            .expect("seed session status");
+        repos
+            .mark_recording_processing_pending(session_id)
+            .await
+            .expect("claimed recovery");
+
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                session_id,
+                Some("validation"),
+                ProcessingStatus::Failed,
+                Some("No recoverable source audio passed validation.".to_string()),
+            )
+            .await
+            .expect("terminal validation failure");
+
+        let session_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_one(&repos.pool)
+                .await
+                .expect("session status");
+        assert_eq!(session_status, "invalid");
+        repos
+            .create_recording_session(
+                &note.id,
+                "after-validation-failure",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/after-validation.partial.wav",
+                "/tmp/after-validation.wav",
+                None,
+            )
+            .await
+            .expect("later recording session");
+        assert!(!repos
+            .has_older_recoverable_recording(&note.id, "after-validation-failure")
+            .await
+            .expect("ordering barrier query"));
+    }
+
+    #[tokio::test]
+    async fn legacy_validation_failure_remains_recoverable_when_terminal_write_fails() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let paths = AppPaths::from_data_dir(directory.path().join("data")).expect("app paths");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "legacy-validation-transaction-failure";
+        let session_dir = paths
+            .recording_session_dir(&note.id, session_id)
+            .expect("session path");
+        std::fs::create_dir_all(&session_dir).expect("session directory");
+        let partial_path = session_dir.join("microphone.partial.wav");
+        let final_path = session_dir.join("microphone.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&final_path, spec).expect("WAV writer");
+        for _ in 0..16_000 {
+            writer.write_sample(1_000_i16).expect("WAV sample");
+        }
+        writer.finalize().expect("finalize WAV");
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .update_recording_session(
+                session_id,
+                "recording",
+                10_000,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("recording duration");
+        assert!(repos
+            .mark_recording_recoverable(session_id, &note.id)
+            .await
+            .expect("recoverable recording"));
+        let info = repos
+            .recoverable_recording_info(session_id)
+            .await
+            .expect("recovery lookup")
+            .expect("recovery info");
+        let progress = NoteProcessingProgressReporter::default();
+        let ticket = claim_recording_recovery(&repos, &note.id, session_id, &progress)
+            .await
+            .expect("recovery claim")
+            .expect("recovery ticket");
+        query(
+            "CREATE TRIGGER reject_recovered_terminal_note_update
+             BEFORE UPDATE OF processing_status ON notes
+             WHEN NEW.id = OLD.id AND NEW.processing_status = 'failed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected recovered terminal note failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        assert!(
+            prepare_recovered_recording(&repos, &paths, &info)
+                .await
+                .is_err(),
+            "terminal recovery transaction should fail"
+        );
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after terminal write failure");
+        assert_eq!(status, "processing_pending");
+
+        recover_and_release_processing_ticket(ticket, &repos, &note.id, session_id, &progress)
+            .await;
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after recovery");
+        assert_eq!(status, "recoverable");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finalization_reserves_processing_order_before_validation_io() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("ordered-finalization.partial.wav");
+        let final_path = directory.path().join("ordered-finalization.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let first_session_id = "ordered-finalization-first";
+        repos
+            .create_recording_session(
+                &note.id,
+                first_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("first recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                first_session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("first source artifact");
+        let held_connection = repos.pool.acquire().await.expect("held connection");
+        let task_repos = repos.clone();
+        let task_note_id = note.id.clone();
+        let first_final_path = final_path.clone();
+        let first_task = tokio::spawn(async move {
+            finish_recording_session(
+                &task_repos,
+                finished_microphone_recording(&task_note_id, first_session_id, first_final_path),
+                Instant::now(),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !processing_queue::is_registered(&note.id, first_session_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first finalization never reserved its processing position");
+        let (later_ticket, depth) =
+            processing_queue::enqueue(&note.id, "ordered-finalization-later")
+                .expect("later recording registration");
+        assert_eq!(depth, 2, "later recording overtook finalization");
+        let mut later_readiness = Box::pin(later_ticket.wait_until_ready());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut later_readiness)
+                .await
+                .is_err(),
+            "later recording started while the first was still validating"
+        );
+
+        drop(held_connection);
+        let first_response = tokio::time::timeout(Duration::from_secs(1), first_task)
+            .await
+            .expect("first finalization remained blocked")
+            .expect("first finalization task panicked")
+            .expect("first finalization failed");
+        assert!(!first_response.processing_started);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut later_readiness)
+                .await
+                .expect("later recording remained blocked")
+        );
+        drop(later_readiness);
+        later_ticket.finish();
+    }
+
+    #[tokio::test]
+    async fn finalization_error_promotes_consumed_capture_to_recovery() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("failed-finalization.partial.wav");
+        let final_path = directory.path().join("failed-finalization.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "failed-finalization";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("source artifact");
+        query(
+            "CREATE TRIGGER fail_finalization_session_update
+             BEFORE UPDATE OF status ON recording_sessions
+             WHEN NEW.id = 'failed-finalization'
+              AND NEW.status IN ('invalid', 'processing_pending')
+             BEGIN
+               SELECT RAISE(FAIL, 'injected finalization persistence failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+        let finished = finished_microphone_recording(&note.id, session_id, final_path);
+
+        finish_recording_session(&repos, finished, Instant::now())
+            .await
+            .expect_err("injected finalization persistence failure");
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status");
+        assert_eq!(status, "recoverable");
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+        let recoveries = scan_marked_recoverable_recordings(&repos.pool)
+            .await
+            .expect("recovery scan");
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn fresh_validation_failure_remains_recoverable_when_terminal_write_fails() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("fresh-validation.partial.wav");
+        let final_path = directory.path().join("fresh-validation.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "fresh-validation-transaction-failure";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("source artifact");
+        query(
+            "CREATE TRIGGER reject_fresh_terminal_note_update
+             BEFORE UPDATE OF processing_status ON notes
+             WHEN NEW.id = OLD.id AND NEW.processing_status = 'failed'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected fresh terminal note failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+
+        finish_recording_session(
+            &repos,
+            finished_microphone_recording(&note.id, session_id, final_path),
+            Instant::now(),
+        )
+        .await
+        .expect_err("terminal finalization transaction should fail");
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status after terminal write failure");
+        assert_eq!(status, "recoverable");
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+    }
+
+    fn finished_microphone_recording(
+        note_id: &str,
+        session_id: &str,
+        final_path: PathBuf,
+    ) -> FinishedRecording {
+        FinishedRecording {
+            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            final_path: final_path.clone(),
+            sources: vec![FinishedSource {
+                source: RecordingSource::Microphone,
+                final_path,
+                elapsed_ms: 5_000,
+                dropped_samples: 0,
+                capture_issue: None,
+                failure: None,
+            }],
+            elapsed_ms: 5_000,
+            recording: RecordingSessionDto {
+                id: session_id.to_string(),
+                note_id: note_id.to_string(),
+                source_mode: RecordingSourceMode::MicrophoneOnly,
+                state: RecordingState::Validating,
+                started_at: crate::db::repositories::timestamp(),
+                elapsed_ms: 5_000,
+                device_label: None,
+                level: AudioLevelDto::default(),
+                live_preview_enabled: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            },
+        }
     }
 }
 
@@ -3379,11 +5106,13 @@ mod tests {
     use super::{
         apply_system_audio_permission_probe_result, assemble_recording_source_readiness,
         capture_start_timeout_error, copy_directory, copy_directory_contents,
-        create_memory_with_settings, delete_profile_records_with_share_revoker, is_share_not_found,
-        load_memory_settings, persist_memory_settings, recovery_validation_expected_duration_ms,
-        replace_directory_from_staging, should_probe_system_audio_permission,
-        start_capture_with_timeout_and_cleanup, update_memory_with_settings,
-        validated_folder_instructions, CaptureStartupGuard, MEMORY_SETTINGS_LOCK,
+        create_memory_with_settings, delete_profile_records_with_share_revoker,
+        extend_unique_source_warnings, finished_source_audio_is_valid, finished_source_warnings,
+        is_share_not_found, load_memory_settings, persist_memory_settings,
+        recovery_validation_expected_duration_ms, replace_directory_from_staging,
+        should_probe_system_audio_permission, start_capture_with_timeout_and_cleanup,
+        update_memory_with_settings, validated_folder_instructions, CaptureStartupGuard,
+        MEMORY_SETTINGS_LOCK,
     };
 
     #[test]
@@ -3407,11 +5136,17 @@ mod tests {
     }
     use crate::{
         app_paths::AppPaths,
-        audio::capture::{is_capture_active, CaptureStartState, StartedRecording, StartedSource},
+        audio::{
+            capture::{
+                is_capture_active, CaptureStartState, FinishedSource, MicrophoneStreamIssue,
+                StartedRecording, StartedSource,
+            },
+            system_audio::SystemAudioFailure,
+        },
         db::repositories::{Repositories, ShareKeyRecord},
         domain::types::{
-            AppError, AudioLevelDto, MemorySettingsDto, RecordingSource, RecordingSourceMode,
-            RecordingState, RecordingStatusDto, SourceReadinessDto,
+            AppError, AudioLevelDto, AudioValidationDto, MemorySettingsDto, RecordingSource,
+            RecordingSourceMode, RecordingState, RecordingStatusDto, SourceReadinessDto,
         },
     };
     use std::{
@@ -3422,6 +5157,95 @@ mod tests {
         },
         time::Duration,
     };
+
+    #[test]
+    fn valid_saved_system_audio_survives_a_helper_failure_diagnostic() {
+        let source = FinishedSource {
+            source: RecordingSource::System,
+            final_path: PathBuf::from("system.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 0,
+            capture_issue: None,
+            failure: Some(SystemAudioFailure {
+                code: "system_audio_capture_failed".to_string(),
+                message: "late helper failure".to_string(),
+            }),
+        };
+        let validation = AudioValidationDto {
+            file_exists: true,
+            non_zero_size: true,
+            readable_audio: true,
+            expected_duration_ms: 2_000,
+            actual_duration_ms: 2_000,
+            duration_within_tolerance: true,
+            non_silent_signal: true,
+            recorded_silence: false,
+            peak_amplitude: 0.5,
+            rms_amplitude: 0.2,
+            warnings: Vec::new(),
+        };
+
+        assert!(finished_source_audio_is_valid(&source, &validation));
+    }
+
+    #[test]
+    fn finalization_keeps_simultaneous_microphone_overflow_and_system_warnings() {
+        let validation = AudioValidationDto {
+            file_exists: true,
+            non_zero_size: true,
+            readable_audio: true,
+            expected_duration_ms: 2_000,
+            actual_duration_ms: 2_000,
+            duration_within_tolerance: true,
+            non_silent_signal: true,
+            recorded_silence: false,
+            peak_amplitude: 0.5,
+            rms_amplitude: 0.2,
+            warnings: Vec::new(),
+        };
+        let microphone = FinishedSource {
+            source: RecordingSource::Microphone,
+            final_path: PathBuf::from("microphone.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 37,
+            capture_issue: Some(MicrophoneStreamIssue {
+                code: "microphone_stream_error".to_string(),
+                message: "Microphone input stopped unexpectedly".to_string(),
+                elapsed_ms: 2_000,
+            }),
+            failure: None,
+        };
+        let system = FinishedSource {
+            source: RecordingSource::System,
+            final_path: PathBuf::from("system.wav"),
+            elapsed_ms: 2_000,
+            dropped_samples: 0,
+            capture_issue: None,
+            failure: Some(SystemAudioFailure {
+                code: "system_audio_capture_failed".to_string(),
+                message: "late helper failure".to_string(),
+            }),
+        };
+        let mut warnings = Vec::new();
+
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&microphone, &validation, true),
+        );
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&system, &validation, true),
+        );
+        extend_unique_source_warnings(
+            &mut warnings,
+            finished_source_warnings(&system, &validation, true),
+        );
+
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings[0].code, "microphone_stream_error");
+        assert_eq!(warnings[1].code, "microphone_buffer_overflow");
+        assert_eq!(warnings[2].code, "system_audio_capture_failed");
+    }
 
     #[cfg(unix)]
     #[test]

@@ -145,6 +145,10 @@ pub struct NoteDto {
     pub audio_sources: Vec<AudioArtifactDto>,
     pub active_tab: Option<String>,
     pub last_error: Option<String>,
+    /// Recording-session-scoped partial note-transcription warnings that
+    /// remain retryable after the Note itself reaches Ready.
+    #[serde(default)]
+    pub transcription_warnings: Vec<NoteTranscriptionWarningDto>,
     /// Recordings queued behind the one currently processing for this note
     /// (0 when nothing extra is waiting). Populated from the in-memory
     /// processing queue at the command layer, not persisted.
@@ -153,6 +157,13 @@ pub struct NoteDto {
     /// Exact recording session selected by the durable retry policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_recording_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTranscriptionWarningDto {
+    pub recording_session_id: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -172,6 +183,9 @@ pub struct NoteProcessingProgressDto {
     pub processing_status: ProcessingStatus,
     /// The note row's `updated_at` value after this transition.
     pub revision: String,
+    /// Present when this transition made saved audio immediately recoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoverableRecordingDto>,
 }
 
 /// The note-row fields returned by the single-statement `update_note` path.
@@ -858,7 +872,7 @@ impl Default for AudioLevelDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverableRecordingDto {
     pub session_id: String,
@@ -872,7 +886,7 @@ pub struct RecoverableRecordingDto {
     pub sources: Vec<RecoverableSourceDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverableSourceDto {
     pub source: RecordingSource,

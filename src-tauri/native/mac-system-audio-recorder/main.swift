@@ -9,6 +9,8 @@ import IOKit.pwr_mgt
 private let zeroSignalRMSFloor: Float = 1.0e-7
 private let startupZeroSignalRecoverySeconds: TimeInterval = 10
 private let activeZeroSignalRecoverySeconds: TimeInterval = 30
+private let bufferFailureThreshold = 3
+private let postRecoveryZeroSignalWarningMessage = "System audio capture is still returning silence after one restart. Microphone recording can continue."
 
 extension String: @retroactive Error {}
 
@@ -91,6 +93,7 @@ final class SystemAudioRecorder {
     private let pauseLock = NSLock()
     private let healthLock = NSLock()
     private let rebuildLock = NSLock()
+    private let statusLock = NSLock()
 
     private var processTapID = AudioObjectID.unknown
     private var aggregateDeviceID = AudioObjectID.unknown
@@ -113,10 +116,16 @@ final class SystemAudioRecorder {
     private var observedSignalSinceGraphStart = false
     private var attemptedGraphRecovery = false
     private var reportedTerminalInputStall = false
+    private var reportedZeroSignalWarning = false
+    private var consecutiveBufferFailures = 0
     private var maxLevel: Double = 0
     private var stallTimer: DispatchSourceTimer?
     private var powerAssertionID: IOPMAssertionID = 0
     private var rebuildScheduled = false
+    private var terminalErrorMessage: String?
+    private var activeWarningMessage: String?
+    private var bufferWarningMessage: String?
+    private var finalizationWarningMessage: String?
 
     init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
         self.outputURL = outputURL
@@ -368,7 +377,11 @@ final class SystemAudioRecorder {
         let frameLength = Int(buffer.frameLength)
         let channelCount = Int(buffer.format.channelCount)
         guard frameLength > 0, channelCount > 0, let channels = buffer.floatChannelData else {
-            emit(["event": "level", "level": "0"])
+            var status = ["event": "level", "level": "0"]
+            if let warning = currentLevelWarning() {
+                status["message"] = warning
+            }
+            emit(status)
             return
         }
         var sum: Float = 0
@@ -387,7 +400,11 @@ final class SystemAudioRecorder {
         }
         let level = min(1, Double(rms) * 4)
         maxLevel = max(maxLevel, level)
-        emit(["event": "level", "level": String(level), "maxLevel": String(maxLevel)])
+        var status = ["event": "level", "level": String(level), "maxLevel": String(maxLevel)]
+        if let warning = currentLevelWarning() {
+            status["message"] = warning
+        }
+        emit(status)
     }
 
     private func markInputReceived() {
@@ -403,6 +420,9 @@ final class SystemAudioRecorder {
         observedSignalSinceGraphStart = false
         attemptedGraphRecovery = false
         reportedTerminalInputStall = false
+        reportedZeroSignalWarning = false
+        consecutiveBufferFailures = 0
+        bufferWarningMessage = nil
         healthLock.unlock()
     }
 
@@ -418,7 +438,15 @@ final class SystemAudioRecorder {
         healthLock.lock()
         lastSignalAt = Date()
         observedSignalSinceGraphStart = true
+        reportedZeroSignalWarning = false
         healthLock.unlock()
+    }
+
+    private func currentLevelWarning() -> String? {
+        healthLock.lock()
+        let warning = bufferWarningMessage ?? (reportedZeroSignalWarning ? postRecoveryZeroSignalWarningMessage : nil)
+        healthLock.unlock()
+        return warning
     }
 
     /// CoreAudio process taps can keep invoking the IO callback while returning
@@ -443,22 +471,23 @@ final class SystemAudioRecorder {
     }
 
     /// After the one permitted graph rebuild, continued zero-filled buffers
-    /// are terminal for the system source even though CoreAudio is still
-    /// invoking the callback. Report that state instead of silently padding a
-    /// meeting-length WAV with zeroes.
-    private func terminalZeroSignalMessage() -> String? {
+    /// still deserve a warning, but they are not conclusive capture failure:
+    /// real system silence produces the same samples. A later nonzero buffer
+    /// clears the transient status, while saved-audio validation handles a
+    /// Source that remains silent through finalization.
+    private func postRecoveryZeroSignalWarning() -> String? {
         healthLock.lock()
         defer { healthLock.unlock() }
-        guard attemptedGraphRecovery, !reportedTerminalInputStall else { return nil }
+        guard attemptedGraphRecovery, !reportedZeroSignalWarning else { return nil }
         let now = Date()
-        let terminal = if !observedSignalSinceGraphStart {
+        let warningDue = if !observedSignalSinceGraphStart {
             now.timeIntervalSince(graphStartedAt) >= startupZeroSignalRecoverySeconds
         } else {
             now.timeIntervalSince(lastSignalAt) >= activeZeroSignalRecoverySeconds
         }
-        guard terminal else { return nil }
-        reportedTerminalInputStall = true
-        return "System audio capture is still returning silence after one restart. Microphone recording can continue."
+        guard warningDue else { return nil }
+        reportedZeroSignalWarning = true
+        return postRecoveryZeroSignalWarningMessage
     }
 
     private func secondsSinceLastInput() -> TimeInterval {
@@ -482,6 +511,30 @@ final class SystemAudioRecorder {
         guard !reportedTerminalInputStall else { return false }
         reportedTerminalInputStall = true
         return true
+    }
+
+    private func clearBufferFailures() {
+        healthLock.lock()
+        consecutiveBufferFailures = 0
+        healthLock.unlock()
+    }
+
+    private func reportBufferFailure(_ error: Error) {
+        healthLock.lock()
+        consecutiveBufferFailures += 1
+        let failureCount = consecutiveBufferFailures
+        let message = "System audio buffer processing failed \(failureCount)/\(bufferFailureThreshold): \(describeError(error))"
+        // Even an isolated conversion or write failure can leave a gap in the
+        // saved Source. Keep it visible through Stop; a later successful write
+        // resets only the consecutive-failure counter, not this diagnostic.
+        bufferWarningMessage = message
+        healthLock.unlock()
+
+        log(message)
+        emit([
+            "event": failureCount >= bufferFailureThreshold ? "error" : "stalled",
+            "message": message,
+        ])
     }
 
     private func startStallWatchdog() {
@@ -512,9 +565,9 @@ final class SystemAudioRecorder {
                 self.log(message)
                 self.emit(["event": "stalled", "message": message])
                 self.rebuildAudioGraph(reason: message)
-            } else if let message = self.terminalZeroSignalMessage() {
+            } else if let message = self.postRecoveryZeroSignalWarning() {
                 self.log(message)
-                self.emit(["event": "error", "message": message])
+                self.emit(["event": "stalled", "message": message])
             }
         }
         stallTimer = timer
@@ -558,12 +611,49 @@ final class SystemAudioRecorder {
         } catch {
             let message = "Failed to write trailing system-audio silence: \(describeError(error))"
             log(message)
-            emit(["event": "error", "message": message])
+            statusLock.lock()
+            finalizationWarningMessage = message
+            statusLock.unlock()
+            emit(["event": "stalled", "message": message])
         }
     }
 
     private func emit(_ object: [String: String]) {
-        let data = try! JSONSerialization.data(withJSONObject: object)
+        statusLock.lock()
+        defer { statusLock.unlock() }
+
+        let event = object["event"]
+        if event == "error" {
+            guard terminalErrorMessage == nil else { return }
+            terminalErrorMessage = object["message"] ?? "System audio capture failed."
+        } else if terminalErrorMessage != nil, event != "stopped" {
+            // Keep the first terminal failure as the live status snapshot.
+            // CoreAudio may continue invoking the IO callback after capture
+            // has failed, so later level/ready events are not evidence of
+            // recovery.
+            return
+        }
+
+        if event == "stalled" {
+            activeWarningMessage = object["message"]
+        } else if event == "ready" || event == "level" {
+            // A level event keeps a zero-signal warning by carrying its
+            // message. A message-free ready or level event is recovery
+            // evidence and clears the transient diagnostic.
+            activeWarningMessage = object["message"]
+        }
+
+        var emittedObject = object
+        if event == "stopped", let terminalErrorMessage {
+            // Rust reads the terminal failure before TERM. Carry it on the
+            // stopped event too so a failure racing with TERM is not lost.
+            emittedObject["terminalError"] = terminalErrorMessage
+        } else if event == "stopped", let warningMessage = finalizationWarningMessage ?? currentLevelWarning() ?? activeWarningMessage {
+            // Finalization can emit a late warning after Rust's pre-TERM
+            // snapshot. Carry it across the stopped boundary as well.
+            emittedObject["message"] = warningMessage
+        }
+        let data = try! JSONSerialization.data(withJSONObject: emittedObject)
         print(String(data: data, encoding: .utf8)!)
         fflush(stdout)
         guard let statusURL else { return }
@@ -602,9 +692,10 @@ final class SystemAudioRecorder {
                 try writeTimelineSilenceIfNeeded(beforeWriting: convertedBuffer.frameLength, to: audioFile, format: outputFormat)
                 try audioFile.write(from: convertedBuffer)
                 outputFramesWritten += AVAudioFramePosition(convertedBuffer.frameLength)
+                clearBufferFailures()
             }
         } catch {
-            emit(["event": "error", "message": describeError(error)])
+            reportBufferFailure(error)
         }
     }
 

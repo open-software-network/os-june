@@ -1,7 +1,10 @@
 use crate::{
     audio::turns::normalize_wav_for_transcription,
-    clovy_api::{transcribe_saved_audio, TranscriptionRequest},
-    domain::types::{RecordingSource, RecordingSourceMode},
+    clovy_api::{
+        note_audio_failure_is_transient, note_audio_failure_scope, transcribe_saved_audio,
+        NoteAudioFailureScope, TranscriptionProviderResult, TranscriptionRequest,
+    },
+    domain::types::{AppError, RecordingSource, RecordingSourceMode},
 };
 use hound::{SampleFormat, WavSpec, WavWriter};
 use serde::Serialize;
@@ -11,9 +14,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
@@ -28,6 +31,10 @@ const PREVIEW_SILENCE_RMS_FLOOR: f32 = 0.001;
 const PREVIEW_ACTIVITY_WINDOW_MS: i64 = 30;
 const PREVIEW_MIN_SUSTAINED_ACTIVITY_MS: i64 = 180;
 const SYSTEM_PREVIEW_POLL_MS: u64 = 500;
+const LIVE_PREVIEW_TRANSCRIPTION_ATTEMPTS: usize = 2;
+const LIVE_PREVIEW_RETRY_DELAY_MS: u64 = 250;
+const LIVE_PREVIEW_CIRCUIT_FAILURE_THRESHOLD: usize = 2;
+const LIVE_PREVIEW_CIRCUIT_COOLDOWN: Duration = Duration::from_secs(30);
 // The system lane tails a growing WAV rather than draining a bounded channel,
 // so it has no natural backpressure. If the transcription round-trip runs
 // slower than real time the buffered backlog would grow without bound and the
@@ -84,6 +91,7 @@ impl LivePreviewSink {
 
 pub struct LivePreviewController {
     cancelled: Arc<AtomicBool>,
+    circuit: Arc<LiveTranscriptPreviewCircuit>,
     sink: LivePreviewSink,
 }
 
@@ -101,6 +109,7 @@ struct LivePreviewWorkerParams {
     channels: u16,
     receiver: mpsc::Receiver<LivePreviewBatch>,
     cancelled: Arc<AtomicBool>,
+    circuit: Arc<LiveTranscriptPreviewCircuit>,
 }
 
 struct PreviewChunkRequest<'a> {
@@ -114,11 +123,108 @@ struct PreviewChunkRequest<'a> {
     sample_rate: u32,
     channels: u16,
     samples: &'a [i16],
+    circuit: &'a LiveTranscriptPreviewCircuit,
+    circuit_permit: LiveTranscriptPreviewPermit,
+}
+
+#[derive(Default)]
+struct LiveTranscriptPreviewCircuitState {
+    consecutive_failures: usize,
+    open_until: Option<Instant>,
+    epoch: u64,
+    probe_in_flight: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LiveTranscriptPreviewPermit {
+    epoch: u64,
+    probe: bool,
+}
+
+#[derive(Default)]
+pub struct LiveTranscriptPreviewCircuit {
+    state: Mutex<LiveTranscriptPreviewCircuitState>,
+}
+
+impl LiveTranscriptPreviewCircuit {
+    fn acquire_request(&self) -> Option<LiveTranscriptPreviewPermit> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Some(open_until) = state.open_until else {
+            return Some(LiveTranscriptPreviewPermit {
+                epoch: state.epoch,
+                probe: false,
+            });
+        };
+        if Instant::now() < open_until {
+            return None;
+        }
+        if state.probe_in_flight {
+            return None;
+        }
+        state.probe_in_flight = true;
+        Some(LiveTranscriptPreviewPermit {
+            epoch: state.epoch,
+            probe: true,
+        })
+    }
+
+    fn record_success(&self, permit: LiveTranscriptPreviewPermit) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if permit.epoch != state.epoch {
+            return;
+        }
+        state.consecutive_failures = 0;
+        if permit.probe {
+            state.open_until = None;
+            state.probe_in_flight = false;
+        }
+    }
+
+    fn record_failure(&self, permit: LiveTranscriptPreviewPermit, error: &AppError) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if permit.epoch != state.epoch {
+            return;
+        }
+        if note_audio_failure_scope(error) == NoteAudioFailureScope::Turn {
+            state.consecutive_failures = 0;
+            if permit.probe {
+                state.open_until = None;
+                state.probe_in_flight = false;
+            }
+            return;
+        }
+        if permit.probe {
+            Self::open(&mut state);
+            return;
+        }
+        state.consecutive_failures += 1;
+        if state.consecutive_failures >= LIVE_PREVIEW_CIRCUIT_FAILURE_THRESHOLD {
+            Self::open(&mut state);
+        }
+    }
+
+    fn release_request(&self, permit: LiveTranscriptPreviewPermit) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if permit.epoch == state.epoch && permit.probe {
+            state.probe_in_flight = false;
+        }
+    }
+
+    fn open(state: &mut LiveTranscriptPreviewCircuitState) {
+        state.consecutive_failures = 0;
+        state.open_until = Some(Instant::now() + LIVE_PREVIEW_CIRCUIT_COOLDOWN);
+        state.epoch = state.epoch.wrapping_add(1);
+        state.probe_in_flight = false;
+    }
 }
 
 impl LivePreviewController {
     pub fn sink(&self) -> LivePreviewSink {
         self.sink.clone()
+    }
+
+    pub fn circuit(&self) -> Arc<LiveTranscriptPreviewCircuit> {
+        Arc::clone(&self.circuit)
     }
 
     pub fn cancel(self) {
@@ -155,7 +261,9 @@ pub fn start_live_transcript_preview(
 ) -> LivePreviewController {
     let (sender, receiver) = mpsc::channel(PREVIEW_BATCH_BUFFER);
     let cancelled = Arc::new(AtomicBool::new(false));
+    let circuit = Arc::new(LiveTranscriptPreviewCircuit::default());
     let worker_cancelled = Arc::clone(&cancelled);
+    let worker_circuit = Arc::clone(&circuit);
     tauri::async_runtime::spawn(async move {
         run_live_preview_worker(LivePreviewWorkerParams {
             app,
@@ -167,11 +275,13 @@ pub fn start_live_transcript_preview(
             channels: channels.max(1),
             receiver,
             cancelled: worker_cancelled,
+            circuit: worker_circuit,
         })
         .await;
     });
     LivePreviewController {
         cancelled,
+        circuit,
         sink: LivePreviewSink {
             sender,
             next_sample_index: Arc::new(AtomicU64::new(0)),
@@ -185,6 +295,7 @@ pub fn start_system_live_transcript_preview(
     session_id: String,
     source_mode: RecordingSourceMode,
     partial_path: PathBuf,
+    circuit: Arc<LiveTranscriptPreviewCircuit>,
 ) -> SystemLivePreviewController {
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
@@ -196,6 +307,7 @@ pub fn start_system_live_transcript_preview(
             source_mode,
             partial_path,
             worker_cancelled,
+            circuit,
         )
         .await;
     });
@@ -213,6 +325,7 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
         channels,
         mut receiver,
         cancelled,
+        circuit,
     } = params;
     let chunk_samples = samples_for_ms(sample_rate, channels, PREVIEW_CHUNK_MS);
     if chunk_samples == 0 {
@@ -255,6 +368,10 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
                 segment_index += 1;
                 continue;
             }
+            let Some(circuit_permit) = circuit.acquire_request() else {
+                segment_index += 1;
+                continue;
+            };
             let segment_id = preview_segment_id(source, segment_index);
             if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                 note_id: &note_id,
@@ -267,6 +384,8 @@ async fn run_live_preview_worker(params: LivePreviewWorkerParams) {
                 sample_rate,
                 channels,
                 samples: &samples,
+                circuit: &circuit,
+                circuit_permit,
             })
             .await
             {
@@ -287,6 +406,7 @@ async fn run_system_live_preview_worker(
     source_mode: RecordingSourceMode,
     partial_path: PathBuf,
     cancelled: Arc<AtomicBool>,
+    circuit: Arc<LiveTranscriptPreviewCircuit>,
 ) {
     let mut reader = WavTailReader::new(partial_path);
     let mut buffer = Vec::new();
@@ -340,6 +460,10 @@ async fn run_system_live_preview_worker(
                         segment_index += 1;
                         continue;
                     }
+                    let Some(circuit_permit) = circuit.acquire_request() else {
+                        segment_index += 1;
+                        continue;
+                    };
                     let segment_id = preview_segment_id(RecordingSource::System, segment_index);
                     if let Some(event) = transcribe_preview_chunk(PreviewChunkRequest {
                         note_id: &note_id,
@@ -352,6 +476,8 @@ async fn run_system_live_preview_worker(
                         sample_rate: read.sample_rate,
                         channels: read.channels,
                         samples: &samples,
+                        circuit: &circuit,
+                        circuit_permit,
                     })
                     .await
                     {
@@ -591,9 +717,12 @@ async fn transcribe_preview_chunk(
         sample_rate,
         channels,
         samples,
+        circuit,
+        circuit_permit,
     } = request;
     let temp_path = preview_chunk_path(session_id, segment_id);
     if let Err(error) = write_preview_wav(&temp_path, sample_rate, channels, samples) {
+        circuit.release_request(circuit_permit);
         let _ = std::fs::remove_file(&temp_path);
         eprintln!("live transcript preview failed to write chunk: {error}");
         return None;
@@ -603,6 +732,7 @@ async fn transcribe_preview_chunk(
     let audio_path = match normalize_preview_audio(&temp_path) {
         Ok(path) => path,
         Err(error) => {
+            circuit.release_request(circuit_permit);
             let _ = std::fs::remove_file(&temp_path);
             let _ = std::fs::remove_file(&normalized_path);
             eprintln!(
@@ -616,13 +746,14 @@ async fn transcribe_preview_chunk(
     };
 
     let request = preview_transcription_request(audio_path.clone(), session_id, segment_id);
-    let result = transcribe_saved_audio(request).await;
+    let result = transcribe_live_preview_with_retries(request).await;
     let _ = std::fs::remove_file(&temp_path);
     if audio_path != temp_path {
         let _ = std::fs::remove_file(&audio_path);
     }
     match result {
         Ok(transcript) => {
+            circuit.record_success(circuit_permit);
             let text = transcript.text.trim().to_string();
             if text.is_empty() {
                 return None;
@@ -645,9 +776,28 @@ async fn transcribe_preview_chunk(
                 "live transcript preview transcription failed: {} ({})",
                 error.message, error.code
             );
+            circuit.record_failure(circuit_permit, &error);
             None
         }
     }
+}
+
+async fn transcribe_live_preview_with_retries(
+    request: TranscriptionRequest,
+) -> Result<TranscriptionProviderResult, AppError> {
+    for attempt in 0..LIVE_PREVIEW_TRANSCRIPTION_ATTEMPTS {
+        match transcribe_saved_audio(request.clone()).await {
+            Ok(transcript) => return Ok(transcript),
+            Err(error)
+                if attempt + 1 < LIVE_PREVIEW_TRANSCRIPTION_ATTEMPTS
+                    && note_audio_failure_is_transient(&error) =>
+            {
+                tokio::time::sleep(Duration::from_millis(LIVE_PREVIEW_RETRY_DELAY_MS)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("live transcript preview retry loop always returns")
 }
 
 fn preview_normalized_path(input_path: &Path) -> PathBuf {
@@ -761,14 +911,14 @@ fn is_effectively_silent(samples: &[i16], sample_rate: u32, channels: u16) -> bo
 
 #[cfg(test)]
 mod tests {
-    use crate::domain::types::RecordingSource;
+    use crate::domain::types::{AppError, RecordingSource};
 
     use super::{
         duration_ms, is_effectively_silent, newest_preview_batch, normalize_preview_audio,
         preview_chunk_path, preview_segment_id, preview_transcription_request, read_wav_layout,
         sample_offset_ms, samples_for_ms, should_drop_stale_batches, trim_stale_system_backlog,
-        write_preview_wav, LivePreviewBatch, LivePreviewSink, WavTailReader,
-        PREVIEW_STALE_BATCH_THRESHOLD, SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS,
+        write_preview_wav, LivePreviewBatch, LivePreviewSink, LiveTranscriptPreviewCircuit,
+        WavTailReader, PREVIEW_STALE_BATCH_THRESHOLD, SYSTEM_PREVIEW_MAX_BACKLOG_CHUNKS,
     };
     use std::{
         io::Write,
@@ -848,6 +998,62 @@ mod tests {
         assert!(is_effectively_silent(&transient, 16_000, 1));
         assert!(!is_effectively_silent(&short_reply, 16_000, 1));
         assert!(!is_effectively_silent(&[2_000; 16_000], 16_000, 1));
+    }
+
+    #[test]
+    fn live_transcript_preview_circuit_requires_corroboration_and_recovers() {
+        let circuit = LiveTranscriptPreviewCircuit::default();
+        let upstream = AppError::new("june_request_failed", "upstream_provider_failed");
+
+        let first = circuit.acquire_request().expect("first request");
+        circuit.record_failure(first, &upstream);
+        let content_failure = circuit.acquire_request().expect("content request");
+
+        circuit.record_failure(
+            content_failure,
+            &AppError::new("clovy_request_failed", "invalid wav"),
+        );
+        let second = circuit.acquire_request().expect("second shared failure");
+        circuit.record_failure(second, &upstream);
+        let third = circuit.acquire_request().expect("third shared failure");
+
+        circuit.record_failure(
+            third,
+            &AppError::new("clovy_request_failed", "metering_provider_failed"),
+        );
+        assert!(circuit.acquire_request().is_none());
+
+        circuit.state.lock().unwrap().open_until = Some(std::time::Instant::now());
+        let probe = circuit.acquire_request().expect("half-open probe");
+        assert!(probe.probe);
+        assert!(circuit.acquire_request().is_none());
+        circuit.record_success(probe);
+        assert!(circuit.acquire_request().is_some());
+    }
+
+    #[test]
+    fn stale_preview_success_cannot_cancel_a_new_cooldown() {
+        let circuit = LiveTranscriptPreviewCircuit::default();
+        let upstream = AppError::new("june_request_failed", "upstream_provider_failed");
+        let stale_success = circuit.acquire_request().expect("stale request");
+        let first_failure = circuit.acquire_request().expect("first failure");
+        let second_failure = circuit.acquire_request().expect("second failure");
+
+        circuit.record_failure(first_failure, &upstream);
+        circuit.record_failure(second_failure, &upstream);
+        assert!(circuit.acquire_request().is_none());
+
+        circuit.record_success(stale_success);
+        assert!(
+            circuit.acquire_request().is_none(),
+            "stale success closed a newer cooldown"
+        );
+
+        circuit.state.lock().unwrap().open_until = Some(std::time::Instant::now());
+        let probe = circuit.acquire_request().expect("post-cooldown probe");
+        assert!(probe.probe);
+        circuit.record_success(probe);
+        assert!(circuit.acquire_request().is_some());
     }
 
     #[test]

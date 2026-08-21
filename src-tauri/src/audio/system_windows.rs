@@ -149,7 +149,10 @@ impl SystemAudioCapture {
             ),
             (Some(error), None) => SystemAudioStopResult::Failed(error.into()),
             (None, Some(error)) => SystemAudioStopResult::Failed(error.into()),
-            (None, None) => SystemAudioStopResult::Stopped(self.final_path),
+            (None, None) => SystemAudioStopResult::Stopped {
+                path: self.final_path,
+                warning: None,
+            },
         }
     }
 }

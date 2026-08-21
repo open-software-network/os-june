@@ -7,7 +7,10 @@ import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import {
+  MEETING_START_TRANSCRIPTION_EVENT,
+  RECORDING_FINALIZATION_WARNING_EVENT,
+} from "../lib/events";
 import {
   beginMaxGrantWait,
   clearMaxGrantWait,
@@ -885,6 +888,70 @@ describe("notes recording reliability", () => {
     expect(screen.queryByText(/Transcribing audio/)).not.toBeInTheDocument();
   });
 
+  it("shows a system audio warning returned after recording finalization", async () => {
+    const microphoneWarning =
+      "Microphone input stopped unexpectedly. Audio after this point may be missing.";
+    const systemWarning =
+      "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it. Check the finished note for missing details.";
+    mocks.finishRecording.mockResolvedValue({
+      note: { ...first, processingStatus: "transcribing" },
+      recording: recording({ state: "ready" }),
+      validation: {},
+      processingStarted: true,
+      warnings: [
+        {
+          source: "microphone",
+          code: "microphone_stream_stalled",
+          message: microphoneWarning,
+        },
+        {
+          source: "system",
+          code: "system_audio_capture_unavailable",
+          message: systemWarning,
+        },
+      ],
+    });
+
+    await startRecordingOnFirstNote();
+    await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+
+    expect(await screen.findByText(`${microphoneWarning} ${systemWarning}`)).toHaveClass(
+      "error-banner",
+    );
+  });
+
+  it("shows a warning when starting a recording auto-finalizes the previous capture", async () => {
+    const microphoneWarning = "Microphone audio may be incomplete.";
+    const systemWarning =
+      "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it.";
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has(RECORDING_FINALIZATION_WARNING_EVENT)).toBe(true),
+    );
+    await act(async () => {
+      await mocks.listeners.get(RECORDING_FINALIZATION_WARNING_EVENT)?.({
+        payload: [
+          {
+            source: "microphone",
+            code: "microphone_stream_stalled",
+            message: microphoneWarning,
+          },
+          {
+            source: "system",
+            code: "system_audio_capture_warning",
+            message: systemWarning,
+          },
+        ],
+      });
+    });
+
+    expect(await screen.findByText(`${microphoneWarning} ${systemWarning}`)).toHaveClass(
+      "error-banner",
+    );
+  });
+
   it("keeps provisional transcript visible after Stop while saved-audio processing is pending", async () => {
     const pendingFinish = deferred<never>();
     mocks.finishRecording.mockReturnValue(pendingFinish.promise);
@@ -1433,7 +1500,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(screen.queryByRole("alert", { name: "Note transcription warning" })).toBeNull();
     expect(
       screen.queryByText(/The transcription provider could not process this audio\./),
     ).toBeNull();
@@ -1462,7 +1529,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(screen.queryByRole("alert", { name: "Note transcription warning" })).toBeNull();
     expect(screen.queryByText(/Recording interrupted/)).toBeNull();
   });
 
@@ -1493,7 +1560,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     await waitFor(() =>
-      expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
         "The service is busy right now. Wait a minute, then retry.",
       ),
     );
@@ -1570,6 +1637,51 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.getNote).toHaveBeenCalledTimes(1));
     expect(mocks.getNote).toHaveBeenCalledWith(selectedNote.id);
     expect(await screen.findByText("The completed note is visible.")).toBeInTheDocument();
+  });
+
+  it("surfaces recovery immediately when a processing worker is abandoned", async () => {
+    const selectedNote = note({
+      processingStatus: "transcribing",
+      activeTab: "transcription",
+    });
+    const recoveredNote = {
+      ...selectedNote,
+      processingStatus: "recoverable" as const,
+      updatedAt: "2026-05-19T10:00:04Z",
+      lastError: "Recording interrupted. Review recovery options.",
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    let workerAbandoned = false;
+    mocks.getNote.mockImplementation(async () => (workerAbandoned ? recoveredNote : selectedNote));
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(mocks.listeners.has("note-processing-progress")).toBe(true));
+
+    workerAbandoned = true;
+    await act(async () => {
+      await mocks.listeners.get("note-processing-progress")?.({
+        payload: {
+          noteId: selectedNote.id,
+          recordingSessionId: "abandoned-recording",
+          stage: "done",
+          processingStatus: "recoverable",
+          revision: recoveredNote.updatedAt,
+          recovery: recovery({ sessionId: "abandoned-recording" }),
+        },
+      });
+    });
+
+    expect(await screen.findByRole("status", { name: "Recoverable recording" })).toHaveTextContent(
+      "This recording was interrupted",
+    );
+    expect(screen.getByRole("button", { name: "Recover" })).toBeEnabled();
   });
 
   it("retries a terminal hydration that fails transiently", async () => {
@@ -1791,6 +1903,7 @@ describe("notes recording reliability", () => {
             ...first,
             processingStatus: "failed",
             lastError: "Network unreachable",
+            retryRecordingSessionId: "recording-to-retry",
             audio: {
               id: "audio-1",
               format: "wav",
@@ -1881,6 +1994,85 @@ describe("notes recording reliability", () => {
         activeTab: "transcription",
       }),
     );
+  });
+
+  it("retries the exact recording session behind a ready partial note-transcription warning", async () => {
+    const warningNote = {
+      ...first,
+      lastError: "System: upstream_provider_failed",
+      transcriptionWarnings: [
+        {
+          recordingSessionId: "recording-with-system-gap",
+          message: "System: upstream_provider_failed",
+        },
+      ],
+    };
+    const retryingNote = {
+      ...warningNote,
+      processingStatus: "transcribing" as const,
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [warningNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : warningNote,
+    );
+    mocks.retryProcessing.mockResolvedValue(retryingNote);
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry note transcription" }));
+
+    await waitFor(() =>
+      expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-system-gap"),
+    );
+    expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
+  });
+
+  it("keeps a ready partial warning targeted after retry preflight fails", async () => {
+    const warningNote = {
+      ...first,
+      lastError: "System: upstream_provider_failed",
+      transcriptionWarnings: [
+        {
+          recordingSessionId: "recording-with-missing-file",
+          message: "System: upstream_provider_failed",
+        },
+      ],
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [warningNote, second],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    mocks.getNote.mockImplementation(async (noteId: string) =>
+      noteId === "note-2" ? second : warningNote,
+    );
+    mocks.retryProcessing.mockRejectedValue({
+      code: "audio_artifact_missing",
+      message: "The saved system audio for this recording is unavailable.",
+    });
+
+    const { container } = render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry note transcription" }));
+
+    await waitFor(() =>
+      expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-missing-file"),
+    );
+    expect(await screen.findByText(/saved system audio.*unavailable/i)).toHaveClass("error-banner");
+    expect(screen.getByRole("button", { name: "Retry note transcription" })).toBeEnabled();
+    expect(container.querySelector(".note-failure-banner")).toBeNull();
   });
 
   it("changes to Max in place and announces success only after the credit grant", async () => {

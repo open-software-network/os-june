@@ -19,8 +19,16 @@ preview).
    A dedicated non-real-time task drains the ring into the WAV writer and
    non-blockingly feeds the **live preview** sink; its worker transcribes ~8s
    chunks and emits ephemeral `live-transcript-event`s that are **never
-   persisted**. The ring holds 30 seconds at the configured sample rate and
-   channel count, with a memory cap for unusual high-channel devices. If disk
+   persisted**. The Microphone and System live transcript preview workers share
+   a recording-scoped service circuit. Transient failures, including an
+   explicit busy-service response, are retried once; two
+   consecutive shared or ambiguous failures pause both preview lanes for 30
+   seconds before one half-open request probes for recovery. Results carry the
+   circuit epoch that admitted them, so an older in-flight success cannot close
+   a newer cooldown. Saved-audio capture continues throughout for final note
+   transcription and Retry. The ring holds 30
+   seconds at the configured sample rate and channel count, with a memory cap
+   for unusual high-channel devices. If disk
    writing ever falls more than that capacity behind, the oldest queued blocks
    are dropped, exact dropped-sample counts appear in recording status, and
    recovery/finalization checkpoints persist the count. Writer progress is
@@ -33,8 +41,16 @@ preview).
 3. **`finish_recording`** stops the input stream, drains and finalizes the
    writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
-   preview. Completed microphone byte metadata is replaced from the writer
-   watermark returned after that final drain.
+   preview. The Stop call that consumes the live capture reserves the recording
+   session's Note-processing position before releasing the capture lock, so a
+   replacement recording cannot overtake WAV finalization or validation.
+   Completed microphone byte metadata is replaced from the writer watermark
+   returned after that final drain. A terminal system-audio helper error remains
+   sticky until shutdown: Clovy preserves any WAV bytes already written and
+   records the diagnostic instead of treating a later level sample or clean
+   helper exit as recovery. Final WAV validation is authoritative, so audio that
+   is still readable and duration-valid remains available to final note
+   transcription and Retry.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
@@ -44,6 +60,20 @@ preview).
    job and transcript row → **note generation**. Full-Source fallbacks are
    prepared lazily when a Source is materially incomplete and atomically
    replace that Source's partial rows only after the replacement succeeds.
+   No-speech and other audio-specific failures remain isolated to their Turn.
+   An unambiguous shared-service note-transcription failure is persisted
+   against the attempted durable job, then opens the pipeline circuit. The
+   Clovy API compatibility envelope can also report deterministic provider
+   rejections as `upstream_provider_failed`. Consecutive ambiguous failures
+   from distinct Sources open the pipeline circuit; two consecutive ambiguous
+   failures from only one Source quarantine that Source while the other Source
+   continues. A successful or content-specific Turn breaks pipeline-wide
+   corroboration and resets that Source's evidence. When the other Source
+   produced a usable
+   transcript, its Note can still be generated and retains a visible warning
+   for the quarantined Source. Already in-flight requests are drained after a
+   pipeline-wide failure, no more Turns or fallbacks are launched, and untouched
+   jobs remain pending for a later Retry.
 
 While capture is active, the native meeting-HUD supervisor samples capture at
 20 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
@@ -125,17 +155,30 @@ The helper is controlled and observed out-of-process (see ADR-0004):
 
 - **Control:** Unix signals — `SIGUSR1` / `SIGUSR2` = pause / resume,
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.
-- **Observation:** a `status.json` file with events `ready` / `level` / `error`
-  / `stopped` (fields include `level` / `maxLevel` / `message`).
+- **Observation:** a `status.json` file with events `ready` / `level` /
+  `stalled` / `error` / `stopped` (fields include `level` / `maxLevel` /
+  `message`). An `error` event is terminal for that capture and remains
+  observable until the parent has recorded it; later level events cannot
+  overwrite it. The helper can still publish `stopped` during an orderly
+  shutdown. That final event is authoritative: it carries any buffer-write or
+  trailing-flush warning that must survive Stop, while an absent message proves
+  that a transient pre-TERM warning recovered.
 - **Routing:** a private stereo process tap is bound to the current default
   system output device, so it records the same device stream the user hears.
   The private aggregate contains the tap only; adding a physical output
   subdevice can create an output-only IO cycle with no tap callbacks. The helper
   performs at most one full-graph rebuild for missing callbacks or zero-filled
-  buffers. If callbacks still stall or remain zero-filled after that rebuild,
-  the helper reports the system source unavailable instead of silently writing
-  a meeting-length silent WAV or entering a restart loop. Ordinary sustained
-  silence remains subject to the saved-audio speech gate below.
+  buffers. Callbacks that do not resume after that rebuild are a terminal
+  Source failure. Continued zero-filled buffers remain a transient `stalled`
+  warning because real system silence is indistinguishable from that signal;
+  later nonzero audio clears the warning, and a Source that stays silent is
+  handled by the saved-audio speech gate below. Isolated conversion/write
+  failures and trailing-silence flush failures are also `stalled` warnings;
+  three consecutive buffer failures become terminal. Even then, finalized WAV
+  bytes remain usable when they pass the normal saved-audio validation gate.
+  System capture diagnostics are promoted into the recording warning stream;
+  a diagnostic discovered during Stop is returned to the renderer and remains
+  visible while the preserved audio is processed.
 - **CLI:** `--output` / `--status` / `--pid` / `--log`.
 - **Timeouts:** ~30s readiness, ~75s probe. **macOS 14.2+** required for
   CoreAudio process taps; older systems get microphone-only.
@@ -180,4 +223,46 @@ flushed periodically and the finalized filename only appears after a clean
 finalize, so a crash leaves replayable audio that recovery can finish
 processing. Durable note-transcription jobs record exact Source spans and
 attempt state; interrupted `running` jobs return to `pending`, and explicit
-Retry resumes only jobs whose fingerprint has not already succeeded.
+Retry resumes only jobs whose fingerprint has not already succeeded. Queue
+registration is idempotent per Note and recording session while work is queued
+or running, so repeated Retry requests cannot fan out duplicate processing for
+the same saved audio. Durable retry state changes only after queue admission,
+and a completed recording session can re-enter pending only while its matching
+failure or partial-Source warning remains unresolved. A stale request therefore
+cannot turn already completed work back into pending work. A failed Note also
+stores the exact recording session and processing stage that failed, preventing
+an older partial recording session from displacing the recording that actually
+needs Retry. The failure-ledger migration backfills retryable failed Notes only
+when an exact recording session or unfinished durable note-transcription job
+identifies the recording. A newer invalid recording blocks fallback to
+unrelated historical audio.
+Partial-Source warnings on a Ready Note retain their own recording-session
+identity, so the warning's Retry action reprocesses the affected saved audio
+directly. Retryable failures remain durable per recording session: a later
+queued success cannot clear an earlier failure, discarding a recovered
+recording session removes only its failure, and recovering one recording
+session reveals the next unresolved one. Finalization commits
+`processing_pending` with the recording session's validation metadata, and
+successful Note generation commits the same recording session as `processed`
+in the Note transaction. A crash therefore reconstructs a
+recovery prompt without reviving work that already completed. Interrupted-state
+promotion runs once per native process; renderer reloads show only sessions
+already marked recoverable and cannot reclassify live native queue work.
+If a queued worker exits or panics before reaching a durable terminal status,
+its still-registered ticket first promotes that session to recoverable, then
+releases the queue identity. Already-queued successors observe that abandoned
+predecessor and become recoverable too, preserving recording order. The
+recovery event carries the saved-audio snapshot so the renderer can show the
+recovery action immediately without waiting for a reload. Errors while
+finalizing a consumed capture acquire the queue barrier before the first
+guarded promotion attempt; a supervised retry retains that barrier while a
+storage write is unavailable. Recovery itself waits for registered
+predecessors, checks for older durable recoveries, and conditionally claims the
+session before validating or rewriting audio metadata. Discard uses the
+opposite conditional transition, so only one action can own the saved audio.
+Recovered audio that still fails validation becomes terminally invalid instead
+of remaining a hidden ordering barrier.
+Multiple recoveries for one Note are returned oldest first to preserve
+recording order. Simultaneous Source warnings are de-duplicated and shown
+together rather than truncating the System warning behind an earlier
+Microphone diagnostic.

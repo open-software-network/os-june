@@ -1347,6 +1347,47 @@ const MIGRATIONS: &[Migration] = &[
             )),
         ],
     },
+    Migration {
+        version: 51,
+        name: "generation_block_warnings",
+        requirements: &[SchemaRequirement::Column {
+            table: "note_generation_blocks",
+            column: "warning",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "note_generation_blocks",
+            columns: GENERATION_BLOCK_WARNING_COLUMN,
+        }],
+    },
+    Migration {
+        version: 52,
+        name: "note_retry_context",
+        requirements: &[
+            SchemaRequirement::Column {
+                table: "notes",
+                column: "retry_recording_session_id",
+            },
+            SchemaRequirement::Column {
+                table: "notes",
+                column: "retry_processing_stage",
+            },
+        ],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "notes",
+            columns: NOTE_RETRY_CONTEXT_COLUMNS,
+        }],
+    },
+    Migration {
+        version: 53,
+        name: "note_processing_failures",
+        requirements: &[
+            SchemaRequirement::Table("note_processing_failures"),
+            SchemaRequirement::Index("idx_note_processing_failures_note_updated"),
+        ],
+        steps: &[MigrationStep::Sql(include_str!(
+            "../../migrations/035_note_processing_failures.sql"
+        ))],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1369,6 +1410,20 @@ const AGENT_ARTIFACT_DISPLAY_NAME_COLUMN: &[ColumnDefinition] = &[ColumnDefiniti
     name: "display_name",
     definition: "TEXT",
 }];
+const GENERATION_BLOCK_WARNING_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "warning",
+    definition: "TEXT",
+}];
+const NOTE_RETRY_CONTEXT_COLUMNS: &[ColumnDefinition] = &[
+    ColumnDefinition {
+        name: "retry_recording_session_id",
+        definition: "TEXT",
+    },
+    ColumnDefinition {
+        name: "retry_processing_stage",
+        definition: "TEXT",
+    },
+];
 
 struct AppliedMigration {
     version: i64,
@@ -2346,9 +2401,468 @@ mod tests {
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
+                (51, "generation_block_warnings".to_string()),
+                (52, "note_retry_context".to_string()),
+                (53, "note_processing_failures".to_string()),
             ]
         );
         assert_latest_stamp(&pool).await;
+    }
+
+    #[tokio::test]
+    async fn processing_failure_migration_backfills_retryable_failed_notes() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error)
+             VALUES ('failed-note', '', 'failed', '2026-08-21T10:00:00.000Z',
+                     '2026-08-21T10:05:00.000Z', 'Generation failed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note");
+        query(
+            "INSERT INTO recording_sessions
+             (id, note_id, status, started_at, expected_elapsed_ms, permission_state,
+              partial_path, final_path)
+             VALUES ('failed-session', 'failed-note', 'valid',
+                     '2026-08-21T10:00:00.000Z', 5000, 'granted',
+                     '/tmp/failed.partial.wav', '/tmp/failed.wav')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed recording session");
+        query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, path, format, duration_ms,
+              size_bytes, checksum, status, created_at)
+             VALUES ('failed-audio', 'failed-note', 'failed-session',
+                     '/tmp/failed.wav', 'wav', 5000, 160000, 'checksum', 'valid',
+                     '2026-08-21T10:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("valid audio artifact");
+        query(
+            "INSERT INTO note_transcription_jobs (
+               id, note_id, recording_session_id, audio_artifact_id,
+               source, source_mode, job_kind, start_ms, end_ms, turn_index,
+               input_fingerprint, configuration_fingerprint, operation_id,
+               provider, max_chunk_ms, pipeline_version, status, attempt_count,
+               last_error, created_at, updated_at, completed_at
+             ) VALUES (
+               'failed-job', 'failed-note', 'failed-session', 'failed-audio',
+               'microphone', 'microphone_only', 'turn', 0, 5000, 0,
+               'input', 'configuration', 'operation', 'provider', NULL,
+               'pipeline', 'failed', 1, 'upstream_provider_failed',
+               '2026-08-21T10:04:00.000Z', '2026-08-21T10:05:00.000Z',
+               '2026-08-21T10:05:00.000Z'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed transcription job");
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let row = query(
+            "SELECT failure.recording_session_id, failure.processing_stage, failure.message,
+                    notes.retry_recording_session_id, notes.retry_processing_stage
+             FROM note_processing_failures failure
+             INNER JOIN notes ON notes.id = failure.note_id
+             WHERE failure.note_id = 'failed-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("backfilled failure");
+        assert_eq!(
+            row.get::<String, _>("recording_session_id"),
+            "failed-session"
+        );
+        assert_eq!(row.get::<String, _>("processing_stage"), "transcribing");
+        assert_eq!(row.get::<String, _>("message"), "Generation failed");
+        assert_eq!(
+            row.get::<Option<String>, _>("retry_recording_session_id")
+                .as_deref(),
+            Some("failed-session")
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("retry_processing_stage")
+                .as_deref(),
+            Some("transcribing")
+        );
+    }
+
+    #[tokio::test]
+    async fn processing_failure_migration_prefers_exact_retry_recording_session_over_older_note_transcription_job(
+    ) {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error,
+              retry_recording_session_id, retry_processing_stage)
+             VALUES ('exact-retry-note', '', 'failed',
+                     '2026-08-21T09:00:00.000Z', '2026-08-21T11:05:00.000Z',
+                     'Generation failed', 'exact-generation', 'generating')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note with exact retry context");
+        for (session_id, started_at) in [
+            ("older-unfinished", "2026-08-21T09:00:00.000Z"),
+            ("exact-generation", "2026-08-21T11:00:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO recording_sessions
+                 (id, note_id, status, started_at, expected_elapsed_ms,
+                  permission_state, partial_path, final_path)
+                 VALUES (?, 'exact-retry-note', 'processing_failed', ?, 5000,
+                         'granted', ?, ?)",
+            )
+            .bind(session_id)
+            .bind(started_at)
+            .bind(format!("/tmp/{session_id}.partial.wav"))
+            .bind(format!("/tmp/{session_id}.wav"))
+            .execute(&pool)
+            .await
+            .expect("recording session");
+            query(
+                "INSERT INTO audio_artifacts
+                 (id, note_id, recording_session_id, path, format, duration_ms,
+                  size_bytes, checksum, status, created_at)
+                 VALUES (?, 'exact-retry-note', ?, ?, 'wav', 5000, 160000,
+                         ?, 'valid', ?)",
+            )
+            .bind(format!("{session_id}-audio"))
+            .bind(session_id)
+            .bind(format!("/tmp/{session_id}.wav"))
+            .bind(format!("{session_id}-checksum"))
+            .bind(started_at)
+            .execute(&pool)
+            .await
+            .expect("valid audio artifact");
+        }
+        for (session_id, status, updated_at) in [
+            ("older-unfinished", "failed", "2026-08-21T09:05:00.000Z"),
+            ("exact-generation", "succeeded", "2026-08-21T11:05:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO note_transcription_jobs (
+                   id, note_id, recording_session_id, audio_artifact_id,
+                   source, source_mode, job_kind, start_ms, end_ms, turn_index,
+                   input_fingerprint, configuration_fingerprint, operation_id,
+                   provider, max_chunk_ms, pipeline_version, status, attempt_count,
+                   created_at, updated_at, completed_at
+                 ) VALUES (?, 'exact-retry-note', ?, ?, 'microphone',
+                           'microphone_only', 'turn', 0, 5000, 0, 'input',
+                           'configuration', ?, 'provider', NULL,
+                           'pipeline', ?, 1, ?, ?, ?)",
+            )
+            .bind(format!("{session_id}-job"))
+            .bind(session_id)
+            .bind(format!("{session_id}-audio"))
+            .bind(format!("{session_id}-operation"))
+            .bind(status)
+            .bind(updated_at)
+            .bind(updated_at)
+            .bind(updated_at)
+            .execute(&pool)
+            .await
+            .expect("transcription job");
+        }
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let failure = query(
+            "SELECT recording_session_id, processing_stage
+             FROM note_processing_failures
+             WHERE note_id = 'exact-retry-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("exact retry ledger row");
+        assert_eq!(
+            failure.get::<String, _>("recording_session_id"),
+            "exact-generation"
+        );
+        assert_eq!(failure.get::<String, _>("processing_stage"), "generating");
+    }
+
+    #[tokio::test]
+    async fn processing_failure_migration_does_not_retry_older_audio_after_invalid_recording() {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error)
+             VALUES ('invalid-note', '', 'failed', '2026-08-21T09:00:00.000Z',
+                     '2026-08-21T11:05:00.000Z', 'Audio validation failed')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note");
+        for (session_id, status, started_at) in [
+            ("older-success", "valid", "2026-08-21T09:00:00.000Z"),
+            ("invalid-current", "valid", "2026-08-21T11:00:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO recording_sessions
+                 (id, note_id, status, started_at, expected_elapsed_ms,
+                  permission_state, partial_path, final_path)
+                 VALUES (?, 'invalid-note', ?, ?, 5000, 'granted', ?, ?)",
+            )
+            .bind(session_id)
+            .bind(status)
+            .bind(started_at)
+            .bind(format!("/tmp/{session_id}.partial.wav"))
+            .bind(format!("/tmp/{session_id}.wav"))
+            .execute(&pool)
+            .await
+            .expect("recording session");
+        }
+        query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, path, format, duration_ms,
+              size_bytes, checksum, status, created_at)
+             VALUES
+               ('older-audio', 'invalid-note', 'older-success', '/tmp/older.wav',
+                'wav', 5000, 160000, 'older', 'valid', '2026-08-21T09:00:00.000Z'),
+               ('invalid-audio', 'invalid-note', 'invalid-current', '/tmp/invalid.wav',
+                'wav', 100, 2048, 'invalid', 'invalid', '2026-08-21T11:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("audio artifacts");
+        query(
+            "INSERT INTO note_generation_blocks
+             (id, note_id, recording_session_id, content, sort_order, created_at, updated_at)
+             VALUES ('older-block', 'invalid-note', 'older-success',
+                     'Already generated', 1,
+                     '2026-08-21T09:05:00.000Z', '2026-08-21T09:05:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("older generated block");
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let failure_count: i64 = query(
+            "SELECT COUNT(*) AS count FROM note_processing_failures
+             WHERE note_id = 'invalid-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("failure count")
+        .get("count");
+        assert_eq!(failure_count, 0);
+        let note = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = 'invalid-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("retry blocker");
+        assert_eq!(
+            note.get::<Option<String>, _>("retry_recording_session_id")
+                .as_deref(),
+            Some("invalid-current")
+        );
+        assert_eq!(
+            note.get::<Option<String>, _>("retry_processing_stage")
+                .as_deref(),
+            Some("validation")
+        );
+    }
+
+    #[tokio::test]
+    async fn processing_failure_migration_keeps_failed_note_transcription_job_and_invalid_blocker_distinct(
+    ) {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error)
+             VALUES ('mixed-failure-note', '', 'failed', '2026-08-21T09:00:00.000Z',
+                     '2026-08-21T11:05:00.000Z', 'Latest recording failed validation')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note");
+        for (session_id, started_at) in [
+            ("older-failed-job", "2026-08-21T09:00:00.000Z"),
+            ("invalid-newest", "2026-08-21T11:00:00.000Z"),
+        ] {
+            query(
+                "INSERT INTO recording_sessions
+                 (id, note_id, status, started_at, expected_elapsed_ms,
+                  permission_state, partial_path, final_path)
+                 VALUES (?, 'mixed-failure-note', 'valid', ?, 5000, 'granted', ?, ?)",
+            )
+            .bind(session_id)
+            .bind(started_at)
+            .bind(format!("/tmp/{session_id}.partial.wav"))
+            .bind(format!("/tmp/{session_id}.wav"))
+            .execute(&pool)
+            .await
+            .expect("recording session");
+        }
+        query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, path, format, duration_ms,
+              size_bytes, checksum, status, created_at)
+             VALUES
+               ('older-failed-audio', 'mixed-failure-note', 'older-failed-job',
+                '/tmp/older-failed.wav', 'wav', 5000, 160000, 'older-failed',
+                'valid', '2026-08-21T09:00:00.000Z'),
+               ('invalid-newest-audio', 'mixed-failure-note', 'invalid-newest',
+                '/tmp/invalid-newest.wav', 'wav', 100, 2048, 'invalid-newest',
+                'invalid', '2026-08-21T11:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("audio artifacts");
+        query(
+            "INSERT INTO note_transcription_jobs (
+               id, note_id, recording_session_id, audio_artifact_id,
+               source, source_mode, job_kind, start_ms, end_ms, turn_index,
+               input_fingerprint, configuration_fingerprint, operation_id,
+               provider, max_chunk_ms, pipeline_version, status, attempt_count,
+               last_error, created_at, updated_at, completed_at
+             ) VALUES (
+               'older-failed-job-row', 'mixed-failure-note', 'older-failed-job',
+               'older-failed-audio', 'microphone', 'microphone_only', 'turn',
+               0, 5000, 0, 'input', 'configuration', 'operation', 'provider',
+               NULL, 'pipeline', 'failed', 1, 'upstream_provider_failed',
+               '2026-08-21T09:04:00.000Z', '2026-08-21T09:05:00.000Z',
+               '2026-08-21T09:05:00.000Z'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed transcription job");
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let failure = query(
+            "SELECT recording_session_id, processing_stage
+             FROM note_processing_failures WHERE note_id = 'mixed-failure-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("failed-job ledger row");
+        assert_eq!(
+            failure.get::<String, _>("recording_session_id"),
+            "older-failed-job"
+        );
+        assert_eq!(failure.get::<String, _>("processing_stage"), "transcribing");
+        let note = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = 'mixed-failure-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("invalid blocker");
+        assert_eq!(
+            note.get::<Option<String>, _>("retry_recording_session_id")
+                .as_deref(),
+            Some("invalid-newest")
+        );
+        assert_eq!(
+            note.get::<Option<String>, _>("retry_processing_stage")
+                .as_deref(),
+            Some("validation")
+        );
+    }
+
+    #[tokio::test]
+    async fn processing_failure_migration_ignores_succeeded_note_transcription_job_without_exact_context(
+    ) {
+        let pool = test_pool().await;
+        run_migration_catalog(&pool, &MIGRATIONS[..52])
+            .await
+            .expect("schema before processing failure ledger");
+        query(
+            "INSERT INTO notes
+             (id, title, processing_status, created_at, updated_at, last_error)
+             VALUES ('succeeded-only-note', '', 'failed', '2026-08-21T09:00:00.000Z',
+                     '2026-08-21T09:05:00.000Z', 'Unrelated failure')",
+        )
+        .execute(&pool)
+        .await
+        .expect("failed note");
+        query(
+            "INSERT INTO recording_sessions
+             (id, note_id, status, started_at, expected_elapsed_ms, permission_state,
+              partial_path, final_path)
+             VALUES ('succeeded-only-session', 'succeeded-only-note', 'processed',
+                     '2026-08-21T09:00:00.000Z', 5000, 'granted',
+                     '/tmp/succeeded.partial.wav', '/tmp/succeeded.wav')",
+        )
+        .execute(&pool)
+        .await
+        .expect("recording session");
+        query(
+            "INSERT INTO audio_artifacts
+             (id, note_id, recording_session_id, path, format, duration_ms,
+              size_bytes, checksum, status, created_at)
+             VALUES ('succeeded-only-audio', 'succeeded-only-note',
+                     'succeeded-only-session', '/tmp/succeeded.wav', 'wav', 5000,
+                     160000, 'succeeded', 'valid', '2026-08-21T09:00:00.000Z')",
+        )
+        .execute(&pool)
+        .await
+        .expect("valid audio artifact");
+        query(
+            "INSERT INTO note_transcription_jobs (
+               id, note_id, recording_session_id, audio_artifact_id,
+               source, source_mode, job_kind, start_ms, end_ms, turn_index,
+               input_fingerprint, configuration_fingerprint, operation_id,
+               provider, max_chunk_ms, pipeline_version, status, attempt_count,
+               created_at, updated_at, completed_at
+             ) VALUES (
+               'succeeded-only-job', 'succeeded-only-note', 'succeeded-only-session',
+               'succeeded-only-audio', 'microphone', 'microphone_only', 'turn',
+               0, 5000, 0, 'input', 'configuration', 'operation', 'provider',
+               NULL, 'pipeline', 'succeeded', 1,
+               '2026-08-21T09:04:00.000Z', '2026-08-21T09:05:00.000Z',
+               '2026-08-21T09:05:00.000Z'
+             )",
+        )
+        .execute(&pool)
+        .await
+        .expect("succeeded transcription job");
+
+        run_migrations(&pool)
+            .await
+            .expect("install processing failure ledger");
+
+        let failure_count: i64 = query(
+            "SELECT COUNT(*) AS count FROM note_processing_failures
+             WHERE note_id = 'succeeded-only-note'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("failure count")
+        .get("count");
+        assert_eq!(failure_count, 0);
     }
 
     #[tokio::test]
@@ -2666,6 +3180,9 @@ mod tests {
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
+                (51, "generation_block_warnings".to_string()),
+                (52, "note_retry_context".to_string()),
+                (53, "note_processing_failures".to_string()),
             ]
         );
 

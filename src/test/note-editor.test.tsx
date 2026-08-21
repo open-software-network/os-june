@@ -734,16 +734,21 @@ describe("NoteEditor", () => {
               message:
                 "Microphone input stopped unexpectedly. Audio after this point may be missing.",
             },
+            {
+              source: "system" as const,
+              code: "system_audio_capture_warning",
+              message: "System audio may be incomplete.",
+            },
           ],
         }}
       />,
     );
 
-    expect(
-      screen.getByText(
-        "Microphone input stopped unexpectedly. Audio after this point may be missing.",
-      ),
-    ).toBeInTheDocument();
+    const warning = screen.getByRole("status", { name: "Recording source warning" });
+    expect(warning).toHaveTextContent(
+      "Microphone input stopped unexpectedly. Audio after this point may be missing.",
+    );
+    expect(warning).toHaveTextContent("System audio may be incomplete.");
     expect(
       screen.queryByText("Make sure everyone has agreed to be recorded."),
     ).not.toBeInTheDocument();
@@ -804,12 +809,60 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
       "The service is busy right now. Wait a minute, then retry.",
     );
     expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
     expect(screen.queryByText("authorization_denied")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a partial-Source warning visible on a generated note", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "ready",
+          lastError: "System: upstream_provider_failed",
+          generatedContent: "Notes generated from the healthy Source.",
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
+      "System: The transcription provider could not process this audio.",
+    );
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+  });
+
+  it("retries the recording session named by a partial note-transcription warning", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    render(
+      <NoteEditor
+        {...props}
+        onRetry={onRetry}
+        note={note({
+          activeTab: "notes",
+          processingStatus: "ready",
+          lastError: "System: upstream_provider_failed",
+          transcriptionWarnings: [
+            {
+              recordingSessionId: "session-with-system-gap",
+              message: "System: upstream_provider_failed",
+            },
+          ],
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry note transcription" }));
+
+    expect(onRetry).toHaveBeenCalledWith("session-with-system-gap");
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
+      "System: The transcription provider could not process this audio.",
+    );
   });
 
   it("orders source transcript turns by persisted turn metadata", () => {
@@ -1134,7 +1187,7 @@ describe("NoteEditor", () => {
     });
   });
 
-  it("offers retry when transcript failed and audio exists", async () => {
+  it("offers retry when the failed recording session is available", async () => {
     const user = userEvent.setup();
     const onRetry = vi.fn();
     render(
@@ -1154,6 +1207,7 @@ describe("NoteEditor", () => {
             checksum: "abc",
             createdAt: now,
           },
+          retryRecordingSessionId: "recording-1",
         })}
       />,
     );
@@ -1161,6 +1215,29 @@ describe("NoteEditor", () => {
     await user.click(screen.getByRole("button", { name: /Retry/i }));
 
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it("disables retry when only unrelated historical audio is available", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "failed",
+          lastError: "No source audio passed validation.",
+          audio: {
+            id: "older-audio",
+            source: "microphone",
+            format: "wav",
+            durationMs: 1200,
+            sizeBytes: 2048,
+            checksum: "older",
+            createdAt: now,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /Retry/i })).toBeDisabled();
   });
 
   it("keeps the record button available and hides retry while processing", () => {

@@ -10,10 +10,11 @@ import {
   resumeRecording,
 } from "../lib/tauri";
 import { playRecordingSound } from "../lib/recording-sounds";
-import { AGENT_RECORDER_REQUEST_EVENT } from "../lib/events";
+import { AGENT_RECORDER_REQUEST_EVENT, RECORDING_FINALIZATION_WARNING_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
-import type { RecordingSourceMode } from "../lib/tauri";
+import { recordingWarningsMessage } from "../lib/recording-warnings";
+import type { RecordingSourceMode, SourceWarningDto } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import type { AgentRecorderRequestPayload } from "./app-shell";
 import type { UseRecordingControlsDependencies } from "./use-recording-controls-types";
@@ -154,6 +155,22 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     };
   }, []);
 
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<SourceWarningDto[]>(RECORDING_FINALIZATION_WARNING_EVENT, ({ payload }) => {
+      const warning = recordingWarningsMessage(payload);
+      if (warning) setError(warning);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [setError]);
+
   async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
     // The dev __recordNoticesDemo session has no backend recording — stopping it
     // just tears the demo down (clears the synthetic status and pins) instead of
@@ -219,6 +236,8 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
     }
     try {
       const result = await finishRecording(sessionId);
+      const finalizationWarning = recordingWarningsMessage(result.warnings);
+      if (finalizationWarning) setError(finalizationWarning);
       // The result belongs to the partition where recording started. Once that
       // partition's temporary recording view has been retired, do not let the
       // finish response upsert the old note into the newly selected data partition.

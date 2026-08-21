@@ -60,6 +60,8 @@ const MICROPHONE_WRITER_WARNING_MESSAGE: &str =
     "Clovy stopped saving microphone audio. Stop the recording now to preserve the audio already written.";
 const MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE: &str =
     "Microphone recording could not keep up. Some audio may be missing.";
+const SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE: &str =
+    "System audio capture needs attention. Clovy is still recording and will preserve any audio it captures.";
 
 static ACTIVE_RECORDING: LazyLock<Mutex<Option<ActiveRecording>>> =
     LazyLock::new(|| Mutex::new(None));
@@ -83,6 +85,19 @@ pub struct FinishedRecording {
     pub sources: Vec<FinishedSource>,
     pub elapsed_ms: i64,
     pub recording: RecordingSessionDto,
+}
+
+pub struct ConsumedCapture {
+    pub session_id: String,
+    pub note_id: String,
+}
+
+pub struct CaptureFinishError {
+    pub error: Box<AppError>,
+    /// Present only after this call removed and consumed the live capture.
+    /// Callers may recover this exact durable session without confusing a
+    /// concurrent stale Stop request for a finalization failure.
+    pub consumed: Option<ConsumedCapture>,
 }
 
 pub struct StartedSource {
@@ -491,13 +506,14 @@ pub fn start_capture_with_cancel(
             Duration::ZERO,
         ) {
             Ok(capture) => {
-                if live_preview_available {
+                if let Some(circuit) = live_preview.as_ref().map(LivePreviewController::circuit) {
                     system_live_preview = Some(start_system_live_transcript_preview(
                         app.clone(),
                         note_id.clone(),
                         session_id.clone(),
                         source_mode,
                         system_partial_path,
+                        circuit,
                     ));
                 }
                 Some(capture)
@@ -766,11 +782,36 @@ pub fn is_capture_active() -> bool {
 }
 
 pub fn finish_active_capture() -> Result<Option<FinishedRecording>, AppError> {
-    let mut active = lock_active()?;
+    finish_active_capture_with_recovery_context(|_| {}).map_err(|failure| *failure.error)
+}
+
+pub fn finish_active_capture_with_recovery_context<F>(
+    on_consumed: F,
+) -> Result<Option<FinishedRecording>, CaptureFinishError>
+where
+    F: FnOnce(&ConsumedCapture),
+{
+    let mut active = lock_active().map_err(|error| CaptureFinishError {
+        error: Box::new(error),
+        consumed: None,
+    })?;
     let Some(recording) = active.take() else {
         return Ok(None);
     };
-    finalize_recording(recording).map(Some)
+    let consumed = ConsumedCapture {
+        session_id: recording.session_id.clone(),
+        note_id: recording.note_id.clone(),
+    };
+    // Reserve downstream ordering while the live-capture lock still excludes
+    // a replacement recording. The callback is synchronous and must not do
+    // capture work or await.
+    on_consumed(&consumed);
+    finish_while_capture_lock_held(active, || finalize_recording(recording).map(Some)).map_err(
+        |error| CaptureFinishError {
+            error: Box::new(error),
+            consumed: Some(consumed),
+        },
+    )
 }
 
 /// Snapshot of whatever recording is currently active, regardless of session
@@ -783,25 +824,69 @@ pub fn current_status() -> Option<RecordingStatusDto> {
 }
 
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
-    let mut active = lock_active()?;
+    finish_capture_with_recovery_context(session_id, |_| {}).map_err(|failure| *failure.error)
+}
+
+pub fn finish_capture_with_recovery_context<F>(
+    session_id: &str,
+    on_consumed: F,
+) -> Result<FinishedRecording, CaptureFinishError>
+where
+    F: FnOnce(&ConsumedCapture),
+{
+    let mut active = lock_active().map_err(|error| CaptureFinishError {
+        error: Box::new(error),
+        consumed: None,
+    })?;
     let Some(recording) = active.take() else {
-        return Err(AppError::new(
-            "recording_not_found",
-            "Recording session was not found.",
-        ));
+        return Err(CaptureFinishError {
+            error: Box::new(AppError::new(
+                "recording_not_found",
+                "Recording session was not found.",
+            )),
+            consumed: None,
+        });
     };
     if recording.session_id != session_id {
         let status = recording.status();
         *active = Some(recording);
-        return Err(AppError::new(
-            "recording_not_found",
-            format!(
-                "Active recording is {}, not {}",
-                status.session_id, session_id
-            ),
-        ));
+        return Err(CaptureFinishError {
+            error: Box::new(AppError::new(
+                "recording_not_found",
+                format!(
+                    "Active recording is {}, not {}",
+                    status.session_id, session_id
+                ),
+            )),
+            consumed: None,
+        });
     }
-    finalize_recording(recording)
+    let consumed = ConsumedCapture {
+        session_id: recording.session_id.clone(),
+        note_id: recording.note_id.clone(),
+    };
+    // This call alone owns finalization. Reserve its processing position
+    // before releasing the capture lock, so a replacement recording cannot
+    // stop and register first.
+    on_consumed(&consumed);
+    finish_while_capture_lock_held(active, || finalize_recording(recording)).map_err(|error| {
+        CaptureFinishError {
+            error: Box::new(error),
+            consumed: Some(consumed),
+        }
+    })
+}
+
+fn finish_while_capture_lock_held<T>(
+    capture_lock: std::sync::MutexGuard<'_, Option<ActiveRecording>>,
+    finish: impl FnOnce() -> T,
+) -> T {
+    // A replacement dual-source start terminates helpers it believes are
+    // stale. Keep replacement startup behind the live-capture lock until the
+    // owned system helper has completed its graceful Stop and final flush.
+    let result = finish();
+    drop(capture_lock);
+    result
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
@@ -885,14 +970,17 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
     }];
     if let Some(system_result) = system_stopped {
         match system_result {
-            SystemAudioStopResult::Stopped(system_path) => {
+            SystemAudioStopResult::Stopped {
+                path: system_path,
+                warning,
+            } => {
                 sources.push(FinishedSource {
                     source: RecordingSource::System,
                     final_path: system_final_path.unwrap_or(system_path.clone()),
                     elapsed_ms: recording_dto.elapsed_ms,
                     dropped_samples: 0,
                     capture_issue: None,
-                    failure: None,
+                    failure: warning,
                 });
             }
             SystemAudioStopResult::Failed(failure) => {
@@ -1032,6 +1120,28 @@ impl ActiveRecording {
                 recent_peaks: recent_peaks.clone(),
             }
         };
+        let sources = source_statuses(
+            self.source_mode,
+            state,
+            elapsed_ms,
+            MicrophoneStatusInput {
+                level: level.clone(),
+                bytes_written,
+                dropped_samples,
+                silence_warning: self.started.elapsed() >= Duration::from_secs(10)
+                    && rms < DEFAULT_SILENCE_THRESHOLD,
+                capture_issue: microphone_capture_issue.clone(),
+            },
+            self.system_capture.as_ref(),
+        );
+        let system_capture_issue = sources
+            .iter()
+            .any(|source| source.source == RecordingSource::System && source.last_error.is_some());
+        let warnings = source_warnings(
+            microphone_capture_issue.as_ref(),
+            dropped_samples,
+            system_capture_issue,
+        );
         RecordingStatusDto {
             session_id: self.session_id.clone(),
             note_id: Some(self.note_id.clone()),
@@ -1043,21 +1153,8 @@ impl ActiveRecording {
                 && rms < DEFAULT_SILENCE_THRESHOLD,
             bytes_written,
             live_preview_enabled: self.live_preview_enabled,
-            sources: source_statuses(
-                self.source_mode,
-                state,
-                elapsed_ms,
-                MicrophoneStatusInput {
-                    level,
-                    bytes_written,
-                    dropped_samples,
-                    silence_warning: self.started.elapsed() >= Duration::from_secs(10)
-                        && rms < DEFAULT_SILENCE_THRESHOLD,
-                    capture_issue: microphone_capture_issue.clone(),
-                },
-                self.system_capture.as_ref(),
-            ),
-            warnings: source_warnings(microphone_capture_issue.as_ref(), dropped_samples),
+            sources,
+            warnings,
         }
     }
 
@@ -1273,9 +1370,10 @@ fn microphone_stream_issue(
     })
 }
 
-fn source_warnings(
+pub(crate) fn source_warnings(
     microphone_capture_issue: Option<&MicrophoneStreamIssue>,
     dropped_samples: u64,
+    system_capture_issue: bool,
 ) -> Vec<SourceWarningDto> {
     let mut warnings = Vec::new();
     if let Some(issue) = microphone_capture_issue {
@@ -1296,12 +1394,35 @@ fn source_warnings(
             message: MICROPHONE_BUFFER_OVERFLOW_WARNING_MESSAGE.to_string(),
         });
     }
+    if system_capture_issue {
+        warnings.push(SourceWarningDto {
+            source: RecordingSource::System,
+            code: "system_audio_capture_warning".to_string(),
+            message: SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE.to_string(),
+        });
+    }
     warnings
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_lock_remains_held_until_recording_session_finalization_returns() {
+        let active = lock_active().expect("capture lock");
+
+        let finalized = finish_while_capture_lock_held(active, || {
+            assert!(matches!(
+                ACTIVE_RECORDING.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            true
+        });
+
+        assert!(finalized);
+        assert!(ACTIVE_RECORDING.try_lock().is_ok());
+    }
 
     #[test]
     fn microphone_permission_mapping_reports_granted_only_for_authorized() {
@@ -1497,7 +1618,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(Some(&issue), 0);
+        let warnings = source_warnings(Some(&issue), 0, false);
 
         let microphone = sources
             .iter()
@@ -1532,7 +1653,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(Some(&issue), 0);
+        let warnings = source_warnings(Some(&issue), 0, false);
 
         assert_eq!(sources[0].bytes_written, 512);
         assert_eq!(
@@ -1565,7 +1686,7 @@ mod tests {
             },
             None,
         );
-        let warnings = source_warnings(None, 37);
+        let warnings = source_warnings(None, 37, false);
 
         assert_eq!(sources[0].dropped_samples, 37);
         assert_eq!(
@@ -1574,6 +1695,36 @@ mod tests {
         );
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "microphone_buffer_overflow");
+    }
+
+    #[test]
+    fn system_capture_issue_appears_in_top_level_warnings() {
+        let warnings = source_warnings(None, 0, true);
+
+        assert_eq!(
+            warnings,
+            vec![SourceWarningDto {
+                source: RecordingSource::System,
+                code: "system_audio_capture_warning".to_string(),
+                message: SYSTEM_AUDIO_CAPTURE_WARNING_MESSAGE.to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn simultaneous_source_issues_remain_distinct_top_level_warnings() {
+        let issue = MicrophoneStreamIssue {
+            code: "microphone_stream_error".to_string(),
+            message: "Microphone input stopped unexpectedly".to_string(),
+            elapsed_ms: 2_000,
+        };
+
+        let warnings = source_warnings(Some(&issue), 37, true);
+
+        assert_eq!(warnings.len(), 3);
+        assert_eq!(warnings[0].code, "microphone_stream_error");
+        assert_eq!(warnings[1].code, "microphone_buffer_overflow");
+        assert_eq!(warnings[2].code, "system_audio_capture_warning");
     }
 
     #[test]

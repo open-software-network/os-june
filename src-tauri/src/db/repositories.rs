@@ -3,8 +3,9 @@ use crate::domain::types::{
     DictionaryEntryDto, FolderDto, ListDictationHistoryResponse, ListNotesResponse, MemoryDto,
     NoteCalendarEventDto, NoteDto, NoteListItemDto, NotePatchDto, NoteTranscriptionJobKind,
     NoteTranscriptionJobPlan, NoteTranscriptionJobRecord, NoteTranscriptionJobStatus,
-    ProcessingStatus, ProfileDataSummaryDto, RecordingOriginMetadata, RecordingSourceMode,
-    RecordingState, SessionFolderDto, SessionProfileDto, TranscriptCoverageDto, TranscriptDto,
+    NoteTranscriptionWarningDto, ProcessingStatus, ProfileDataSummaryDto, RecordingOriginMetadata,
+    RecordingSourceMode, RecordingState, SessionFolderDto, SessionProfileDto,
+    TranscriptCoverageDto, TranscriptDto,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
@@ -2291,6 +2292,7 @@ impl Repositories {
             audio_sources: self.latest_audio_sources(note_id).await?,
             active_tab: row.get("active_tab"),
             last_error: row.get("last_error"),
+            transcription_warnings: self.generation_block_warnings(note_id).await?,
             queued_recordings: 0,
             retry_recording_session_id,
         })
@@ -3433,18 +3435,147 @@ impl Repositories {
         status: ProcessingStatus,
         last_error: Option<String>,
     ) -> Result<String, sqlx::error::Error> {
+        let clear_retry_context =
+            matches!(status, ProcessingStatus::Ready | ProcessingStatus::Failed);
         let row = query(
             "UPDATE notes
-             SET processing_status = ?, last_error = ?, updated_at = ?
+             SET processing_status = ?,
+                 last_error = COALESCE(
+                     ?,
+                     (SELECT GROUP_CONCAT(warning, '; ')
+                      FROM note_generation_blocks
+                      WHERE note_id = ?
+                        AND warning IS NOT NULL
+                        AND TRIM(warning) != '')
+                 ),
+                 retry_recording_session_id = CASE WHEN ? = 1 THEN NULL ELSE retry_recording_session_id END,
+                 retry_processing_stage = CASE WHEN ? = 1 THEN NULL ELSE retry_processing_stage END,
+                 updated_at = ?
              WHERE id = ?
              RETURNING updated_at",
         )
         .bind(status.as_db())
         .bind(last_error)
+        .bind(note_id)
+        .bind(i64::from(clear_retry_context))
+        .bind(i64::from(clear_retry_context))
         .bind(timestamp())
         .bind(note_id)
         .fetch_one(&self.pool)
         .await?;
+        Ok(row.get("updated_at"))
+    }
+
+    pub async fn set_note_status_for_recording_session(
+        &self,
+        note_id: &str,
+        recording_session_id: &str,
+        processing_stage: Option<&str>,
+        status: ProcessingStatus,
+        last_error: Option<String>,
+    ) -> Result<String, sqlx::error::Error> {
+        let clear_retry_context = status == ProcessingStatus::Ready;
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        if status == ProcessingStatus::Failed {
+            let failure_message = last_error
+                .as_deref()
+                .unwrap_or("Clovy couldn't finish processing this recording.");
+            query(
+                "INSERT INTO note_processing_failures
+                 (note_id, recording_session_id, processing_stage, message, created_at, updated_at)
+                 SELECT ?, ?, COALESCE(
+                   ?,
+                   (SELECT retry_processing_stage FROM notes
+                    WHERE id = ? AND retry_recording_session_id = ?)
+                 ), ?, ?, ?
+                 WHERE EXISTS (
+                   SELECT 1 FROM audio_artifacts
+                   WHERE note_id = ? AND recording_session_id = ? AND status = 'valid'
+                 )
+                 ON CONFLICT(note_id, recording_session_id) DO UPDATE SET
+                   processing_stage = COALESCE(
+                     excluded.processing_stage,
+                     note_processing_failures.processing_stage
+                   ),
+                   message = excluded.message,
+                   updated_at = excluded.updated_at",
+            )
+            .bind(note_id)
+            .bind(recording_session_id)
+            .bind(processing_stage)
+            .bind(note_id)
+            .bind(recording_session_id)
+            .bind(failure_message)
+            .bind(&now)
+            .bind(&now)
+            .bind(note_id)
+            .bind(recording_session_id)
+            .execute(&mut *tx)
+            .await?;
+            query(
+                "UPDATE recording_sessions
+                 SET status = CASE WHEN ? = 'validation' THEN 'invalid' ELSE 'processing_failed' END,
+                     last_error = ?,
+                     ended_at = COALESCE(ended_at, ?)
+                 WHERE id = ? AND note_id = ?",
+            )
+            .bind(processing_stage)
+            .bind(last_error.as_deref())
+            .bind(&now)
+            .bind(recording_session_id)
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
+        } else if clear_retry_context {
+            query(
+                "DELETE FROM note_processing_failures
+                 WHERE note_id = ? AND recording_session_id = ?",
+            )
+            .bind(note_id)
+            .bind(recording_session_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let row = query(
+            "UPDATE notes
+             SET processing_status = ?,
+                 last_error = COALESCE(
+                     (SELECT GROUP_CONCAT(message, '; ')
+                      FROM (
+                        SELECT message FROM note_processing_failures
+                        WHERE note_id = ?
+                        ORDER BY updated_at DESC, rowid DESC
+                      )),
+                     ?,
+                     (SELECT GROUP_CONCAT(warning, '; ')
+                      FROM note_generation_blocks
+                      WHERE note_id = ?
+                        AND warning IS NOT NULL
+                        AND TRIM(warning) != '')
+                 ),
+                 retry_recording_session_id = CASE WHEN ? = 1 THEN NULL ELSE ? END,
+                 retry_processing_stage = CASE
+                     WHEN ? = 1 THEN NULL
+                     ELSE COALESCE(?, retry_processing_stage)
+                 END,
+                 updated_at = ?
+             WHERE id = ?
+             RETURNING updated_at",
+        )
+        .bind(status.as_db())
+        .bind(note_id)
+        .bind(last_error)
+        .bind(note_id)
+        .bind(i64::from(clear_retry_context))
+        .bind(recording_session_id)
+        .bind(i64::from(clear_retry_context))
+        .bind(processing_stage)
+        .bind(&now)
+        .bind(note_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(row.get("updated_at"))
     }
 
@@ -3485,6 +3616,26 @@ impl Repositories {
         generation_result_id: Option<&str>,
         title: Option<String>,
         content: String,
+    ) -> Result<NoteDto, sqlx::error::Error> {
+        self.set_generated_note_for_session_with_warning(
+            note_id,
+            recording_session_id,
+            generation_result_id,
+            title,
+            content,
+            None,
+        )
+        .await
+    }
+
+    pub async fn set_generated_note_for_session_with_warning(
+        &self,
+        note_id: &str,
+        recording_session_id: Option<&str>,
+        generation_result_id: Option<&str>,
+        title: Option<String>,
+        content: String,
+        warning: Option<&str>,
     ) -> Result<NoteDto, sqlx::error::Error> {
         let current = self.get_note(note_id).await?;
         let title = if is_replaceable_generated_title(&current.title) {
@@ -3531,6 +3682,7 @@ impl Repositories {
                 generation_result_id,
                 Some(title.as_str()),
                 &content,
+                warning,
             )
             .await?;
             self.compose_generation_blocks(note_id)
@@ -3562,6 +3714,34 @@ impl Repositories {
         // Title and edited content are user-owned. Apply generation's changes
         // only while the exact snapshots it read are still current; a NULL
         // edited-content snapshot never authorizes a write to that column.
+        let warning = self
+            .generation_block_warning_summary(note_id)
+            .await?
+            .or_else(|| warning.map(str::to_string));
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        if let Some(session_id) = recording_session_id {
+            query(
+                "DELETE FROM note_processing_failures
+                 WHERE note_id = ? AND recording_session_id = ?",
+            )
+            .bind(note_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+            query(
+                "UPDATE recording_sessions
+                 SET status = 'processed',
+                     last_error = NULL,
+                     ended_at = COALESCE(ended_at, ?)
+                 WHERE id = ? AND note_id = ?",
+            )
+            .bind(&now)
+            .bind(session_id)
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
+        }
         query(
             "UPDATE notes
              SET title = CASE
@@ -3575,8 +3755,48 @@ impl Repositories {
                      ELSE edited_content
                  END,
                  active_tab = 'notes',
-                 processing_status = 'ready',
-                 last_error = NULL,
+                 processing_status = CASE
+                     WHEN EXISTS (
+                       SELECT 1 FROM note_processing_failures
+                       WHERE note_id = ?
+                     ) THEN 'failed'
+                     ELSE 'ready'
+                 END,
+                 last_error = COALESCE(
+                     (SELECT GROUP_CONCAT(message, '; ')
+                      FROM (
+                        SELECT message FROM note_processing_failures
+                        WHERE note_id = ?
+                        ORDER BY updated_at DESC, rowid DESC
+                      )),
+                     ?
+                 ),
+                 retry_recording_session_id = (
+                   SELECT failure.recording_session_id
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
+                 retry_processing_stage = (
+                   SELECT failure.processing_stage
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
                  updated_at = ?,
                  revision = revision + 1
              WHERE id = ?",
@@ -3587,10 +3807,16 @@ impl Repositories {
         .bind(expected_edited_content.as_deref())
         .bind(expected_edited_content.as_deref())
         .bind(next_edited_content)
-        .bind(timestamp())
         .bind(note_id)
-        .execute(&self.pool)
+        .bind(note_id)
+        .bind(warning)
+        .bind(note_id)
+        .bind(note_id)
+        .bind(&now)
+        .bind(note_id)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         self.get_note(note_id).await
     }
 
@@ -3650,6 +3876,7 @@ impl Repositories {
         generation_result_id: Option<&str>,
         title_suggestion: Option<&str>,
         content: &str,
+        warning: Option<&str>,
     ) -> Result<(), sqlx::error::Error> {
         let now = timestamp();
         if let Some(row) = query(
@@ -3663,12 +3890,13 @@ impl Repositories {
             let id: String = row.get("id");
             query(
                 "UPDATE note_generation_blocks
-                 SET generation_result_id = ?, content = ?, title_suggestion = ?, updated_at = ?
+                 SET generation_result_id = ?, content = ?, title_suggestion = ?, warning = ?, updated_at = ?
                  WHERE id = ?",
             )
             .bind(generation_result_id)
             .bind(content)
             .bind(title_suggestion)
+            .bind(warning)
             .bind(&now)
             .bind(id)
             .execute(&self.pool)
@@ -3679,8 +3907,8 @@ impl Repositories {
         let sort_order = self.next_generation_block_sort_order(note_id).await?;
         query(
             "INSERT INTO note_generation_blocks
-             (id, note_id, recording_session_id, generation_result_id, content, title_suggestion, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, note_id, recording_session_id, generation_result_id, content, title_suggestion, warning, sort_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(note_id)
@@ -3688,12 +3916,52 @@ impl Repositories {
         .bind(generation_result_id)
         .bind(content)
         .bind(title_suggestion)
+        .bind(warning)
         .bind(sort_order)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn generation_block_warning_summary(
+        &self,
+        note_id: &str,
+    ) -> Result<Option<String>, sqlx::error::Error> {
+        let warnings = self.generation_block_warnings(note_id).await?;
+        Ok((!warnings.is_empty()).then(|| {
+            warnings
+                .into_iter()
+                .map(|warning| warning.message)
+                .collect::<Vec<_>>()
+                .join("; ")
+        }))
+    }
+
+    async fn generation_block_warnings(
+        &self,
+        note_id: &str,
+    ) -> Result<Vec<NoteTranscriptionWarningDto>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT recording_session_id, warning
+             FROM note_generation_blocks
+             WHERE note_id = ?
+               AND recording_session_id IS NOT NULL
+               AND warning IS NOT NULL
+               AND TRIM(warning) != ''
+             ORDER BY sort_order ASC, created_at ASC, rowid ASC",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| NoteTranscriptionWarningDto {
+                recording_session_id: row.get("recording_session_id"),
+                message: row.get("warning"),
+            })
+            .collect())
     }
 
     async fn next_generation_block_sort_order(
@@ -3763,10 +4031,19 @@ impl Repositories {
         // the recording session row is the source of truth for live capture.
         query(
             "UPDATE notes
-             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             SET processing_status = 'recording',
+                 last_error = (
+                     SELECT GROUP_CONCAT(warning, '; ')
+                     FROM note_generation_blocks
+                     WHERE note_id = ?
+                       AND warning IS NOT NULL
+                       AND TRIM(warning) != ''
+                 ),
+                 updated_at = ?
              WHERE id = ?
                AND processing_status NOT IN ('transcribing', 'generating')",
         )
+        .bind(note_id)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)
@@ -3822,10 +4099,19 @@ impl Repositories {
         .await?;
         query(
             "UPDATE notes
-             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             SET processing_status = 'recording',
+                 last_error = (
+                     SELECT GROUP_CONCAT(warning, '; ')
+                     FROM note_generation_blocks
+                     WHERE note_id = ?
+                       AND warning IS NOT NULL
+                       AND TRIM(warning) != ''
+                 ),
+                 updated_at = ?
              WHERE id = ?
                AND processing_status NOT IN ('transcribing', 'generating')",
         )
+        .bind(note_id)
         .bind(&now)
         .bind(note_id)
         .execute(&mut *tx)
@@ -3869,6 +4155,35 @@ impl Repositories {
         Ok(row.map(|row| RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str())))
     }
 
+    pub async fn has_older_recoverable_recording(
+        &self,
+        note_id: &str,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let row = query(
+            "SELECT EXISTS (
+               SELECT 1
+               FROM recording_sessions older
+               INNER JOIN recording_sessions current
+                 ON current.id = ? AND current.note_id = ?
+               WHERE older.note_id = current.note_id
+                 AND older.status = 'recoverable'
+                 AND (
+                   older.started_at < current.started_at
+                   OR (
+                     older.started_at = current.started_at
+                     AND older.rowid < current.rowid
+                   )
+                 )
+             ) AS has_older_recovery",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.get::<i64, _>("has_older_recovery") != 0)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn update_recording_session(
         &self,
@@ -3887,7 +4202,10 @@ impl Repositories {
             "UPDATE recording_sessions
              SET status = ?, expected_elapsed_ms = ?, file_size_bytes = ?, duration_ms = ?, checksum = ?,
                  peak_amplitude = ?, rms_amplitude = ?, validation_summary = ?, last_error = ?,
-                 ended_at = CASE WHEN ? IN ('valid', 'invalid', 'failed') THEN ? ELSE ended_at END
+                 ended_at = CASE
+                     WHEN ? IN ('valid', 'invalid', 'failed', 'processing_pending') THEN ?
+                     ELSE ended_at
+                 END
              WHERE id = ?",
         )
         .bind(status)
@@ -3944,16 +4262,16 @@ impl Repositories {
         &self,
         session_id: &str,
         note_id: &str,
-    ) -> Result<(), sqlx::error::Error> {
+    ) -> Result<bool, sqlx::error::Error> {
         let now = timestamp();
         let message = "Recording interrupted before it could be finished.";
         let mut tx = self.pool.begin().await?;
-        query(
+        let transitioned = query(
             "UPDATE recording_sessions
              SET status = 'recoverable',
                  last_error = COALESCE(last_error, ?),
                  ended_at = COALESCE(ended_at, ?)
-             WHERE id = ?
+             WHERE id = ? AND note_id = ?
                AND status IN (
                  'recording',
                  'paused',
@@ -3961,6 +4279,7 @@ impl Repositories {
                  'validating',
                  'transcribing',
                  'generating',
+                 'processing_pending',
                  'failed',
                  'recoverable'
                )",
@@ -3968,8 +4287,13 @@ impl Repositories {
         .bind(message)
         .bind(&now)
         .bind(session_id)
+        .bind(note_id)
         .execute(&mut *tx)
         .await?;
+        if transitioned.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
         query(
             "UPDATE audio_artifacts
              SET status = 'recoverable',
@@ -4003,7 +4327,8 @@ impl Repositories {
         .bind(note_id)
         .execute(&mut *tx)
         .await?;
-        tx.commit().await
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn mark_recording_recovery_valid(
@@ -4018,6 +4343,103 @@ impl Repositories {
              WHERE id = ?
                AND status = 'recoverable'",
         )
+        .bind(timestamp())
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_recording_processing_pending(
+        &self,
+        session_id: &str,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE recording_sessions
+             SET status = 'processing_pending', last_error = NULL
+             WHERE id = ?
+               AND status IN (
+                 'valid', 'invalid', 'recoverable', 'failed', 'processing_failed',
+                 'processed', 'processing_pending'
+               )",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_recording_retry_processing_pending(
+        &self,
+        note_id: &str,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE recording_sessions
+             SET status = 'processing_pending', last_error = NULL
+             WHERE id = ? AND note_id = ?
+               AND (
+                 status IN (
+                   'valid', 'invalid', 'recoverable', 'failed',
+                   'processing_failed', 'processing_pending'
+                 )
+                 OR (
+                   status = 'processed'
+                   AND (
+                     EXISTS (
+                       SELECT 1
+                       FROM note_processing_failures failure
+                       WHERE failure.note_id = recording_sessions.note_id
+                         AND failure.recording_session_id = recording_sessions.id
+                     )
+                     OR EXISTS (
+                       SELECT 1
+                       FROM note_generation_blocks block
+                       WHERE block.note_id = recording_sessions.note_id
+                         AND block.recording_session_id = recording_sessions.id
+                         AND block.warning IS NOT NULL
+                         AND TRIM(block.warning) != ''
+                     )
+                   )
+                 )
+               )",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn mark_recovered_recording_processing_pending(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE recording_sessions
+             SET status = 'processing_pending', last_error = NULL
+             WHERE id = ? AND status = 'recoverable'",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn mark_recording_processing_finished(
+        &self,
+        session_id: &str,
+        error: Option<&str>,
+    ) -> Result<(), sqlx::error::Error> {
+        query(
+            "UPDATE recording_sessions
+             SET status = CASE WHEN ? IS NULL THEN 'processed' ELSE 'processing_failed' END,
+                 last_error = ?,
+                 ended_at = COALESCE(ended_at, ?)
+             WHERE id = ?",
+        )
+        .bind(error)
+        .bind(error)
         .bind(timestamp())
         .bind(session_id)
         .execute(&self.pool)
@@ -4280,6 +4702,52 @@ impl Repositories {
         &self,
         note_id: &str,
     ) -> Result<Option<String>, sqlx::error::Error> {
+        let unresolved = query(
+            "SELECT
+               EXISTS (
+                 SELECT 1 FROM note_processing_failures WHERE note_id = ?
+               ) AS has_failures,
+               (SELECT failure.recording_session_id
+                FROM note_processing_failures failure
+                WHERE failure.note_id = ?
+                  AND EXISTS (
+                    SELECT 1 FROM audio_artifacts artifact
+                    WHERE artifact.note_id = failure.note_id
+                      AND artifact.recording_session_id = failure.recording_session_id
+                      AND artifact.status = 'valid'
+                  )
+                ORDER BY failure.updated_at DESC, failure.rowid DESC
+                LIMIT 1) AS retry_recording_session_id",
+        )
+        .bind(note_id)
+        .bind(note_id)
+        .fetch_one(&self.pool)
+        .await?;
+        if unresolved.get::<i64, _>("has_failures") != 0 {
+            return Ok(unresolved.get("retry_recording_session_id"));
+        }
+
+        let persisted = query(
+            "SELECT retry_recording_session_id,
+                    EXISTS (
+                      SELECT 1 FROM audio_artifacts artifact
+                      WHERE artifact.note_id = notes.id
+                        AND artifact.recording_session_id = notes.retry_recording_session_id
+                        AND artifact.status = 'valid'
+                    ) AS retryable
+             FROM notes
+             WHERE id = ?
+               AND retry_recording_session_id IS NOT NULL
+               AND TRIM(retry_recording_session_id) != ''",
+        )
+        .bind(note_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        if let Some(row) = persisted {
+            return Ok((row.get::<i64, _>("retryable") != 0)
+                .then(|| row.get("retry_recording_session_id")));
+        }
+
         let row = query(
             "SELECT aa.recording_session_id
              FROM audio_artifacts aa
@@ -4292,12 +4760,12 @@ impl Repositories {
              WHERE aa.note_id = ? AND aa.status = 'valid'
              GROUP BY aa.recording_session_id
              ORDER BY
+               CASE WHEN MAX(ngb.id) IS NULL THEN 0 ELSE 1 END,
                CASE WHEN MAX(
                  CASE WHEN ntj.status IN ('pending', 'running', 'failed') THEN 1 ELSE 0 END
                ) = 1 THEN 0 ELSE 1 END,
                CASE WHEN MAX(ntj.id) IS NULL THEN 1 ELSE 0 END,
                MAX(ntj.updated_at) DESC,
-               CASE WHEN MAX(ngb.id) IS NULL THEN 0 ELSE 1 END,
                MAX(aa.duration_ms) DESC,
                MAX(aa.created_at) DESC
              LIMIT 1",
@@ -5259,10 +5727,35 @@ impl Repositories {
     ) -> Result<u64, sqlx::error::Error> {
         let now = timestamp();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let interrupted_message = "Note transcription was interrupted when Clovy closed. Your recording is saved locally, so you can retry.";
+        query(
+            "INSERT INTO note_processing_failures
+             (note_id, recording_session_id, processing_stage, message, created_at, updated_at)
+             SELECT notes.id, notes.retry_recording_session_id,
+                    notes.retry_processing_stage, ?, ?, ?
+             FROM notes
+             WHERE notes.processing_status IN ('transcribing', 'generating')
+               AND notes.retry_recording_session_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM audio_artifacts artifact
+                 WHERE artifact.note_id = notes.id
+                   AND artifact.recording_session_id = notes.retry_recording_session_id
+                   AND artifact.status = 'valid'
+               )
+             ON CONFLICT(note_id, recording_session_id) DO UPDATE SET
+               processing_stage = excluded.processing_stage,
+               message = excluded.message,
+               updated_at = excluded.updated_at",
+        )
+        .bind(interrupted_message)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
         query(
             "UPDATE notes
              SET processing_status = 'failed',
-                 last_error = 'Transcription was interrupted when Clovy closed. Your recording is saved locally, so you can retry.',
+                 last_error = ?,
                  updated_at = ?
              WHERE processing_status IN ('transcribing', 'generating')
                AND EXISTS (
@@ -5270,6 +5763,7 @@ impl Repositories {
                  WHERE artifact.note_id = notes.id AND artifact.status = 'valid'
                )",
         )
+        .bind(interrupted_message)
         .bind(&now)
         .execute(&mut *tx)
         .await?;
@@ -5645,30 +6139,115 @@ impl Repositories {
         }))
     }
 
+    pub async fn recoverable_recording_info(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<RecordingRecoveryInfo>, sqlx::error::Error> {
+        let row = query(
+            "SELECT id, note_id, source_mode, partial_path, final_path, expected_elapsed_ms
+             FROM recording_sessions
+             WHERE id = ? AND status = 'recoverable'",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| RecordingRecoveryInfo {
+            session_id: row.get("id"),
+            note_id: row.get("note_id"),
+            source_mode: RecordingSourceMode::from(row.get::<String, _>("source_mode").as_str()),
+            partial_path: row.get("partial_path"),
+            final_path: row.get("final_path"),
+            expected_elapsed_ms: row.get("expected_elapsed_ms"),
+        }))
+    }
+
     pub async fn mark_recording_discarded(
         &self,
         session_id: &str,
         note_id: &str,
-    ) -> Result<NoteDto, sqlx::error::Error> {
-        query("UPDATE recording_sessions SET status = 'failed', last_error = 'Discarded by user' WHERE id = ?")
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+    ) -> Result<Option<NoteDto>, sqlx::error::Error> {
+        let now = timestamp();
+        let mut tx = self.pool.begin().await?;
+        let transitioned = query(
+            "UPDATE recording_sessions
+             SET status = 'discarded', last_error = 'Discarded by user'
+             WHERE id = ? AND note_id = ? AND status = 'recoverable'",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+        if transitioned.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
         query(
             "UPDATE audio_artifacts
              SET status = 'discarded', last_error = 'Discarded by user'
-             WHERE recording_session_id = ?",
+             WHERE recording_session_id = ? AND note_id = ?",
         )
         .bind(session_id)
-        .execute(&self.pool)
+        .bind(note_id)
+        .execute(&mut *tx)
         .await?;
-        self.set_note_status(
-            note_id,
-            ProcessingStatus::Failed,
-            Some("Recording discarded".to_string()),
+        query(
+            "DELETE FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
         )
+        .bind(note_id)
+        .bind(session_id)
+        .execute(&mut *tx)
         .await?;
-        self.get_note(note_id).await
+        query(
+            "UPDATE notes
+             SET processing_status = 'failed',
+                 last_error = COALESCE(
+                   (SELECT GROUP_CONCAT(message, '; ')
+                    FROM (
+                      SELECT message FROM note_processing_failures
+                      WHERE note_id = ?
+                      ORDER BY updated_at DESC, rowid DESC
+                    )),
+                   'Recording discarded'
+                 ),
+                 retry_recording_session_id = (
+                   SELECT failure.recording_session_id
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
+                 retry_processing_stage = (
+                   SELECT failure.processing_stage
+                   FROM note_processing_failures failure
+                   WHERE failure.note_id = ?
+                     AND EXISTS (
+                       SELECT 1 FROM audio_artifacts artifact
+                       WHERE artifact.note_id = failure.note_id
+                         AND artifact.recording_session_id = failure.recording_session_id
+                         AND artifact.status = 'valid'
+                     )
+                   ORDER BY failure.updated_at DESC, failure.rowid DESC
+                   LIMIT 1
+                 ),
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(note_id)
+        .bind(note_id)
+        .bind(note_id)
+        .bind(&now)
+        .bind(note_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.get_note(note_id).await.map(Some)
     }
 
     async fn folder_ids(&self, note_id: &str) -> Result<Vec<String>, sqlx::error::Error> {
@@ -6563,6 +7142,7 @@ mod tests {
         NoteTranscriptionJobStatus, ProcessingStatus, RecordingOriginMetadata, RecordingSourceMode,
     };
     use sqlx::query::query;
+    use sqlx::query_scalar::query_scalar;
     use sqlx::row::Row;
     use sqlx_sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use std::time::Duration as StdDuration;
@@ -6781,42 +7361,60 @@ mod tests {
             .create_note("default", None)
             .await
             .expect("create note");
+        let artifact_id = recording_artifact_for_note(
+            repos,
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            source,
+            checksum,
+            10_000,
+        )
+        .await;
+        (note.id, artifact_id)
+    }
+
+    async fn recording_artifact_for_note(
+        repos: &Repositories,
+        note_id: &str,
+        session_id: &str,
+        source_mode: RecordingSourceMode,
+        source: &str,
+        checksum: &str,
+        duration_ms: i64,
+    ) -> String {
+        let partial_path = format!("/tmp/{session_id}.partial.wav");
+        let final_path = format!("/tmp/{session_id}.wav");
         repos
             .create_recording_session(
-                &note.id,
+                note_id,
                 session_id,
-                RecordingSourceMode::MicrophonePlusSystem,
-                "/tmp/fixture.partial.wav",
-                "/tmp/fixture.wav",
+                source_mode,
+                &partial_path,
+                &final_path,
                 None,
             )
             .await
             .expect("create recording session");
         let artifact = repos
-            .create_pending_source_artifact(
-                &note.id,
-                session_id,
-                source,
-                "/tmp/fixture.partial.wav",
-                "/tmp/fixture.wav",
-            )
+            .create_pending_source_artifact(note_id, session_id, source, &partial_path, &final_path)
             .await
             .expect("create audio artifact");
         repos
             .finalize_source_artifact(
                 &artifact.id,
-                "/tmp/fixture.wav",
+                &final_path,
                 "valid",
-                10_000,
-                320_044,
+                duration_ms,
+                duration_ms.saturating_mul(32).saturating_add(44),
                 checksum,
-                10_000,
+                duration_ms,
                 None,
                 None,
             )
             .await
             .expect("finalize audio artifact");
-        (note.id, artifact.id)
+        artifact.id
     }
 
     #[tokio::test]
@@ -7234,6 +7832,82 @@ mod tests {
         let active = repos.get_note(&note.id).await.expect("active note");
         assert_eq!(active.processing_status, ProcessingStatus::Transcribing);
         assert_eq!(active.last_error.as_deref(), Some(warning));
+    }
+
+    #[tokio::test]
+    async fn partial_source_warning_survives_later_recording_sessions_until_its_recording_session_recovers(
+    ) {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        let warning = "System: The transcription provider could not process this audio.";
+
+        let warned = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("session-with-warning"),
+                None,
+                None,
+                "First generated block".to_string(),
+                Some(warning),
+            )
+            .await
+            .expect("generate partial note");
+        assert_eq!(warned.last_error.as_deref(), Some(warning));
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "later-recording",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/later.partial.wav",
+                "/tmp/later.wav",
+                None,
+            )
+            .await
+            .expect("start later recording");
+        let recording = repos.get_note(&note.id).await.expect("recording note");
+        assert_eq!(recording.last_error.as_deref(), Some(warning));
+
+        repos
+            .set_note_status(&note.id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("start later processing");
+        let processing = repos.get_note(&note.id).await.expect("processing note");
+        assert_eq!(processing.last_error.as_deref(), Some(warning));
+
+        let later = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("later-recording"),
+                None,
+                None,
+                "Second generated block".to_string(),
+                None,
+            )
+            .await
+            .expect("generate later session");
+        assert_eq!(later.last_error.as_deref(), Some(warning));
+
+        let recovered = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("session-with-warning"),
+                None,
+                None,
+                "Recovered first generated block".to_string(),
+                None,
+            )
+            .await
+            .expect("recover warned session");
+        assert_eq!(recovered.last_error, None);
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Recovered first generated block")));
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Second generated block")));
     }
 
     async fn transcript_count(repos: &Repositories, session_id: &str) -> i64 {
@@ -8171,6 +8845,442 @@ mod tests {
             .await
             .expect("reject cross-note session")
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn retry_uses_the_recording_session_that_failed_generation_over_an_older_partial_recording_session(
+    ) {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+
+        let older_artifact_id = recording_artifact_for_note(
+            &repos,
+            &note.id,
+            "older-partial-session",
+            RecordingSourceMode::MicrophonePlusSystem,
+            "system",
+            "older-checksum",
+            20_000,
+        )
+        .await;
+        let older_plan = transcription_plan(
+            "older-failed-span",
+            &older_artifact_id,
+            "system",
+            0,
+            20_000,
+            0,
+        );
+        repos
+            .reconcile_note_transcription_jobs(
+                &note.id,
+                "older-partial-session",
+                RecordingSourceMode::MicrophonePlusSystem,
+                std::slice::from_ref(&older_plan),
+            )
+            .await
+            .expect("older plan");
+        assert!(repos
+            .claim_note_transcription_job(&older_plan.span_id)
+            .await
+            .expect("claim older job"));
+        repos
+            .complete_note_transcription_job_failure(
+                &older_plan.span_id,
+                "upstream_provider_failed",
+            )
+            .await
+            .expect("fail older job");
+        repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("older-partial-session"),
+                None,
+                None,
+                "Older partial note".to_string(),
+                Some("System: upstream_provider_failed"),
+            )
+            .await
+            .expect("persist older partial note");
+
+        let newer_artifact_id = recording_artifact_for_note(
+            &repos,
+            &note.id,
+            "newer-generation-session",
+            RecordingSourceMode::MicrophoneOnly,
+            "microphone",
+            "newer-checksum",
+            5_000,
+        )
+        .await;
+        let newer_plan = transcription_plan(
+            "newer-succeeded-span",
+            &newer_artifact_id,
+            "microphone",
+            0,
+            5_000,
+            0,
+        );
+        repos
+            .reconcile_note_transcription_jobs(
+                &note.id,
+                "newer-generation-session",
+                RecordingSourceMode::MicrophoneOnly,
+                std::slice::from_ref(&newer_plan),
+            )
+            .await
+            .expect("newer plan");
+        assert!(repos
+            .claim_note_transcription_job(&newer_plan.span_id)
+            .await
+            .expect("claim newer job"));
+        repos
+            .complete_note_transcription_job_success(
+                &newer_plan.span_id,
+                "Newer transcript awaiting generation",
+                None,
+            )
+            .await
+            .expect("complete newer transcription");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "newer-generation-session",
+                Some("generating"),
+                ProcessingStatus::Failed,
+                Some("Note generation failed".to_string()),
+            )
+            .await
+            .expect("persist exact generation failure");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "newer-generation-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Note generation failed".to_string()),
+            )
+            .await
+            .expect("persist terminal wrapper failure without erasing stage");
+
+        let hydrated = repos.get_note(&note.id).await.expect("hydrate failed note");
+        assert_eq!(
+            hydrated.retry_recording_session_id.as_deref(),
+            Some("newer-generation-session")
+        );
+        assert_eq!(hydrated.transcription_warnings.len(), 1);
+        assert_eq!(
+            hydrated.transcription_warnings[0].recording_session_id,
+            "older-partial-session"
+        );
+        let retry_context = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = ?",
+        )
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("retry context");
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_recording_session_id"),
+            Some("newer-generation-session".to_string())
+        );
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_processing_stage"),
+            Some("generating".to_string())
+        );
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("newer-generation-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("failure stage");
+        assert_eq!(failure_stage.as_deref(), Some("generating"));
+        let failed_recording_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind("newer-generation-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("failed recording status");
+        assert_eq!(failed_recording_status, "processing_failed");
+        let retry_sources = repos
+            .latest_valid_audio_artifact_paths(&note.id)
+            .await
+            .expect("exact retry sources");
+        assert_eq!(retry_sources.len(), 1);
+        assert_eq!(retry_sources[0].3, "newer-generation-session");
+
+        let recovered = repos
+            .set_generated_note_for_session(
+                &note.id,
+                Some("newer-generation-session"),
+                None,
+                None,
+                "Recovered newer note".to_string(),
+            )
+            .await
+            .expect("complete exact retry");
+        assert_eq!(recovered.processing_status, ProcessingStatus::Ready);
+        assert_eq!(recovered.retry_recording_session_id, None);
+        let recovered_recording_status: String =
+            query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+                .bind("newer-generation-session")
+                .fetch_one(&repos.pool)
+                .await
+                .expect("recovered recording status");
+        assert_eq!(recovered_recording_status, "processed");
+        let cleared_context = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = ?",
+        )
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("cleared retry context");
+        assert_eq!(
+            cleared_context.get::<Option<String>, _>("retry_recording_session_id"),
+            None
+        );
+        assert_eq!(
+            cleared_context.get::<Option<String>, _>("retry_processing_stage"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn first_terminal_wrapper_failure_inherits_the_active_processing_stage() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        recording_artifact_for_note(
+            &repos,
+            &note.id,
+            "setup-failure-session",
+            RecordingSourceMode::MicrophoneOnly,
+            "microphone",
+            "setup-failure-checksum",
+            5_000,
+        )
+        .await;
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "setup-failure-session",
+                Some("transcribing"),
+                ProcessingStatus::Transcribing,
+                None,
+            )
+            .await
+            .expect("enter transcription stage");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "setup-failure-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Audio preparation failed".to_string()),
+            )
+            .await
+            .expect("terminal wrapper failure");
+
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("setup-failure-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("failure stage");
+        assert_eq!(failure_stage.as_deref(), Some("transcribing"));
+        let retry_context = query(
+            "SELECT retry_recording_session_id, retry_processing_stage
+             FROM notes WHERE id = ?",
+        )
+        .bind(&note.id)
+        .fetch_one(&repos.pool)
+        .await
+        .expect("retry context");
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_recording_session_id"),
+            Some("setup-failure-session".to_string())
+        );
+        assert_eq!(
+            retry_context.get::<Option<String>, _>("retry_processing_stage"),
+            Some("transcribing".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_wrapper_failure_does_not_inherit_stage_from_another_recording_session() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        for (session_id, checksum) in [
+            ("older-stage-session", "older-stage-checksum"),
+            ("new-stage-session", "new-stage-checksum"),
+        ] {
+            recording_artifact_for_note(
+                &repos,
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone",
+                checksum,
+                5_000,
+            )
+            .await;
+        }
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "older-stage-session",
+                Some("generating"),
+                ProcessingStatus::Generating,
+                None,
+            )
+            .await
+            .expect("older generation stage");
+
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "new-stage-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Setup failed before the first stage write".to_string()),
+            )
+            .await
+            .expect("new terminal wrapper failure");
+
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("new-stage-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("new failure stage");
+        assert_eq!(failure_stage, None);
+    }
+
+    #[tokio::test]
+    async fn exact_nonretryable_failure_does_not_fall_back_to_older_audio() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        recording_artifact_for_note(
+            &repos,
+            &note.id,
+            "older-successful-session",
+            RecordingSourceMode::MicrophoneOnly,
+            "microphone",
+            "older-checksum",
+            10_000,
+        )
+        .await;
+        repos
+            .create_recording_session(
+                &note.id,
+                "invalid-current-session",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/invalid-current.partial.wav",
+                "/tmp/invalid-current.wav",
+                None,
+            )
+            .await
+            .expect("invalid session");
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "invalid-current-session",
+                Some("validation"),
+                ProcessingStatus::Failed,
+                Some("No source audio passed validation.".to_string()),
+            )
+            .await
+            .expect("persist validation failure");
+
+        let failed = repos.get_note(&note.id).await.expect("failed note");
+        assert_eq!(failed.retry_recording_session_id, None);
+        assert!(repos
+            .latest_valid_audio_artifact_paths(&note.id)
+            .await
+            .expect("retry sources")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn later_recording_session_success_keeps_an_earlier_retryable_failure_visible() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        for session_id in ["earlier-failed-session", "later-successful-session"] {
+            recording_artifact_for_note(
+                &repos,
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone",
+                session_id,
+                10_000,
+            )
+            .await;
+        }
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "earlier-failed-session",
+                Some("transcribing"),
+                ProcessingStatus::Failed,
+                Some("Earlier recording still needs transcription.".to_string()),
+            )
+            .await
+            .expect("persist earlier failure");
+
+        let after_later_success = repos
+            .set_generated_note_for_session(
+                &note.id,
+                Some("later-successful-session"),
+                None,
+                None,
+                "Later generated note".to_string(),
+            )
+            .await
+            .expect("generate later session");
+        assert_eq!(
+            after_later_success.processing_status,
+            ProcessingStatus::Failed
+        );
+        assert_eq!(
+            after_later_success.retry_recording_session_id.as_deref(),
+            Some("earlier-failed-session")
+        );
+        assert_eq!(
+            after_later_success.last_error.as_deref(),
+            Some("Earlier recording still needs transcription.")
+        );
+
+        let recovered = repos
+            .set_generated_note_for_session(
+                &note.id,
+                Some("earlier-failed-session"),
+                None,
+                None,
+                "Recovered earlier note".to_string(),
+            )
+            .await
+            .expect("recover earlier session");
+        assert_eq!(recovered.processing_status, ProcessingStatus::Ready);
+        assert_eq!(recovered.retry_recording_session_id, None);
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Later generated note")));
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Recovered earlier note")));
     }
 
     #[tokio::test]
