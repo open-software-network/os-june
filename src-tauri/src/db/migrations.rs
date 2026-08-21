@@ -2362,6 +2362,7 @@ mod tests {
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
+                (51, "generation_block_warnings".to_string()),
             ]
         );
         assert_latest_stamp(&pool).await;
@@ -2682,6 +2683,7 @@ mod tests {
                 (48, "linear_managed_mcp".to_string()),
                 (49, "linear_managed_mcp_repair".to_string()),
                 (50, "agent_artifact_display_names".to_string()),
+                (51, "generation_block_warnings".to_string()),
             ]
         );
 
