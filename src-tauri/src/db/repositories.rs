@@ -5727,7 +5727,7 @@ impl Repositories {
     ) -> Result<u64, sqlx::error::Error> {
         let now = timestamp();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let interrupted_message = "Transcription was interrupted when Clovy closed. Your recording is saved locally, so you can retry.";
+        let interrupted_message = "Note transcription was interrupted when Clovy closed. Your recording is saved locally, so you can retry.";
         query(
             "INSERT INTO note_processing_failures
              (note_id, recording_session_id, processing_stage, message, created_at, updated_at)

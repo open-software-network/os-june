@@ -60,12 +60,13 @@ preview).
    No-speech and other audio-specific failures remain isolated to their Turn.
    An unambiguous shared-service note-transcription failure is persisted
    against the attempted durable job, then opens the pipeline circuit. The
-   compatibility API can also report deterministic provider rejections as
-   `upstream_provider_failed`. Consecutive ambiguous failures from distinct
-   Sources open the pipeline circuit; two consecutive ambiguous failures from
-   only one Source quarantine that Source while the other Source continues. A
-   successful or content-specific Turn breaks pipeline-wide corroboration and
-   resets that Source's evidence. When the other Source produced a usable
+   Clovy API compatibility envelope can also report deterministic provider
+   rejections as `upstream_provider_failed`. Consecutive ambiguous failures
+   from distinct Sources open the pipeline circuit; two consecutive ambiguous
+   failures from only one Source quarantine that Source while the other Source
+   continues. A successful or content-specific Turn breaks pipeline-wide
+   corroboration and resets that Source's evidence. When the other Source
+   produced a usable
    transcript, its Note can still be generated and retains a visible warning
    for the quarantined Source. Already in-flight requests are drained after a
    pipeline-wide failure, no more Turns or fallbacks are launched, and untouched

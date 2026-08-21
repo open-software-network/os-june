@@ -4096,7 +4096,7 @@ fn user_facing_transcription_failure_message(
             "internal_error" | "server_busy"
         )
     {
-        return "The transcription service is temporarily unavailable. Please try again."
+        return "The note transcription service is temporarily unavailable. Please try again."
             .to_string();
     }
     if matches!(
@@ -4106,7 +4106,7 @@ fn user_facing_transcription_failure_message(
         normalized_message.as_str(),
         "model_not_priced" | "model_type_invalid" | "price_overflow"
     ) {
-        return "The selected transcription model is unavailable. Choose another model, then retry."
+        return "The selected note transcription model is unavailable. Choose another model, then retry."
             .to_string();
     }
     if normalized_code == "clovy_api_response_invalid"
@@ -4123,7 +4123,7 @@ fn user_facing_transcription_failure_message(
         return message.trim().to_string();
     }
     if note_audio_failure_scope(&AppError::new(code, message)) != NoteAudioFailureScope::Turn {
-        return "Clovy couldn't reach the transcription service. Check your connection, then retry."
+        return "Clovy couldn't reach the note transcription service. Check your connection, then retry."
             .to_string();
     }
     message.trim().to_string()
@@ -6268,17 +6268,17 @@ mod tests {
             (
                 "june_request_failed",
                 "internal_error",
-                "The transcription service is temporarily unavailable. Please try again.",
+                "The note transcription service is temporarily unavailable. Please try again.",
             ),
             (
                 "june_request_failed",
                 "server_busy",
-                "The transcription service is temporarily unavailable. Please try again.",
+                "The note transcription service is temporarily unavailable. Please try again.",
             ),
             (
                 "june_request_failed",
                 "model_not_priced",
-                "The selected transcription model is unavailable. Choose another model, then retry.",
+                "The selected note transcription model is unavailable. Choose another model, then retry.",
             ),
         ] {
             assert_eq!(
@@ -6391,7 +6391,7 @@ mod tests {
             &[],
             &[failed_candidate(
                 "microphone",
-                "The transcription service was unavailable. Please try again.",
+                "The note transcription service was unavailable. Please try again.",
                 0,
             )],
         );

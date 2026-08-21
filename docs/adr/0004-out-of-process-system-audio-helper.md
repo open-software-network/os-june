@@ -43,3 +43,20 @@ plus `--pid` / `--log`). The helper writes system audio to its own growing WAV.
   timeouts (30s / 75s) gate whether system capture is offered.
 - **macOS 14.2+** is required for process-tap capture; older systems fall back
   to microphone-only (`system-audio-min-macos-version.txt`).
+
+## Addendum (2026-08-21): sticky health and stop diagnostics
+
+The helper status wire contract now adds a `stalled` event for nonterminal
+capture warnings. A stalled event may trigger one capture-graph rebuild, and a
+later message-free `ready` or `level` event can prove that warning recovered.
+Repeated buffer failures or a capture stall that survives the rebuild still
+emit `error`; the helper latches the first terminal error so later activity
+cannot erase it.
+
+The final `stopped` event is authoritative. It may carry the latched terminal
+failure in the additive `terminalError` field, or a late nonterminal warning in
+`message`. A message-free stopped event clears a recovered warning. Carrying
+diagnostics through the stop event closes the race where the main app reads an
+older status snapshot immediately before signaling the helper to stop. Older
+readers ignore the additive field, while the event names and fields remain a
+wire contract between the helper and `system_macos.rs`.

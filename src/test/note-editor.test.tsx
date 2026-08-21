@@ -809,7 +809,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
       "The service is busy right now. Wait a minute, then retry.",
     );
     expect(screen.getByText("Transcribing audio")).toBeInTheDocument();
@@ -830,7 +830,7 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
       "System: The transcription provider could not process this audio.",
     );
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
@@ -857,10 +857,10 @@ describe("NoteEditor", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Retry transcription" }));
+    await user.click(screen.getByRole("button", { name: "Retry note transcription" }));
 
     expect(onRetry).toHaveBeenCalledWith("session-with-system-gap");
-    expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+    expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
       "System: The transcription provider could not process this audio.",
     );
   });

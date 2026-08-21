@@ -556,7 +556,7 @@ export function NoteEditor({
             className="note-transcription-warning"
             tone="warning"
             role="alert"
-            aria-label="Transcription warning"
+            aria-label="Note transcription warning"
             body={userFacingFailureMessage(warning.message)}
             actions={
               note.processingStatus === "ready" ? (
@@ -576,7 +576,7 @@ export function NoteEditor({
                     })();
                   }}
                 >
-                  Retry transcription
+                  Retry note transcription
                 </button>
               ) : undefined
             }
@@ -587,7 +587,7 @@ export function NoteEditor({
             className="note-transcription-warning"
             tone="warning"
             role="alert"
-            aria-label="Transcription warning"
+            aria-label="Note transcription warning"
             body={userFacingFailureMessage(note.lastError)}
           />
         ) : null}

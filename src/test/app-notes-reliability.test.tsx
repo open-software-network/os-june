@@ -1500,7 +1500,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(screen.queryByRole("alert", { name: "Note transcription warning" })).toBeNull();
     expect(
       screen.queryByText(/The transcription provider could not process this audio\./),
     ).toBeNull();
@@ -1529,7 +1529,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     expect(await screen.findByText(/Transcribing audio/)).toBeInTheDocument();
-    expect(screen.queryByRole("alert", { name: "Transcription warning" })).toBeNull();
+    expect(screen.queryByRole("alert", { name: "Note transcription warning" })).toBeNull();
     expect(screen.queryByText(/Recording interrupted/)).toBeNull();
   });
 
@@ -1560,7 +1560,7 @@ describe("notes recording reliability", () => {
     await waitFor(() => expect(mocks.finishRecording).toHaveBeenCalledWith("rec-1"));
 
     await waitFor(() =>
-      expect(screen.getByRole("alert", { name: "Transcription warning" })).toHaveTextContent(
+      expect(screen.getByRole("alert", { name: "Note transcription warning" })).toHaveTextContent(
         "The service is busy right now. Wait a minute, then retry.",
       ),
     );
@@ -2027,7 +2027,7 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
-    await userEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry note transcription" }));
 
     await waitFor(() =>
       expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-system-gap"),
@@ -2065,13 +2065,13 @@ describe("notes recording reliability", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
     await userEvent.click(screen.getByRole("button", { name: /First note Preview/ }));
 
-    await userEvent.click(screen.getByRole("button", { name: "Retry transcription" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry note transcription" }));
 
     await waitFor(() =>
       expect(mocks.retryProcessing).toHaveBeenCalledWith("note-1", "recording-with-missing-file"),
     );
     expect(await screen.findByText(/saved system audio.*unavailable/i)).toHaveClass("error-banner");
-    expect(screen.getByRole("button", { name: "Retry transcription" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry note transcription" })).toBeEnabled();
     expect(container.querySelector(".note-failure-banner")).toBeNull();
   });
 
