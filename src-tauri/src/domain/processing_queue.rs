@@ -274,7 +274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registration_order_wins_when_later_session_is_polled_first() {
+    async fn registration_order_wins_when_later_recording_session_is_polled_first() {
         let (first, _) = enqueue("note-serial", "session-1").unwrap();
         let (second, _) = enqueue("note-serial", "session-2").unwrap();
         let (second_attempted_tx, second_attempted_rx) = tokio::sync::oneshot::channel();

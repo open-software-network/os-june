@@ -7835,7 +7835,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn partial_source_warning_survives_later_sessions_until_its_session_recovers() {
+    async fn partial_source_warning_survives_later_recording_sessions_until_its_recording_session_recovers(
+    ) {
         let repos = test_repositories().await;
         let note = repos.create_note("default", None).await.expect("note");
         let warning = "System: The transcription provider could not process this audio.";

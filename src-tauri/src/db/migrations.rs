@@ -2499,7 +2499,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn processing_failure_migration_prefers_exact_retry_session_over_older_job() {
+    async fn processing_failure_migration_prefers_exact_retry_recording_session_over_older_note_transcription_job(
+    ) {
         let pool = test_pool().await;
         run_migration_catalog(&pool, &MIGRATIONS[..52])
             .await
