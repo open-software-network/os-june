@@ -207,6 +207,9 @@ export function useNoteProcessingEvents(dependencies: UseNoteProcessingEventsDep
         noteId: progress.noteId,
         processingStatus: progress.processingStatus,
       });
+      if (progress.recovery) {
+        dispatch({ type: "recoveryAvailable", recovery: progress.recovery });
+      }
       if (progress.stage === "done") {
         pendingTerminalHydrationsRef.current.set(progress.noteId, progress);
         void refreshCompletedNote(progress);

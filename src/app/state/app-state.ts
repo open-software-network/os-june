@@ -46,6 +46,7 @@ export type NotesAction =
   | { type: "foldersLoaded"; folders: FolderDto[] }
   | { type: "notesLoaded"; notes: NoteListItemDto[] }
   | { type: "recoveriesUpdated"; recoveries: RecoverableRecordingDto[] }
+  | { type: "recoveryAvailable"; recovery: RecoverableRecordingDto }
   | { type: "recoveryRemoved"; sessionId: string };
 
 export function createInitialState(): NotesState {
@@ -164,6 +165,20 @@ export function notesReducer(state: NotesState, action: NotesAction): NotesState
       return {
         ...state,
         activeRecoveries: action.recoveries,
+      };
+    case "recoveryAvailable":
+      return {
+        ...state,
+        activeRecoveries: [
+          ...state.activeRecoveries.filter(
+            (recovery) => recovery.sessionId !== action.recovery.sessionId,
+          ),
+          action.recovery,
+        ].sort(
+          (left, right) =>
+            left.startedAt.localeCompare(right.startedAt) ||
+            left.sessionId.localeCompare(right.sessionId),
+        ),
       };
     case "recoveryRemoved":
       return {

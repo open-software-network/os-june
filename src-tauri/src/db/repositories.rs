@@ -3486,7 +3486,8 @@ impl Repositories {
                  (note_id, recording_session_id, processing_stage, message, created_at, updated_at)
                  SELECT ?, ?, COALESCE(
                    ?,
-                   (SELECT retry_processing_stage FROM notes WHERE id = ?)
+                   (SELECT retry_processing_stage FROM notes
+                    WHERE id = ? AND retry_recording_session_id = ?)
                  ), ?, ?, ?
                  WHERE EXISTS (
                    SELECT 1 FROM audio_artifacts
@@ -3504,6 +3505,7 @@ impl Repositories {
             .bind(recording_session_id)
             .bind(processing_stage)
             .bind(note_id)
+            .bind(recording_session_id)
             .bind(failure_message)
             .bind(&now)
             .bind(&now)
@@ -9011,6 +9013,59 @@ mod tests {
             retry_context.get::<Option<String>, _>("retry_processing_stage"),
             Some("transcribing".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_wrapper_failure_does_not_inherit_another_sessions_stage() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        for (session_id, checksum) in [
+            ("older-stage-session", "older-stage-checksum"),
+            ("new-stage-session", "new-stage-checksum"),
+        ] {
+            recording_artifact_for_note(
+                &repos,
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                "microphone",
+                checksum,
+                5_000,
+            )
+            .await;
+        }
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "older-stage-session",
+                Some("generating"),
+                ProcessingStatus::Generating,
+                None,
+            )
+            .await
+            .expect("older generation stage");
+
+        repos
+            .set_note_status_for_recording_session(
+                &note.id,
+                "new-stage-session",
+                None,
+                ProcessingStatus::Failed,
+                Some("Setup failed before the first stage write".to_string()),
+            )
+            .await
+            .expect("new terminal wrapper failure");
+
+        let failure_stage: Option<String> = query_scalar(
+            "SELECT processing_stage FROM note_processing_failures
+             WHERE note_id = ? AND recording_session_id = ?",
+        )
+        .bind(&note.id)
+        .bind("new-stage-session")
+        .fetch_one(&repos.pool)
+        .await
+        .expect("new failure stage");
+        assert_eq!(failure_stage, None);
     }
 
     #[tokio::test]

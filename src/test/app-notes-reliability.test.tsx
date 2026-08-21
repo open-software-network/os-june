@@ -1639,6 +1639,51 @@ describe("notes recording reliability", () => {
     expect(await screen.findByText("The completed note is visible.")).toBeInTheDocument();
   });
 
+  it("surfaces recovery immediately when a processing worker is abandoned", async () => {
+    const selectedNote = note({
+      processingStatus: "transcribing",
+      activeTab: "transcription",
+    });
+    const recoveredNote = {
+      ...selectedNote,
+      processingStatus: "recoverable" as const,
+      updatedAt: "2026-05-19T10:00:04Z",
+      lastError: "Recording interrupted. Review recovery options.",
+    };
+    mocks.bootstrapApp.mockResolvedValue({
+      folders: [],
+      notes: [selectedNote],
+      activeRecoveries: [],
+      providerConfigured: true,
+    });
+    let workerAbandoned = false;
+    mocks.getNote.mockImplementation(async () => (workerAbandoned ? recoveredNote : selectedNote));
+
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: "Meeting notes" }));
+    await userEvent.click(await screen.findByRole("button", { name: /First note Preview/ }));
+    await waitFor(() => expect(mocks.listeners.has("note-processing-progress")).toBe(true));
+
+    workerAbandoned = true;
+    await act(async () => {
+      await mocks.listeners.get("note-processing-progress")?.({
+        payload: {
+          noteId: selectedNote.id,
+          recordingSessionId: "abandoned-recording",
+          stage: "done",
+          processingStatus: "recoverable",
+          revision: recoveredNote.updatedAt,
+          recovery: recovery({ sessionId: "abandoned-recording" }),
+        },
+      });
+    });
+
+    expect(await screen.findByRole("status", { name: "Recoverable recording" })).toHaveTextContent(
+      "This recording was interrupted",
+    );
+    expect(screen.getByRole("button", { name: "Recover" })).toBeEnabled();
+  });
+
   it("retries a terminal hydration that fails transiently", async () => {
     const selectedNote = note({
       processingStatus: "generating",

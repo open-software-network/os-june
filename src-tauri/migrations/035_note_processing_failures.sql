@@ -47,7 +47,6 @@ WITH session_evidence AS (
     MAX(notes.retry_recording_session_id) AS exact_session_id,
     MAX(notes.retry_processing_stage) AS exact_processing_stage,
     MAX(note_generation_blocks.id) AS generation_block_id,
-    MAX(note_transcription_jobs.id) AS transcription_job_id,
     MAX(CASE
       WHEN note_transcription_jobs.status IN ('pending', 'running', 'failed') THEN 1
       ELSE 0
@@ -88,9 +87,8 @@ ranked_sessions AS (
   FROM session_evidence
   WHERE session_evidence.exact_session_id = session_evidence.recording_session_id
      OR (
-       session_evidence.exact_session_id IS NULL
-       AND session_evidence.generation_block_id IS NULL
-       AND session_evidence.transcription_job_id IS NOT NULL
+       session_evidence.generation_block_id IS NULL
+       AND session_evidence.has_unfinished_job = 1
      )
 )
 INSERT OR IGNORE INTO note_processing_failures (
@@ -105,7 +103,10 @@ SELECT
   notes.id,
   ranked_sessions.recording_session_id,
   COALESCE(
-    NULLIF(TRIM(ranked_sessions.exact_processing_stage), ''),
+    CASE
+      WHEN ranked_sessions.exact_session_id = ranked_sessions.recording_session_id
+      THEN NULLIF(TRIM(ranked_sessions.exact_processing_stage), '')
+    END,
     CASE
       WHEN ranked_sessions.has_unfinished_job = 1 THEN 'transcribing'
       WHEN ranked_sessions.has_succeeded_job = 1 THEN 'generating'
@@ -125,20 +126,40 @@ INNER JOIN ranked_sessions
 WHERE notes.processing_status = 'failed';
 
 UPDATE notes
-SET retry_recording_session_id = (
-      SELECT note_processing_failures.recording_session_id
-      FROM note_processing_failures
-      WHERE note_processing_failures.note_id = notes.id
-      ORDER BY note_processing_failures.updated_at DESC, note_processing_failures.rowid DESC
-      LIMIT 1
-    ),
-    retry_processing_stage = (
-      SELECT note_processing_failures.processing_stage
-      FROM note_processing_failures
-      WHERE note_processing_failures.note_id = notes.id
-      ORDER BY note_processing_failures.updated_at DESC, note_processing_failures.rowid DESC
-      LIMIT 1
-    )
+SET retry_recording_session_id = CASE
+      WHEN notes.retry_recording_session_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM audio_artifacts
+         WHERE audio_artifacts.note_id = notes.id
+           AND audio_artifacts.recording_session_id = notes.retry_recording_session_id
+           AND audio_artifacts.status = 'valid'
+       )
+      THEN notes.retry_recording_session_id
+      ELSE (
+        SELECT note_processing_failures.recording_session_id
+        FROM note_processing_failures
+        WHERE note_processing_failures.note_id = notes.id
+        ORDER BY note_processing_failures.updated_at DESC, note_processing_failures.rowid DESC
+        LIMIT 1
+      )
+    END,
+    retry_processing_stage = CASE
+      WHEN notes.retry_recording_session_id IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM audio_artifacts
+         WHERE audio_artifacts.note_id = notes.id
+           AND audio_artifacts.recording_session_id = notes.retry_recording_session_id
+           AND audio_artifacts.status = 'valid'
+       )
+      THEN notes.retry_processing_stage
+      ELSE (
+        SELECT note_processing_failures.processing_stage
+        FROM note_processing_failures
+        WHERE note_processing_failures.note_id = notes.id
+        ORDER BY note_processing_failures.updated_at DESC, note_processing_failures.rowid DESC
+        LIMIT 1
+      )
+    END
 WHERE notes.processing_status = 'failed'
   AND EXISTS (
     SELECT 1 FROM note_processing_failures

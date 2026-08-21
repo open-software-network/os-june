@@ -2114,14 +2114,26 @@ pub async fn finish_recording(
 ) -> Result<FinishRecordingResponse, AppError> {
     let timing = ProcessingTiming::from_done(Instant::now());
     let repos = repositories(&app).await?;
+    let progress = note_processing_progress_reporter(&app);
     let finalization_started = Instant::now();
-    let finished = finish_capture(&request.session_id)?;
+    let was_active = current_status()
+        .map(|recording| recording.session_id == request.session_id)
+        .unwrap_or(false);
+    let finished = match finish_capture(&request.session_id) {
+        Ok(finished) => finished,
+        Err(error) => {
+            if was_active {
+                recover_recording_session_by_id(&repos, &request.session_id, &progress).await;
+            }
+            return Err(error);
+        }
+    };
     let response = finish_recording_session_with_timing(
         &repos,
         finished,
         finalization_started,
         timing,
-        note_processing_progress_reporter(&app),
+        progress,
     )
     .await?;
     if response.processing_started {
@@ -2137,14 +2149,25 @@ async fn finish_active_capture_before_start(
     app: &AppHandle,
     repos: &Repositories,
 ) -> Result<(), AppError> {
+    let active_session_id = current_status().map(|recording| recording.session_id);
+    let progress = note_processing_progress_reporter(app);
     let finalization_started = Instant::now();
-    if let Some(finished) = finish_active_capture()? {
+    let finished = match finish_active_capture() {
+        Ok(finished) => finished,
+        Err(error) => {
+            if let Some(session_id) = active_session_id {
+                recover_recording_session_by_id(repos, &session_id, &progress).await;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(finished) = finished {
         let response = finish_recording_session_with_timing(
             repos,
             finished,
             finalization_started,
             ProcessingTiming::untracked(),
-            note_processing_progress_reporter(app),
+            progress,
         )
         .await?;
         if !response.warnings.is_empty() {
@@ -2173,6 +2196,29 @@ async fn finish_recording_session(
 }
 
 async fn finish_recording_session_with_timing(
+    repos: &Repositories,
+    finished: crate::audio::capture::FinishedRecording,
+    finalization_started: Instant,
+    timing: ProcessingTiming,
+    progress: NoteProcessingProgressReporter,
+) -> Result<FinishRecordingResponse, AppError> {
+    let note_id = finished.note_id.clone();
+    let recording_session_id = finished.session_id.clone();
+    let result = finish_recording_session_inner(
+        repos,
+        finished,
+        finalization_started,
+        timing,
+        progress.clone(),
+    )
+    .await;
+    if result.is_err() {
+        recover_abandoned_processing_run(repos, &note_id, &recording_session_id, &progress).await;
+    }
+    result
+}
+
+async fn finish_recording_session_inner(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
@@ -2506,7 +2552,7 @@ async fn finish_recording_session_with_timing(
     };
     if depth <= 1 {
         // First in line: reflect "processing" immediately for snappy feedback.
-        repos
+        if let Err(error) = repos
             .set_note_status_for_recording_session(
                 &finished.note_id,
                 &finished.session_id,
@@ -2514,10 +2560,42 @@ async fn finish_recording_session_with_timing(
                 crate::domain::types::ProcessingStatus::Transcribing,
                 None,
             )
-            .await?;
+            .await
+        {
+            let abandoned = recover_abandoned_processing_run(
+                repos,
+                &finished.note_id,
+                &finished.session_id,
+                &progress,
+            )
+            .await;
+            if abandoned {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+            return Err(error.into());
+        }
     }
 
-    let mut note = repos.get_note(&finished.note_id).await?;
+    let mut note = match repos.get_note(&finished.note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            let abandoned = recover_abandoned_processing_run(
+                repos,
+                &finished.note_id,
+                &finished.session_id,
+                &progress,
+            )
+            .await;
+            if abandoned {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+            return Err(error.into());
+        }
+    };
     note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
 
     let task_repos = repos.clone();
@@ -2527,7 +2605,9 @@ async fn finish_recording_session_with_timing(
     let mut task_sources = Some(valid_sources);
     tokio::spawn(async move {
         let run_completed = match AssertUnwindSafe(async {
-            ticket.wait_until_ready().await;
+            if !ticket.wait_until_ready().await {
+                return false;
+            }
             #[cfg(test)]
             note_transcription_benchmark::record_processing_dequeued(&task_session_id);
             add_latency_checkpoint(
@@ -2548,7 +2628,7 @@ async fn finish_recording_session_with_timing(
             let title = note.title.clone();
             let existing_generated_note = note.generated_content.clone();
             let manual_notes = manual_notes_for_generation(&note);
-            let _ = process_saved_source_audio_with_progress(
+            process_saved_source_audio_with_progress(
                 &task_repos,
                 &task_note_id,
                 &task_session_id,
@@ -2560,8 +2640,8 @@ async fn finish_recording_session_with_timing(
                 timing,
                 progress.clone(),
             )
-            .await;
-            true
+            .await
+            .is_ok()
         })
         .catch_unwind()
         .await
@@ -2576,16 +2656,22 @@ async fn finish_recording_session_with_timing(
                 false
             }
         };
-        if !run_completed {
+        let abandoned = if !run_completed {
             recover_abandoned_processing_run(
                 &task_repos,
                 &task_note_id,
                 &task_session_id,
                 &progress,
             )
-            .await;
+            .await
+        } else {
+            false
+        };
+        if abandoned {
+            ticket.abandon();
+        } else {
+            ticket.finish();
         }
-        ticket.finish();
     });
     Ok(FinishRecordingResponse {
         note,
@@ -2772,8 +2858,9 @@ pub async fn retry_processing(
         note.queued_recordings = processing_queue::queued_behind(&request.note_id);
         return Ok(note);
     };
+    let progress = note_processing_progress_reporter(&app);
     if depth <= 1 {
-        repos
+        if let Err(error) = repos
             .set_note_status_for_recording_session(
                 &request.note_id,
                 &task_recording_session_id,
@@ -2781,19 +2868,67 @@ pub async fn retry_processing(
                 ProcessingStatus::Transcribing,
                 None,
             )
-            .await?;
+            .await
+        {
+            let abandoned = recover_abandoned_processing_run(
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            if abandoned {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+            return Err(error.into());
+        }
     }
 
-    let mut note = repos.get_note(&request.note_id).await?;
+    let mut note = match repos.get_note(&request.note_id).await {
+        Ok(note) => note,
+        Err(error) => {
+            let abandoned = recover_abandoned_processing_run(
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            if abandoned {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+            return Err(error.into());
+        }
+    };
     note.queued_recordings = processing_queue::queued_behind(&request.note_id);
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
-    let task_source_mode = repos
+    let task_source_mode = match repos
         .recording_session_source_mode(&task_recording_session_id)
-        .await?
-        .unwrap_or(RecordingSourceMode::MicrophoneOnly);
-    let progress = note_processing_progress_reporter(&app);
+        .await
+    {
+        Ok(source_mode) => source_mode.unwrap_or(RecordingSourceMode::MicrophoneOnly),
+        Err(error) => {
+            let abandoned = recover_abandoned_processing_run(
+                &repos,
+                &request.note_id,
+                &task_recording_session_id,
+                &progress,
+            )
+            .await;
+            if abandoned {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+            return Err(error.into());
+        }
+    };
     let mut task_sources = Some(
         sources
             .into_iter()
@@ -2804,7 +2939,9 @@ pub async fn retry_processing(
     );
     tokio::spawn(async move {
         let run_completed = match AssertUnwindSafe(async {
-            ticket.wait_until_ready().await;
+            if !ticket.wait_until_ready().await {
+                return false;
+            }
             let timing = ProcessingTiming::untracked();
             add_latency_checkpoint(
                 &task_repos,
@@ -2822,7 +2959,7 @@ pub async fn retry_processing(
             let title = note.title.clone();
             let existing_generated_note = note.generated_content.clone();
             let manual_notes = manual_notes_for_generation(&note);
-            let _ = process_saved_source_audio_with_progress(
+            process_saved_source_audio_with_progress(
                 &task_repos,
                 &task_note_id,
                 &task_recording_session_id,
@@ -2834,8 +2971,8 @@ pub async fn retry_processing(
                 timing,
                 progress.clone(),
             )
-            .await;
-            true
+            .await
+            .is_ok()
         })
         .catch_unwind()
         .await
@@ -2850,16 +2987,22 @@ pub async fn retry_processing(
                 false
             }
         };
-        if !run_completed {
+        let abandoned = if !run_completed {
             recover_abandoned_processing_run(
                 &task_repos,
                 &task_note_id,
                 &task_recording_session_id,
                 &progress,
             )
-            .await;
+            .await
+        } else {
+            false
+        };
+        if abandoned {
+            ticket.abandon();
+        } else {
+            ticket.finish();
         }
-        ticket.finish();
     });
     Ok(note)
 }
@@ -2872,9 +3015,13 @@ async fn enqueue_retry_processing(
     let Some(registration) = processing_queue::enqueue(note_id, recording_session_id) else {
         return Ok(None);
     };
-    repos
+    if let Err(error) = repos
         .mark_recording_processing_pending(recording_session_id)
-        .await?;
+        .await
+    {
+        registration.0.finish();
+        return Err(error.into());
+    }
     Ok(Some(registration))
 }
 
@@ -2883,23 +3030,42 @@ async fn recover_abandoned_processing_run(
     note_id: &str,
     recording_session_id: &str,
     progress: &NoteProcessingProgressReporter,
-) {
+) -> bool {
     match repos
         .mark_recording_recoverable(recording_session_id, note_id)
         .await
     {
         Ok(true) => {
-            if let Ok(note) = repos.get_note(note_id).await {
-                progress.emit(
-                    note_id,
-                    recording_session_id,
-                    NoteProcessingStage::Done,
-                    ProcessingStatus::Recoverable,
-                    note.updated_at,
-                );
-            }
+            let revision = repos
+                .get_note(note_id)
+                .await
+                .map(|note| note.updated_at)
+                .unwrap_or_else(|_| crate::db::repositories::timestamp());
+            let recovery = match scan_marked_recoverable_recordings(&repos.pool).await {
+                Ok(recoveries) => recoveries
+                    .into_iter()
+                    .find(|recovery| recovery.session_id == recording_session_id),
+                Err(error) => {
+                    tracing::warn!(
+                        note_id,
+                        recording_session_id,
+                        %error,
+                        "failed to hydrate recoverable recording event"
+                    );
+                    None
+                }
+            };
+            progress.emit_with_recovery(
+                note_id,
+                recording_session_id,
+                NoteProcessingStage::Done,
+                ProcessingStatus::Recoverable,
+                revision,
+                recovery,
+            );
+            true
         }
-        Ok(false) => {}
+        Ok(false) => false,
         Err(error) => {
             tracing::error!(
                 note_id,
@@ -2907,6 +3073,29 @@ async fn recover_abandoned_processing_run(
                 %error,
                 "failed to recover abandoned note processing"
             );
+            true
+        }
+    }
+}
+
+async fn recover_recording_session_by_id(
+    repos: &Repositories,
+    recording_session_id: &str,
+    progress: &NoteProcessingProgressReporter,
+) -> bool {
+    match repos.recording_recovery_info(recording_session_id).await {
+        Ok(Some(info)) => {
+            recover_abandoned_processing_run(repos, &info.note_id, recording_session_id, progress)
+                .await
+        }
+        Ok(None) => false,
+        Err(error) => {
+            tracing::error!(
+                recording_session_id,
+                %error,
+                "failed to locate recording after finalization error"
+            );
+            true
         }
     }
 }
@@ -3157,7 +3346,12 @@ async fn process_recovered_source_audio(
     }
     let mut sources = Some(sources);
     let result = match AssertUnwindSafe(async {
-        ticket.wait_until_ready().await;
+        if !ticket.wait_until_ready().await {
+            return Err(AppError::new(
+                "processing_predecessor_recoverable",
+                "An earlier saved recording must be recovered first.",
+            ));
+        }
         let note = repos.get_note(note_id).await?;
         let sources = sources.take().ok_or_else(|| {
             AppError::new(
@@ -3195,10 +3389,16 @@ async fn process_recovered_source_audio(
             ))
         }
     };
-    if result.is_err() {
-        recover_abandoned_processing_run(repos, note_id, session_id, &progress).await;
+    let abandoned = if result.is_err() {
+        recover_abandoned_processing_run(repos, note_id, session_id, &progress).await
+    } else {
+        false
+    };
+    if abandoned {
+        ticket.abandon();
+    } else {
+        ticket.finish();
     }
-    ticket.finish();
     result
 }
 
@@ -3457,18 +3657,29 @@ mod note_transcription_benchmark;
 
 #[cfg(test)]
 mod retry_audio_source_tests {
-    use super::{enqueue_retry_processing, recover_abandoned_processing_run, retry_audio_sources};
+    use super::{
+        enqueue_retry_processing, finish_recording_session, recover_abandoned_processing_run,
+        retry_audio_sources,
+    };
     use crate::{
         app_paths::AppPaths,
-        audio::recovery::scan_marked_recoverable_recordings,
+        audio::{
+            capture::{FinishedRecording, FinishedSource},
+            recovery::scan_marked_recoverable_recordings,
+        },
         db::{migrations::run_migrations, repositories::Repositories},
         domain::{
             processing::NoteProcessingProgressReporter,
             processing_queue,
-            types::{ProcessingStatus, RecordingSourceMode},
+            types::{
+                AudioLevelDto, ProcessingStatus, RecordingSessionDto, RecordingSource,
+                RecordingSourceMode, RecordingState,
+            },
         },
     };
-    use sqlx::query_scalar::query_scalar;
+    use sqlx::{query::query, query_scalar::query_scalar};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
 
     #[tokio::test]
     async fn retry_aborts_when_any_selected_valid_source_file_is_missing() {
@@ -3617,13 +3828,15 @@ mod retry_audio_source_tests {
             .await
             .expect("pending processing");
 
-        recover_abandoned_processing_run(
-            &repos,
-            &note.id,
-            session_id,
-            &NoteProcessingProgressReporter::default(),
-        )
-        .await;
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emitted_for_sink = Arc::clone(&emitted);
+        let reporter = NoteProcessingProgressReporter::new(move |progress| {
+            emitted_for_sink
+                .lock()
+                .expect("progress sink lock")
+                .push(progress);
+        });
+        assert!(recover_abandoned_processing_run(&repos, &note.id, session_id, &reporter,).await);
 
         let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
         assert_eq!(
@@ -3633,6 +3846,113 @@ mod retry_audio_source_tests {
         let recoveries = scan_marked_recoverable_recordings(&repos.pool)
             .await
             .expect("renderer reload scan");
+        assert_eq!(recoveries.len(), 1);
+        assert_eq!(recoveries[0].session_id, session_id);
+        let progress = emitted.lock().expect("progress events");
+        assert_eq!(progress.len(), 1);
+        assert_eq!(
+            progress[0]
+                .recovery
+                .as_ref()
+                .map(|recovery| recovery.session_id.as_str()),
+            Some(session_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn finalization_error_promotes_consumed_capture_to_recovery() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("failed-finalization.partial.wav");
+        let final_path = directory.path().join("failed-finalization.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let session_id = "failed-finalization";
+        repos
+            .create_recording_session(
+                &note.id,
+                session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("source artifact");
+        query(
+            "CREATE TRIGGER fail_finalization_session_update
+             BEFORE UPDATE OF status ON recording_sessions
+             WHEN NEW.id = 'failed-finalization'
+              AND NEW.status IN ('invalid', 'processing_pending')
+             BEGIN
+               SELECT RAISE(FAIL, 'injected finalization persistence failure');
+             END",
+        )
+        .execute(&repos.pool)
+        .await
+        .expect("failure trigger");
+        let finished = FinishedRecording {
+            session_id: session_id.to_string(),
+            note_id: note.id.clone(),
+            source_mode: RecordingSourceMode::MicrophoneOnly,
+            final_path: final_path.clone(),
+            sources: vec![FinishedSource {
+                source: RecordingSource::Microphone,
+                final_path,
+                elapsed_ms: 5_000,
+                dropped_samples: 0,
+                capture_issue: None,
+                failure: None,
+            }],
+            elapsed_ms: 5_000,
+            recording: RecordingSessionDto {
+                id: session_id.to_string(),
+                note_id: note.id.clone(),
+                source_mode: RecordingSourceMode::MicrophoneOnly,
+                state: RecordingState::Validating,
+                started_at: crate::db::repositories::timestamp(),
+                elapsed_ms: 5_000,
+                device_label: None,
+                level: AudioLevelDto::default(),
+                live_preview_enabled: false,
+                sources: Vec::new(),
+                warnings: Vec::new(),
+            },
+        };
+
+        finish_recording_session(&repos, finished, Instant::now())
+            .await
+            .expect_err("injected finalization persistence failure");
+        let status: String = query_scalar("SELECT status FROM recording_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_one(&repos.pool)
+            .await
+            .expect("recording status");
+        assert_eq!(status, "recoverable");
+        let recovered_note = repos.get_note(&note.id).await.expect("recoverable note");
+        assert_eq!(
+            recovered_note.processing_status,
+            ProcessingStatus::Recoverable
+        );
+        let recoveries = scan_marked_recoverable_recordings(&repos.pool)
+            .await
+            .expect("recovery scan");
         assert_eq!(recoveries.len(), 1);
         assert_eq!(recoveries[0].session_id, session_id);
     }

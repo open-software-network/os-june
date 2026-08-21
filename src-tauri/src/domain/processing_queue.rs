@@ -21,30 +21,42 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CompletionState {
+    Pending,
+    Finished,
+    Abandoned,
+}
+
 struct CompletionSignal {
-    completed: watch::Sender<bool>,
+    completed: watch::Sender<CompletionState>,
 }
 
 impl CompletionSignal {
     fn new() -> Self {
-        let (completed, _receiver) = watch::channel(false);
+        let (completed, _receiver) = watch::channel(CompletionState::Pending);
         Self { completed }
     }
 
-    async fn wait(&self) {
+    async fn wait(&self) -> bool {
         let mut completed = self.completed.subscribe();
-        if *completed.borrow_and_update() {
-            return;
+        match *completed.borrow_and_update() {
+            CompletionState::Finished => return true,
+            CompletionState::Abandoned => return false,
+            CompletionState::Pending => {}
         }
         while completed.changed().await.is_ok() {
-            if *completed.borrow_and_update() {
-                return;
+            match *completed.borrow_and_update() {
+                CompletionState::Finished => return true,
+                CompletionState::Abandoned => return false,
+                CompletionState::Pending => {}
             }
         }
+        false
     }
 
-    fn complete(&self) {
-        self.completed.send_replace(true);
+    fn complete(&self, state: CompletionState) {
+        self.completed.send_replace(state);
     }
 }
 
@@ -70,22 +82,38 @@ pub struct ProcessingTicket {
     predecessors: Vec<Arc<CompletionSignal>>,
     completion: Arc<CompletionSignal>,
     pending: Arc<AtomicI64>,
-    finished: AtomicBool,
+    released: AtomicBool,
 }
 
 impl ProcessingTicket {
     /// Wait until every recording session registered earlier on this note has
-    /// finished processing.
-    pub async fn wait_until_ready(&self) {
+    /// finished processing. Returns false when an earlier session was
+    /// abandoned, so later saved audio can be surfaced for recovery instead of
+    /// being generated out of recording order.
+    pub async fn wait_until_ready(&self) -> bool {
         for predecessor in &self.predecessors {
-            predecessor.wait().await;
+            if !predecessor.wait().await {
+                return false;
+            }
         }
+        true
     }
 
     /// Mark this recording session done, release its identity, and wake the
     /// next registered session.
     pub fn finish(&self) {
-        if self.finished.swap(true, Ordering::SeqCst) {
+        self.release(CompletionState::Finished);
+    }
+
+    /// Release a session that did not reach a durable terminal state. Later
+    /// registered sessions observe the abandonment and recover their own saved
+    /// audio rather than bypassing this recording.
+    pub fn abandon(&self) {
+        self.release(CompletionState::Abandoned);
+    }
+
+    fn release(&self, state: CompletionState) {
+        if self.released.swap(true, Ordering::SeqCst) {
             return;
         }
         let mut map = QUEUES.lock().expect("processing queue mutex poisoned");
@@ -112,13 +140,13 @@ impl ProcessingTicket {
             }
         }
         drop(map);
-        self.completion.complete();
+        self.completion.complete(state);
     }
 }
 
 impl Drop for ProcessingTicket {
     fn drop(&mut self) {
-        self.finish();
+        self.abandon();
     }
 }
 
@@ -150,7 +178,7 @@ pub fn enqueue(note_id: &str, recording_session_id: &str) -> Option<(ProcessingT
         predecessors: queue.active_completions.clone(),
         completion: Arc::clone(&completion),
         pending: queue.pending.clone(),
-        finished: AtomicBool::new(false),
+        released: AtomicBool::new(false),
     };
     queue.active_completions.push(completion);
     Some((ticket, depth))
@@ -241,8 +269,9 @@ mod tests {
         let (second_started_tx, mut second_started_rx) = tokio::sync::mpsc::unbounded_channel();
         let second_task = tokio::spawn(async move {
             second_attempted_tx.send(()).unwrap();
-            second.wait_until_ready().await;
-            second_started_tx.send(()).unwrap();
+            second_started_tx
+                .send(second.wait_until_ready().await)
+                .unwrap();
             second.finish();
         });
 
@@ -259,10 +288,15 @@ mod tests {
 
         first.wait_until_ready().await;
         first.finish();
-        tokio::time::timeout(std::time::Duration::from_secs(1), second_started_rx.recv())
-            .await
-            .expect("second session remained blocked")
-            .expect("second session task ended without starting");
+        let ready =
+            tokio::time::timeout(std::time::Duration::from_secs(1), second_started_rx.recv())
+                .await
+                .expect("second session remained blocked")
+                .expect("second session task ended without starting");
+        assert!(
+            ready,
+            "second session treated a finished predecessor as abandoned"
+        );
         second_task.await.unwrap();
     }
 
@@ -275,9 +309,13 @@ mod tests {
 
         let (last_started_tx, mut last_started_rx) = tokio::sync::mpsc::unbounded_channel();
         let last_task = tokio::spawn(async move {
-            last.wait_until_ready().await;
-            last_started_tx.send(()).unwrap();
-            last.finish();
+            let ready = last.wait_until_ready().await;
+            last_started_tx.send(ready).unwrap();
+            if ready {
+                last.finish();
+            } else {
+                last.abandon();
+            }
         });
 
         assert!(
@@ -288,11 +326,23 @@ mod tests {
         );
 
         first.finish();
-        tokio::time::timeout(std::time::Duration::from_secs(1), last_started_rx.recv())
+        let ready = tokio::time::timeout(std::time::Duration::from_secs(1), last_started_rx.recv())
             .await
             .expect("last session remained blocked")
             .expect("last session task ended without starting");
+        assert!(!ready, "last session ignored the abandoned predecessor");
         last_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn abandoned_predecessor_prevents_later_processing() {
+        let (first, _) = enqueue("note-abandoned", "session-1").unwrap();
+        let (second, _) = enqueue("note-abandoned", "session-2").unwrap();
+
+        first.abandon();
+
+        assert!(!second.wait_until_ready().await);
+        second.abandon();
     }
 
     #[test]

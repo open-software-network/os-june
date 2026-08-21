@@ -101,6 +101,25 @@ impl NoteProcessingProgressReporter {
         processing_status: ProcessingStatus,
         revision: String,
     ) {
+        self.emit_with_recovery(
+            note_id,
+            recording_session_id,
+            stage,
+            processing_status,
+            revision,
+            None,
+        );
+    }
+
+    pub(crate) fn emit_with_recovery(
+        &self,
+        note_id: &str,
+        recording_session_id: &str,
+        stage: NoteProcessingStage,
+        processing_status: ProcessingStatus,
+        revision: String,
+        recovery: Option<crate::domain::types::RecoverableRecordingDto>,
+    ) {
         let Some(sink) = &self.sink else {
             return;
         };
@@ -110,6 +129,7 @@ impl NoteProcessingProgressReporter {
             stage,
             processing_status,
             revision,
+            recovery,
         });
     }
 }

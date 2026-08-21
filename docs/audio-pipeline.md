@@ -243,7 +243,11 @@ promotion runs once per native process; renderer reloads show only sessions
 already marked recoverable and cannot reclassify live native queue work.
 If a queued worker exits or panics before reaching a durable terminal status,
 its still-registered ticket first promotes that session to recoverable, then
-releases the queue identity, so a reload cannot strand the saved audio.
+releases the queue identity. Already-queued successors observe that abandoned
+predecessor and become recoverable too, preserving recording order. The
+recovery event carries the saved-audio snapshot so the renderer can show the
+recovery action immediately without waiting for a reload. Errors while
+finalizing a consumed capture use the same guarded promotion.
 Multiple recoveries for one Note are returned oldest first to preserve
 recording order. Simultaneous Source warnings are de-duplicated and shown
 together rather than truncating the System warning behind an earlier

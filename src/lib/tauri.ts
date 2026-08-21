@@ -643,6 +643,7 @@ export type NoteProcessingProgressDto = {
   stage: "transcribing" | "generating" | "done";
   processingStatus: ProcessingStatus;
   revision: string;
+  recovery?: RecoverableRecordingDto;
 };
 
 export type NotePatchDto = Pick<

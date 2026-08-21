@@ -183,6 +183,9 @@ pub struct NoteProcessingProgressDto {
     pub processing_status: ProcessingStatus,
     /// The note row's `updated_at` value after this transition.
     pub revision: String,
+    /// Present when this transition made saved audio immediately recoverable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<RecoverableRecordingDto>,
 }
 
 /// The note-row fields returned by the single-statement `update_note` path.
@@ -869,7 +872,7 @@ impl Default for AudioLevelDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverableRecordingDto {
     pub session_id: String,
@@ -883,7 +886,7 @@ pub struct RecoverableRecordingDto {
     pub sources: Vec<RecoverableSourceDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverableSourceDto {
     pub source: RecordingSource,
