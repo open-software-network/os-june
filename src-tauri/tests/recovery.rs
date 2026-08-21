@@ -1,5 +1,5 @@
 use clovy_lib::{
-    audio::recovery::scan_recoverable_recordings,
+    audio::recovery::{scan_marked_recoverable_recordings, scan_recoverable_recordings},
     db::{migrations::run_migrations, repositories::Repositories},
     domain::types::{ProcessingStatus, RecordingSourceMode, RecordingState},
 };
@@ -262,6 +262,47 @@ async fn scan_orders_same_note_recoveries_by_recording_chronology() {
             .collect::<Vec<_>>(),
         vec!["earlier-session", "later-session"]
     );
+}
+
+#[tokio::test]
+async fn renderer_reload_scan_ignores_live_pending_processing() {
+    let repos = repos().await;
+    let dir = tempdir().expect("tempdir");
+    let final_path = dir.path().join("live-pending.wav");
+    std::fs::write(&final_path, b"live pending audio").expect("audio bytes");
+    let note = repos.create_note("default", None).await.expect("note");
+    repos
+        .create_recording_session(
+            &note.id,
+            "live-pending-session",
+            RecordingSourceMode::MicrophoneOnly,
+            &dir.path()
+                .join("live-pending.partial.wav")
+                .to_string_lossy(),
+            &final_path.to_string_lossy(),
+            None,
+        )
+        .await
+        .expect("session");
+    repos
+        .mark_recording_processing_pending("live-pending-session")
+        .await
+        .expect("pending handoff");
+
+    assert!(scan_marked_recoverable_recordings(&repos.pool)
+        .await
+        .expect("renderer reload scan")
+        .is_empty());
+
+    repos
+        .mark_recording_recoverable("live-pending-session", &note.id)
+        .await
+        .expect("one-time startup promotion");
+    let recoveries = scan_marked_recoverable_recordings(&repos.pool)
+        .await
+        .expect("promoted recovery scan");
+    assert_eq!(recoveries.len(), 1);
+    assert_eq!(recoveries[0].session_id, "live-pending-session");
 }
 
 #[tokio::test]

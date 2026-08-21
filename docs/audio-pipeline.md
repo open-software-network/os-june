@@ -236,7 +236,10 @@ removes only its failure, and recovering one session reveals the next
 unresolved one. Finalization commits `processing_pending` with the session's
 validation metadata, and successful Note generation commits the same session
 as `processed` in the Note transaction. A crash therefore reconstructs a
-recovery prompt without reviving work that already completed. Multiple
-recoveries for one Note are returned oldest first to preserve recording order.
-Simultaneous Source warnings are de-duplicated and shown together rather than
-truncating the System warning behind an earlier Microphone diagnostic.
+recovery prompt without reviving work that already completed. Interrupted-state
+promotion runs once per native process; renderer reloads show only sessions
+already marked recoverable and cannot reclassify live native queue work.
+Multiple recoveries for one Note are returned oldest first to preserve
+recording order. Simultaneous Source warnings are de-duplicated and shown
+together rather than truncating the System warning behind an earlier
+Microphone diagnostic.

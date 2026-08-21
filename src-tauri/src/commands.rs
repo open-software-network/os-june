@@ -9,7 +9,7 @@ use crate::{
             CaptureRecoverySnapshot, CaptureStartHandshake, CaptureStartState, StartedRecording,
             CAPTURE_START_TIMEOUT, RECOVERY_SNAPSHOT_INTERVAL,
         },
-        recovery::scan_recoverable_recordings,
+        recovery::{scan_marked_recoverable_recordings, scan_recoverable_recordings},
         validation::{
             checksum_file, source_audio_passes_validation, validate_audio_artifact,
             validation_config_for_source, AudioValidationConfig,
@@ -250,23 +250,30 @@ impl Drop for MeetingStartCompletionGuard<'_> {
 pub async fn bootstrap_app(app: AppHandle) -> Result<BootstrapResponse, AppError> {
     let repos = repositories(&app).await?;
     let profile = active_profile(&app);
+    let active_recording = current_status();
+    let active_recording_session_id = active_recording
+        .as_ref()
+        .map(|recording| recording.session_id.clone());
     TRANSCRIPTION_STARTUP_REPAIR
         .get_or_try_init(|| async {
             repos.release_interrupted_note_transcription_jobs().await?;
+            let mut interrupted = scan_recoverable_recordings(&repos.pool).await?;
+            if let Some(active_session_id) = active_recording_session_id.as_deref() {
+                interrupted.retain(|recovery| recovery.session_id != active_session_id);
+            }
+            for recovery in &interrupted {
+                repos
+                    .mark_recording_recoverable(&recovery.session_id, &recovery.note_id)
+                    .await?;
+            }
             Ok::<(), sqlx::Error>(())
         })
         .await?;
-    let active_recording = current_status();
-    let mut active_recoveries = scan_recoverable_recordings(&repos.pool)
+    let mut active_recoveries = scan_marked_recoverable_recordings(&repos.pool)
         .await
         .map_err(|error| AppError::new("recovery_scan_failed", error.to_string()))?;
     if let Some(active) = &active_recording {
         active_recoveries.retain(|recovery| recovery.session_id != active.session_id);
-    }
-    for recovery in &active_recoveries {
-        repos
-            .mark_recording_recoverable(&recovery.session_id, &recovery.note_id)
-            .await?;
     }
     let folders = repos
         .list_folders(&profile)

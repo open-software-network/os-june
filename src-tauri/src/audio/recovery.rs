@@ -8,12 +8,30 @@ use sqlx_sqlite::SqlitePool;
 pub async fn scan_recoverable_recordings(
     pool: &SqlitePool,
 ) -> Result<Vec<RecoverableRecordingDto>, sqlx::error::Error> {
+    scan_recordings_for_recovery(pool, true).await
+}
+
+pub async fn scan_marked_recoverable_recordings(
+    pool: &SqlitePool,
+) -> Result<Vec<RecoverableRecordingDto>, sqlx::error::Error> {
+    scan_recordings_for_recovery(pool, false).await
+}
+
+async fn scan_recordings_for_recovery(
+    pool: &SqlitePool,
+    include_interrupted: bool,
+) -> Result<Vec<RecoverableRecordingDto>, sqlx::error::Error> {
     let rows = query(
         "SELECT id, note_id, source_mode, started_at, partial_path, final_path
          FROM recording_sessions
-         WHERE status IN ('recording', 'paused', 'finalizing', 'validating', 'transcribing', 'generating', 'processing_pending', 'failed', 'recoverable')
+         WHERE status = 'recoverable'
+            OR (? = 1 AND status IN (
+              'recording', 'paused', 'finalizing', 'validating',
+              'transcribing', 'generating', 'processing_pending', 'failed'
+            ))
          ORDER BY started_at ASC, rowid ASC",
     )
+    .bind(i64::from(include_interrupted))
     .fetch_all(pool)
     .await?;
 
