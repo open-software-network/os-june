@@ -806,13 +806,12 @@ where
     // a replacement recording. The callback is synchronous and must not do
     // capture work or await.
     on_consumed(&consumed);
-    drop(active);
-    finalize_recording(recording)
-        .map(Some)
-        .map_err(|error| CaptureFinishError {
+    finish_while_capture_lock_held(active, || finalize_recording(recording).map(Some)).map_err(
+        |error| CaptureFinishError {
             error: Box::new(error),
             consumed: Some(consumed),
-        })
+        },
+    )
 }
 
 /// Snapshot of whatever recording is currently active, regardless of session
@@ -870,11 +869,24 @@ where
     // before releasing the capture lock, so a replacement recording cannot
     // stop and register first.
     on_consumed(&consumed);
-    drop(active);
-    finalize_recording(recording).map_err(|error| CaptureFinishError {
-        error: Box::new(error),
-        consumed: Some(consumed),
+    finish_while_capture_lock_held(active, || finalize_recording(recording)).map_err(|error| {
+        CaptureFinishError {
+            error: Box::new(error),
+            consumed: Some(consumed),
+        }
     })
+}
+
+fn finish_while_capture_lock_held<T>(
+    capture_lock: std::sync::MutexGuard<'_, Option<ActiveRecording>>,
+    finish: impl FnOnce() -> T,
+) -> T {
+    // A replacement dual-source start terminates helpers it believes are
+    // stale. Keep replacement startup behind the live-capture lock until the
+    // owned system helper has completed its graceful Stop and final flush.
+    let result = finish();
+    drop(capture_lock);
+    result
 }
 
 fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, AppError> {
@@ -1395,6 +1407,22 @@ pub(crate) fn source_warnings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_lock_remains_held_until_recording_session_finalization_returns() {
+        let active = lock_active().expect("capture lock");
+
+        let finalized = finish_while_capture_lock_held(active, || {
+            assert!(matches!(
+                ACTIVE_RECORDING.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            ));
+            true
+        });
+
+        assert!(finalized);
+        assert!(ACTIVE_RECORDING.try_lock().is_ok());
+    }
 
     #[test]
     fn microphone_permission_mapping_reports_granted_only_for_authorized() {
