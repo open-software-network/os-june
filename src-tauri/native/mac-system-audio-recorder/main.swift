@@ -91,6 +91,7 @@ final class SystemAudioRecorder {
     private let pauseLock = NSLock()
     private let healthLock = NSLock()
     private let rebuildLock = NSLock()
+    private let statusLock = NSLock()
 
     private var processTapID = AudioObjectID.unknown
     private var aggregateDeviceID = AudioObjectID.unknown
@@ -117,6 +118,7 @@ final class SystemAudioRecorder {
     private var stallTimer: DispatchSourceTimer?
     private var powerAssertionID: IOPMAssertionID = 0
     private var rebuildScheduled = false
+    private var terminalErrorMessage: String?
 
     init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
         self.outputURL = outputURL
@@ -563,7 +565,28 @@ final class SystemAudioRecorder {
     }
 
     private func emit(_ object: [String: String]) {
-        let data = try! JSONSerialization.data(withJSONObject: object)
+        statusLock.lock()
+        defer { statusLock.unlock() }
+
+        let event = object["event"]
+        if event == "error" {
+            guard terminalErrorMessage == nil else { return }
+            terminalErrorMessage = object["message"] ?? "System audio capture failed."
+        } else if terminalErrorMessage != nil, event != "stopped" {
+            // Keep the first terminal failure as the live status snapshot.
+            // CoreAudio may continue invoking the IO callback after capture
+            // has failed, so later level/ready events are not evidence of
+            // recovery.
+            return
+        }
+
+        var emittedObject = object
+        if event == "stopped", let terminalErrorMessage {
+            // Rust reads the terminal failure before TERM. Carry it on the
+            // stopped event too so a failure racing with TERM is not lost.
+            emittedObject["terminalError"] = terminalErrorMessage
+        }
+        let data = try! JSONSerialization.data(withJSONObject: emittedObject)
         print(String(data: data, encoding: .utf8)!)
         fflush(stdout)
         guard let statusURL else { return }

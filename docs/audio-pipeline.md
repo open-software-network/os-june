@@ -34,7 +34,10 @@ preview).
    writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
    preview. Completed microphone byte metadata is replaced from the writer
-   watermark returned after that final drain.
+   watermark returned after that final drain. A terminal system-audio helper
+   error remains sticky until shutdown: Clovy preserves any WAV bytes already
+   written, but finalization records that Source as failed instead of treating a
+   later level sample or clean helper exit as recovery.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
@@ -44,6 +47,11 @@ preview).
    job and transcript row → **note generation**. Full-Source fallbacks are
    prepared lazily when a Source is materially incomplete and atomically
    replace that Source's partial rows only after the replacement succeeds.
+   No-speech and other audio-specific failures remain isolated to their Turn.
+   A service-wide transcription failure is persisted against the attempted
+   durable job, then opens the pipeline circuit: already in-flight requests are
+   drained, no more Turns or fallbacks are launched, and untouched jobs remain
+   pending for a later Retry.
 
 While capture is active, the native meeting-HUD supervisor samples capture at
 20 Hz and emits the additive `recording-telemetry` Tauri event. Its narrow
@@ -126,7 +134,10 @@ The helper is controlled and observed out-of-process (see ADR-0004):
 - **Control:** Unix signals — `SIGUSR1` / `SIGUSR2` = pause / resume,
   `SIGTERM` / `SIGKILL` = stop. Launched via `/usr/bin/open -n`.
 - **Observation:** a `status.json` file with events `ready` / `level` / `error`
-  / `stopped` (fields include `level` / `maxLevel` / `message`).
+  / `stopped` (fields include `level` / `maxLevel` / `message`). An `error`
+  event is terminal for that capture and remains observable until the parent
+  has recorded it; later level events cannot overwrite it. The helper can still
+  publish `stopped` during an orderly shutdown.
 - **Routing:** a private stereo process tap is bound to the current default
   system output device, so it records the same device stream the user hears.
   The private aggregate contains the tap only; adding a physical output
@@ -180,4 +191,7 @@ flushed periodically and the finalized filename only appears after a clean
 finalize, so a crash leaves replayable audio that recovery can finish
 processing. Durable note-transcription jobs record exact Source spans and
 attempt state; interrupted `running` jobs return to `pending`, and explicit
-Retry resumes only jobs whose fingerprint has not already succeeded.
+Retry resumes only jobs whose fingerprint has not already succeeded. Queue
+registration is idempotent per Note and recording session while work is queued
+or running, so repeated Retry requests cannot fan out duplicate processing for
+the same saved audio.

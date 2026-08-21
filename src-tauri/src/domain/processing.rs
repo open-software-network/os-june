@@ -2150,6 +2150,7 @@ struct CompletedTurnTranscription {
     result: TurnTranscriptionResult,
     duration_ms: i64,
     replaces_source: bool,
+    terminal_error: Option<AppError>,
 }
 
 #[derive(Debug, Clone)]
@@ -2709,6 +2710,65 @@ fn is_retryable_transcription_error(error: &AppError) -> bool {
             || message.contains("error sending request")))
 }
 
+/// Whether one turn's failure proves that the shared transcription request
+/// path is unavailable for every remaining turn in this processing run.
+///
+/// These failures come from the desktop-to-Clovy API boundary, account and
+/// metering checks, or the configured upstream provider. Retrying hundreds of
+/// independent audio spans cannot make them turn-specific, so the scheduler
+/// persists the failed span and then opens the circuit. Audio/content failures
+/// remain ordinary per-turn failures and do not stop another span or Source.
+fn is_pipeline_wide_transcription_error(error: &AppError) -> bool {
+    if is_no_speech_error(error) {
+        return false;
+    }
+
+    let code = error.code.trim().to_ascii_lowercase();
+    let message = error.message.trim().to_ascii_lowercase();
+    let request_boundary_failure = matches!(
+        code.as_str(),
+        "clovy_request_failed" | "june_request_failed" | "request_failed"
+    ) && (matches!(
+        message.as_str(),
+        "authorization_denied"
+            | "upstream_provider_failed"
+            | "metering_provider_failed"
+            | "internal_error"
+            | "server_busy"
+            | "model_not_priced"
+            | "model_type_invalid"
+            | "price_overflow"
+            | "timeout"
+    ) || message.contains("error sending request")
+        || message.contains("error decoding response")
+        || message.contains("timed out")
+        || message.contains("connection")
+        || message.contains("couldn't reach clovy")
+        || message.contains("dns error")
+        || message.contains("response stream ended unexpectedly"));
+
+    matches!(
+        code.as_str(),
+        "clovy_api_response_invalid"
+            | "june_api_response_invalid"
+            | "empty_response"
+            | "network_error"
+            | "transport_error"
+            | "unauthorized"
+            | "authorization_denied"
+            | "insufficient_credits"
+            | "venice_api_key_invalid"
+            | "venice_api_key_model_unavailable"
+            | "venice_api_key_rejected"
+    ) || request_boundary_failure
+        || code.contains("upstream_provider")
+        || code.contains("metering_provider")
+        || message.contains("upstream_provider_failed")
+        || message.contains("metering_provider_failed")
+        || message.contains("authorization_denied")
+        || message.contains("insufficient_credits")
+}
+
 fn transient_retry_delay(operation_id: &str, attempt: usize, error: &AppError) -> Duration {
     if let Some(retry_after_ms) = retry_after_ms(error) {
         return Duration::from_millis(
@@ -2778,6 +2838,7 @@ async fn sink_and_record_completed_turn(
     if let Some(sink) = result_sink {
         sink(event.clone()).await?;
     }
+    let terminal_error = event.terminal_error.clone();
     match event.result {
         TurnTranscriptionResult::Candidate(candidate) => {
             completed_by_source
@@ -2794,7 +2855,7 @@ async fn sink_and_record_completed_turn(
             outcome.failures.push(failure);
         }
     }
-    Ok(())
+    terminal_error.map_or(Ok(()), Err)
 }
 
 fn stop_stream_after_error(
@@ -3117,6 +3178,7 @@ async fn transcribe_source_fallbacks(
         if let Some(sink) = result_sink {
             sink(event.clone()).await?;
         }
+        let terminal_error = event.terminal_error.clone();
         match event.result {
             TurnTranscriptionResult::Candidate(candidate) => {
                 let source = candidate.input.source.clone();
@@ -3130,6 +3192,9 @@ async fn transcribe_source_fallbacks(
                 outcome.candidates.push(candidate);
             }
             TurnTranscriptionResult::Failure(failure) => outcome.failures.push(failure),
+        }
+        if let Some(error) = terminal_error {
+            return Err(error);
         }
     }
     sort_transcription_outcome(outcome);
@@ -3383,6 +3448,8 @@ async fn transcribe_one_turn_job(
     {
         Ok(transcription) => transcription,
         Err(error) => {
+            let terminal_error =
+                is_pipeline_wide_transcription_error(&error).then_some(error.clone());
             let warning = user_facing_transcription_failure_message(
                 &error.code,
                 &error.message,
@@ -3407,6 +3474,7 @@ async fn transcribe_one_turn_job(
                 }),
                 duration_ms: elapsed_ms(started),
                 replaces_source,
+                terminal_error,
             });
         }
     };
@@ -3438,6 +3506,7 @@ async fn transcribe_one_turn_job(
         }),
         duration_ms: elapsed_ms(started),
         replaces_source,
+        terminal_error: None,
     })
 }
 
@@ -5425,77 +5494,160 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exhausted_invalid_tail_turn_stays_visible_as_failure() {
-        // When a turn fails after the allowed attempt budget, or fails with a
-        // non-retryable provider/metering error, it stays a visible per-turn
-        // failure without dropping earlier successful turns. The surfaced
-        // warning is user-facing copy, never the raw provider code.
-        let cases = [
-            (
-                AppError::new(
-                    "clovy_api_response_invalid",
-                    "The processing service returned an invalid response.",
-                ),
-                "The processing service returned an invalid response.",
-                TRANSIENT_TRANSCRIPTION_ATTEMPTS,
-            ),
-            (
-                AppError::new("june_request_failed", "upstream_provider_failed"),
-                "The transcription provider could not process this audio.",
-                1,
-            ),
-            (
-                AppError::new("june_request_failed", "metering_provider_failed"),
-                "Billing is temporarily unavailable. Please try again in a moment.",
-                1,
-            ),
-        ];
-
-        for (tail_error, expected_warning, expected_attempts) in cases {
-            let tail_attempts = Arc::new(AtomicUsize::new(0));
-            let transcriber = {
+    async fn content_specific_tail_turn_stays_visible_as_failure() {
+        let tail_attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let tail_attempts = Arc::clone(&tail_attempts);
+            Arc::new(move |request: TranscriptionRequest| {
                 let tail_attempts = Arc::clone(&tail_attempts);
-                Arc::new(move |request: TranscriptionRequest| {
-                    let tail_attempts = Arc::clone(&tail_attempts);
-                    let tail_error = tail_error.clone();
-                    Box::pin(async move {
-                        if request.audio_path == std::path::Path::new("tail") {
-                            tail_attempts.fetch_add(1, Ordering::SeqCst);
-                            return Err(tail_error);
-                        }
-                        Ok(TranscriptionProviderResult {
-                            text: request.audio_path.to_string_lossy().to_string(),
-                            language: None,
-                            provider: "test".to_string(),
-                        })
-                    }) as TranscriptionFuture
-                }) as TurnTranscriber
-            };
+                Box::pin(async move {
+                    if request.audio_path == std::path::Path::new("tail") {
+                        tail_attempts.fetch_add(1, Ordering::SeqCst);
+                        return Err(AppError::new(
+                            "transcription_failed",
+                            "The turn audio could not be decoded.",
+                        ));
+                    }
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: None,
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
 
-            let outcome = transcribe_turn_jobs_by_source_lane(
-                vec![
-                    test_job("intro", "microphone", 0),
-                    test_job("tail", "microphone", 1),
-                ],
-                crate::providers::OPENAI_PROVIDER.to_string(),
-                "Meeting".to_string(),
-                None,
-                transcriber,
-            )
-            .await
-            .expect("source lanes should complete despite a failed tail turn");
+        let outcome = transcribe_turn_jobs_by_source_lane(
+            vec![
+                test_job("intro", "microphone", 0),
+                test_job("tail", "microphone", 1),
+            ],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            transcriber,
+        )
+        .await
+        .expect("source lanes should complete despite a content-specific failure");
 
-            assert_eq!(tail_attempts.load(Ordering::SeqCst), expected_attempts);
-            assert_eq!(outcome.candidates.len(), 1);
-            assert_eq!(outcome.failures.len(), 1);
-            assert_eq!(outcome.candidates[0].input.text, "intro");
-            assert_eq!(outcome.failures[0].input.source, "microphone");
-            assert_eq!(outcome.failures[0].input.turn_index, Some(1));
-            assert_eq!(
-                outcome.failures[0].input.warning.as_deref(),
-                Some(expected_warning)
+        assert_eq!(tail_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(outcome.candidates.len(), 1);
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(outcome.candidates[0].input.text, "intro");
+        assert_eq!(outcome.failures[0].input.source, "microphone");
+        assert_eq!(outcome.failures[0].input.turn_index, Some(1));
+        assert_eq!(
+            outcome.failures[0].input.warning.as_deref(),
+            Some("The turn audio could not be decoded.")
+        );
+    }
+
+    #[test]
+    fn pipeline_wide_errors_exclude_content_and_no_speech_failures() {
+        for error in [
+            AppError::new("june_request_failed", "upstream_provider_failed"),
+            AppError::new("clovy_request_failed", "metering_provider_failed"),
+            AppError::new("clovy_request_failed", "authorization_denied"),
+            AppError::new("insufficient_credits", "Your balance is too low."),
+            AppError::new(
+                "clovy_api_response_invalid",
+                "The processing service returned an invalid response.",
+            ),
+            AppError::new("clovy_request_failed", "error sending request"),
+            AppError::new(
+                "clovy_request_failed",
+                "The processing service response stream ended unexpectedly.",
+            ),
+            AppError::new("clovy_request_failed", "model_not_priced"),
+        ] {
+            assert!(
+                is_pipeline_wide_transcription_error(&error),
+                "expected pipeline-wide classification for {}: {}",
+                error.code,
+                error.message
             );
         }
+
+        assert!(!is_pipeline_wide_transcription_error(&AppError::new(
+            "no_speech",
+            "no_speech",
+        )));
+        assert!(!is_pipeline_wide_transcription_error(&AppError::new(
+            "transcription_failed",
+            "The turn audio could not be decoded.",
+        )));
+        assert!(!is_pipeline_wide_transcription_error(&AppError::new(
+            "clovy_request_failed",
+            "The turn audio could not be decoded.",
+        )));
+    }
+
+    #[tokio::test]
+    async fn pipeline_wide_failure_is_sunk_before_remaining_turns_are_aborted() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let transcriber = {
+            let attempts = Arc::clone(&attempts);
+            Arc::new(move |_request: TranscriptionRequest| {
+                let attempts = Arc::clone(&attempts);
+                Box::pin(async move {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    let mut error =
+                        AppError::new("june_request_failed", "upstream_provider_failed");
+                    error.details = Some(serde_json::json!({ "provider": "test-upstream" }));
+                    Err(error)
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+        let sunk_events = Arc::new(Mutex::new(Vec::<CompletedTurnTranscription>::new()));
+        let result_sink = {
+            let sunk_events = Arc::clone(&sunk_events);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let sunk_events = Arc::clone(&sunk_events);
+                Box::pin(async move {
+                    sunk_events.lock().unwrap().push(event);
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+
+        let error = transcribe_turn_jobs_bounded(
+            vec![
+                test_job("first", "microphone", 0),
+                test_job("must-not-start", "microphone", 1),
+            ],
+            Vec::new(),
+            &[],
+            crate::providers::OPENAI_PROVIDER.to_string(),
+            "Meeting".to_string(),
+            None,
+            Arc::new(prepare_source_fallback),
+            transcriber,
+            Some(result_sink),
+            1,
+        )
+        .await
+        .expect_err("a pipeline-wide failure must open the circuit");
+
+        assert_eq!(error.code, "june_request_failed");
+        assert_eq!(error.message, "upstream_provider_failed");
+        assert_eq!(
+            error.details,
+            Some(serde_json::json!({ "provider": "test-upstream" }))
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        let sunk_events = sunk_events.lock().unwrap();
+        assert_eq!(sunk_events.len(), 1);
+        assert!(matches!(
+            sunk_events[0].result,
+            TurnTranscriptionResult::Failure(_)
+        ));
+        let sunk_error = sunk_events[0]
+            .terminal_error
+            .as_ref()
+            .expect("the sink must receive the terminal provider error");
+        assert_eq!(sunk_error.code, error.code);
+        assert_eq!(sunk_error.message, error.message);
+        assert_eq!(sunk_error.details, error.details);
     }
 
     #[test]
@@ -8365,6 +8517,56 @@ mod tests {
                 "artifact-system-1100-1600-turn-1-fallback-false-saved-audio-v3",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn pipeline_wide_fallback_failure_is_sunk_before_it_aborts() {
+        let descriptors = vec![turn_preparation_job(0, "microphone", 0, false)];
+        let fallback_plans = build_source_fallback_plans(&descriptors);
+        let transcriber = Arc::new(move |_request: TranscriptionRequest| {
+            Box::pin(async move {
+                Err(AppError::new(
+                    "clovy_request_failed",
+                    "metering_provider_failed",
+                ))
+            }) as TranscriptionFuture
+        }) as TurnTranscriber;
+        let sunk_events = Arc::new(Mutex::new(Vec::<CompletedTurnTranscription>::new()));
+        let result_sink = {
+            let sunk_events = Arc::clone(&sunk_events);
+            Arc::new(move |event: CompletedTurnTranscription| {
+                let sunk_events = Arc::clone(&sunk_events);
+                Box::pin(async move {
+                    sunk_events.lock().unwrap().push(event);
+                    Ok(())
+                }) as TurnResultFuture
+            }) as TurnResultSink
+        };
+        let fallback_preparer =
+            Arc::new(|plan| Ok(fake_fallback_job(plan))) as SourceFallbackPreparer;
+
+        let mut outcome = TranscriptionOutcome::default();
+        let error = transcribe_source_fallbacks(
+            &mut outcome,
+            fallback_plans,
+            &[],
+            crate::providers::OPENAI_PROVIDER,
+            "Meeting",
+            None,
+            &fallback_preparer,
+            &transcriber,
+            None,
+            Some(&result_sink),
+        )
+        .await
+        .expect_err("a pipeline-wide fallback failure must open the circuit");
+
+        assert_eq!(error.code, "clovy_request_failed");
+        assert_eq!(error.message, "metering_provider_failed");
+        assert_eq!(outcome.failures.len(), 1);
+        let sunk_events = sunk_events.lock().unwrap();
+        assert_eq!(sunk_events.len(), 1);
+        assert!(sunk_events[0].terminal_error.is_some());
     }
 
     #[tokio::test]

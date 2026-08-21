@@ -2425,7 +2425,19 @@ async fn finish_recording_session_with_timing(
     // any in-flight job for the note; the spawned task waits its turn and reads
     // the note's generated content *after* acquiring the lock, so incremental
     // generation always builds on whatever the previous job wrote.
-    let (ticket, depth) = processing_queue::enqueue(&finished.note_id);
+    let Some((ticket, depth)) = processing_queue::enqueue(&finished.note_id, &finished.session_id)
+    else {
+        let mut note = repos.get_note(&finished.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
+        return Ok(FinishRecordingResponse {
+            note,
+            recording: finished.recording,
+            validation,
+            validations: source_validations,
+            processing_started: true,
+            warnings,
+        });
+    };
     if depth <= 1 {
         // First in line: reflect "processing" immediately for snappy feedback.
         repos
@@ -2648,7 +2660,26 @@ pub async fn retry_processing(
         request.recording_session_id.as_deref(),
     )
     .await?;
-    let (ticket, depth) = processing_queue::enqueue(&request.note_id);
+    let task_recording_session_id = sources
+        .first()
+        .map(
+            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
+                recording_session_id.clone()
+            },
+        )
+        .ok_or_else(|| {
+            AppError::new(
+                "audio_artifact_missing",
+                "No saved audio is available for retry.",
+            )
+        })?;
+    let Some((ticket, depth)) =
+        processing_queue::enqueue(&request.note_id, &task_recording_session_id)
+    else {
+        let mut note = repos.get_note(&request.note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(&request.note_id);
+        return Ok(note);
+    };
     if depth <= 1 {
         repos
             .set_note_status(&request.note_id, ProcessingStatus::Transcribing, None)
@@ -2660,14 +2691,6 @@ pub async fn retry_processing(
 
     let task_repos = repos.clone();
     let task_note_id = request.note_id.clone();
-    let task_recording_session_id = sources
-        .first()
-        .map(
-            |(_id, _source, _path, recording_session_id, _recorded_silence)| {
-                recording_session_id.clone()
-            },
-        )
-        .unwrap_or_default();
     let task_source_mode = repos
         .recording_session_source_mode(&task_recording_session_id)
         .await?
@@ -2946,7 +2969,11 @@ async fn process_recovered_source_audio(
     sources: Vec<crate::domain::processing::SourceAudioForProcessing>,
     progress: NoteProcessingProgressReporter,
 ) -> Result<NoteDto, AppError> {
-    let (ticket, _depth) = processing_queue::enqueue(note_id);
+    let Some((ticket, _depth)) = processing_queue::enqueue(note_id, session_id) else {
+        let mut note = repos.get_note(note_id).await?;
+        note.queued_recordings = processing_queue::queued_behind(note_id);
+        return Ok(note);
+    };
     let queue_lock = ticket.lock();
     let _guard = queue_lock.lock().await;
     let note = match repos.get_note(note_id).await {
