@@ -223,9 +223,11 @@ Retry resumes only jobs whose fingerprint has not already succeeded. Queue
 registration is idempotent per Note and recording session while work is queued
 or running, so repeated Retry requests cannot fan out duplicate processing for
 the same saved audio. Durable retry state changes only after queue admission,
-so a duplicate request cannot turn already completed work back into pending
-work. A failed Note also stores the exact recording session and processing
-stage that failed, preventing an older partial session from displacing the
+and a completed session can re-enter pending only while its matching failure or
+partial-Source warning remains unresolved. A stale request therefore cannot
+turn already completed work back into pending work. A failed Note also stores
+the exact recording session and processing stage that failed, preventing an
+older partial session from displacing the
 recording that actually needs Retry. The failure-ledger migration backfills
 retryable failed Notes only when an exact session or unfinished durable
 transcription job identifies the recording. A newer invalid recording blocks
@@ -247,7 +249,14 @@ releases the queue identity. Already-queued successors observe that abandoned
 predecessor and become recoverable too, preserving recording order. The
 recovery event carries the saved-audio snapshot so the renderer can show the
 recovery action immediately without waiting for a reload. Errors while
-finalizing a consumed capture use the same guarded promotion.
+finalizing a consumed capture acquire the queue barrier before the first
+guarded promotion attempt; a supervised retry retains that barrier while a
+storage write is unavailable. Recovery itself waits for registered
+predecessors, checks for older durable recoveries, and conditionally claims the
+session before validating or rewriting audio metadata. Discard uses the
+opposite conditional transition, so only one action can own the saved audio.
+Recovered audio that still fails validation becomes terminally invalid instead
+of remaining a hidden ordering barrier.
 Multiple recoveries for one Note are returned oldest first to preserve
 recording order. Simultaneous Source warnings are de-duplicated and shown
 together rather than truncating the System warning behind an earlier

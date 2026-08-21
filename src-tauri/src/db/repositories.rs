@@ -3513,21 +3513,20 @@ impl Repositories {
             .bind(recording_session_id)
             .execute(&mut *tx)
             .await?;
-            if processing_stage != Some("validation") {
-                query(
-                    "UPDATE recording_sessions
-                     SET status = 'processing_failed',
-                         last_error = ?,
-                         ended_at = COALESCE(ended_at, ?)
-                     WHERE id = ? AND note_id = ?",
-                )
-                .bind(last_error.as_deref())
-                .bind(&now)
-                .bind(recording_session_id)
-                .bind(note_id)
-                .execute(&mut *tx)
-                .await?;
-            }
+            query(
+                "UPDATE recording_sessions
+                 SET status = CASE WHEN ? = 'validation' THEN 'invalid' ELSE 'processing_failed' END,
+                     last_error = ?,
+                     ended_at = COALESCE(ended_at, ?)
+                 WHERE id = ? AND note_id = ?",
+            )
+            .bind(processing_stage)
+            .bind(last_error.as_deref())
+            .bind(&now)
+            .bind(recording_session_id)
+            .bind(note_id)
+            .execute(&mut *tx)
+            .await?;
         } else if clear_retry_context {
             query(
                 "DELETE FROM note_processing_failures
@@ -4368,6 +4367,48 @@ impl Repositories {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn mark_recording_retry_processing_pending(
+        &self,
+        note_id: &str,
+        session_id: &str,
+    ) -> Result<bool, sqlx::error::Error> {
+        let result = query(
+            "UPDATE recording_sessions
+             SET status = 'processing_pending', last_error = NULL
+             WHERE id = ? AND note_id = ?
+               AND (
+                 status IN (
+                   'valid', 'invalid', 'recoverable', 'failed',
+                   'processing_failed', 'processing_pending'
+                 )
+                 OR (
+                   status = 'processed'
+                   AND (
+                     EXISTS (
+                       SELECT 1
+                       FROM note_processing_failures failure
+                       WHERE failure.note_id = recording_sessions.note_id
+                         AND failure.recording_session_id = recording_sessions.id
+                     )
+                     OR EXISTS (
+                       SELECT 1
+                       FROM note_generation_blocks block
+                       WHERE block.note_id = recording_sessions.note_id
+                         AND block.recording_session_id = recording_sessions.id
+                         AND block.warning IS NOT NULL
+                         AND TRIM(block.warning) != ''
+                     )
+                   )
+                 )
+               )",
+        )
+        .bind(session_id)
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn mark_recovered_recording_processing_pending(
