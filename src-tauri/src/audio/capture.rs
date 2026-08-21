@@ -888,14 +888,17 @@ fn finalize_recording(recording: ActiveRecording) -> Result<FinishedRecording, A
     }];
     if let Some(system_result) = system_stopped {
         match system_result {
-            SystemAudioStopResult::Stopped(system_path) => {
+            SystemAudioStopResult::Stopped {
+                path: system_path,
+                warning,
+            } => {
                 sources.push(FinishedSource {
                     source: RecordingSource::System,
                     final_path: system_final_path.unwrap_or(system_path.clone()),
                     elapsed_ms: recording_dto.elapsed_ms,
                     dropped_samples: 0,
                     capture_issue: None,
-                    failure: None,
+                    failure: warning,
                 });
             }
             SystemAudioStopResult::Failed(failure) => {

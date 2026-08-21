@@ -53,10 +53,10 @@ struct NoteQueue {
     pending: Arc<AtomicI64>,
     /// Recording sessions currently queued or running for this note.
     registered_recording_session_ids: HashSet<String>,
-    /// Completion of the last registered session. A new ticket waits on it,
-    /// preserving registration order even when spawned tasks are polled out of
-    /// order by the runtime.
-    tail: Option<Arc<CompletionSignal>>,
+    /// Completion signals for every recording session still registered on
+    /// this note. New tickets retain all earlier signals so dropping a queued
+    /// ticket cannot let its successor bypass an older running session.
+    active_completions: Vec<Arc<CompletionSignal>>,
 }
 
 static QUEUES: LazyLock<Mutex<HashMap<String, NoteQueue>>> =
@@ -67,7 +67,7 @@ static QUEUES: LazyLock<Mutex<HashMap<String, NoteQueue>>> =
 pub struct ProcessingTicket {
     note_id: String,
     recording_session_id: String,
-    predecessor: Option<Arc<CompletionSignal>>,
+    predecessors: Vec<Arc<CompletionSignal>>,
     completion: Arc<CompletionSignal>,
     pending: Arc<AtomicI64>,
     finished: AtomicBool,
@@ -77,7 +77,7 @@ impl ProcessingTicket {
     /// Wait until every recording session registered earlier on this note has
     /// finished processing.
     pub async fn wait_until_ready(&self) {
-        if let Some(predecessor) = &self.predecessor {
+        for predecessor in &self.predecessors {
             predecessor.wait().await;
         }
     }
@@ -95,6 +95,9 @@ impl ProcessingTicket {
                 queue
                     .registered_recording_session_ids
                     .remove(&self.recording_session_id);
+                queue
+                    .active_completions
+                    .retain(|completion| !Arc::ptr_eq(completion, &self.completion));
             }
         }
         if remaining <= 0 {
@@ -131,7 +134,7 @@ pub fn enqueue(note_id: &str, recording_session_id: &str) -> Option<(ProcessingT
     let queue = map.entry(note_id.to_string()).or_insert_with(|| NoteQueue {
         pending: Arc::new(AtomicI64::new(0)),
         registered_recording_session_ids: HashSet::new(),
-        tail: None,
+        active_completions: Vec::new(),
     });
     if !queue
         .registered_recording_session_ids
@@ -144,11 +147,12 @@ pub fn enqueue(note_id: &str, recording_session_id: &str) -> Option<(ProcessingT
     let ticket = ProcessingTicket {
         note_id: note_id.to_string(),
         recording_session_id: recording_session_id.to_string(),
-        predecessor: queue.tail.replace(Arc::clone(&completion)),
-        completion,
+        predecessors: queue.active_completions.clone(),
+        completion: Arc::clone(&completion),
         pending: queue.pending.clone(),
         finished: AtomicBool::new(false),
     };
+    queue.active_completions.push(completion);
     Some((ticket, depth))
 }
 
@@ -260,6 +264,35 @@ mod tests {
             .expect("second session remained blocked")
             .expect("second session task ended without starting");
         second_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropping_a_middle_ticket_does_not_release_its_successor_early() {
+        let (first, _) = enqueue("note-middle-drop", "session-1").unwrap();
+        let (middle, _) = enqueue("note-middle-drop", "session-2").unwrap();
+        let (last, _) = enqueue("note-middle-drop", "session-3").unwrap();
+        drop(middle);
+
+        let (last_started_tx, mut last_started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let last_task = tokio::spawn(async move {
+            last.wait_until_ready().await;
+            last_started_tx.send(()).unwrap();
+            last.finish();
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), last_started_rx.recv())
+                .await
+                .is_err(),
+            "last session bypassed the still-running first registration"
+        );
+
+        first.finish();
+        tokio::time::timeout(std::time::Duration::from_secs(1), last_started_rx.recv())
+            .await
+            .expect("last session remained blocked")
+            .expect("last session task ended without starting");
+        last_task.await.unwrap();
     }
 
     #[test]

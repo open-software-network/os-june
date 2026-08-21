@@ -175,7 +175,7 @@ impl SystemAudioCapture {
         // Capture a terminal helper failure before requesting shutdown. The
         // helper must replace its live status with `stopped` so shutdown can
         // be coordinated without waiting for the timeout.
-        let mut terminal_error = self.capture_terminal_error();
+        let (mut terminal_error, mut warning) = self.capture_diagnostics();
         dev_log(format!("stopping helper pid={}", self.pid));
         send_signal(self.pid, "-TERM");
         match wait_for_stopped(&self.status_path, Duration::from_secs(5)) {
@@ -184,6 +184,9 @@ impl SystemAudioCapture {
                 // terminal failure after the pre-TERM read but before it
                 // handles TERM.
                 terminal_error = terminal_error.or(stopped.terminal_error);
+                if stopped.message.is_some() {
+                    warning = stopped.message;
+                }
             }
             Err(_) => {
                 dev_log(format!(
@@ -222,11 +225,17 @@ impl SystemAudioCapture {
                 AppError::new("system_audio_capture_unavailable", message).into(),
             ),
             (None, Some(error)) => SystemAudioStopResult::Failed(error.into()),
-            (None, None) => SystemAudioStopResult::Stopped(self.final_path),
+            (None, None) => SystemAudioStopResult::Stopped {
+                path: self.final_path,
+                warning: warning.map(|message| crate::audio::system_audio::SystemAudioFailure {
+                    code: "system_audio_capture_warning".to_string(),
+                    message,
+                }),
+            },
         }
     }
 
-    fn capture_terminal_error(&self) -> Option<String> {
+    fn capture_diagnostics(&self) -> (Option<String>, Option<String>) {
         if let Ok(status) = read_status(&self.status_path) {
             if let Ok(mut stats) = self.stats.lock() {
                 apply_helper_status(&mut stats, &status);
@@ -235,7 +244,15 @@ impl SystemAudioCapture {
         self.stats
             .lock()
             .ok()
-            .and_then(|stats| stats.terminal_error.clone())
+            .map(|stats| {
+                let terminal_error = stats.terminal_error.clone();
+                let warning = terminal_error
+                    .is_none()
+                    .then(|| stats.last_error.clone())
+                    .flatten();
+                (terminal_error, warning)
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -856,6 +873,55 @@ mod tests {
             },
         );
         assert_eq!(stats.last_error, None);
+    }
+
+    #[test]
+    fn helper_zero_signal_warning_survives_later_zero_level_status() {
+        let mut stats = SystemAudioStats::default();
+        let warning =
+            "System audio capture is still returning silence after one restart.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stalled".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "level".to_string(),
+                level: Some(0.0),
+                max_level: Some(0.0),
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+
+        assert_eq!(stats.last_error, Some(warning));
+    }
+
+    #[test]
+    fn stopped_status_carries_a_racing_nonterminal_warning() {
+        let mut stats = SystemAudioStats::default();
+        let warning = "Failed to write trailing system-audio silence.".to_string();
+
+        apply_helper_status(
+            &mut stats,
+            &HelperStatus {
+                event: "stopped".to_string(),
+                level: None,
+                max_level: None,
+                message: Some(warning.clone()),
+                terminal_error: None,
+            },
+        );
+
+        assert_eq!(stats.last_error, Some(warning));
     }
 
     #[test]

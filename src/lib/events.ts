@@ -2,4 +2,5 @@ export const MEETING_START_TRANSCRIPTION_EVENT = "clovy://meeting-start-transcri
 export const MEETING_END_STATE_EVENT = "meeting-end-state-event";
 export const MEETING_END_FINISH_REQUEST_EVENT = "clovy://meeting-end-finish";
 export const AGENT_RECORDER_REQUEST_EVENT = "clovy://agent-recorder-request";
+export const RECORDING_FINALIZATION_WARNING_EVENT = "clovy://recording-finalization-warning";
 export const ACCOUNT_AVATAR_CHANGED_EVENT = "clovy://account-avatar-change";

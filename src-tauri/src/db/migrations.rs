@@ -1347,6 +1347,18 @@ const MIGRATIONS: &[Migration] = &[
             )),
         ],
     },
+    Migration {
+        version: 51,
+        name: "generation_block_warnings",
+        requirements: &[SchemaRequirement::Column {
+            table: "note_generation_blocks",
+            column: "warning",
+        }],
+        steps: &[MigrationStep::EnsureColumns {
+            table: "note_generation_blocks",
+            columns: GENERATION_BLOCK_WARNING_COLUMN,
+        }],
+    },
 ];
 
 const NOTE_REVISION_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
@@ -1367,6 +1379,10 @@ const COMPANION_OPERATION_STATE_COLUMN: &[ColumnDefinition] = &[ColumnDefinition
 }];
 const AGENT_ARTIFACT_DISPLAY_NAME_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
     name: "display_name",
+    definition: "TEXT",
+}];
+const GENERATION_BLOCK_WARNING_COLUMN: &[ColumnDefinition] = &[ColumnDefinition {
+    name: "warning",
     definition: "TEXT",
 }];
 

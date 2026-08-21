@@ -10,10 +10,10 @@ import {
   resumeRecording,
 } from "../lib/tauri";
 import { playRecordingSound } from "../lib/recording-sounds";
-import { AGENT_RECORDER_REQUEST_EVENT } from "../lib/events";
+import { AGENT_RECORDER_REQUEST_EVENT, RECORDING_FINALIZATION_WARNING_EVENT } from "../lib/events";
 import { errorCode, messageFromError } from "../lib/errors";
 import { getCurrentDataPartitionName } from "../lib/data-partition";
-import type { RecordingSourceMode } from "../lib/tauri";
+import type { RecordingSourceMode, SourceWarningDto } from "../lib/tauri";
 import { RECORD_NOTICES_DEMO_SESSION_ID } from "./processing-demo-ids";
 import type { AgentRecorderRequestPayload } from "./app-shell";
 import type { UseRecordingControlsDependencies } from "./use-recording-controls-types";
@@ -153,6 +153,22 @@ export function useRecordingControls(dependencies: UseRecordingControlsDependenc
       unlisten?.();
     };
   }, []);
+
+  useEffect(() => {
+    let aborted = false;
+    let unlisten: (() => void) | undefined;
+    void listen<SourceWarningDto[]>(RECORDING_FINALIZATION_WARNING_EVENT, ({ payload }) => {
+      const warning = payload.map((item) => item.message.trim()).find(Boolean);
+      if (warning) setError(warning);
+    }).then((cleanup) => {
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, [setError]);
 
   async function handleFinishRecording(sessionId: string, options: { rethrow?: boolean } = {}) {
     // The dev __recordNoticesDemo session has no backend recording — stopping it

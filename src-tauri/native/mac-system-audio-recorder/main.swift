@@ -10,6 +10,7 @@ private let zeroSignalRMSFloor: Float = 1.0e-7
 private let startupZeroSignalRecoverySeconds: TimeInterval = 10
 private let activeZeroSignalRecoverySeconds: TimeInterval = 30
 private let bufferFailureThreshold = 3
+private let postRecoveryZeroSignalWarningMessage = "System audio capture is still returning silence after one restart. Microphone recording can continue."
 
 extension String: @retroactive Error {}
 
@@ -122,6 +123,7 @@ final class SystemAudioRecorder {
     private var powerAssertionID: IOPMAssertionID = 0
     private var rebuildScheduled = false
     private var terminalErrorMessage: String?
+    private var activeWarningMessage: String?
 
     init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
         self.outputURL = outputURL
@@ -373,7 +375,11 @@ final class SystemAudioRecorder {
         let frameLength = Int(buffer.frameLength)
         let channelCount = Int(buffer.format.channelCount)
         guard frameLength > 0, channelCount > 0, let channels = buffer.floatChannelData else {
-            emit(["event": "level", "level": "0"])
+            var status = ["event": "level", "level": "0"]
+            if let warning = currentZeroSignalWarning() {
+                status["message"] = warning
+            }
+            emit(status)
             return
         }
         var sum: Float = 0
@@ -392,7 +398,11 @@ final class SystemAudioRecorder {
         }
         let level = min(1, Double(rms) * 4)
         maxLevel = max(maxLevel, level)
-        emit(["event": "level", "level": String(level), "maxLevel": String(maxLevel)])
+        var status = ["event": "level", "level": String(level), "maxLevel": String(maxLevel)]
+        if let warning = currentZeroSignalWarning() {
+            status["message"] = warning
+        }
+        emit(status)
     }
 
     private func markInputReceived() {
@@ -425,7 +435,15 @@ final class SystemAudioRecorder {
         healthLock.lock()
         lastSignalAt = Date()
         observedSignalSinceGraphStart = true
+        reportedZeroSignalWarning = false
         healthLock.unlock()
+    }
+
+    private func currentZeroSignalWarning() -> String? {
+        healthLock.lock()
+        let warning = reportedZeroSignalWarning ? postRecoveryZeroSignalWarningMessage : nil
+        healthLock.unlock()
+        return warning
     }
 
     /// CoreAudio process taps can keep invoking the IO callback while returning
@@ -466,7 +484,7 @@ final class SystemAudioRecorder {
         }
         guard warningDue else { return nil }
         reportedZeroSignalWarning = true
-        return "System audio capture is still returning silence after one restart. Microphone recording can continue."
+        return postRecoveryZeroSignalWarningMessage
     }
 
     private func secondsSinceLastInput() -> TimeInterval {
@@ -606,11 +624,24 @@ final class SystemAudioRecorder {
             return
         }
 
+        if event == "stalled" {
+            activeWarningMessage = object["message"]
+        } else if event == "ready" || event == "level" {
+            // A level event keeps a zero-signal warning by carrying its
+            // message. A message-free ready or level event is recovery
+            // evidence and clears the transient diagnostic.
+            activeWarningMessage = object["message"]
+        }
+
         var emittedObject = object
         if event == "stopped", let terminalErrorMessage {
             // Rust reads the terminal failure before TERM. Carry it on the
             // stopped event too so a failure racing with TERM is not lost.
             emittedObject["terminalError"] = terminalErrorMessage
+        } else if event == "stopped", let activeWarningMessage {
+            // Finalization can emit a late warning after Rust's pre-TERM
+            // snapshot. Carry it across the stopped boundary as well.
+            emittedObject["message"] = activeWarningMessage
         }
         let data = try! JSONSerialization.data(withJSONObject: emittedObject)
         print(String(data: data, encoding: .utf8)!)

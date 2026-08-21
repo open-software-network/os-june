@@ -3435,12 +3435,22 @@ impl Repositories {
     ) -> Result<String, sqlx::error::Error> {
         let row = query(
             "UPDATE notes
-             SET processing_status = ?, last_error = ?, updated_at = ?
+             SET processing_status = ?,
+                 last_error = COALESCE(
+                     ?,
+                     (SELECT GROUP_CONCAT(warning, '; ')
+                      FROM note_generation_blocks
+                      WHERE note_id = ?
+                        AND warning IS NOT NULL
+                        AND TRIM(warning) != '')
+                 ),
+                 updated_at = ?
              WHERE id = ?
              RETURNING updated_at",
         )
         .bind(status.as_db())
         .bind(last_error)
+        .bind(note_id)
         .bind(timestamp())
         .bind(note_id)
         .fetch_one(&self.pool)
@@ -3551,6 +3561,7 @@ impl Repositories {
                 generation_result_id,
                 Some(title.as_str()),
                 &content,
+                warning,
             )
             .await?;
             self.compose_generation_blocks(note_id)
@@ -3582,6 +3593,10 @@ impl Repositories {
         // Title and edited content are user-owned. Apply generation's changes
         // only while the exact snapshots it read are still current; a NULL
         // edited-content snapshot never authorizes a write to that column.
+        let warning = self
+            .generation_block_warning_summary(note_id)
+            .await?
+            .or_else(|| warning.map(str::to_string));
         query(
             "UPDATE notes
              SET title = CASE
@@ -3671,6 +3686,7 @@ impl Repositories {
         generation_result_id: Option<&str>,
         title_suggestion: Option<&str>,
         content: &str,
+        warning: Option<&str>,
     ) -> Result<(), sqlx::error::Error> {
         let now = timestamp();
         if let Some(row) = query(
@@ -3684,12 +3700,13 @@ impl Repositories {
             let id: String = row.get("id");
             query(
                 "UPDATE note_generation_blocks
-                 SET generation_result_id = ?, content = ?, title_suggestion = ?, updated_at = ?
+                 SET generation_result_id = ?, content = ?, title_suggestion = ?, warning = ?, updated_at = ?
                  WHERE id = ?",
             )
             .bind(generation_result_id)
             .bind(content)
             .bind(title_suggestion)
+            .bind(warning)
             .bind(&now)
             .bind(id)
             .execute(&self.pool)
@@ -3700,8 +3717,8 @@ impl Repositories {
         let sort_order = self.next_generation_block_sort_order(note_id).await?;
         query(
             "INSERT INTO note_generation_blocks
-             (id, note_id, recording_session_id, generation_result_id, content, title_suggestion, sort_order, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             (id, note_id, recording_session_id, generation_result_id, content, title_suggestion, warning, sort_order, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(note_id)
@@ -3709,12 +3726,35 @@ impl Repositories {
         .bind(generation_result_id)
         .bind(content)
         .bind(title_suggestion)
+        .bind(warning)
         .bind(sort_order)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn generation_block_warning_summary(
+        &self,
+        note_id: &str,
+    ) -> Result<Option<String>, sqlx::error::Error> {
+        let rows = query(
+            "SELECT warning
+             FROM note_generation_blocks
+             WHERE note_id = ?
+               AND warning IS NOT NULL
+               AND TRIM(warning) != ''
+             ORDER BY sort_order ASC, created_at ASC, rowid ASC",
+        )
+        .bind(note_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let warnings = rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("warning"))
+            .collect::<Vec<_>>();
+        Ok((!warnings.is_empty()).then(|| warnings.join("; ")))
     }
 
     async fn next_generation_block_sort_order(
@@ -3784,10 +3824,19 @@ impl Repositories {
         // the recording session row is the source of truth for live capture.
         query(
             "UPDATE notes
-             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             SET processing_status = 'recording',
+                 last_error = (
+                     SELECT GROUP_CONCAT(warning, '; ')
+                     FROM note_generation_blocks
+                     WHERE note_id = ?
+                       AND warning IS NOT NULL
+                       AND TRIM(warning) != ''
+                 ),
+                 updated_at = ?
              WHERE id = ?
                AND processing_status NOT IN ('transcribing', 'generating')",
         )
+        .bind(note_id)
         .bind(timestamp())
         .bind(note_id)
         .execute(&self.pool)
@@ -3843,10 +3892,19 @@ impl Repositories {
         .await?;
         query(
             "UPDATE notes
-             SET processing_status = 'recording', last_error = NULL, updated_at = ?
+             SET processing_status = 'recording',
+                 last_error = (
+                     SELECT GROUP_CONCAT(warning, '; ')
+                     FROM note_generation_blocks
+                     WHERE note_id = ?
+                       AND warning IS NOT NULL
+                       AND TRIM(warning) != ''
+                 ),
+                 updated_at = ?
              WHERE id = ?
                AND processing_status NOT IN ('transcribing', 'generating')",
         )
+        .bind(note_id)
         .bind(&now)
         .bind(note_id)
         .execute(&mut *tx)
@@ -7255,6 +7313,81 @@ mod tests {
         let active = repos.get_note(&note.id).await.expect("active note");
         assert_eq!(active.processing_status, ProcessingStatus::Transcribing);
         assert_eq!(active.last_error.as_deref(), Some(warning));
+    }
+
+    #[tokio::test]
+    async fn partial_source_warning_survives_later_sessions_until_its_session_recovers() {
+        let repos = test_repositories().await;
+        let note = repos.create_note("default", None).await.expect("note");
+        let warning = "System: The transcription provider could not process this audio.";
+
+        let warned = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("session-with-warning"),
+                None,
+                None,
+                "First generated block".to_string(),
+                Some(warning),
+            )
+            .await
+            .expect("generate partial note");
+        assert_eq!(warned.last_error.as_deref(), Some(warning));
+
+        repos
+            .create_recording_session(
+                &note.id,
+                "later-recording",
+                RecordingSourceMode::MicrophoneOnly,
+                "/tmp/later.partial.wav",
+                "/tmp/later.wav",
+                None,
+            )
+            .await
+            .expect("start later recording");
+        let recording = repos.get_note(&note.id).await.expect("recording note");
+        assert_eq!(recording.last_error.as_deref(), Some(warning));
+
+        repos
+            .set_note_status(&note.id, ProcessingStatus::Transcribing, None)
+            .await
+            .expect("start later processing");
+        let processing = repos.get_note(&note.id).await.expect("processing note");
+        assert_eq!(processing.last_error.as_deref(), Some(warning));
+
+        let later = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("later-recording"),
+                None,
+                None,
+                "Second generated block".to_string(),
+                None,
+            )
+            .await
+            .expect("generate later session");
+        assert_eq!(later.last_error.as_deref(), Some(warning));
+
+        let recovered = repos
+            .set_generated_note_for_session_with_warning(
+                &note.id,
+                Some("session-with-warning"),
+                None,
+                None,
+                "Recovered first generated block".to_string(),
+                None,
+            )
+            .await
+            .expect("recover warned session");
+        assert_eq!(recovered.last_error, None);
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Recovered first generated block")));
+        assert!(recovered
+            .generated_content
+            .as_deref()
+            .is_some_and(|content| content.contains("Second generated block")));
     }
 
     async fn transcript_count(repos: &Repositories, session_id: &str) -> i64 {

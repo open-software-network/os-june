@@ -7,7 +7,10 @@ import {
   resetCurrentDataPartitionForTests,
   setCurrentDataPartitionName,
 } from "../lib/data-partition";
-import { MEETING_START_TRANSCRIPTION_EVENT } from "../lib/events";
+import {
+  MEETING_START_TRANSCRIPTION_EVENT,
+  RECORDING_FINALIZATION_WARNING_EVENT,
+} from "../lib/events";
 import {
   beginMaxGrantWait,
   clearMaxGrantWait,
@@ -904,6 +907,30 @@ describe("notes recording reliability", () => {
 
     await startRecordingOnFirstNote();
     await userEvent.click(await screen.findByRole("button", { name: "Done" }));
+
+    expect(await screen.findByText(warning)).toHaveClass("error-banner");
+  });
+
+  it("shows a warning when starting a recording auto-finalizes the previous capture", async () => {
+    const warning =
+      "System audio may be incomplete. Clovy preserved the audio it recorded and will still process it.";
+
+    render(<App />);
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has(RECORDING_FINALIZATION_WARNING_EVENT)).toBe(true),
+    );
+    await act(async () => {
+      await mocks.listeners.get(RECORDING_FINALIZATION_WARNING_EVENT)?.({
+        payload: [
+          {
+            source: "system",
+            code: "system_audio_capture_warning",
+            message: warning,
+          },
+        ],
+      });
+    });
 
     expect(await screen.findByText(warning)).toHaveClass("error-banner");
   });

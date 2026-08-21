@@ -66,6 +66,7 @@ const MEMORY_CONTENT_MAX_CHARS: usize = 4_000;
 const FOLDER_INSTRUCTIONS_MAX_CHARS: usize = 4_000;
 const ISSUE_REPORT_ATTACHMENT_LIMIT: usize = 20;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const RECORDING_FINALIZATION_WARNING_EVENT: &str = "clovy://recording-finalization-warning";
 
 fn finished_source_audio_is_valid(
     source: &crate::audio::capture::FinishedSource,
@@ -2078,7 +2079,7 @@ async fn finish_active_capture_before_start(
 ) -> Result<(), AppError> {
     let finalization_started = Instant::now();
     if let Some(finished) = finish_active_capture()? {
-        finish_recording_session_with_timing(
+        let response = finish_recording_session_with_timing(
             repos,
             finished,
             finalization_started,
@@ -2086,6 +2087,11 @@ async fn finish_active_capture_before_start(
             note_processing_progress_reporter(app),
         )
         .await?;
+        if !response.warnings.is_empty() {
+            if let Err(error) = app.emit(RECORDING_FINALIZATION_WARNING_EVENT, &response.warnings) {
+                tracing::warn!(%error, "failed to emit recording finalization warning");
+            }
+        }
     }
     Ok(())
 }
