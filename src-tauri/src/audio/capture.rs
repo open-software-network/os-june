@@ -782,11 +782,15 @@ pub fn is_capture_active() -> bool {
 }
 
 pub fn finish_active_capture() -> Result<Option<FinishedRecording>, AppError> {
-    finish_active_capture_with_recovery_context().map_err(|failure| *failure.error)
+    finish_active_capture_with_recovery_context(|_| {}).map_err(|failure| *failure.error)
 }
 
-pub fn finish_active_capture_with_recovery_context(
-) -> Result<Option<FinishedRecording>, CaptureFinishError> {
+pub fn finish_active_capture_with_recovery_context<F>(
+    on_consumed: F,
+) -> Result<Option<FinishedRecording>, CaptureFinishError>
+where
+    F: FnOnce(&ConsumedCapture),
+{
     let mut active = lock_active().map_err(|error| CaptureFinishError {
         error: Box::new(error),
         consumed: None,
@@ -798,6 +802,11 @@ pub fn finish_active_capture_with_recovery_context(
         session_id: recording.session_id.clone(),
         note_id: recording.note_id.clone(),
     };
+    // Reserve downstream ordering while the live-capture lock still excludes
+    // a replacement recording. The callback is synchronous and must not do
+    // capture work or await.
+    on_consumed(&consumed);
+    drop(active);
     finalize_recording(recording)
         .map(Some)
         .map_err(|error| CaptureFinishError {
@@ -816,12 +825,16 @@ pub fn current_status() -> Option<RecordingStatusDto> {
 }
 
 pub fn finish_capture(session_id: &str) -> Result<FinishedRecording, AppError> {
-    finish_capture_with_recovery_context(session_id).map_err(|failure| *failure.error)
+    finish_capture_with_recovery_context(session_id, |_| {}).map_err(|failure| *failure.error)
 }
 
-pub fn finish_capture_with_recovery_context(
+pub fn finish_capture_with_recovery_context<F>(
     session_id: &str,
-) -> Result<FinishedRecording, CaptureFinishError> {
+    on_consumed: F,
+) -> Result<FinishedRecording, CaptureFinishError>
+where
+    F: FnOnce(&ConsumedCapture),
+{
     let mut active = lock_active().map_err(|error| CaptureFinishError {
         error: Box::new(error),
         consumed: None,
@@ -853,6 +866,11 @@ pub fn finish_capture_with_recovery_context(
         session_id: recording.session_id.clone(),
         note_id: recording.note_id.clone(),
     };
+    // This call alone owns finalization. Reserve its processing position
+    // before releasing the capture lock, so a replacement recording cannot
+    // stop and register first.
+    on_consumed(&consumed);
+    drop(active);
     finalize_recording(recording).map_err(|error| CaptureFinishError {
         error: Box::new(error),
         consumed: Some(consumed),

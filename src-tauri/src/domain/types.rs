@@ -145,8 +145,8 @@ pub struct NoteDto {
     pub audio_sources: Vec<AudioArtifactDto>,
     pub active_tab: Option<String>,
     pub last_error: Option<String>,
-    /// Session-scoped partial transcription warnings that remain retryable
-    /// after the Note itself reaches Ready.
+    /// Recording-session-scoped partial note-transcription warnings that
+    /// remain retryable after the Note itself reaches Ready.
     #[serde(default)]
     pub transcription_warnings: Vec<NoteTranscriptionWarningDto>,
     /// Recordings queued behind the one currently processing for this note

@@ -836,7 +836,7 @@ describe("NoteEditor", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   });
 
-  it("retries the recording session named by a partial transcription warning", async () => {
+  it("retries the recording session named by a partial note-transcription warning", async () => {
     const user = userEvent.setup();
     const onRetry = vi.fn();
     render(

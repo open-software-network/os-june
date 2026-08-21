@@ -8,6 +8,7 @@ use crate::{
     audio::capture::{FinishedRecording, FinishedSource},
     domain::{
         processing::{NoteProcessingProgressReporter, ProcessingTiming},
+        processing_queue,
         types::{
             AudioLevelDto, ProcessingStatus, RecordingSessionDto, RecordingSource,
             RecordingSourceMode, RecordingState,
@@ -124,12 +125,14 @@ async fn assert_done_origin_checkpoints_are_monotonic_and_single_shot() {
         .expect("timing microphone artifact");
 
     let timing = ProcessingTiming::from_done(Instant::now());
+    let processing_registration = processing_queue::enqueue(&note.id, &recording_session_id);
     let response = finish_recording_session_with_timing(
         &repos,
         timing_finished_recording(&note.id, &recording_session_id, audio_path),
         Instant::now(),
         timing,
         NoteProcessingProgressReporter::default(),
+        processing_registration,
     )
     .await
     .expect("finish timing recording");

@@ -1996,7 +1996,7 @@ describe("notes recording reliability", () => {
     );
   });
 
-  it("retries the exact recording behind a ready partial transcription warning", async () => {
+  it("retries the exact recording session behind a ready partial note-transcription warning", async () => {
     const warningNote = {
       ...first,
       lastError: "System: upstream_provider_failed",

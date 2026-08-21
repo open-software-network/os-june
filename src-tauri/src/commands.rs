@@ -2122,17 +2122,32 @@ pub async fn finish_recording(
     let repos = repositories(&app).await?;
     let progress = note_processing_progress_reporter(&app);
     let finalization_started = Instant::now();
-    let finished = match finish_capture_with_recovery_context(&request.session_id) {
+    let mut processing_registration = None;
+    let finished = match finish_capture_with_recovery_context(&request.session_id, |consumed| {
+        processing_registration =
+            processing_queue::enqueue(&consumed.note_id, &consumed.session_id);
+    }) {
         Ok(finished) => finished,
         Err(failure) => {
             if let Some(consumed) = failure.consumed {
-                recover_processing_run_or_supervise(
-                    &repos,
-                    &consumed.note_id,
-                    &consumed.session_id,
-                    &progress,
-                )
-                .await;
+                if let Some((ticket, _depth)) = processing_registration.take() {
+                    recover_and_release_processing_ticket(
+                        ticket,
+                        &repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                } else {
+                    recover_processing_run_or_supervise(
+                        &repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                }
             }
             return Err(*failure.error);
         }
@@ -2143,6 +2158,7 @@ pub async fn finish_recording(
         finalization_started,
         timing,
         progress,
+        processing_registration,
     )
     .await?;
     if response.processing_started {
@@ -2160,17 +2176,32 @@ async fn finish_active_capture_before_start(
 ) -> Result<(), AppError> {
     let progress = note_processing_progress_reporter(app);
     let finalization_started = Instant::now();
-    let finished = match finish_active_capture_with_recovery_context() {
+    let mut processing_registration = None;
+    let finished = match finish_active_capture_with_recovery_context(|consumed| {
+        processing_registration =
+            processing_queue::enqueue(&consumed.note_id, &consumed.session_id);
+    }) {
         Ok(finished) => finished,
         Err(failure) => {
             if let Some(consumed) = failure.consumed {
-                recover_processing_run_or_supervise(
-                    repos,
-                    &consumed.note_id,
-                    &consumed.session_id,
-                    &progress,
-                )
-                .await;
+                if let Some((ticket, _depth)) = processing_registration.take() {
+                    recover_and_release_processing_ticket(
+                        ticket,
+                        repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                } else {
+                    recover_processing_run_or_supervise(
+                        repos,
+                        &consumed.note_id,
+                        &consumed.session_id,
+                        &progress,
+                    )
+                    .await;
+                }
             }
             return Err(*failure.error);
         }
@@ -2182,6 +2213,7 @@ async fn finish_active_capture_before_start(
             finalization_started,
             ProcessingTiming::untracked(),
             progress,
+            processing_registration,
         )
         .await?;
         if !response.warnings.is_empty() {
@@ -2193,18 +2225,23 @@ async fn finish_active_capture_before_start(
     Ok(())
 }
 
+type ProcessingRegistration = (processing_queue::ProcessingTicket, i64);
+
 #[cfg(test)]
 async fn finish_recording_session(
     repos: &Repositories,
     finished: crate::audio::capture::FinishedRecording,
     finalization_started: Instant,
 ) -> Result<FinishRecordingResponse, AppError> {
+    let processing_registration =
+        processing_queue::enqueue(&finished.note_id, &finished.session_id);
     finish_recording_session_with_timing(
         repos,
         finished,
         finalization_started,
         ProcessingTiming::untracked(),
         NoteProcessingProgressReporter::default(),
+        processing_registration,
     )
     .await
 }
@@ -2215,20 +2252,35 @@ async fn finish_recording_session_with_timing(
     finalization_started: Instant,
     timing: ProcessingTiming,
     progress: NoteProcessingProgressReporter,
+    processing_registration: Option<ProcessingRegistration>,
 ) -> Result<FinishRecordingResponse, AppError> {
     let note_id = finished.note_id.clone();
     let recording_session_id = finished.session_id.clone();
+    let had_processing_registration = processing_registration.is_some();
+    let mut processing_registration = processing_registration;
     let result = finish_recording_session_inner(
         repos,
         finished,
         finalization_started,
         timing,
         progress.clone(),
+        &mut processing_registration,
     )
     .await;
     if result.is_err() {
-        recover_processing_run_or_supervise(repos, &note_id, &recording_session_id, &progress)
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            recover_and_release_processing_ticket(
+                ticket,
+                repos,
+                &note_id,
+                &recording_session_id,
+                &progress,
+            )
             .await;
+        } else if !had_processing_registration {
+            recover_processing_run_or_supervise(repos, &note_id, &recording_session_id, &progress)
+                .await;
+        }
     }
     result
 }
@@ -2239,6 +2291,7 @@ async fn finish_recording_session_inner(
     finalization_started: Instant,
     timing: ProcessingTiming,
     progress: NoteProcessingProgressReporter,
+    processing_registration: &mut Option<ProcessingRegistration>,
 ) -> Result<FinishRecordingResponse, AppError> {
     let finalization_ms = finalization_started
         .elapsed()
@@ -2531,8 +2584,12 @@ async fn finish_recording_session_inner(
                 Some(validation.warnings.join("; ")),
             )
             .await?;
+        let note = repos.get_note(&finished.note_id).await?;
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            ticket.finish();
+        }
         return Ok(FinishRecordingResponse {
-            note: repos.get_note(&finished.note_id).await?,
+            note,
             recording: finished.recording,
             validation,
             validations: source_validations,
@@ -2548,10 +2605,22 @@ async fn finish_recording_session_inner(
         .has_older_recoverable_recording(&finished.note_id, &finished.session_id)
         .await?
     {
-        recover_abandoned_processing_run(repos, &finished.note_id, &finished.session_id, &progress)
-            .await?;
+        let recovered = recover_abandoned_processing_run(
+            repos,
+            &finished.note_id,
+            &finished.session_id,
+            &progress,
+        )
+        .await?;
         let mut note = repos.get_note(&finished.note_id).await?;
         note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
+        if let Some((ticket, _depth)) = processing_registration.take() {
+            if recovered {
+                ticket.abandon();
+            } else {
+                ticket.finish();
+            }
+        }
         return Ok(FinishRecordingResponse {
             note,
             recording: finished.recording,
@@ -2562,15 +2631,12 @@ async fn finish_recording_session_inner(
         });
     }
 
-    // Capture is single-instance, but processing runs asynchronously — so the
-    // user may have already recorded (and stopped) another message on this note
-    // while a previous one is still in flight. Register this recording behind
-    // any in-flight processing for the note; the spawned task waits its turn
-    // and reads the note's generated content after every earlier recording
-    // session finishes, so incremental
-    // generation always builds on whatever the previous job wrote.
-    let Some((ticket, depth)) = processing_queue::enqueue(&finished.note_id, &finished.session_id)
-    else {
+    // Capture is single-instance, but processing runs asynchronously. This
+    // registration was reserved atomically when Stop consumed the capture, so
+    // a replacement recording cannot overtake finalization. The spawned task
+    // waits its turn and reads the Note after every earlier recording session
+    // finishes, preserving incremental generation order.
+    let Some((ticket, depth)) = processing_registration.take() else {
         let mut note = repos.get_note(&finished.note_id).await?;
         note.queued_recordings = processing_queue::queued_behind(&finished.note_id);
         return Ok(FinishRecordingResponse {
@@ -4707,6 +4773,90 @@ mod retry_audio_source_tests {
             .await
             .expect("recording status after recovery");
         assert_eq!(status, "recoverable");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn finalization_reserves_processing_order_before_validation_io() {
+        let pool = sqlx_sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("test database");
+        run_migrations(&pool).await.expect("migrations");
+        let repos = Repositories::new(pool);
+        let directory = tempfile::tempdir().expect("recording directory");
+        let partial_path = directory.path().join("ordered-finalization.partial.wav");
+        let final_path = directory.path().join("ordered-finalization.wav");
+        std::fs::write(&partial_path, b"saved partial audio").expect("partial audio");
+        let note = repos.create_note("default", None).await.expect("note");
+        let first_session_id = "ordered-finalization-first";
+        repos
+            .create_recording_session(
+                &note.id,
+                first_session_id,
+                RecordingSourceMode::MicrophoneOnly,
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+                None,
+            )
+            .await
+            .expect("first recording session");
+        repos
+            .create_pending_source_artifact(
+                &note.id,
+                first_session_id,
+                RecordingSource::Microphone.as_db(),
+                &partial_path.to_string_lossy(),
+                &final_path.to_string_lossy(),
+            )
+            .await
+            .expect("first source artifact");
+        let held_connection = repos.pool.acquire().await.expect("held connection");
+        let task_repos = repos.clone();
+        let task_note_id = note.id.clone();
+        let first_final_path = final_path.clone();
+        let first_task = tokio::spawn(async move {
+            finish_recording_session(
+                &task_repos,
+                finished_microphone_recording(&task_note_id, first_session_id, first_final_path),
+                Instant::now(),
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !processing_queue::is_registered(&note.id, first_session_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first finalization never reserved its processing position");
+        let (later_ticket, depth) =
+            processing_queue::enqueue(&note.id, "ordered-finalization-later")
+                .expect("later recording registration");
+        assert_eq!(depth, 2, "later recording overtook finalization");
+        let mut later_readiness = Box::pin(later_ticket.wait_until_ready());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut later_readiness)
+                .await
+                .is_err(),
+            "later recording started while the first was still validating"
+        );
+
+        drop(held_connection);
+        let first_response = tokio::time::timeout(Duration::from_secs(1), first_task)
+            .await
+            .expect("first finalization remained blocked")
+            .expect("first finalization task panicked")
+            .expect("first finalization failed");
+        assert!(!first_response.processing_started);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), &mut later_readiness)
+                .await
+                .expect("later recording remained blocked")
+        );
+        drop(later_readiness);
+        later_ticket.finish();
     }
 
     #[tokio::test]

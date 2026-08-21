@@ -41,13 +41,16 @@ preview).
 3. **`finish_recording`** stops the input stream, drains and finalizes the
    writer task, then atomically renames
    `*.partial.wav` → `*.wav` (the durability commit), stops the helper, cancels
-   preview. Completed microphone byte metadata is replaced from the writer
-   watermark returned after that final drain. A terminal system-audio helper
-   error remains sticky until shutdown: Clovy preserves any WAV bytes already
-   written and records the diagnostic instead of treating a later level sample
-   or clean helper exit as recovery. Final WAV validation is authoritative, so
-   audio that is still readable and duration-valid remains available to final
-   note transcription and Retry.
+   preview. The Stop call that consumes the live capture reserves the recording
+   session's Note-processing position before releasing the capture lock, so a
+   replacement recording cannot overtake WAV finalization or validation.
+   Completed microphone byte metadata is replaced from the writer watermark
+   returned after that final drain. A terminal system-audio helper error remains
+   sticky until shutdown: Clovy preserves any WAV bytes already written and
+   records the diagnostic instead of treating a later level sample or clean
+   helper exit as recovery. Final WAV validation is authoritative, so audio that
+   is still readable and duration-valid remains available to final note
+   transcription and Retry.
 4. **`process_saved_source_audio`** (`src-tauri/src/domain/processing.rs`) runs
    the batch pipeline for microphone-only and dual-Source recordings:
    `drop_silent_system_sources` → dual-Source `turns::detect_turns` (or one
@@ -224,23 +227,24 @@ Retry resumes only jobs whose fingerprint has not already succeeded. Queue
 registration is idempotent per Note and recording session while work is queued
 or running, so repeated Retry requests cannot fan out duplicate processing for
 the same saved audio. Durable retry state changes only after queue admission,
-and a completed session can re-enter pending only while its matching failure or
-partial-Source warning remains unresolved. A stale request therefore cannot
-turn already completed work back into pending work. A failed Note also stores
-the exact recording session and processing stage that failed, preventing an
-older partial session from displacing the
-recording that actually needs Retry. The failure-ledger migration backfills
-retryable failed Notes only when an exact session or unfinished durable
-transcription job identifies the recording. A newer invalid recording blocks
-fallback to unrelated historical audio.
+and a completed recording session can re-enter pending only while its matching
+failure or partial-Source warning remains unresolved. A stale request therefore
+cannot turn already completed work back into pending work. A failed Note also
+stores the exact recording session and processing stage that failed, preventing
+an older partial recording session from displacing the recording that actually
+needs Retry. The failure-ledger migration backfills retryable failed Notes only
+when an exact recording session or unfinished durable note-transcription job
+identifies the recording. A newer invalid recording blocks fallback to
+unrelated historical audio.
 Partial-Source warnings on a Ready Note retain their own recording-session
 identity, so the warning's Retry action reprocesses the affected saved audio
 directly. Retryable failures remain durable per recording session: a later
-queued success cannot clear an earlier failure, discarding a recovered session
-removes only its failure, and recovering one session reveals the next
-unresolved one. Finalization commits `processing_pending` with the session's
-validation metadata, and successful Note generation commits the same session
-as `processed` in the Note transaction. A crash therefore reconstructs a
+queued success cannot clear an earlier failure, discarding a recovered
+recording session removes only its failure, and recovering one recording
+session reveals the next unresolved one. Finalization commits
+`processing_pending` with the recording session's validation metadata, and
+successful Note generation commits the same recording session as `processed`
+in the Note transaction. A crash therefore reconstructs a
 recovery prompt without reviving work that already completed. Interrupted-state
 promotion runs once per native process; renderer reloads show only sessions
 already marked recoverable and cannot reclassify live native queue work.
